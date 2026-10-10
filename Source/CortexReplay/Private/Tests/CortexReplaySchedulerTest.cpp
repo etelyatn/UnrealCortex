@@ -113,6 +113,7 @@ bool FCortexReplaySchedulerSameTimeLatenessTest::RunTest(const FString& Paramete
 	Up.Input.Kind = ECortexEditorPhysicalInputKind::KeyUp;
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Down, Up});
 	Recording.Metadata.DurationSeconds = 0.4;
+	Fixture.ApplyCadenceFrames(Recording);
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	TArray<int32> Dispatched;
@@ -128,9 +129,9 @@ bool FCortexReplaySchedulerSameTimeLatenessTest::RunTest(const FString& Paramete
 		const FCortexEditorPhysicalInputUIObservation UI;
 		return FCortexReplayGuardEvaluator::Evaluate(Event, Snapshot->InitialState.Pose, UI, false);
 	};
-	TestTrue(TEXT("Initial due event accepted"), Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+	TestTrue(TEXT("Initial due event accepted"), AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch).bSuccess);
 	Elapsed = 0.301;
-	const FCortexCommandResult Late = Scheduler.Advance(Clock, Evaluate, Dispatch);
+	const FCortexCommandResult Late = AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch);
 	TestFalse(TEXT("Event scheduled at 0.2 is too late"), Late.bSuccess);
 	TestEqual(TEXT("Late event reports REPLAY_TIMING_ERROR"), Late.ErrorCode,
 		FString(TEXT("REPLAY_TIMING_ERROR")));
@@ -162,11 +163,13 @@ bool FCortexReplaySchedulerDelayInsideOneAdvanceTest::RunTest(const FString& Par
 	FCortexReplayEvent Up = Down;
 	Up.Sequence = 1;
 	Up.Input.Kind = ECortexEditorPhysicalInputKind::KeyUp;
-	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(Fixture.MakeRecording(1, false, {Down, Up}));
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Down, Up});
+	Fixture.ApplyCadenceFrames(Recording);
+	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	double Elapsed = 0.0;
 	TArray<int32> Dispatched;
-	const FCortexCommandResult Result = Scheduler.Advance([&Elapsed]() { return Elapsed; },
+	const FCortexCommandResult Result = AdvanceFrame(Scheduler, [&Elapsed]() { return Elapsed; },
 		[&Snapshot](const FCortexReplayEvent& Event)
 		{
 			const FCortexEditorPhysicalInputUIObservation UI;
@@ -206,8 +209,9 @@ bool FCortexReplaySchedulerExactLatenessBoundaryTest::RunTest(const FString& Par
 	FCortexReplayTestFixture Fixture;
 	const FCortexReplayEvent Press = MakeKeyEvent(0, 0.0,
 		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
-	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(
-		Fixture.MakeRecording(1, false, {Press}));
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
+	Fixture.ApplyCadenceFrames(Recording);
+	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	auto Evaluate = [&Snapshot](const FCortexReplayEvent& Event)
 	{
 		const FCortexEditorPhysicalInputUIObservation UI;
@@ -219,7 +223,7 @@ bool FCortexReplaySchedulerExactLatenessBoundaryTest::RunTest(const FString& Par
 		FCortexReplayScheduler Scheduler(Snapshot);
 		int32 Dispatches = 0;
 		double Elapsed = 0.100;
-		const FCortexCommandResult Result = Scheduler.Advance([&Elapsed]() { return Elapsed; },
+		const FCortexCommandResult Result = AdvanceFrame(Scheduler, [&Elapsed]() { return Elapsed; },
 			Evaluate,
 			[&Dispatches](const FCortexReplayEvent&)
 			{
@@ -235,7 +239,7 @@ bool FCortexReplaySchedulerExactLatenessBoundaryTest::RunTest(const FString& Par
 		FCortexReplayScheduler Scheduler(Snapshot);
 		int32 Dispatches = 0;
 		double Elapsed = 0.101;
-		const FCortexCommandResult Result = Scheduler.Advance([&Elapsed]() { return Elapsed; },
+		const FCortexCommandResult Result = AdvanceFrame(Scheduler, [&Elapsed]() { return Elapsed; },
 			Evaluate,
 			[&Dispatches](const FCortexReplayEvent&)
 			{
@@ -264,12 +268,13 @@ bool FCortexReplaySchedulerSameTimeSequenceOrderingTest::RunTest(const FString& 
 	Events.Add(MakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W));
 	FCortexReplayEvent Second = MakeKeyEvent(1, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::E);
 	Events.Add(Second);
-	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(
-		Fixture.MakeRecording(1, false, Events));
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, Events);
+	Fixture.ApplyCadenceFrames(Recording);
+	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	FSchedulerDispatchLog Log;
 	double Elapsed = 0.0;
-	const FCortexCommandResult Result = Scheduler.Advance([&Elapsed]() { return Elapsed; },
+	const FCortexCommandResult Result = AdvanceFrame(Scheduler, [&Elapsed]() { return Elapsed; },
 		MakeUnguardedEvaluator(Snapshot),
 		[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); });
 	TestTrue(TEXT("Both same-time events accepted"), Result.bSuccess);
@@ -301,17 +306,18 @@ bool FCortexReplaySchedulerGamePauseIndependentTest::RunTest(const FString& Para
 	Second.CaptureContext.bWorldPaused = true;
 	// The recorded game time does not advance while paused; the monotonic clock still does.
 	Second.CaptureContext.WorldTimeSeconds = 0.0;
-	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(
-		Fixture.MakeRecording(1, false, {First, Second}));
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {First, Second});
+	Fixture.ApplyCadenceFrames(Recording);
+	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	FSchedulerDispatchLog Log;
 	double Elapsed = 0.0;
 	TestTrue(TEXT("Paused capture diagnostics do not block the first event"),
-		Scheduler.Advance([&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
+		AdvanceFrame(Scheduler, [&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
 			[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); }).bSuccess);
 	Elapsed = 0.2;
 	TestTrue(TEXT("Paused capture diagnostics do not block the later event"),
-		Scheduler.Advance([&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
+		AdvanceFrame(Scheduler, [&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
 			[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); }).bSuccess);
 	TestEqual(TEXT("Monotonic time dispatched both events"), Log.Sequences.Num(), 2);
 
@@ -332,24 +338,25 @@ bool FCortexReplaySchedulerTrailingIdleDurationTest::RunTest(const FString& Para
 		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
 	Recording.Metadata.DurationSeconds = 0.4;
+	Fixture.ApplyCadenceFrames(Recording);
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	FSchedulerDispatchLog Log;
 	double Elapsed = 0.0;
 	TestTrue(TEXT("Last event dispatched"),
-		Scheduler.Advance([&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
+		AdvanceFrame(Scheduler, [&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
 			[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); }).bSuccess);
 	TestEqual(TEXT("Event dispatched"), Scheduler.GetDispatchedCount(), 1);
 	TestFalse(TEXT("Not complete while trailing idle remains"), Scheduler.IsComplete());
 	Elapsed = 0.3;
 	TestTrue(TEXT("Idle poll accepted"),
-		Scheduler.Advance([&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
+		AdvanceFrame(Scheduler, [&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
 			[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); }).bSuccess);
 	TestFalse(TEXT("Still incomplete before the recorded duration"), Scheduler.IsComplete());
 	TestEqual(TEXT("No extra event dispatched while idle"), Scheduler.GetDispatchedCount(), 1);
 	Elapsed = 0.4;
 	TestTrue(TEXT("Trailing completion poll accepted"),
-		Scheduler.Advance([&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
+		AdvanceFrame(Scheduler, [&Elapsed]() { return Elapsed; }, MakeUnguardedEvaluator(Snapshot),
 			[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); }).bSuccess);
 	TestTrue(TEXT("Complete at the recorded duration"), Scheduler.IsComplete());
 
@@ -389,6 +396,7 @@ bool FCortexReplaySchedulerShiftedDeadlineTest::RunTest(const FString& Parameter
 	Guard.ExpectedLocalPosition = FVector2D(0.25, 0.5);
 	Recording.Metadata.GuardCoverage.UISupportedPresses = 1;
 	Recording.Metadata.GuardCoverage.UINotApplicablePresses = 0;
+	Fixture.ApplyCadenceFrames(Recording);
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	FCortexEditorPhysicalInputUIObservation UI;
@@ -407,20 +415,20 @@ bool FCortexReplaySchedulerShiftedDeadlineTest::RunTest(const FString& Parameter
 		Dispatched.Add(Event.Sequence);
 		return FCortexCommandRouter::Success(nullptr);
 	};
-	TestTrue(TEXT("Readiness wait admitted"), Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+	TestTrue(TEXT("Readiness wait admitted"), AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch).bSuccess);
 	TestEqual(TEXT("Pending sequence retained"), Scheduler.GetWaitingSequence(), 0);
 	TestEqual(TEXT("Disabled target receives nothing"), Dispatched.Num(), 0);
 	Elapsed = 0.5;
 	UI.State = ECortexEditorUIObservationState::Ready;
-	TestTrue(TEXT("Fresh ready press accepted"), Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+	TestTrue(TEXT("Fresh ready press accepted"), AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch).bSuccess);
 	TestEqual(TEXT("Measured wait offset"), Scheduler.GetAuthorizedWaitSeconds(), 0.5);
 	TestEqual(TEXT("Later release not compressed"), Dispatched.Num(), 1);
 	Elapsed = 0.75;
-	TestTrue(TEXT("Release at shifted deadline"), Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+	TestTrue(TEXT("Release at shifted deadline"), AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch).bSuccess);
 	TestEqual(TEXT("Balanced stored edge sequence"), Dispatched.Num(), 2);
 	TestFalse(TEXT("Trailing idle remains"), Scheduler.IsComplete());
 	Elapsed = 1.0;
-	TestTrue(TEXT("Shifted duration completed"), Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+	TestTrue(TEXT("Shifted duration completed"), AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch).bSuccess);
 	TestTrue(TEXT("Complete after full duration"), Scheduler.IsComplete());
 
 	return true;
@@ -444,6 +452,7 @@ bool FCortexReplaySchedulerWaitExcludesEvaluationTest::RunTest(const FString& Pa
 
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
 	Recording.Metadata.DurationSeconds = 0.3;
+	Fixture.ApplyCadenceFrames(Recording);
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 
@@ -472,23 +481,23 @@ bool FCortexReplaySchedulerWaitExcludesEvaluationTest::RunTest(const FString& Pa
 
 	// The target is disabled, so the run enters its readiness wait at t=0.
 	TestTrue(TEXT("Readiness wait admitted"),
-		Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+		AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch).bSuccess);
 	TestEqual(TEXT("Blocked press retained"), Scheduler.GetWaitingSequence(), 0);
 
 	// Two pending polls, each with evaluation work under the 100 ms allowance.
 	Elapsed = 0.05;
 	TestTrue(TEXT("First pending poll accepted"),
-		Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+		AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch).bSuccess);
 	Elapsed = 0.10;
 	TestTrue(TEXT("Second pending poll accepted"),
-		Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+		AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch).bSuccess);
 	TestEqual(TEXT("Still waiting on the same press"), Scheduler.GetWaitingSequence(), 0);
 
 	// The target becomes ready at an observed wait of 0.15 s.
 	Probe.MakeReady();
 	Elapsed = 0.15;
 	TestTrue(TEXT("Fresh ready press accepted"),
-		Scheduler.Advance(Clock, Evaluate, Dispatch).bSuccess);
+		AdvanceFrame(Scheduler, Clock, Evaluate, Dispatch).bSuccess);
 	TestEqual(TEXT("Press dispatched once ready"), Dispatched.Num(), 1);
 	TestEqual(TEXT("Wait state cleared"), Scheduler.GetWaitingSequence(), INDEX_NONE);
 
@@ -529,6 +538,7 @@ bool FCortexReplaySchedulerClassifiedDoubleClickOnceTest::RunTest(const FString&
 
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Down, Up, DoubleClick, FinalUp});
 	Recording.Metadata.DurationSeconds = 0.2;
+	Fixture.ApplyCadenceFrames(Recording);
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	FSchedulerDispatchLog Log;
@@ -542,22 +552,22 @@ bool FCortexReplaySchedulerClassifiedDoubleClickOnceTest::RunTest(const FString&
 	};
 
 	TestTrue(TEXT("First press accepted"),
-		Scheduler.Advance(Clock, Evaluate,
+		AdvanceFrame(Scheduler, Clock, Evaluate,
 			[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); }).bSuccess);
 	Elapsed = 0.10;
 	// The classified second press is initially not ready, so the run waits without consuming it.
 	TestTrue(TEXT("Pending second press waits"),
-		Scheduler.Advance(Clock, Evaluate,
+		AdvanceFrame(Scheduler, Clock, Evaluate,
 			[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); }).bSuccess);
 	TestEqual(TEXT("Second press retained pending"), Scheduler.GetWaitingSequence(), 2);
 	TestEqual(TEXT("Pending press not consumed before readiness"), Log.Sequences.Num(), 2);
 	PendingUI.State = ECortexEditorUIObservationState::Ready;
 	TestTrue(TEXT("Classified press dispatched once ready"),
-		Scheduler.Advance(Clock, Evaluate,
+		AdvanceFrame(Scheduler, Clock, Evaluate,
 			[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); }).bSuccess);
 	Elapsed = 0.2;
 	TestTrue(TEXT("Final release dispatched"),
-		Scheduler.Advance(Clock, Evaluate,
+		AdvanceFrame(Scheduler, Clock, Evaluate,
 			[&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); }).bSuccess);
 
 	TestEqual(TEXT("Stored edge sequence dispatched once"), Log.Sequences.Num(), 4);
@@ -568,6 +578,183 @@ bool FCortexReplaySchedulerClassifiedDoubleClickOnceTest::RunTest(const FString&
 		TestTrue(TEXT("Classified DoubleClick retained once"), Log.Kinds[2] == ECortexEditorPhysicalInputKind::DoubleClick);
 		TestTrue(TEXT("Final PointerUp retained"), Log.Kinds[3] == ECortexEditorPhysicalInputKind::PointerUp);
 	}
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The committed frame frontier - not dispatched events and not the recorded duration - decides
+// completion, and only an explicit Commit advances it.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplaySchedulerFrameTailCommitTest,
+	"Cortex.Replay.Scheduler.FrameTailCommit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplaySchedulerFrameTailCommitTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	const FCortexReplayEvent Press = MakeKeyEvent(0, 0.0,
+		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
+	Recording.Metadata.DurationSeconds = 0.4;
+	Fixture.ApplyCadenceFrames(Recording);
+	TestEqual(TEXT("Cadence fixture has a warmup, an input frame and an empty tail"),
+		Recording.Frames.Num(), 3);
+	TestEqual(TEXT("The tail frame carries no input"), Recording.Frames.Last().EventCount, 0);
+	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
+	FCortexReplayScheduler Scheduler(Snapshot);
+	FSchedulerDispatchLog Log;
+	double Elapsed = 0.0;
+	auto Clock = [&Elapsed]() { return Elapsed; };
+	auto Dispatch = [&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); };
+
+	TestFalse(TEXT("Nothing is complete before any frame commits"), Scheduler.IsComplete());
+	TestFalse(TEXT("No frame is in preparation before the first poll"), Scheduler.GetCurrentFrame().IsSet());
+
+	ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
+	TestTrue(TEXT("Warmup frame prepares"),
+		Scheduler.PrepareFrame(0, Clock, MakeUnguardedEvaluator(Snapshot), Dispatch, Preparation).bSuccess);
+	TestEqual(TEXT("Warmup frame is ready"), static_cast<int32>(Preparation),
+		static_cast<int32>(ECortexReplayFramePreparation::Ready));
+	TestEqual(TEXT("Preparing does not count as committed"), Scheduler.GetCompletedFrameCount(), 0);
+	TestEqual(TEXT("The warmup frame is the frame in preparation"), Scheduler.GetCurrentFrame().GetValue(), 0);
+
+	TestTrue(TEXT("Warmup frame commits"), Scheduler.CommitFrame(0).bSuccess);
+	TestEqual(TEXT("Commit advances the frontier"), Scheduler.GetCompletedFrameCount(), 1);
+	TestFalse(TEXT("No frame stays in preparation after commit"), Scheduler.GetCurrentFrame().IsSet());
+
+	TestTrue(TEXT("Input frame prepares"),
+		Scheduler.PrepareFrame(1, Clock, MakeUnguardedEvaluator(Snapshot), Dispatch, Preparation).bSuccess);
+	TestTrue(TEXT("Input frame commits"), Scheduler.CommitFrame(1).bSuccess);
+	TestEqual(TEXT("Both the warmup and the input frame dispatched their ranges"), Log.Sequences.Num(), 1);
+
+	// The trailing frame carries no events, so only its own deadline can hold completion open.
+	TestTrue(TEXT("Empty tail is not yet due"),
+		Scheduler.PrepareFrame(2, Clock, MakeUnguardedEvaluator(Snapshot), Dispatch, Preparation).bSuccess);
+	TestEqual(TEXT("An empty frame that is not due stays waiting"), static_cast<int32>(Preparation),
+		static_cast<int32>(ECortexReplayFramePreparation::Waiting));
+	TestFalse(TEXT("An uncommitted empty tail keeps the run incomplete"), Scheduler.IsComplete());
+
+	Elapsed = 0.4;
+	TestTrue(TEXT("Empty tail prepares at its deadline"),
+		Scheduler.PrepareFrame(2, Clock, MakeUnguardedEvaluator(Snapshot), Dispatch, Preparation).bSuccess);
+	TestEqual(TEXT("Empty tail is ready at its deadline"), static_cast<int32>(Preparation),
+		static_cast<int32>(ECortexReplayFramePreparation::Ready));
+	TestFalse(TEXT("Completion is not claimed before the final close"), Scheduler.IsComplete());
+	TestTrue(TEXT("Empty tail commits"), Scheduler.CommitFrame(2).bSuccess);
+	TestTrue(TEXT("Completion follows the final committed close"), Scheduler.IsComplete());
+	TestEqual(TEXT("Every frame is committed"), Scheduler.GetCompletedFrameCount(), 3);
+
+	const FCortexCommandResult DuplicateCommit = Scheduler.CommitFrame(2);
+	TestFalse(TEXT("A duplicate commit is refused"), DuplicateCommit.bSuccess);
+	TestTrue(TEXT("A completed run polls as a no-op"),
+		Scheduler.PrepareFrame(3, Clock, MakeUnguardedEvaluator(Snapshot), Dispatch, Preparation).bSuccess);
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Lateness is enforced at the frame's own range inside the frame API: an overdue frame errors and
+// its frontier does not move.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplaySchedulerFrameBundleLatenessTest,
+	"Cortex.Replay.Scheduler.FrameBundleLateness",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplaySchedulerFrameBundleLatenessTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	const FCortexReplayEvent Press = MakeKeyEvent(0, 0.0,
+		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
+	Recording.Metadata.DurationSeconds = 0.4;
+	Fixture.ApplyCadenceFrames(Recording);
+	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
+	FCortexReplayScheduler Scheduler(Snapshot);
+	FSchedulerDispatchLog Log;
+	double Elapsed = 0.0;
+	auto Clock = [&Elapsed]() { return Elapsed; };
+	auto Dispatch = [&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); };
+
+	ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
+	TestTrue(TEXT("Warmup frame prepares"),
+		Scheduler.PrepareFrame(0, Clock, MakeUnguardedEvaluator(Snapshot), Dispatch, Preparation).bSuccess);
+	TestTrue(TEXT("Warmup frame commits"), Scheduler.CommitFrame(0).bSuccess);
+
+	// The input frame's only event is due at 0.0, so 101 ms of lateness is over the fixed allowance.
+	Elapsed = 0.101;
+	const FCortexCommandResult Late =
+		Scheduler.PrepareFrame(1, Clock, MakeUnguardedEvaluator(Snapshot), Dispatch, Preparation);
+	TestFalse(TEXT("A frame overdue beyond the fixed allowance fails"), Late.bSuccess);
+	TestEqual(TEXT("Frame lateness reports REPLAY_TIMING_ERROR"), Late.ErrorCode,
+		FString(TEXT("REPLAY_TIMING_ERROR")));
+	TestEqual(TEXT("The late frame dispatched nothing"), Log.Sequences.Num(), 0);
+	TestEqual(TEXT("The late frame did not advance the frontier"), Scheduler.GetCompletedFrameCount(), 1);
+	TestFalse(TEXT("The late frame is not complete"), Scheduler.IsComplete());
+
+	const FCortexCommandResult LateCommit = Scheduler.CommitFrame(1);
+	TestFalse(TEXT("An unprepared frame cannot be committed"), LateCommit.bSuccess);
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A guard failure inside a frame freezes that frame's remaining range: nothing is replayed and the
+// scheduler never drains the next frame.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplaySchedulerFrameReentrantCancelTest,
+	"Cortex.Replay.Scheduler.FrameReentrantCancel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplaySchedulerFrameReentrantCancelTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	const FCortexReplayEvent First = MakeKeyEvent(0, 0.0,
+		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
+	FCortexReplayEvent Second = MakeKeyEvent(1, 0.0,
+		ECortexEditorPhysicalInputKind::KeyUp, EKeys::W);
+	Second.TimeSeconds = 0.05;
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {First, Second});
+	Recording.Metadata.DurationSeconds = 0.3;
+	Fixture.ApplyCadenceFrames(Recording);
+	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
+	FCortexReplayScheduler Scheduler(Snapshot);
+	FSchedulerDispatchLog Log;
+	double Elapsed = 0.0;
+	auto Clock = [&Elapsed]() { return Elapsed; };
+	auto Dispatch = [&Log](const FCortexReplayEvent& Event) { return Log.Record(Event); };
+
+	// The warmup frame carries no events, so the first guard evaluation happens on the input frame.
+	auto Evaluate = [](const FCortexReplayEvent&)
+	{
+		FCortexReplayGuardDecision Decision;
+		Decision.State = ECortexReplayGuardDecisionState::Error;
+		Decision.Error = FCortexCommandRouter::Error(
+			FString(TEXT("REPLAY_POSE_GUARD_FAILED")), FString(TEXT("pose mismatch")));
+		return Decision;
+	};
+
+	ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
+	TestTrue(TEXT("Warmup frame prepares"),
+		Scheduler.PrepareFrame(0, Clock, Evaluate, Dispatch, Preparation).bSuccess);
+	TestTrue(TEXT("Warmup frame commits"), Scheduler.CommitFrame(0).bSuccess);
+
+	Elapsed = 0.0;
+	const FCortexCommandResult Failed = Scheduler.PrepareFrame(1, Clock, Evaluate, Dispatch, Preparation);
+	TestFalse(TEXT("A guard failure fails the frame preparation"), Failed.bSuccess);
+	TestEqual(TEXT("The guard failure keeps its own code"), Failed.ErrorCode,
+		FString(TEXT("REPLAY_POSE_GUARD_FAILED")));
+	TestEqual(TEXT("Nothing was dispatched by the failed frame"), Log.Sequences.Num(), 0);
+	TestEqual(TEXT("The failed frame did not advance the frontier"), Scheduler.GetCompletedFrameCount(), 1);
+
+	// A repeated poll must fail the same way: the remaining range is frozen and the next frame is
+	// never drained into.
+	Elapsed = 0.2;
+	const FCortexCommandResult Repeated = Scheduler.PrepareFrame(1, Clock, Evaluate, Dispatch, Preparation);
+	TestFalse(TEXT("A repeated poll stays failed"), Repeated.bSuccess);
+	TestEqual(TEXT("Still nothing delivered after the failure"), Log.Sequences.Num(), 0);
+	TestEqual(TEXT("Still no frontier movement after the failure"), Scheduler.GetCompletedFrameCount(), 1);
+	TestFalse(TEXT("The frozen run never completes"), Scheduler.IsComplete());
 
 	return true;
 }

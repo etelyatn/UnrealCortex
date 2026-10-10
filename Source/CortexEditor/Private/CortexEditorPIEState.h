@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CortexEngineCompat.h"
 #include "CortexTypes.h"
 #include "Containers/Ticker.h"
 #include "HAL/ThreadSafeBool.h"
@@ -77,6 +78,17 @@ public:
 	// cancellation callback can never install a successor run the cleanup would not own.
 	bool IsInputAdmissionBlocked() const { return bInputAdmissionBlocked; }
 
+	// --- Scoped owned-end handling -------------------------------------------------------------
+	// A scoped end retires only the owned instance; a foreign instance may still be running, so the
+	// global state machine and the session-wide cancellation token/pending callbacks are left alone.
+	// Public entry point so the engine capability's scoped lifecycle (and its tests) can drive it by
+	// exact identity instead of the targetless global PIE events.
+	void HandleScopedPIELifecycle(const FCortexScopedPIESnapshot& Snapshot);
+	// Stops only this session's owned continuous injections/tickers and completes their own pending
+	// callers. Deliberately neither flips InputCancelToken nor calls CompletePendingInputCallbacks:
+	// those are session-wide and may belong to a surviving foreign owner.
+	void CancelOwnedInputForScopedEnd();
+
 private:
 	struct FContinuousInputRun
 	{
@@ -114,6 +126,9 @@ private:
 	FTSTicker::FDelegateHandle CancelDeferHandle;
 	TArray<FTSTicker::FDelegateHandle> InputTickerHandles;
 	TSharedRef<FThreadSafeBool> InputCancelToken = MakeShared<FThreadSafeBool>(false);
+
+	/** Subscription to the engine capability's scoped lifecycle; invalid on unsupported engines. */
+	FDelegateHandle ScopedLifecycleDelegateHandle;
 
 	// Per-action owned continuous injections; keyed by the actual (weak) action. Generation is
 	// monotone across the session so a stale stop timer can never act on a successor run.

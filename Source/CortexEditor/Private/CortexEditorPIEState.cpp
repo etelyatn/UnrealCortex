@@ -45,6 +45,15 @@ void FCortexEditorPIEState::BindDelegates()
 	FEditorDelegates::PrePIEEnded.AddRaw(this, &FCortexEditorPIEState::HandlePrePIEEnded);
 	FEditorDelegates::EndPIE.AddRaw(this, &FCortexEditorPIEState::HandleEndPIE);
 	FEditorDelegates::CancelPIE.AddRaw(this, &FCortexEditorPIEState::HandleCancelPIE);
+
+	// Scoped owned ends are target-identifying: observe them so the owned input resources are retired
+	// without touching a surviving foreign instance. Repository engines without the capability return
+	// an invalid handle and register nothing, so the global path above remains authoritative there.
+	ScopedLifecycleDelegateHandle = CortexEngineCompat::ObserveScopedPIELifecycle(
+		[this](const FCortexScopedPIESnapshot& Snapshot)
+		{
+			HandleScopedPIELifecycle(Snapshot);
+		});
 }
 
 void FCortexEditorPIEState::UnbindDelegates()
@@ -56,6 +65,8 @@ void FCortexEditorPIEState::UnbindDelegates()
 	FEditorDelegates::PrePIEEnded.RemoveAll(this);
 	FEditorDelegates::EndPIE.RemoveAll(this);
 	FEditorDelegates::CancelPIE.RemoveAll(this);
+	CortexEngineCompat::RemoveScopedPIELifecycleObserver(ScopedLifecycleDelegateHandle);
+	ScopedLifecycleDelegateHandle.Reset();
 }
 
 void FCortexEditorPIEState::SetState(ECortexPIEState NewState)
@@ -193,7 +204,10 @@ void FCortexEditorPIEState::CancelAllInputTickers()
 		}
 	}
 
-	if (bHadInputTickers || RunsToStop.Num() > 0)
+	// Any still-pending input callback belongs to a session that is being cancelled: complete it
+	// exactly once, even when its owned tickers/runs were already retired by an earlier scoped end
+	// (the second call is a no-op because the map is empty by then).
+	if (bHadInputTickers || RunsToStop.Num() > 0 || PendingInputCallbacks.Num() > 0)
 	{
 		CompletePendingInputCallbacks(Cancellation);
 	}
@@ -430,4 +444,55 @@ void FCortexEditorPIEState::HandleCancelPIE()
 			OnPIEEnded();
 			return false;
 		}));
+}
+
+void FCortexEditorPIEState::HandleScopedPIELifecycle(const FCortexScopedPIESnapshot& Snapshot)
+{
+	// Only the owned instance's ending retires owned resources; the Ended transition needs nothing
+	// here, and non-ending phases are ignored.
+	if (Snapshot.Phase != ECortexScopedPIEPhase::Ending)
+	{
+		return;
+	}
+
+	// Deliberately does NOT change the global state machine: with a surviving foreign instance the
+	// editor is still in PIE, and only the engine's final/global end may report PIE stopped.
+	CancelOwnedInputForScopedEnd();
+}
+
+void FCortexEditorPIEState::CancelOwnedInputForScopedEnd()
+{
+	// A cancellation callback must not install a successor run this cleanup would not own.
+	TGuardValue<bool> AdmissionBlock(bInputAdmissionBlocked, true);
+
+	// Move owned state out before anything can invoke a deferred response: completing a callback may
+	// re-enter the session and mutate the containers we would otherwise be iterating.
+	TMap<TWeakObjectPtr<const UInputAction>, FContinuousInputRun> RunsToStop = MoveTemp(ContinuousInputRuns);
+	TArray<FTSTicker::FDelegateHandle> TickersToRemove = MoveTemp(InputTickerHandles);
+
+	// Owned native injections are stopped synchronously before their tickers are removed, so an
+	// owned continuous injection can never outlive its owner.
+	for (TPair<TWeakObjectPtr<const UInputAction>, FContinuousInputRun>& Pair : RunsToStop)
+	{
+		StopNativeContinuousInjection(Pair.Value);
+	}
+
+	for (FTSTicker::FDelegateHandle& Handle : TickersToRemove)
+	{
+		if (Handle.IsValid())
+		{
+			FTSTicker::GetCoreTicker().RemoveTicker(Handle);
+			Handle.Reset();
+		}
+	}
+
+	// Each owned timed run's pending caller completes exactly once with a shared cancellation.
+	const FCortexCommandResult Cancellation = MakeContinuousInputCancellationResult();
+	for (TPair<TWeakObjectPtr<const UInputAction>, FContinuousInputRun>& Pair : RunsToStop)
+	{
+		if (Pair.Value.bHasCallback)
+		{
+			CompletePendingInputCallback(Pair.Value.CallbackId, Cancellation);
+		}
+	}
 }

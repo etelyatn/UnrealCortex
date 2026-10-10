@@ -318,7 +318,6 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	ECapturePhase CapturePhase = ECapturePhase::None;
 	/** Scopes async capture callbacks to the exact operation that started them. */
 	uint64 CaptureOperationGeneration = 0;
-	bool bBorrowedCapture = false;
 	bool bOwnedCapture = false;
 	bool bCaptureFaulted = false;
 	bool bCapturePublishOnComplete = false;
@@ -634,11 +633,9 @@ void FCortexReplayService::FImpl::TickRun()
 
 		// Arm replay interference ownership at epoch establishment, before the first dispatch, so a
 		// foreign focus/input established during the pre-first-event window is treated as
-		// interference rather than being delivered to the foreign consumer. An AI-origin run is
-		// unattended (real input interrupts); a human-origin run is attended (the human's own input
-		// is allowed and only route loss interrupts).
-		const FCortexCommandResult Epoch = Session->BeginReplayEpoch(
-			ActiveRun.Origin == ECortexReplayOrigin::AI);
+		// interference rather than being delivered to the foreign consumer. Real selected-route
+		// input interrupts the epoch for every origin: the recording's origin never suppresses it.
+		const FCortexCommandResult Epoch = Session->BeginReplayEpoch();
 		if (!Epoch.bSuccess)
 		{
 			Owner->Finalize(ECortexReplayState::Interrupted, Epoch);
@@ -662,10 +659,21 @@ void FCortexReplayService::FImpl::TickRun()
 			return;
 		}
 
-		const FCortexCommandResult Advanced = Scheduler->Advance(
+		// The frame API prepares exactly one frame's event range and commits it only once that range
+		// is fully prepared. Native closure verification for the committed frame arrives with the
+		// frame observer; until then a prepared frame commits on readiness, preserving the previous
+		// dispatch-ordered progress.
+		ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
+		FCortexCommandResult Advanced = Scheduler->PrepareFrame(
+			Scheduler->GetCompletedFrameCount(),
 			[this]() { return FPlatformTime::Seconds() - ReplayEpoch; },
 			[this](const FCortexReplayEvent& Event) { return EvaluateGuard(Event); },
-			[this](const FCortexReplayEvent& Event) { return DispatchEvent(Event); });
+			[this](const FCortexReplayEvent& Event) { return DispatchEvent(Event); },
+			Preparation);
+		if (Advanced.bSuccess && Preparation == ECortexReplayFramePreparation::Ready)
+		{
+			Advanced = Scheduler->CommitFrame(Scheduler->GetCompletedFrameCount());
+		}
 
 		ActiveRun.DispatchedEvents = Scheduler->GetDispatchedCount();
 		ActiveRun.AuthorizedWaitSeconds = Scheduler->GetAuthorizedWaitSeconds();
@@ -953,7 +961,6 @@ void FCortexReplayService::FImpl::CompleteCaptureFinalization()
 void FCortexReplayService::FImpl::ResetCapture()
 {
 	CapturePhase = ECapturePhase::None;
-	bBorrowedCapture = false;
 	bOwnedCapture = false;
 	bCaptureFaulted = false;
 	bCapturePublishOnComplete = false;
@@ -989,11 +996,60 @@ FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
 	}
 
 	FCortexReplaySnapshot CaptureSnapshot;
-	CaptureSnapshot.InitialState.SchemaVersion = 1;
+	CaptureSnapshot.InitialState.SchemaVersion = 2;
 	CaptureSnapshot.InitialState.RecordingId = CaptureRecordingId;
 	CaptureSnapshot.InitialState.PawnClassPath = CaptureTargetInfo.PawnClassPath;
 	CaptureSnapshot.InitialState.Pose = CaptureInitialPose;
 	CaptureSnapshot.Events = CaptureEvents;
+
+	// Format-2 frame stream, built from the observed capture-frame identity of each event: one
+	// warmup frame that admits no input, then one frame per distinct observed capture frame, each
+	// attributing its own contiguous event range. An eventless capture still gets a second (empty)
+	// owned frame so the input epoch stays a valid ordinal.
+	CaptureSnapshot.Frames.Reset();
+	{
+		FCortexReplayFrame Warmup;
+		Warmup.FrameIndex = 0;
+		Warmup.FrameBeginSeconds = 0.0;
+		Warmup.InputDeadlineSeconds = 0.0;
+		Warmup.FirstSequence = 0;
+		Warmup.EventCount = 0;
+		CaptureSnapshot.Frames.Add(Warmup);
+
+		int32 NextSequence = 0;
+		int32 EventIndex = 0;
+		while (EventIndex < CaptureSnapshot.Events.Num())
+		{
+			const uint64 GroupFrame = CaptureSnapshot.Events[EventIndex].CaptureContext.FrameNumber;
+			int32 GroupCount = 0;
+			while (EventIndex + GroupCount < CaptureSnapshot.Events.Num()
+				&& CaptureSnapshot.Events[EventIndex + GroupCount].CaptureContext.FrameNumber == GroupFrame)
+			{
+				++GroupCount;
+			}
+
+			FCortexReplayFrame Frame;
+			Frame.FrameIndex = CaptureSnapshot.Frames.Num();
+			Frame.FrameBeginSeconds = CaptureSnapshot.Events[EventIndex].TimeSeconds;
+			Frame.InputDeadlineSeconds = Frame.FrameBeginSeconds;
+			Frame.FirstSequence = NextSequence;
+			Frame.EventCount = GroupCount;
+			Frame.CaptureFrame = GroupFrame;
+			CaptureSnapshot.Frames.Add(Frame);
+
+			NextSequence += GroupCount;
+			EventIndex += GroupCount;
+		}
+
+		if (CaptureSnapshot.Events.Num() == 0)
+		{
+			FCortexReplayFrame EmptyOwned;
+			EmptyOwned.FrameIndex = 1;
+			CaptureSnapshot.Frames.Add(EmptyOwned);
+		}
+	}
+	CaptureSnapshot.Metadata.Timing.FrameCount = CaptureSnapshot.Frames.Num();
+	CaptureSnapshot.Metadata.Timing.InputEpochFrame = 1;
 
 	for (const FCortexReplayEvent& Event : CaptureSnapshot.Events)
 	{
@@ -1015,7 +1071,7 @@ FCortexCommandResult FCortexReplayService::FImpl::PublishCaptureSnapshot()
 		}
 	}
 
-	CaptureSnapshot.Metadata.SchemaVersion = 1;
+	CaptureSnapshot.Metadata.SchemaVersion = 2;
 	CaptureSnapshot.Metadata.RecordingId = CaptureRecordingId;
 	CaptureSnapshot.Metadata.Name = FString::Printf(TEXT("Capture %d"), CaptureRecordingId);
 	CaptureSnapshot.Metadata.Description.Reset();
@@ -1618,7 +1674,7 @@ FCortexCommandResult FCortexReplayService::GetCurrentOperation() const
 			: State.CapturePhase == FImpl::ECapturePhase::Finalizing ? TEXT("Finalizing")
 			: TEXT("Recording");
 		Data->SetStringField(TEXT("kind"), TEXT("capture"));
-		Data->SetStringField(TEXT("origin"), State.bBorrowedCapture ? TEXT("human") : TEXT("ai"));
+		Data->SetStringField(TEXT("origin"), TEXT("human"));
 		Data->SetNumberField(TEXT("recording_id"), State.CaptureRecordingId);
 		Data->SetStringField(TEXT("state"), CaptureState);
 		// A pending or failed publication is visible to the human window while retries are pending.
@@ -1680,174 +1736,6 @@ bool FCortexReplayService::IsRecordInUse(int32 Id) const
 	return false;
 }
 
-#if WITH_DEV_AUTOMATION_TESTS
-bool FCortexReplayService::IsActiveReplayEpochArmedForTests() const
-{
-	return Impl->Session.IsValid() && Impl->Session->IsReplayEpochArmed();
-}
-
-bool FCortexReplayService::IsActiveReplayEpochUnattendedForTests() const
-{
-	return Impl->Session.IsValid() && Impl->Session->IsReplayUnattended();
-}
-#endif
-
-FCortexCommandResult FCortexReplayService::EnumerateHumanCaptureTargets(
-	TArray<FCortexReplayCaptureTargetChoice>& Out) const
-{
-	Out.Reset();
-	if (!GEngine)
-	{
-		return ServiceError(CortexReplayErrorCodes::TargetUnavailable,
-			TEXT("No engine world contexts are available"));
-	}
-
-	int32 Resolved = 0;
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		UWorld* World = Context.World();
-		if (Context.WorldType != EWorldType::PIE || World == nullptr)
-		{
-			continue;
-		}
-		// Viewport existence alone is not readiness: the client must expose a registered scene
-		// viewport and a game layer manager, and each candidate is validated per local player.
-		UGameViewportClient* ViewportClient = World->GetGameViewport();
-		if (ViewportClient == nullptr || ViewportClient->GetGameViewport() == nullptr
-			|| !ViewportClient->GetGameLayerManager().IsValid())
-		{
-			continue;
-		}
-		UGameInstance* GameInstance = World->GetGameInstance();
-		if (GameInstance == nullptr)
-		{
-			continue;
-		}
-
-		const int32 LocalPlayerCount = GameInstance->GetNumLocalPlayers();
-		for (int32 LocalPlayerIndex = 0; LocalPlayerIndex < LocalPlayerCount; ++LocalPlayerIndex)
-		{
-			ULocalPlayer* LocalPlayer = GameInstance->GetLocalPlayerByIndex(LocalPlayerIndex);
-			if (LocalPlayer == nullptr)
-			{
-				continue;
-			}
-			APlayerController* Controller = LocalPlayer->GetPlayerController(World);
-			if (!IsValid(Controller) || !IsValid(Controller->GetPawn()))
-			{
-				continue;
-			}
-
-			FCortexReplayCaptureTargetChoice Choice;
-			Choice.World = World;
-			Choice.LocalPlayerIndex = LocalPlayerIndex;
-			Choice.MapAssetPath = UWorld::RemovePIEPrefix(World->GetPackage()->GetName());
-			Choice.ViewportLabel = FString::Printf(TEXT("%s [PIE player %d]"),
-				*Choice.MapAssetPath, LocalPlayerIndex);
-			Out.Add(MoveTemp(Choice));
-			++Resolved;
-		}
-	}
-
-	if (Resolved == 0)
-	{
-		return ServiceError(CortexReplayErrorCodes::TargetUnavailable,
-			TEXT("No ready PIE local-player/viewport candidate could be resolved"));
-	}
-	return ServiceSuccess();
-}
-
-FCortexCommandResult FCortexReplayService::StartCaptureAtTarget(UWorld& World, int32 LocalPlayerIndex)
-{
-	FImpl& State = *Impl;
-	if (State.bShutdown)
-	{
-		return ServiceError(CortexReplayErrorCodes::InvalidOperation, TEXT("Replay service is shut down"));
-	}
-	if (State.bRunActive || State.bFinalizing || State.CapturePhase != FImpl::ECapturePhase::None)
-	{
-		return ServiceError(CortexErrorCodes::EditorBusy, TEXT("Another replay operation owns the target"));
-	}
-
-	// Reserve capture ownership before any asynchronous work so status, IsRecordInUse and
-	// competing admission all see the operation from its first frame.
-	State.ResetCapture();
-	// An admitted capture supersedes any retained terminal summary from a previous capture.
-	State.ClearLastCaptureOutcome();
-	State.CapturePhase = FImpl::ECapturePhase::Preparing;
-	State.bBorrowedCapture = true;
-	State.bOwnedCapture = false;
-	++State.CaptureOperationGeneration;
-	const uint64 Generation = State.CaptureOperationGeneration;
-
-	State.Session = MakeShared<FCortexEditorPhysicalInputSession>();
-	FCortexReplayService::FImpl* RawState = &State;
-	State.Session->SetInterruptionCallback(
-		[RawState, Generation](const FCortexCommandResult& Interruption)
-		{
-			RawState->OnCaptureInterruption(Generation, Interruption);
-		});
-
-	const FCortexCommandResult Bound = State.Session->BindTarget(World, LocalPlayerIndex);
-	if (!Bound.bSuccess)
-	{
-		State.Session->Shutdown();
-		State.Session.Reset();
-		State.ResetCapture();
-		return Bound;
-	}
-
-	int32 ReservedId = 0;
-	const FCortexCommandResult Reserved = State.Library.ReserveId(ReservedId);
-	if (!Reserved.bSuccess)
-	{
-		State.Session->Shutdown();
-		State.Session.Reset();
-		State.ResetCapture();
-		return Reserved;
-	}
-	State.CaptureRecordingId = ReservedId;
-	State.CaptureEvents.Reset();
-
-	FCortexEditorPhysicalInputPlayerPose Pose;
-	const FCortexCommandResult PoseResult = State.Session->ReadPlayerPose(Pose);
-	if (!PoseResult.bSuccess)
-	{
-		State.MarkCaptureFaulted(PoseResult);
-		State.BeginCaptureFinalization(false);
-		State.TickCapture();
-		return PoseResult;
-	}
-
-	const FCortexCommandResult Armed = State.Session->SetCaptureCallback(
-		[RawState](const FCortexEditorPhysicalInputEvent& Event, double TimeSeconds,
-			const FCortexEditorPhysicalInputCaptureContext& Context)
-		{
-			RawState->OnCaptureEvent(Event, TimeSeconds, Context);
-		});
-	if (!Armed.bSuccess)
-	{
-		// A human-held key makes the neutral-state arming check reject this; never report Recording.
-		State.MarkCaptureFaulted(Armed);
-		State.BeginCaptureFinalization(false);
-		State.TickCapture();
-		return Armed;
-	}
-
-	State.CaptureTargetInfo = State.Session->GetTargetInfo();
-	State.CaptureMapAssetPath = State.CaptureTargetInfo.MapAssetPath;
-	State.CaptureInitialPose = Pose;
-	State.CaptureEpochSeconds = FPlatformTime::Seconds();
-	State.CapturePhase = FImpl::ECapturePhase::Recording;
-	UE_LOG(LogCortexReplay, Display,
-		TEXT("Capture %d start accepted (borrowed, map '%s', local player %d)"),
-		State.CaptureRecordingId, *State.CaptureMapAssetPath, LocalPlayerIndex);
-	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d entered Recording (epoch established)"),
-		State.CaptureRecordingId);
-	State.EnsureTicker();
-	return ServiceSuccess();
-}
-
 FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEditorMapAssetPath)
 {
 	FImpl& State = *Impl;
@@ -1872,7 +1760,6 @@ FCortexCommandResult FCortexReplayService::StartCapture(const FString& SavedEdit
 	// An admitted capture supersedes any retained terminal summary from a previous capture.
 	State.ClearLastCaptureOutcome();
 	State.CapturePhase = FImpl::ECapturePhase::Preparing;
-	State.bBorrowedCapture = false;
 	State.bOwnedCapture = true;
 	State.CaptureRecordingId = ReservedId;
 	++State.CaptureOperationGeneration;
@@ -1964,65 +1851,6 @@ FCortexCommandResult FCortexReplayService::StopCapture(bool bAbnormal)
 		State.CaptureRecordingId, *FString(FImpl::CapturePhaseToString(State.CapturePhase)),
 		State.bCaptureFaulted ? 1 : 0, bAbnormal ? 1 : 0, bPublish ? 1 : 0,
 		bPublish ? TEXT("publish") : TEXT("discard"));
-
-	if (State.bBorrowedCapture)
-	{
-		// Borrowed capture detaches without ending the human PIE session.
-		State.bFrozen = true;
-		if (State.Session.IsValid())
-		{
-			State.Session->ReleaseHeldInputs();
-			State.Session->Shutdown();
-			State.Session.Reset();
-		}
-		FCortexCommandResult PublishFailure;
-		bool bCapturePublished = false;
-		if (bPublish)
-		{
-			const FCortexCommandResult PublishResult = State.PublishCaptureSnapshot();
-			if (!PublishResult.bSuccess)
-			{
-				if (!IsPermanentCapturePublicationError(PublishResult.ErrorCode))
-				{
-					// The captured data and recording id are retained so the failure is queryable and
-					// the publication is retried instead of silently completing.
-					State.RetainCaptureForPublicationRetry(PublishResult);
-					UE_LOG(LogCortexReplay, Display,
-						TEXT("Capture %d publication failed: %s (%s); retained for retry"),
-						State.CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
-					State.EnsureTicker();
-					return PublishResult;
-				}
-				// Immutable for the frozen stream: retain the explicit terminal failure and release
-				// the operation now instead of retrying a publication that can never succeed.
-				UE_LOG(LogCortexReplay, Display,
-					TEXT("Capture %d publication permanently failed: %s (%s); releasing the operation"),
-					State.CaptureRecordingId, *PublishResult.ErrorCode, *PublishResult.ErrorMessage);
-				State.StoreLastCaptureOutcome(/*bPublished=*/false, &PublishResult);
-				PublishFailure = PublishResult;
-			}
-			else
-			{
-				State.StoreLastCaptureOutcome(/*bPublished=*/true, nullptr);
-				bCapturePublished = true;
-				UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication succeeded"),
-					State.CaptureRecordingId);
-			}
-		}
-		const int32 CompletedRecordingId = State.CaptureRecordingId;
-		State.ResetCapture();
-		UE_LOG(LogCortexReplay, Display, TEXT("Capture %d finalized (published=%d)"),
-			CompletedRecordingId, bCapturePublished ? 1 : 0);
-		if (State.bShutdown)
-		{
-			State.DetachTickerAndSession();
-		}
-		if (!PublishFailure.ErrorCode.IsEmpty())
-		{
-			return PublishFailure;
-		}
-		return DiscardResult.ErrorCode.IsEmpty() ? ServiceSuccess() : DiscardResult;
-	}
 
 	// Owned capture retains its session and ownership until the matching teardown is observed.
 	State.BeginCaptureFinalization(bPublish);

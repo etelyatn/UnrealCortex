@@ -162,6 +162,8 @@ bool PublishReplayRecording(FAutomationTestBase& Test, FCortexReplayTestFixture&
 	{
 		Snapshot.Metadata.DurationSeconds = FMath::Max(Snapshot.Metadata.DurationSeconds,
 			DurationOverrideSeconds);
+		// The trailing frame's deadline is the recording end, so it must follow the override.
+		FCortexReplayTestFixture::ApplyCadenceFrames(Snapshot);
 	}
 	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
 	return Test.TestTrue(TEXT("Recording published"), Library.Publish(Snapshot).bSuccess);
@@ -1327,90 +1329,6 @@ bool FCortexReplayLifecycleFinalizationTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
-// The replay epoch is armed from the run's origin: an AI-origin run is unattended (real input
-// interrupts) and a human-origin run is attended (the human's own input is allowed).
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleEpochArmingModeTest,
-	"Cortex.Replay.Lifecycle.EpochArmingModeMatchesOrigin",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FCortexReplayLifecycleEpochArmingModeTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
-	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
-	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
-	const FString MapPath = MakeReplayMapAssetPath();
-
-	// One AI-eligible recording usable by both origins; the trailing edge keeps the run in
-	// playback long enough to observe the armed epoch before it completes.
-	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
-		{MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
-		 MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}, true))
-	{
-		return false;
-	}
-
-	// An AI-origin run arms the epoch unattended.
-	const FCortexCommandResult AIStart = Service->StartReplay(1, ECortexReplayOrigin::AI);
-	TestTrue(TEXT("AI replay admitted"), AIStart.bSuccess);
-	if (!AIStart.bSuccess) { return false; }
-	const TSharedPtr<FGuid> AIRunId = MakeShared<FGuid>(ParseRunId(AIStart));
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, AIRunId,
-		TEXT("Replaying"), /*bAIOnly=*/true,
-		[Service](FAutomationTestBase& T)
-		{
-			T.TestTrue(TEXT("AI-origin replay epoch is armed"),
-				Service->IsActiveReplayEpochArmedForTests());
-			T.TestTrue(TEXT("AI-origin replay epoch is unattended"),
-				Service->IsActiveReplayEpochUnattendedForTests());
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service, AIRunId](FAutomationTestBase& T)
-		{
-			T.TestTrue(TEXT("AI run cancelled"), Service->CancelReplay(*AIRunId, true).bSuccess);
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, AIRunId,
-		TEXT("Cancelled"), /*bAIOnly=*/true, TFunction<void(FAutomationTestBase&)>(), Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
-
-	// A human-origin run arms the same epoch attended. ADD_LATENT_AUTOMATION_COMMAND only queues,
-	// so the human start must run inside the latent chain after the AI run's teardown; starting it
-	// synchronously here would still see the AI run owning the target and be refused busy.
-	const TSharedPtr<FGuid> HumanRunId = MakeShared<FGuid>();
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service, HumanRunId](FAutomationTestBase& T)
-		{
-			const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::Human);
-			T.TestTrue(TEXT("Human replay admitted"), Started.bSuccess);
-			if (Started.bSuccess)
-			{
-				*HumanRunId = ParseRunId(Started);
-			}
-		}, Fixture));
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, HumanRunId,
-		TEXT("Replaying"), /*bAIOnly=*/false,
-		[Service](FAutomationTestBase& T)
-		{
-			T.TestTrue(TEXT("Human-origin replay epoch is armed"),
-				Service->IsActiveReplayEpochArmedForTests());
-			T.TestFalse(TEXT("Human-origin replay epoch is attended, not unattended"),
-				Service->IsActiveReplayEpochUnattendedForTests());
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service, HumanRunId](FAutomationTestBase& T)
-		{
-			T.TestTrue(TEXT("Human run cancelled"), Service->CancelReplay(*HumanRunId, false).bSuccess);
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitStateThenCheck(this, Service, HumanRunId,
-		TEXT("Cancelled"), /*bAIOnly=*/false, TFunction<void(FAutomationTestBase&)>(), Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
-
-	return true;
-}
-
-// ---------------------------------------------------------------------------
 // An owned replay launch must acquire the initial keyboard focus on the newly created route,
 // mirroring UEditorEngine::GiveFocusToLastClientPIEViewport (which the owned launch skips while
 // the 'Game Gets Mouse Control' play setting is off). A valid foreign off-route keyboard focus
@@ -1836,73 +1754,6 @@ bool FCortexReplayLifecycleShutdownTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
-// Borrowed human capture: Stop detaches without ending the human PIE session.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleBorrowedCaptureTest,
-	"Cortex.Replay.Lifecycle.BorrowedCaptureStopKeepsHumanPie",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FCortexReplayLifecycleBorrowedCaptureTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
-	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
-	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitExternalPiePlaying(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service](FAutomationTestBase& T)
-		{
-			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
-			T.TestNotNull(TEXT("External PIE world exists"), PlayWorld);
-
-			TArray<FCortexReplayCaptureTargetChoice> Choices;
-			const FCortexCommandResult Enumerated = Service->EnumerateHumanCaptureTargets(Choices);
-			T.TestTrue(TEXT("Human capture target enumeration succeeds"), Enumerated.bSuccess);
-			const FCortexReplayCaptureTargetChoice* Selected = nullptr;
-			for (const FCortexReplayCaptureTargetChoice& Choice : Choices)
-			{
-				if (Choice.World.Get() == PlayWorld)
-				{
-					Selected = &Choice;
-					break;
-				}
-			}
-			T.TestNotNull(TEXT("Enumeration never picks an unrelated first world"), Selected);
-			if (Selected == nullptr || PlayWorld == nullptr)
-			{
-				return;
-			}
-			const FCortexCommandResult Borrowed =
-				Service->StartCaptureAtTarget(*PlayWorld, Selected->LocalPlayerIndex);
-			T.TestTrue(TEXT("Borrowed capture admitted"), Borrowed.bSuccess);
-			const FCortexCommandResult Active = Service->GetCurrentOperation();
-			T.TestTrue(TEXT("Borrowed capture is the active operation"),
-				Active.bSuccess && Active.Data.IsValid());
-
-			// A focus change needed for human Stop/Edit is not itself capture interference.
-			if (FSlateApplication::IsInitialized())
-			{
-				FSlateApplication::Get().ClearUserFocus(Selected->LocalPlayerIndex);
-			}
-			const FCortexCommandResult Stopped = Service->StopCapture(false);
-			T.TestTrue(TEXT("Borrowed capture stops normally"), Stopped.bSuccess);
-			T.TestTrue(TEXT("Borrowed human PIE still runs after Stop"),
-				GEditor && GEditor->PlayWorld == PlayWorld);
-			T.TestFalse(TEXT("Borrowed capture released the record"), Service->IsRecordInUse(1));
-
-			const FCortexCommandResult Idle = Service->GetCurrentOperation();
-			T.TestTrue(TEXT("get_current_operation succeeds after Stop"), Idle.bSuccess);
-			T.TestFalse(TEXT("No operation remains after borrowed Stop"), Idle.Data.IsValid());
-		}, Fixture));
-
-	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
-
-	return true;
-}
-
-// ---------------------------------------------------------------------------
 // The production preparation deadline fails an owned replay with a missing pawn.
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTimeoutPossessionTest,
@@ -2188,83 +2039,6 @@ bool FCortexReplayLifecycleDestructionTest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRetainedRun(this, Fixture, RunId,
 		TEXT("Cancelled"), Fixture));
-
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// A failed owned/borrowed capture publication is retained and retried, not silently completed.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCapturePublishFailureTest,
-	"Cortex.Replay.Lifecycle.CapturePublicationFailureRetained",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FCortexReplayLifecycleCapturePublishFailureTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
-	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
-	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitExternalPiePlaying(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service, Fixture](FAutomationTestBase& T)
-		{
-			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
-			T.TestNotNull(TEXT("External PIE world exists"), PlayWorld);
-
-			TArray<FCortexReplayCaptureTargetChoice> Choices;
-			T.TestTrue(TEXT("Human capture target enumeration succeeds"),
-				Service->EnumerateHumanCaptureTargets(Choices).bSuccess);
-			const FCortexReplayCaptureTargetChoice* Selected = nullptr;
-			for (const FCortexReplayCaptureTargetChoice& Choice : Choices)
-			{
-				if (Choice.World.Get() == PlayWorld) { Selected = &Choice; break; }
-			}
-			T.TestNotNull(TEXT("Matching capture target enumerated"), Selected);
-			if (Selected == nullptr || PlayWorld == nullptr) { return; }
-			T.TestTrue(TEXT("Borrowed capture admitted"),
-				Service->StartCaptureAtTarget(*PlayWorld, Selected->LocalPlayerIndex).bSuccess);
-
-			// Occupy the canonical publication path with a file so Publish must fail.
-			const FString RecordingsRoot = FPaths::Combine(Fixture->GetProjectRoot(),
-				TEXT(".cortex/replay/recordings"));
-			T.TestTrue(TEXT("Recordings root created"),
-				IFileManager::Get().MakeDirectory(*RecordingsRoot, true));
-			const FString BlockedPath = FPaths::Combine(RecordingsRoot, TEXT("1"));
-			T.TestTrue(TEXT("Publication path blocked"),
-				FFileHelper::SaveStringToFile(TEXT("blocked"), *BlockedPath));
-
-			const FCortexCommandResult Stopped = Service->StopCapture(false);
-			T.TestFalse(TEXT("Publication failure is reported to the caller"), Stopped.bSuccess);
-
-			const FCortexCommandResult Active = Service->GetCurrentOperation();
-			T.TestTrue(TEXT("Failed capture remains queryable"), Active.bSuccess && Active.Data.IsValid());
-			if (Active.Data.IsValid())
-			{
-				T.TestEqual(TEXT("Failed capture keeps its reserved recording id"),
-					static_cast<int32>(Active.Data->GetNumberField(TEXT("recording_id"))), 1);
-				T.TestEqual(TEXT("Failed capture stays Finalizing"),
-					Active.Data->GetStringField(TEXT("state")), FString(TEXT("Finalizing")));
-			}
-			T.TestTrue(TEXT("Repository still holds the failed recording"),
-				Service->IsRecordInUse(1));
-
-			// Allow the retained publication to be retried successfully.
-			T.TestTrue(TEXT("Publication path unblocked"),
-				IFileManager::Get().Delete(*BlockedPath, false, true, true));
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service](FAutomationTestBase& T)
-		{
-			const FCortexCommandResult Idle = Service->GetCurrentOperation();
-			T.TestTrue(TEXT("get_current_operation succeeds after the retry"), Idle.bSuccess);
-			T.TestFalse(TEXT("Capture released once its publication succeeded"), Idle.Data.IsValid());
-			T.TestFalse(TEXT("Failed capture no longer owns the record"), Service->IsRecordInUse(1));
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 
 	return true;
 }

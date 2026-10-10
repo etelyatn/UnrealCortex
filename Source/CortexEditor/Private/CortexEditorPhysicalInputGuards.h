@@ -8,6 +8,9 @@
 class SWidget;
 class UWorld;
 
+/** Shared native byte identity: lower-case SHA-256, empty when the provider is unavailable. */
+FString CortexEditorPhysicalInputSha256(const uint8* Data, int64 Size);
+
 /**
  * Weak selector resolution and freshness state for the uniquely tagged runtime Slate route.
  *

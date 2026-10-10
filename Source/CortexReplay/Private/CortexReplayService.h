@@ -15,19 +15,6 @@ struct FCortexReplayRunRecord;
 class UWorld;
 
 /**
- * The exact human-selected borrowed capture target.
- *
- * Holds weak exact handles only; resolved again before admission. Enumeration grants no ownership
- * and is never exposed over transport.
- */
-struct FCortexReplayCaptureTargetChoice
-{
-	TWeakObjectPtr<UWorld> World;
-	int32 LocalPlayerIndex = INDEX_NONE;
-	FString MapAssetPath, ViewportLabel;
-};
-
-/**
  * Single owner of native capture orchestration, replay scheduling and run finalization.
  *
  * The service owns its library, run store, current physical-input session and its one backend
@@ -45,15 +32,8 @@ public:
 	explicit FCortexReplayService(const FString& ProjectRoot);
 	~FCortexReplayService();
 
-	/** Game-Thread enumeration of actual PIE local-player/viewport candidates; never picks the first. */
-	FCortexCommandResult EnumerateHumanCaptureTargets(
-		TArray<FCortexReplayCaptureTargetChoice>& Out) const;
-
 	/** Human capture on an owned fresh PIE session for the saved editor map. */
 	FCortexCommandResult StartCapture(const FString& SavedEditorMapAssetPath);
-
-	/** Human capture on an explicitly borrowed existing target; never owns its shutdown. */
-	FCortexCommandResult StartCaptureAtTarget(UWorld& World, int32 LocalPlayerIndex);
 
 	/** Stops capture; bAbnormal keeps the record incomplete/error instead of publishing it. */
 	FCortexCommandResult StopCapture(bool bAbnormal);
@@ -101,17 +81,6 @@ public:
 
 	/** Backend-owner shutdown: neutralizes owned input, ends owned PIE and drops delegates/ticker. */
 	void Shutdown();
-
-#if WITH_DEV_AUTOMATION_TESTS
-	/**
-	 * Test-support observation of the active physical-input session's replay epoch. Reports false
-	 * when no session exists or no epoch is armed.
-	 */
-	bool IsActiveReplayEpochArmedForTests() const;
-
-	/** Test-support observation of whether that armed replay epoch is unattended (AI-origin). */
-	bool IsActiveReplayEpochUnattendedForTests() const;
-#endif
 
 private:
 	/**

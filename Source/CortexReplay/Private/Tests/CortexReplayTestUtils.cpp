@@ -13,7 +13,7 @@
 
 namespace
 {
-constexpr int32 FixtureFormatSchemaVersion = 1;
+constexpr int32 FixtureFormatSchemaVersion = 2;
 
 /**
  * Brings the level editor's active viewport window to the front so the selected owned-PIE route
@@ -176,5 +176,95 @@ FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(
 		}
 	}
 
+	// Format-2 fixture frames express the recorded input cadence: an empty warmup frame that admits
+	// no input (so the input epoch is a valid frame ordinal), one frame per distinct recorded input
+	// time, and a trailing empty frame holding the idle tail open to the recorded duration. A frame
+	// whose event could not be consumed by its own deadline is a malformed recording, so the fixture
+	// never parks input behind an unrelated frame boundary.
+	ApplyCadenceFrames(Snapshot);
+
 	return Snapshot;
+}
+
+void FCortexReplayTestFixture::ApplyCadenceFrames(FCortexReplaySnapshot& Recording)
+{
+	Recording.Frames.Reset();
+
+	// Frame 0 admits no input, so the input epoch stays a valid frame ordinal. A zero-length warmup
+	// never delays the first input.
+	FCortexReplayFrame Warmup;
+	Warmup.FrameIndex = 0;
+	Warmup.FrameBeginSeconds = 0.0;
+	Warmup.InputDeadlineSeconds = 0.0;
+	Warmup.FirstSequence = 0;
+	Warmup.EventCount = 0;
+	Recording.Frames.Add(Warmup);
+
+	// One frame per distinct recorded input time, carrying that time's contiguous event range.
+	int32 Index = 0;
+	while (Index < Recording.Events.Num())
+	{
+		const double Time = Recording.Events[Index].TimeSeconds;
+		int32 Count = 0;
+		while (Index + Count < Recording.Events.Num()
+			&& Recording.Events[Index + Count].TimeSeconds == Time)
+		{
+			++Count;
+		}
+
+		FCortexReplayFrame Frame;
+		Frame.FrameIndex = Recording.Frames.Num();
+		Frame.FrameBeginSeconds = Time;
+		Frame.InputDeadlineSeconds = Time;
+		Frame.FirstSequence = Index;
+		Frame.EventCount = Count;
+		Recording.Frames.Add(Frame);
+		Index += Count;
+	}
+
+	// A trailing frame with no input holds the recorded idle tail open to the recorded duration.
+	FCortexReplayFrame Trailing;
+	Trailing.FrameIndex = Recording.Frames.Num();
+	Trailing.FrameBeginSeconds = Recording.Events.Num() > 0 ? Recording.Events.Last().TimeSeconds : 0.0;
+	Trailing.InputDeadlineSeconds = Recording.Metadata.DurationSeconds;
+	Trailing.FirstSequence = Recording.Events.Num();
+	Trailing.EventCount = 0;
+	Recording.Frames.Add(Trailing);
+
+	Recording.Metadata.Timing.FrameCount = Recording.Frames.Num();
+	Recording.Metadata.Timing.InputEpochFrame = 1;
+}
+
+FCortexCommandResult AdvanceFrame(FCortexReplayScheduler& Scheduler,
+	TFunctionRef<double()> ReadElapsedSeconds,
+	TFunctionRef<FCortexReplayGuardDecision(const FCortexReplayEvent&)> EvaluateGuard,
+	TFunctionRef<FCortexCommandResult(const FCortexReplayEvent&)> Dispatch)
+{
+	// Drain every frame whose whole range is prepared and whose deadline has passed, stopping exactly
+	// at the first frame that is not yet due - the same frontier the scalar scheduler used to break on.
+	for (;;)
+	{
+		if (Scheduler.IsComplete())
+		{
+			return FCortexCommandRouter::Success(nullptr);
+		}
+
+		ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
+		const FCortexCommandResult Prepared = Scheduler.PrepareFrame(Scheduler.GetCompletedFrameCount(),
+			ReadElapsedSeconds, EvaluateGuard, Dispatch, Preparation);
+		if (!Prepared.bSuccess)
+		{
+			return Prepared;
+		}
+		if (Preparation != ECortexReplayFramePreparation::Ready)
+		{
+			return Prepared;
+		}
+
+		const FCortexCommandResult Committed = Scheduler.CommitFrame(Scheduler.GetCompletedFrameCount());
+		if (!Committed.bSuccess)
+		{
+			return Committed;
+		}
+	}
 }

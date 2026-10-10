@@ -86,42 +86,6 @@ private:
 };
 
 /**
- * Transient target-choice popup shown only when Record sees several ready PIE candidates.
- *
- * Candidates display map / local-player index / viewport label. No candidate is selected by
- * default: the human must choose explicitly, and Cancel selects none (never the first world).
- */
-class SCortexReplayTargetChoiceDialog : public SCompoundWidget
-{
-public:
-	SLATE_BEGIN_ARGS(SCortexReplayTargetChoiceDialog) {}
-		SLATE_ARGUMENT(TArray<FCortexReplayCaptureTargetChoice>, Candidates)
-		SLATE_EVENT(FOnCortexReplayTargetChosen, OnChosen)
-		SLATE_EVENT(FSimpleDelegate, OnDismissed)
-	SLATE_END_ARGS()
-
-	void Construct(const FArguments& InArgs);
-
-	int32 GetCandidateCount() const;
-	FString GetCandidateLabel(int32 Index) const;
-
-	/** INDEX_NONE until a candidate is explicitly chosen; never defaults to the first. */
-	int32 GetSelectedIndex() const;
-
-	void SelectCandidate(int32 Index);
-	void Cancel();
-	FReply OnCancelClicked();
-
-	TSharedPtr<SButton> CancelButton;
-
-private:
-	TArray<FCortexReplayCaptureTargetChoice> Candidates;
-	int32 SelectedIndex = INDEX_NONE;
-	FOnCortexReplayTargetChosen OnChosen;
-	FSimpleDelegate OnDismissed;
-};
-
-/**
  * Independent human recording-library window hosted in a nomad tab.
  *
  * Compact library with a top Record/Stop toolbar and a short operation label, one row per human
@@ -153,25 +117,8 @@ public:
 	FReply OnStopClicked();
 	void BeginRecord();
 
-	/**
-	 * Post-enumeration Record entry: routes an explicit candidate set to an owned saved-map
-	 * capture (empty), one explicitly selected target, or the transient choice popup. Public so the
-	 * record path can be exercised without a live enumeration.
-	 */
-	void BeginRecordForCandidates(const TArray<FCortexReplayCaptureTargetChoice>& Candidates);
-
 	void StopActiveOperation();
 	FText GetOperationLabel() const;
-
-	/**
-	 * Turns service candidates into a live capture target. Zero candidates leaves the owned
-	 * saved-editor-map path; one ready candidate is selected explicitly; several require the
-	 * transient choice popup. Never attaches to the first world.
-	 */
-	TSharedPtr<SCortexReplayTargetChoiceDialog> PromptForCaptureTarget(
-		const TArray<FCortexReplayCaptureTargetChoice>& Candidates);
-	bool HasChosenCaptureTarget() const;
-	FCortexReplayCaptureTargetChoice GetChosenCaptureTarget() const;
 
 	/** Edit popup lifecycle; metadata drafts are committed through the service on Save. */
 	TSharedPtr<SCortexReplayMetadataDialog> OpenMetadataDialog(int32 RecordingId);
@@ -224,10 +171,6 @@ private:
 	void HandleDeleteClicked(int32 RecordingId);
 	void HandleRowSelected(int32 RecordingId);
 
-	void HandleTargetChosen(int32 CandidateIndex);
-	void HandleTargetChoiceCancelled();
-	void StartBorrowedCaptureAtIndex(int32 CandidateIndex);
-
 	void HandleMetadataCommitted(int32 RecordingId, const FString& Name,
 		const FString& Description, bool bAIEnabled);
 	void HandleMetadataDismissed();
@@ -246,11 +189,7 @@ private:
 
 	TSharedPtr<SCortexReplayMetadataDialog> MetadataDialog;
 	TSharedPtr<SCortexReplayDeleteDialog> DeleteDialog;
-	TSharedPtr<SCortexReplayTargetChoiceDialog> TargetChoiceDialog;
 
-	TArray<FCortexReplayCaptureTargetChoice> PendingCandidates;
-	int32 ChosenTargetIndex = INDEX_NONE;
-	bool bPendingRecordStart = false;
 	int32 SelectedRecordingId = 0;
 	bool bCompactLayout = false;
 	/** Last backend operation signature; a change refreshes the rows (start/completion/publication). */

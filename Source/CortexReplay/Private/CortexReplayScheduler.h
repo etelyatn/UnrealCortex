@@ -30,20 +30,35 @@ public:
 	explicit FCortexReplayScheduler(TSharedRef<const FCortexReplaySnapshot> Snapshot);
 
 	/**
-	 * Advances the scheduler by one poll.
+	 * Prepares exactly the requested frame's `[FirstSequence, EventCount)` event range, in order,
+	 * and never drains a later frame. Returns success while the frame is still being prepared
+	 * (OutPreparation == Waiting, e.g. blocked on a permitted UI wait) and a REPLAY_TIMING_ERROR /
+	 * guard error when the run must stop. A frame with no events is immediately Ready.
 	 *
-	 * Returns success while the run is active (including while a permitted UI wait is pending) and
-	 * a REPLAY_TIMING_ERROR / guard error when the run must stop. The caller's callables are
-	 * invoked synchronously on the calling (Game) thread.
+	 * The caller's callables are invoked synchronously on the calling (Game) thread.
 	 */
-	FCortexCommandResult Advance(TFunctionRef<double()> ReadElapsedSeconds,
+	FCortexCommandResult PrepareFrame(int32 FrameIndex,
+		TFunctionRef<double()> ReadElapsedSeconds,
 		TFunctionRef<FCortexReplayGuardDecision(const FCortexReplayEvent&)> EvaluateGuard,
-		TFunctionRef<FCortexCommandResult(const FCortexReplayEvent&)> Dispatch);
+		TFunctionRef<FCortexCommandResult(const FCortexReplayEvent&)> Dispatch,
+		ECortexReplayFramePreparation& OutPreparation);
+
+	/**
+	 * Commits a frame whose preparation completed. Refused when the frame is not the current
+	 * unprepared frame, when preparation is still outstanding, or when it was already committed.
+	 */
+	FCortexCommandResult CommitFrame(int32 FrameIndex);
 
 	/** Number of events handed to Dispatch so far. */
 	int32 GetDispatchedCount() const;
 
-	/** True once every event has been dispatched and the recorded trailing duration has elapsed. */
+	/** Number of frames committed so far. */
+	int32 GetCompletedFrameCount() const;
+
+	/** Frame currently being prepared, or INDEX_NONE when no frame is in preparation. */
+	TOptional<int32> GetCurrentFrame() const;
+
+	/** True once every frame of the snapshot has been committed. */
 	bool IsComplete() const;
 
 	/** Measured authorized wait offset committed so far (total, capped at 5 seconds). */
@@ -73,6 +88,13 @@ private:
 	int32 NextEvent = 0;
 	int32 DispatchedCount = 0;
 
+	/** Frame currently in preparation, or INDEX_NONE when none is outstanding. */
+	int32 PreparingFrame = INDEX_NONE;
+	/** True once the outstanding preparation has dispatched its whole event range. */
+	bool bPreparationComplete = false;
+	/** Frames committed so far. */
+	int32 CompletedFrames = 0;
+
 	/** Active UI wait state. */
 	int32 WaitingSequence = INDEX_NONE;
 	ECortexEditorUIObservationState WaitReason = ECortexEditorUIObservationState::Ready;
@@ -84,6 +106,4 @@ private:
 	double WaitEvaluationSeconds = 0.0;
 	double AuthorizedWaitSeconds = 0.0;
 	double LastObservedElapsed = 0.0;
-
-	bool bComplete = false;
 };

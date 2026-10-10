@@ -555,14 +555,15 @@ public:
 	bool Update() override
 	{
 		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
-		TArray<FCortexReplayCaptureTargetChoice> Candidates;
-		if (Service->EnumerateHumanCaptureTargets(Candidates).bSuccess)
+		// Captures are always owned now: readiness means an unrelated PIE session is up, which
+		// Record must then refuse rather than borrow. There is no borrowable target any more.
+		if (GEditor && GEditor->PlayWorld != nullptr)
 		{
 			return true;
 		}
 		if (FPlatformTime::Seconds() - StartTime > WindowReadyWatchdogSeconds)
 		{
-			Test->AddError(TEXT("No ready PIE capture target became available"));
+			Test->AddError(TEXT("No unrelated PIE session became available"));
 			return true;
 		}
 		return false;
@@ -970,7 +971,7 @@ bool FCortexReplayWindowSelectedSummaryTest::RunTest(const FString& Parameters)
 // Desktop/narrow rows keep every required field; targets are chosen explicitly.
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowCompactAndTargetChoiceTest,
-	"Cortex.Replay.Window.CompactRowsAndExplicitTargetSelection",
+	"Cortex.Replay.Window.CompactRowsFollowDockedWidth",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FCortexReplayWindowCompactAndTargetChoiceTest::RunTest(const FString& Parameters)
 {
@@ -1022,66 +1023,6 @@ bool FCortexReplayWindowCompactAndTargetChoiceTest::RunTest(const FString& Param
 		}
 	}
 
-	// Target choices: no PIE -> owned path; one candidate -> that exact choice; several -> explicit.
-	Window->RefreshLibrary();
-	Window->SelectRecording(1);
-	TestFalse(TEXT("No target is chosen before Record"), Window->HasChosenCaptureTarget());
-
-	const TArray<FCortexReplayCaptureTargetChoice> NoCandidates;
-	TestNull(TEXT("Zero candidates leaves the owned saved-map path"),
-		Window->PromptForCaptureTarget(NoCandidates).Get());
-	TestFalse(TEXT("Zero candidates selects nothing"), Window->HasChosenCaptureTarget());
-
-	TArray<FCortexReplayCaptureTargetChoice> Single;
-	FCortexReplayCaptureTargetChoice Only;
-	Only.LocalPlayerIndex = 0;
-	Only.MapAssetPath = TEXT("/Game/Maps/TestMap");
-	Only.ViewportLabel = TEXT("Viewport 0");
-	Single.Add(Only);
-	TestNull(TEXT("One ready candidate auto-selects without a popup"),
-		Window->PromptForCaptureTarget(Single).Get());
-	TestTrue(TEXT("One ready candidate is chosen explicitly"), Window->HasChosenCaptureTarget());
-	TestEqual(TEXT("Auto-selected candidate keeps its exact map"),
-		Window->GetChosenCaptureTarget().MapAssetPath, Single[0].MapAssetPath);
-
-	TArray<FCortexReplayCaptureTargetChoice> Several;
-	for (int32 Index = 0; Index < 3; ++Index)
-	{
-		FCortexReplayCaptureTargetChoice Candidate;
-		Candidate.LocalPlayerIndex = Index;
-		Candidate.MapAssetPath = FString::Printf(TEXT("/Game/Maps/Candidate%d"), Index);
-		Candidate.ViewportLabel = FString::Printf(TEXT("Viewport %d"), Index);
-		Several.Add(Candidate);
-	}
-
-	const TSharedPtr<SCortexReplayTargetChoiceDialog> Choice =
-		Window->PromptForCaptureTarget(Several);
-	if (!TestTrue(TEXT("Several candidates require the choice popup"), Choice.IsValid()))
-	{
-		return false;
-	}
-	TestEqual(TEXT("Every candidate is displayed"), Choice->GetCandidateCount(), 3);
-	TestEqual(TEXT("No candidate defaults to the first"), Choice->GetSelectedIndex(), INDEX_NONE);
-
-	Choice->SelectCandidate(2);
-	TestEqual(TEXT("Chosen index is the explicit selection"), Choice->GetSelectedIndex(), 2);
-	TestTrue(TEXT("Explicit selection is retained"), Window->HasChosenCaptureTarget());
-	TestEqual(TEXT("Explicit selection keeps its exact local player"),
-		Window->GetChosenCaptureTarget().LocalPlayerIndex, 2);
-	TestEqual(TEXT("Explicit selection keeps its exact map"),
-		Window->GetChosenCaptureTarget().MapAssetPath, FString(TEXT("/Game/Maps/Candidate2")));
-	TestEqual(TEXT("Explicit selection keeps its exact viewport label"),
-		Window->GetChosenCaptureTarget().ViewportLabel, FString(TEXT("Viewport 2")));
-
-	// Cancelling a fresh choice selects none rather than attaching to the first world.
-	const TSharedPtr<SCortexReplayTargetChoiceDialog> Cancelled =
-		Window->PromptForCaptureTarget(Several);
-	if (!TestTrue(TEXT("Choice popup reopens"), Cancelled.IsValid()))
-	{
-		return false;
-	}
-	Cancelled->Cancel();
-	TestFalse(TEXT("Cancel selects no target"), Window->HasChosenCaptureTarget());
 
 	return true;
 }
@@ -1407,67 +1348,6 @@ bool FCortexReplayWindowExternalSessionEndIncompleteTest::RunTest(const FString&
 }
 
 // ---------------------------------------------------------------------------
-// Borrowed capture ownership is reported from backend state, so it survives a window reopen.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowBorrowedOwnershipTest,
-	"Cortex.Replay.Window.BorrowedCaptureOwnershipSurvivesReopen",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FCortexReplayWindowBorrowedOwnershipTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor)
-	{
-		AddError(TEXT("GEditor missing"));
-		return false;
-	}
-
-	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
-	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
-	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitPiePlaying(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitReadyTargets(this, Service, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
-		[Window](FAutomationTestBase&)
-		{
-			Window->OnRecordClicked();
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitOperation(this, Service, TEXT("capture"), true, 45.0, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
-		[Window, Service](FAutomationTestBase& T)
-		{
-			TickWindow(*Window);
-			T.TestTrue(TEXT("Borrowed capture is reported as borrowed"),
-				Window->GetOperationLabel().ToString().Contains(TEXT("borrowed")));
-
-			// Close/reopen the window while the capture is active: the ownership presentation must
-			// come from the backend, not from window-local state.
-			const TSharedRef<SCortexReplayWindow> Reopened =
-				SNew(SCortexReplayWindow).Service(Service);
-			Reopened->RefreshLibrary();
-			T.TestTrue(TEXT("Reopened window still reports borrowed ownership"),
-				Reopened->GetOperationLabel().ToString().Contains(TEXT("borrowed")));
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
-		[Window](FAutomationTestBase&)
-		{
-			Window->OnStopClicked();
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitOperation(this, Service, TEXT(""), false, 30.0, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
-		[](FAutomationTestBase& T)
-		{
-			T.TestTrue(TEXT("Borrowed Stop leaves the human PIE running"),
-				GEditor && GEditor->PlayWorld != nullptr);
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
-	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
-
-	return true;
-}
-
-// ---------------------------------------------------------------------------
 // A rejected capture admission is exposed through the operation label instead of Ready.
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowAdmissionRejectionTest,
@@ -1492,26 +1372,17 @@ bool FCortexReplayWindowAdmissionRejectionTest::RunTest(const FString& Parameter
 	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
 		[Window, Service](FAutomationTestBase& T)
 		{
-			TArray<FCortexReplayCaptureTargetChoice> Choices;
-			T.TestTrue(TEXT("Enumeration succeeds"), Service->EnumerateHumanCaptureTargets(Choices).bSuccess);
-			if (Choices.Num() == 0)
-			{
-				return;
-			}
-
-			// A real enumerated world with an unresolvable local-player index forces the native
-			// admission rejection through the real post-enumeration Record entry.
-			FCortexReplayCaptureTargetChoice BadChoice = Choices[0];
-			BadChoice.LocalPlayerIndex = 99;
-			TArray<FCortexReplayCaptureTargetChoice> Bad;
-			Bad.Add(BadChoice);
-			Window->BeginRecordForCandidates(Bad);
+			// An unrelated PIE session is running: the owned Record request must be refused as busy
+			// through the real Record entry, and that refusal must be visible rather than Ready.
+			Window->BeginRecord();
 
 			T.TestFalse(TEXT("Rejected admission starts no backend operation"),
 				Service->GetCurrentOperation().Data.IsValid());
 			const FString Label = Window->GetOperationLabel().ToString();
 			T.TestTrue(TEXT("Rejection is exposed in the operation label"),
 				!Label.IsEmpty() && Label != TEXT("Ready"));
+			T.TestTrue(TEXT("The unrelated PIE world is untouched"),
+				GEditor && GEditor->PlayWorld != nullptr);
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
@@ -1681,3 +1552,62 @@ bool FCortexReplayWindowCaptureStopDiscardTest::RunTest(const FString& Parameter
 // (Folded into Cortex.Replay.Window.ExternalSessionEndIncompleteSurfaces: the retained terminal
 // capture reason now covers the idle display and the held identity in one place.)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// A fresh owned capture must never adopt (borrow) an unrelated running PIE session:
+// clicking Record against unrelated PIE must be refused as busy, leave no capture
+// ownership and no new row, and leave the unrelated session untouched.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowFreshCaptureRefusesActivePIETest,
+	"Cortex.Replay.Window.FreshCaptureRefusesActivePIE",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowFreshCaptureRefusesActivePIETest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitPiePlaying(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitReadyTargets(this, Service, Fixture));
+
+	// Idle baseline: no capture operation is active before the click.
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Before = Service->GetCurrentOperation();
+			T.TestTrue(TEXT("No capture operation is active before Record"),
+				Before.bSuccess && !Before.Data.IsValid());
+		}, Fixture));
+
+	// The real Record entry, with an unrelated PIE already running.
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase&)
+		{
+			Window->OnRecordClicked();
+		}, Fixture));
+
+	// Next engine frame: the click must have been refused, not turned into borrowed ownership.
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window, Service](FAutomationTestBase& T)
+		{
+			TickWindow(*Window);
+
+			const FCortexCommandResult Current = Service->GetCurrentOperation();
+			T.TestTrue(TEXT("Unrelated PIE is not borrowed"), Current.bSuccess && !Current.Data.IsValid());
+			T.TestTrue(TEXT("Original unrelated world remains live"),
+				GEditor && GEditor->PlayWorld != nullptr);
+		}, Fixture));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}

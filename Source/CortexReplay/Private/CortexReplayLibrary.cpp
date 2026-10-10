@@ -32,7 +32,14 @@
 
 namespace
 {
-constexpr int32 ReplayFormatSchemaVersion = 1;
+/**
+ * Recording-side format version (metadata.json / initial_state.json / inputs.jsonl / frames.jsonl).
+ * The library.json container has its OWN, separate schema version: it is a directory manifest, and
+ * bumping the recording format must not make existing libraries unreadable.
+ */
+constexpr int32 ReplayRecordingFormatVersion = 2;
+/** library.json container schema; independent of the recording format. */
+constexpr int32 ReplayLibrarySchemaVersion = 1;
 constexpr int64 MaxRecordingId = MAX_int32;				// 2147483647
 constexpr int64 ExhaustedCounterValue = MaxRecordingId + 1;	// 2147483648 exhausted sentinel
 
@@ -105,6 +112,11 @@ FString GetInitialStatePath(const FString& RecordingDirectory)
 FString GetInputsPath(const FString& RecordingDirectory)
 {
 	return FPaths::Combine(RecordingDirectory, TEXT("inputs.jsonl"));
+}
+
+FString GetFramesPath(const FString& RecordingDirectory)
+{
+	return FPaths::Combine(RecordingDirectory, TEXT("frames.jsonl"));
 }
 
 bool EnsureDirectory(const FString& Directory)
@@ -1375,7 +1387,7 @@ TSharedPtr<FJsonObject> SerializeGuard(const FCortexReplayInteractionGuard& Guar
 TSharedPtr<FJsonObject> SerializeEvent(const FCortexReplayEvent& Event)
 {
 	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
-	Object->SetNumberField(TEXT("schema_version"), ReplayFormatSchemaVersion);
+	Object->SetNumberField(TEXT("schema_version"), ReplayRecordingFormatVersion);
 	Object->SetNumberField(TEXT("sequence"), Event.Sequence);
 	Object->SetNumberField(TEXT("time_seconds"), Event.TimeSeconds);
 	Object->SetStringField(TEXT("kind"), KindToString(Event.Input.Kind));
@@ -1394,6 +1406,41 @@ TSharedPtr<FJsonObject> SerializeEvent(const FCortexReplayEvent& Event)
 	if (Event.Guard.IsSet())
 	{
 		Object->SetObjectField(TEXT("guard"), SerializeGuard(*Event.Guard));
+	}
+
+	return Object;
+}
+
+/**
+ * Serializes one recorded frame. A frame with no observed world tick omits `world_tick` entirely,
+ * which is distinct from a present tick carrying a zero delta.
+ */
+TSharedPtr<FJsonObject> SerializeFrame(const FCortexReplayFrame& Frame)
+{
+	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetNumberField(TEXT("schema_version"), ReplayRecordingFormatVersion);
+	Object->SetNumberField(TEXT("frame_index"), Frame.FrameIndex);
+	Object->SetNumberField(TEXT("frame_begin_seconds"), Frame.FrameBeginSeconds);
+	Object->SetNumberField(TEXT("input_deadline_seconds"), Frame.InputDeadlineSeconds);
+	Object->SetNumberField(TEXT("app_delta_seconds"), Frame.AppDeltaSeconds);
+	Object->SetNumberField(TEXT("app_current_offset_seconds"), Frame.AppCurrentOffsetSeconds);
+	Object->SetNumberField(TEXT("app_last_offset_seconds"), Frame.AppLastOffsetSeconds);
+	Object->SetNumberField(TEXT("first_sequence"), Frame.FirstSequence);
+	Object->SetNumberField(TEXT("event_count"), Frame.EventCount);
+	Object->SetStringField(TEXT("capture_frame"), FString::Printf(TEXT("%llu"), Frame.CaptureFrame));
+
+	if (Frame.WorldTick.IsSet())
+	{
+		const FCortexEditorObservedWorldTick& Tick = Frame.WorldTick.GetValue();
+		TSharedPtr<FJsonObject> TickObject = MakeShared<FJsonObject>();
+		TickObject->SetStringField(TEXT("tick_type"), Tick.TickType.ToString());
+		TickObject->SetNumberField(TEXT("real_delta_seconds"), Tick.RealDeltaSeconds);
+		TickObject->SetNumberField(TEXT("delta_seconds"), Tick.DeltaSeconds);
+		TickObject->SetNumberField(TEXT("real_time_offset_seconds"), Tick.RealTimeOffsetSeconds);
+		TickObject->SetNumberField(TEXT("time_offset_seconds"), Tick.TimeOffsetSeconds);
+		TickObject->SetBoolField(TEXT("paused"), Tick.bPaused);
+		TickObject->SetNumberField(TEXT("effective_time_dilation"), Tick.EffectiveTimeDilation);
+		Object->SetObjectField(TEXT("world_tick"), TickObject);
 	}
 
 	return Object;
@@ -1449,6 +1496,13 @@ TSharedPtr<FJsonObject> MakeImmutableMetadataJson(
 	Object->SetObjectField(TEXT("guard_coverage"), MakeCoverageJson(Metadata.GuardCoverage));
 	Object->SetStringField(TEXT("initial_state_sha256"), InitialStateSha256);
 	Object->SetStringField(TEXT("inputs_sha256"), InputsSha256);
+	Object->SetStringField(TEXT("frames_sha256"), Metadata.FramesSha256);
+	{
+		TSharedPtr<FJsonObject> TimingObject = MakeShared<FJsonObject>();
+		TimingObject->SetNumberField(TEXT("frame_count"), Metadata.Timing.FrameCount);
+		TimingObject->SetNumberField(TEXT("input_epoch_frame"), Metadata.Timing.InputEpochFrame);
+		Object->SetObjectField(TEXT("timing"), TimingObject);
+	}
 	return Object;
 }
 
@@ -1474,6 +1528,13 @@ FString SerializeMetadata(
 	Object->SetObjectField(TEXT("guard_coverage"), MakeCoverageJson(Metadata.GuardCoverage));
 	Object->SetStringField(TEXT("initial_state_sha256"), InitialStateSha256);
 	Object->SetStringField(TEXT("inputs_sha256"), InputsSha256);
+	Object->SetStringField(TEXT("frames_sha256"), Metadata.FramesSha256);
+	{
+		TSharedPtr<FJsonObject> TimingObject = MakeShared<FJsonObject>();
+		TimingObject->SetNumberField(TEXT("frame_count"), Metadata.Timing.FrameCount);
+		TimingObject->SetNumberField(TEXT("input_epoch_frame"), Metadata.Timing.InputEpochFrame);
+		Object->SetObjectField(TEXT("timing"), TimingObject);
+	}
 	return SerializeCanonicalJson(Object.ToSharedRef());
 }
 
@@ -1924,7 +1985,7 @@ bool CoverageEquals(const FCortexReplayGuardCoverage& Left, const FCortexReplayG
 
 bool ValidateMetadataFields(const FCortexReplayMetadata& Metadata, FString& OutError)
 {
-	if (Metadata.SchemaVersion != ReplayFormatSchemaVersion)
+	if (Metadata.SchemaVersion != ReplayRecordingFormatVersion)
 	{
 		OutError = TEXT("Unsupported metadata schema version");
 		return false;
@@ -1999,7 +2060,7 @@ bool ValidateMetadataFields(const FCortexReplayMetadata& Metadata, FString& OutE
 
 bool ValidateInitialState(const FCortexReplayInitialState& InitialState, int32 ExpectedId, FString& OutError)
 {
-	if (InitialState.SchemaVersion != ReplayFormatSchemaVersion)
+	if (InitialState.SchemaVersion != ReplayRecordingFormatVersion)
 	{
 		OutError = TEXT("Unsupported initial-state schema version");
 		return false;
@@ -2208,9 +2269,24 @@ bool ParseMetadata(
 	}
 
 	if (!TryReadJsonString(Object, TEXT("initial_state_sha256"), true, Metadata.InitialStateSha256, OutError)
-		|| !TryReadJsonString(Object, TEXT("inputs_sha256"), true, Metadata.InputsSha256, OutError))
+		|| !TryReadJsonString(Object, TEXT("inputs_sha256"), true, Metadata.InputsSha256, OutError)
+		|| !TryReadJsonString(Object, TEXT("frames_sha256"), true, Metadata.FramesSha256, OutError))
 	{
 		return false;
+	}
+
+	{
+		const TSharedPtr<FJsonObject>* TimingObject = nullptr;
+		if (!Object->TryGetObjectField(TEXT("timing"), TimingObject) || TimingObject == nullptr)
+		{
+			OutError = TEXT("Missing object field 'timing'");
+			return false;
+		}
+		if (!TryReadJsonInt32(*TimingObject, TEXT("frame_count"), 0, MAX_int32, Metadata.Timing.FrameCount, OutError)
+			|| !TryReadJsonInt32(*TimingObject, TEXT("input_epoch_frame"), -1, MAX_int32, Metadata.Timing.InputEpochFrame, OutError))
+		{
+			return false;
+		}
 	}
 
 	if (!ValidateMetadataFields(Metadata, OutError))
@@ -2510,7 +2586,7 @@ bool ParseInputRow(
 		return false;
 	}
 
-	if (SchemaVersion != ReplayFormatSchemaVersion)
+	if (SchemaVersion != ReplayRecordingFormatVersion)
 	{
 		OutError = FString::Printf(TEXT("Input row %d uses an unsupported schema version"), RowOrdinal);
 		return false;
@@ -2653,6 +2729,194 @@ bool ParseInputRow(
 
 	OutEvents.Add(MoveTemp(Event));
 	return true;
+}
+
+/**
+ * Cross-frame invariants shared by publication and load: contiguous frame ordinals, contiguous
+ * sequence attribution that accounts for every input exactly once (widened before comparing),
+ * non-decreasing begin/deadline times, finite non-negative application values, and a timing block
+ * consistent with the frame set. Row-level JSON/schema/numeric shape is checked by the parser.
+ */
+bool ValidateFrameSet(
+	const TArray<FCortexReplayFrame>& Frames,
+	int32 EventCount,
+	const FCortexReplayTiming& Timing,
+	FString& OutError)
+{
+	int64 NextSequence = 0;
+	double PreviousDeadline = -1.0;
+	double PreviousBegin = -1.0;
+
+	for (int32 Index = 0; Index < Frames.Num(); ++Index)
+	{
+		const FCortexReplayFrame& Frame = Frames[Index];
+		if (Frame.FrameIndex != Index)
+		{
+			OutError = FString::Printf(TEXT("Frame %d is not the expected contiguous frame_index"), Index);
+			return false;
+		}
+		if (Frame.FirstSequence != NextSequence)
+		{
+			OutError = FString::Printf(TEXT("Frame %d does not start at the next unattributed sequence"), Index);
+			return false;
+		}
+		const int64 EndSequence = static_cast<int64>(Frame.FirstSequence) + static_cast<int64>(Frame.EventCount);
+		if (EndSequence > static_cast<int64>(EventCount))
+		{
+			OutError = FString::Printf(TEXT("Frame %d attributes more events than the inputs stream carries"), Index);
+			return false;
+		}
+		NextSequence = EndSequence;
+
+		if (!FMath::IsFinite(Frame.FrameBeginSeconds) || !FMath::IsFinite(Frame.InputDeadlineSeconds)
+			|| !FMath::IsFinite(Frame.AppDeltaSeconds) || !FMath::IsFinite(Frame.AppCurrentOffsetSeconds)
+			|| !FMath::IsFinite(Frame.AppLastOffsetSeconds) || Frame.AppDeltaSeconds < 0.0)
+		{
+			OutError = FString::Printf(TEXT("Frame %d carries a non-finite or negative application value"), Index);
+			return false;
+		}
+		if (Frame.FrameBeginSeconds < PreviousBegin || Frame.InputDeadlineSeconds < PreviousDeadline)
+		{
+			OutError = FString::Printf(TEXT("Frame %d moves time backwards"), Index);
+			return false;
+		}
+		PreviousBegin = Frame.FrameBeginSeconds;
+		PreviousDeadline = Frame.InputDeadlineSeconds;
+	}
+
+	if (NextSequence != static_cast<int64>(EventCount))
+	{
+		OutError = TEXT("the frames do not attribute every input event exactly once");
+		return false;
+	}
+
+	if (Timing.FrameCount != Frames.Num())
+	{
+		OutError = TEXT("timing.frame_count does not match the frame set");
+		return false;
+	}
+	if (Timing.FrameCount > 0
+		&& (Timing.InputEpochFrame < 1 || Timing.InputEpochFrame >= Timing.FrameCount))
+	{
+		OutError = TEXT("timing.input_epoch_frame must satisfy 1 <= epoch < frame_count");
+		return false;
+	}
+
+	return true;
+}
+
+/**
+ * Parses and validates the frames stream.
+ *
+ * Counts and ranges are widened before any comparison, indices and sequence ranges must be
+ * contiguous, deadlines/begin times non-decreasing, and every frame's doubles finite. The number of
+ * attributed events must equal the inputs stream exactly, so every input belongs to one frame.
+ */
+bool ParseFramesStream(
+	const FString& Path,
+	int32 EventCount,
+	FCortexReplayTiming& Timing,
+	TArray<FCortexReplayFrame>& OutFrames,
+	FString& OutSha256,
+	FString& OutError)
+{
+	OutFrames.Reset();
+
+	TArray<uint8> Bytes;
+	if (!ReadFileBytes(Path, Bytes))
+	{
+		OutError = TEXT("frames.jsonl is unreadable");
+		return false;
+	}
+	if (!ComputeSha256Hex(Bytes, OutSha256, OutError))
+	{
+		return false;
+	}
+
+	TArray<FString> Lines;
+	Utf8BytesToFString(Bytes).ParseIntoArrayLines(Lines, /*bCullEmpty=*/true);
+
+	for (int32 RowOrdinal = 0; RowOrdinal < Lines.Num(); ++RowOrdinal)
+	{
+		TSharedPtr<FJsonObject> Object;
+		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Lines[RowOrdinal]);
+		if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid())
+		{
+			OutError = FString::Printf(TEXT("Frame row %d is not valid JSON"), RowOrdinal);
+			return false;
+		}
+
+		int32 SchemaVersion = 0;
+		FCortexReplayFrame Frame;
+		if (!TryReadJsonInt32(Object, TEXT("schema_version"), 0, MAX_int32, SchemaVersion, OutError)
+			|| !TryReadJsonInt32(Object, TEXT("frame_index"), 0, MAX_int32, Frame.FrameIndex, OutError)
+			|| !TryReadJsonInt32(Object, TEXT("first_sequence"), 0, MAX_int32, Frame.FirstSequence, OutError)
+			|| !TryReadJsonInt32(Object, TEXT("event_count"), 0, MAX_int32, Frame.EventCount, OutError)
+			|| !TryReadJsonNumber(Object, TEXT("frame_begin_seconds"), Frame.FrameBeginSeconds, OutError)
+			|| !TryReadJsonNumber(Object, TEXT("input_deadline_seconds"), Frame.InputDeadlineSeconds, OutError)
+			|| !TryReadJsonNumber(Object, TEXT("app_delta_seconds"), Frame.AppDeltaSeconds, OutError)
+			|| !TryReadJsonNumber(Object, TEXT("app_current_offset_seconds"), Frame.AppCurrentOffsetSeconds, OutError)
+			|| !TryReadJsonNumber(Object, TEXT("app_last_offset_seconds"), Frame.AppLastOffsetSeconds, OutError))
+		{
+			OutError = FString::Printf(TEXT("Frame row %d: %s"), RowOrdinal, *OutError);
+			return false;
+		}
+
+		if (SchemaVersion != ReplayRecordingFormatVersion)
+		{
+			OutError = FString::Printf(TEXT("Frame row %d uses an unsupported schema version"), RowOrdinal);
+			return false;
+		}
+
+		FString CaptureFrameText;
+		if (!TryReadJsonString(Object, TEXT("capture_frame"), true, CaptureFrameText, OutError))
+		{
+			OutError = FString::Printf(TEXT("Frame row %d: %s"), RowOrdinal, *OutError);
+			return false;
+		}
+		if (!CaptureFrameText.IsNumeric())
+		{
+			OutError = FString::Printf(TEXT("Frame row %d has a non-numeric capture_frame"), RowOrdinal);
+			return false;
+		}
+		Frame.CaptureFrame = FCString::Strtoui64(*CaptureFrameText, nullptr, 10);
+
+		const TSharedPtr<FJsonObject>* TickObject = nullptr;
+		if (Object->TryGetObjectField(TEXT("world_tick"), TickObject) && TickObject != nullptr)
+		{
+			FCortexEditorObservedWorldTick Tick;
+			FString TickType;
+			double RealDelta = 0.0;
+			double Delta = 0.0;
+			double RealOffset = 0.0;
+			double Offset = 0.0;
+			double Dilation = 1.0;
+			bool bPaused = false;
+			if (!TryReadJsonString(*TickObject, TEXT("tick_type"), true, TickType, OutError)
+				|| !TryReadJsonNumber(*TickObject, TEXT("real_delta_seconds"), RealDelta, OutError)
+				|| !TryReadJsonNumber(*TickObject, TEXT("delta_seconds"), Delta, OutError)
+				|| !TryReadJsonNumber(*TickObject, TEXT("real_time_offset_seconds"), RealOffset, OutError)
+				|| !TryReadJsonNumber(*TickObject, TEXT("time_offset_seconds"), Offset, OutError)
+				|| !TryReadJsonBool(*TickObject, TEXT("paused"), bPaused, OutError)
+				|| !TryReadJsonNumber(*TickObject, TEXT("effective_time_dilation"), Dilation, OutError))
+			{
+				OutError = FString::Printf(TEXT("Frame %d world_tick: %s"), RowOrdinal, *OutError);
+				return false;
+			}
+			Tick.TickType = FName(*TickType);
+			Tick.RealDeltaSeconds = static_cast<float>(RealDelta);
+			Tick.DeltaSeconds = static_cast<float>(Delta);
+			Tick.RealTimeOffsetSeconds = RealOffset;
+			Tick.TimeOffsetSeconds = Offset;
+			Tick.bPaused = bPaused;
+			Tick.EffectiveTimeDilation = static_cast<float>(Dilation);
+			Frame.WorldTick = Tick;
+		}
+
+		OutFrames.Add(MoveTemp(Frame));
+	}
+
+	return ValidateFrameSet(OutFrames, EventCount, Timing, OutError);
 }
 
 bool ParseInputsStream(
@@ -2836,7 +3100,7 @@ FCortexCommandResult FCortexReplayLibrary::ReadValidatedNextId(int64& OutNextId)
 		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, FString::Printf(TEXT("library.json: %s"), *ValidationError));
 	}
 
-	if (LibrarySchemaVersion != ReplayFormatSchemaVersion)
+	if (LibrarySchemaVersion != ReplayLibrarySchemaVersion)
 	{
 		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, TEXT("library.json schema is unsupported"));
 	}
@@ -2853,7 +3117,7 @@ FCortexCommandResult FCortexReplayLibrary::ReadValidatedNextId(int64& OutNextId)
 FCortexCommandResult FCortexReplayLibrary::CommitCounterAtomically(int64 NextValue)
 {
 	TSharedPtr<FJsonObject> CommittedObject = MakeShared<FJsonObject>();
-	CommittedObject->SetNumberField(TEXT("schema_version"), ReplayFormatSchemaVersion);
+	CommittedObject->SetNumberField(TEXT("schema_version"), ReplayLibrarySchemaVersion);
 	CommittedObject->SetNumberField(TEXT("next_recording_id"), static_cast<double>(NextValue));
 
 	FString CommitError;
@@ -2998,6 +3262,7 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 	const FString MetadataPath = GetMetadataPath(RecordingDirectory);
 	const FString InitialStatePath = GetInitialStatePath(RecordingDirectory);
 	const FString InputsPath = GetInputsPath(RecordingDirectory);
+	const FString FramesPath = GetFramesPath(RecordingDirectory);
 
 	TArray<uint8> MetadataBytes;
 	if (!ReadFileBytes(MetadataPath, MetadataBytes))
@@ -3014,6 +3279,11 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 	if (!IFileManager::Get().FileExists(*InputsPath))
 	{
 		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing inputs.jsonl"));
+	}
+
+	if (!IFileManager::Get().FileExists(*FramesPath))
+	{
+		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing frames.jsonl"));
 	}
 
 	FCortexReplayMetadata Metadata;
@@ -3038,13 +3308,22 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, ValidationError);
 	}
 
+	TArray<FCortexReplayFrame> Frames;
+	FString FramesSha256;
+	FCortexReplayTiming LoadedTiming = Metadata.Timing;
+	if (!ParseFramesStream(FramesPath, Events.Num(), LoadedTiming, Frames, FramesSha256, ValidationError))
+	{
+		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, ValidationError);
+	}
+
 	FString InitialStateSha256;
 	if (!ComputeSha256Hex(InitialStateBytes, InitialStateSha256, ValidationError))
 	{
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, ValidationError);
 	}
 
-	if (!IsLowerHexSha256(Metadata.InitialStateSha256) || !IsLowerHexSha256(Metadata.InputsSha256))
+	if (!IsLowerHexSha256(Metadata.InitialStateSha256) || !IsLowerHexSha256(Metadata.InputsSha256)
+		|| !IsLowerHexSha256(Metadata.FramesSha256))
 	{
 		return ReplayError(CortexReplayErrorCodes::InvalidRecording, TEXT("metadata.json payload hashes are malformed"));
 	}
@@ -3057,6 +3336,11 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 	if (InputsSha256 != Metadata.InputsSha256)
 	{
 		return ReplayError(CortexReplayErrorCodes::InvalidRecording, TEXT("inputs.jsonl does not match its recorded hash"));
+	}
+
+	if (FramesSha256 != Metadata.FramesSha256)
+	{
+		return ReplayError(CortexReplayErrorCodes::InvalidRecording, TEXT("frames.jsonl does not match its recorded hash"));
 	}
 
 	if (!CoverageEquals(Coverage, Metadata.GuardCoverage))
@@ -3101,10 +3385,17 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Recording changed while it was being loaded"));
 	}
 
+	FString FramesRecheckSha256;
+	if (!ComputeFileSha256Hex(FramesPath, FramesRecheckSha256, ValidationError) || FramesRecheckSha256 != FramesSha256)
+	{
+		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Recording changed while it was being loaded"));
+	}
+
 	FCortexReplaySnapshot Snapshot;
 	Snapshot.Metadata = Metadata;
 	Snapshot.InitialState = InitialState;
 	Snapshot.Events = MoveTemp(Events);
+	Snapshot.Frames = MoveTemp(Frames);
 
 	FString SnapshotHashError;
 	const TArray<uint8> ImmutableBytes = ToUtf8Bytes(SerializeCanonicalJson(
@@ -3156,6 +3447,13 @@ FCortexCommandResult FCortexReplayLibrary::Publish(const FCortexReplaySnapshot& 
 	if (Recording.Events.Num() > 0 && Recording.Metadata.DurationSeconds < Recording.Events.Last().TimeSeconds)
 	{
 		return ReplayError(CortexReplayErrorCodes::InvalidRecording, TEXT("duration_seconds does not cover the final event time"));
+	}
+
+	// Cross-frame invariants are checked before anything is staged, so a malformed frame set is
+	// reported as an invalid recording rather than a storage failure.
+	if (!ValidateFrameSet(Recording.Frames, Recording.Events.Num(), Recording.Metadata.Timing, ValidationError))
+	{
+		return ReplayError(CortexReplayErrorCodes::InvalidRecording, ValidationError);
 	}
 
 	const TArray<uint8> InitialStateBytes = ToUtf8Bytes(SerializeInitialState(Recording.InitialState));
@@ -3219,9 +3517,37 @@ FCortexCommandResult FCortexReplayLibrary::Publish(const FCortexReplaySnapshot& 
 		}
 	}
 
+	// Stream every recorded frame to its own staged file while hashing it, exactly like inputs.
+	FString FramesSha256;
 	if (bStaged)
 	{
-		const TArray<uint8> MetadataBytes = ToUtf8Bytes(SerializeMetadata(Recording.Metadata, InitialStateSha256, InputsSha256));
+		const int32 ExpectedFrames = Recording.Frames.Num();
+		FCortexReplayDurableWriter Writer;
+		bStaged = Writer.Open(GetFramesPath(PendingDirectory), StageError);
+		if (bStaged)
+		{
+			FCortexReplaySha256State Hash;
+			bStaged = Hash.Begin(StageError);
+			for (int32 FrameIndex = 0; FrameIndex < ExpectedFrames && bStaged; ++FrameIndex)
+			{
+				const FString Row = SerializeCanonicalJson(SerializeFrame(Recording.Frames[FrameIndex]).ToSharedRef());
+				const TArray<uint8> RowBytes = ToUtf8Bytes(Row + TEXT("\n"));
+				bStaged = Writer.WriteBytes(RowBytes.GetData(), RowBytes.Num(), StageError)
+					&& Hash.Update(RowBytes.GetData(), RowBytes.Num());
+			}
+
+			if (bStaged)
+			{
+				bStaged = Writer.Commit(StageError) && Hash.Finish(FramesSha256, StageError);
+			}
+		}
+	}
+
+	if (bStaged)
+	{
+		FCortexReplayMetadata CommittedMetadata = Recording.Metadata;
+		CommittedMetadata.FramesSha256 = FramesSha256;
+		const TArray<uint8> MetadataBytes = ToUtf8Bytes(SerializeMetadata(CommittedMetadata, InitialStateSha256, InputsSha256));
 		bStaged = WriteFileBytesDurably(GetMetadataPath(PendingDirectory), MetadataBytes, StageError);
 
 		if (bStaged)
@@ -3230,13 +3556,18 @@ FCortexCommandResult FCortexReplayLibrary::Publish(const FCortexReplaySnapshot& 
 			TArray<uint8> StagedInitialState;
 			FString StagedInitialStateSha256;
 			FString StagedInputsSha256;
+			FString StagedFramesSha256;
+			TArray<FCortexReplayFrame> StagedFrames;
+			FCortexReplayTiming StagedTiming = Recording.Metadata.Timing;
 			bStaged = ReadFileBytes(GetMetadataPath(PendingDirectory), StagedMetadata)
 				&& ReadFileBytes(GetInitialStatePath(PendingDirectory), StagedInitialState)
 				&& ComputeFileSha256Hex(GetInputsPath(PendingDirectory), StagedInputsSha256, StageError)
 				&& ComputeSha256Hex(StagedInitialState, StagedInitialStateSha256, StageError)
+				&& ParseFramesStream(GetFramesPath(PendingDirectory), Recording.Events.Num(), StagedTiming, StagedFrames, StagedFramesSha256, StageError)
 				&& StagedMetadata == MetadataBytes
 				&& StagedInitialStateSha256 == InitialStateSha256
-				&& StagedInputsSha256 == InputsSha256;
+				&& StagedInputsSha256 == InputsSha256
+				&& StagedFramesSha256 == FramesSha256;
 		}
 	}
 

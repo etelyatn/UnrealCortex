@@ -89,10 +89,22 @@ struct FCortexEditorPhysicalInputCaptureContext
 	FVector2D UILocalPosition = FVector2D::ZeroVector;
 };
 
+/** Public UPlayerInput mouse-filter memory; never a synthetic axis event or a private-field patch. */
+struct FCortexEditorNativeMouseFilterState
+{
+	float ZeroTimeSeconds[2] = { 0.0f, 0.0f };
+	float SmoothedMouse[2] = { 0.0f, 0.0f };
+	int32 SampleCount = 0;
+	float SamplingTotalSeconds = 0.0f;
+	float EffectiveTimeDilation = 1.0f;
+};
+
 struct FCortexEditorPhysicalInputTargetInfo
 {
 	FString MapAssetPath;
 	FString PawnClassPath;
+	FString PlayerInputClass;
+	FString InputConfigSha256;
 	int32 LocalPlayerIndex = 0;
 	FIntPoint ViewportSize = FIntPoint::ZeroValue;
 	double DpiScale = 1.0;

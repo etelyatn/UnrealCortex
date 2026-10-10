@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "CortexEditorPhysicalInput.h"
+#include "CortexEngineCompat.h"
 #include "CortexTypes.h"
 #include "Templates/Function.h"
 #include "UObject/WeakObjectPtrTemplates.h"
@@ -117,6 +118,42 @@ public:
 	/** The weak binding handles; never persisted. */
 	const FCortexEditorPhysicalInputTargetBinding& GetTargetBinding() const;
 
+	/**
+	 * True only when the given PIE world/context is the exact owned request this session accepted.
+	 *
+	 * Authority comes from the current owned request generation, the pre-request baseline PIE
+	 * context handles and the queued/started request fingerprints — never from ordinary target
+	 * readiness and never from a first-global-PIE selection. A world/context that is already
+	 * pinned stays authoritative; a successor context (even with an identical request), a
+	 * baseline context or an ambiguous multi-context result is rejected.
+	 */
+	bool IsWorldThisOwnedRequest(UWorld& World, FName ContextHandle) const;
+
+	/**
+	 * Reads the bound player input's public mouse-filter memory plus the effective world time
+	 * dilation: the two ZeroTime/SmoothedMouse components, the native sample count and sampling
+	 * total, and the exact effective dilation. Never reads or infers private engine state, and
+	 * never derives a synthetic axis value.
+	 */
+	FCortexCommandResult ReadNativeMouseFilterState(FCortexEditorNativeMouseFilterState& Out) const;
+
+	/**
+	 * Restores the recorded public mouse-filter fields on the still-original PlayerInput instance.
+	 *
+	 * Rejects non-finite or non-positive sampling state before any mutation, requires the exact
+	 * effective time dilation to still match, writes only the four public fields and verifies the
+	 * readback. Private engine state (for example LastTimeDilation) is never touched.
+	 */
+	FCortexCommandResult RestoreNativeMouseFilterState(const FCortexEditorNativeMouseFilterState& In);
+
+	/**
+	 * Live selected-route input-configuration identity: the bound PlayerInput class path and a
+	 * canonical lower-case SHA-256 over the live axis/config values (see the implementation for
+	 * the exact ordered field set). Both outputs are reset when this fails.
+	 */
+	FCortexCommandResult ReadNativeInputConfig(FString& OutPlayerInputClass,
+		FString& OutInputConfigSha256) const;
+
 	/** Reads the bound pawn's transform and the bound controller's control rotation. */
 	FCortexCommandResult ReadPlayerPose(FCortexEditorPhysicalInputPlayerPose& Out) const;
 
@@ -152,20 +189,16 @@ public:
 	 * Arms replay epoch interference ownership at epoch establishment, before the first event.
 	 *
 	 * While armed, any loss of the selected focus/window/route is always treated as interference,
-	 * including during the idle/wait window before the first dispatch. Real physical input is
-	 * treated as interference only when bUnattended is true: an unattended (AI-origin) replay
-	 * interrupts on any real key/button/move edge, while an attended (human-origin) replay lets
-	 * the human's own input through without interrupting. Does not steal focus and does not enable
-	 * inactive-application input handling; a lost route is reported as interference instead.
+	 * including during the idle/wait window before the first dispatch. Real selected-route physical
+	 * input from either origin (human or AI) is interference too, so a foreign key/button/move/wheel
+	 * edge faults the epoch exactly like route loss; the recording's origin never suppresses an
+	 * interruption. Does not steal focus and does not enable inactive-application input handling.
 	 * Requires the exact binding to still be valid; cleared by ReleaseHeldInputs/Shutdown.
 	 */
-	FCortexCommandResult BeginReplayEpoch(bool bUnattended);
+	FCortexCommandResult BeginReplayEpoch();
 
-	/** True only while a replay epoch is armed (attended or unattended). */
+	/** True only while a replay epoch is armed. */
 	bool IsReplayEpochArmed() const;
-
-	/** True only while an armed replay epoch is unattended (AI-origin) interference ownership. */
-	bool IsReplayUnattended() const;
 
 	/**
 	 * Non-blocking observation of the exact selected route for one guarded press. Returns the
@@ -193,9 +226,9 @@ public:
 		double, const FCortexEditorPhysicalInputCaptureContext&)>&& Callback);
 
 	/**
-	 * Registers the one interruption callback. It is invoked when real physical input is observed
-	 * during an unattended replay, or when the selected route loses ownership during any replay
-	 * (attended or unattended); reentrant callbacks only record state and never re-enter dispatch.
+	 * Registers the one interruption callback. It is invoked when real selected-route physical
+	 * input is observed during an armed replay epoch, or when the selected route loses ownership
+	 * during any replay; reentrant callbacks only record state and never re-enter dispatch.
 	 * Passing an empty callback clears it.
 	 */
 	void SetInterruptionCallback(TFunction<void(const FCortexCommandResult&)>&& Callback);
@@ -248,9 +281,72 @@ public:
 		FVector2D& OutScreenSpacePosition, FVector2D& OutViewportPosition) const;
 #endif
 
+	/**
+	 * Terminal-loss ownership cleanup for the native clock.
+	 *
+	 * Quiesces the exact engine authority of the newest admitted owned request so no further owned
+	 * world tick is admitted, without ending PIE, flipping the aggregate end flag, or touching any
+	 * foreign instance. Used on a failed clock-producer read, where the weak caller backend may
+	 * already have retired. Preserves the producer's own error and the held-provider clock state.
+	 * Idempotent, and safe when nothing is retained.
+	 */
+	static FCortexCommandResult QuiesceRetainedOwnedAuthority();
+
+	/**
+	 * Reads the retained exact-session authority's snapshot (fails when nothing is retained).
+	 * Used to prove "no foreign play topology" before a cleanup-only cache reanchor.
+	 */
+	static FCortexCommandResult ReadRetainedOwnedAuthority(FCortexScopedPIESnapshot& OutSnapshot);
+
 private:
 	/** The non-consuming processor reports every observed engine input back to this session. */
 	friend class FCortexEditorPhysicalInputCaptureProcessor;
+
+	/**
+	 * The native frame observer authorizes the owned world and pins the accepted request
+	 * generation through this friendship. It is also the only caller of the opt-in pre-baseline
+	 * preparation monitoring hooks below; they are not new command inputs or public API.
+	 */
+	friend class FCortexEditorEngineFrameObserver;
+
+	// ---- native frame observation collaboration (pre-baseline preparation monitoring) ----
+
+	/**
+	 * Opt-in passive monitoring of owned preparation, called by the native frame observer BEFORE
+	 * the owned PIE request is queued. Installs a non-consuming processor so a real
+	 * selected-route packet observed while the owned world is being prepared (before the capture
+	 * baseline) faults preparation through the interruption callback. This is observer-only policy:
+	 * independent BindTarget/BeginOwnedPIE users are never switched into it.
+	 */
+	void BeginNativeFramePreparationMonitoring();
+
+	/**
+	 * Authorizes this owned request and resolves the provisional exact route at owned-world birth
+	 * (selected local player, Slate user, input device, owned viewport and layer-manager widgets)
+	 * WITHOUT waiting for a pawn or a stable pawn class. A missing identity is reported, never
+	 * replaced with a global or default one. Fails when the world is not this owned request.
+	 */
+	FCortexCommandResult BindNativeFramePreparationRoute(UWorld& World, FName ContextHandle);
+
+	/**
+	 * Disables pre-baseline monitoring only: it unregisters the monitoring processor and drops the
+	 * provisional route. An active capture epoch or replay epoch is never touched. A request made
+	 * from inside an interruption callback is deferred until that callback unwinds.
+	 */
+	void EndNativeFramePreparationMonitoring();
+
+	/** Applies a retire request once no interruption callback is executing. */
+	void ApplyNativeFramePreparationMonitoringRetire();
+
+	/**
+	 * Retries the provisional route resolution for the authorized owned request while monitoring is
+	 * enabled and the route is not yet bound (for example when the exact viewport widgets were not
+	 * registered at the birth tick). It never substitutes a global or default identity.
+	 */
+	void RetryNativeFramePreparationRoute();
+
+	/** Resolves the provisional route for an already-authorized owned world/context. */
+	FCortexCommandResult ResolveNativeFramePreparationRoute(UWorld& World, FName ContextHandle);
 
 	/** Owned PIE lifecycle; borrowed bindings leave this at None. */
 	enum class EOwnedState : uint8
@@ -277,6 +373,12 @@ private:
 	bool bOwnedRequestOutstanding = false;
 	bool bStartupResolved = false;
 	uint64 Generation = 0;
+	/**
+	 * Engine-issued ownership-scoped PIE authority for this operation's owned request (opaque to
+	 * this module). Owned end/quiesce route through it so the engine retires exactly this instance
+	 * instead of the whole session; never the global aggregate request.
+	 */
+	TSharedPtr<FCortexScopedPIEAuthority> OwnedEngineScope;
 	/** Identity of the request the engine queued, excluding DestinationSlateViewport (nulled at start). */
 	uint64 SubmittedRequestFingerprint = 0;
 	/** Identity of the request while still queued, including DestinationSlateViewport. */
@@ -352,14 +454,44 @@ private:
 	/** True after this session arms a replay epoch and before cleanup: replay is in progress. */
 	bool bReplayInProgress = false;
 	/**
-	 * True while that replay epoch is unattended (AI-origin): real physical input is interference.
-	 * Cleared when the epoch ends. Meaningful only while bReplayInProgress is true.
+	 * True while the native frame observer's opt-in pre-baseline preparation monitoring is enabled.
+	 * A real selected-route packet observed while this is set (and the target is not yet bound)
+	 * faults preparation through the interruption callback. Disabled by the observer's end hook and
+	 * whenever capture is armed or a replay epoch is established.
 	 */
-	bool bReplayUnattended = false;
-	/** True once per epoch so the attended-suppression Display log fires at most once. */
-	bool bAttendedSuppressionLogged = false;
+	bool bNativeFramePreparationMonitoring = false;
+	/**
+	 * True once the provisional pre-baseline route (owned viewport/local player/Slate user/device)
+	 * has been resolved for this owned request. Only the native monitor binding sets it.
+	 */
+	bool bNativePreparationRouteBound = false;
+	/** Provisional route identity for pre-baseline monitoring; weak handles only. */
+	FCortexEditorPhysicalInputTargetBinding NativePreparationRoute;
+	TWeakObjectPtr<UWorld> NativePreparationWorld;
+	FName NativePreparationContextHandle = NAME_None;
+	/** Authorized owned request whose provisional route still needs resolution (retry target). */
+	TWeakObjectPtr<UWorld> PendingNativePreparationWorld;
+	FName PendingNativePreparationContextHandle = NAME_None;
+	/** True once the unresolved provisional route has been reported, so retries do not spam. */
+	bool bNativePreparationRouteFailureLogged = false;
+	/** Passive preparation-monitoring processor; registered only while the monitor is enabled. */
+	TSharedPtr<FCortexEditorPhysicalInputCaptureProcessor> NativePreparationProcessor;
+	/**
+	 * Reentrancy depth of the interruption-notification callbacks. A retire request that arrives
+	 * from inside a callback (observer uninstall, teardown) is deferred until this returns to zero so
+	 * the processor currently executing is never unregistered and freed from under itself.
+	 */
+	int32 NativeMonitoringCallbackDepth = 0;
+	/** Set by a reentrant retire request; applied once the callback stack unwinds. */
+	bool bNativeMonitoringRetireRequested = false;
 	/** Exact PlayerInput instance the binding was acquired with; never a replacement. */
 	TWeakObjectPtr<UPlayerInput> BoundPlayerInput;
+
+	/**
+	 * The route identity the observation predicates use: the bound target when bound, otherwise the
+	 * provisional pre-baseline preparation route. Never returns a global/default identity.
+	 */
+	const FCortexEditorPhysicalInputTargetBinding& GetObservedRouteBinding() const;
 
 	/** Creates the capture/dispatch/guard state and installs the non-consuming processor. */
 	void AttachCaptureToBinding();
@@ -427,12 +559,6 @@ private:
 
 	/** Reports a foreign-input interruption through the single interruption callback. */
 	void NotifyInterruption(const FCortexCommandResult& Result);
-
-	/**
-	 * Logs once per epoch (Display) that real physical input was observed while the replay is
-	 * attended, so the interruption was suppressed instead of ending the run.
-	 */
-	void LogAttendedInputSuppressed(const FKey& Key);
 
 	/** Signals an incomplete capture epoch (for example inconsistent modifier bits). */
 	void SignalCaptureFault(const FString& Message);

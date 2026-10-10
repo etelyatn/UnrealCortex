@@ -202,8 +202,10 @@ TArray<uint8> SelectorToUtf8Bytes(const FString& Text)
 	return Bytes;
 }
 
+} // namespace
+
 /** Lower-case 64-hex SHA-256 of the payload bytes; empty when the provider is unavailable. */
-FString ComputeSelectorSha256Hex(const uint8* Data, int64 Size)
+FString CortexEditorPhysicalInputSha256(const uint8* Data, int64 Size)
 {
 #if PLATFORM_WINDOWS
 	BCRYPT_ALG_HANDLE AlgorithmHandle = nullptr;
@@ -248,6 +250,9 @@ FString ComputeSelectorSha256Hex(const uint8* Data, int64 Size)
 	return FString();
 #endif
 }
+
+namespace
+{
 
 /**
  * Collects every widget carrying Tag across the whole subtree of one scope root (including the
@@ -359,7 +364,7 @@ FString FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(
 #endif
 	const FString Canonical = CanonicalizeSelector(Identity);
 	const TArray<uint8> Bytes = SelectorToUtf8Bytes(Canonical);
-	return ComputeSelectorSha256Hex(Bytes.GetData(), static_cast<int64>(Bytes.Num()));
+	return CortexEditorPhysicalInputSha256(Bytes.GetData(), static_cast<int64>(Bytes.Num()));
 }
 
 bool FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(const FString& Digest)

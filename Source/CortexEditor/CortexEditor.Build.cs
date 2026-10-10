@@ -10,6 +10,7 @@ public class CortexEditor : ModuleRules
 		{
 			"Core",
 			"CoreUObject",
+			"Engine",
 			"CortexCore",
 			"InputCore",
 			"SlateCore",
@@ -18,7 +19,6 @@ public class CortexEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"ApplicationCore",
-			"Engine",
 			"Json",
 			"JsonUtilities",
 			"UnrealEd",

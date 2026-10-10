@@ -18,6 +18,8 @@
 #include "Templates/Function.h"
 #include "Widgets/Layout/SBox.h"
 
+#include <limits>
+
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
 #endif
@@ -300,7 +302,8 @@ bool FCortexReplayLibraryInitialStateTest::RunTest(const FString& Parameters)
 
 	{
 		FCortexReplaySnapshot Snapshot = Fixture.MakeRecording(Id, false, {});
-		Snapshot.InitialState.SchemaVersion = 2;
+		// The current recording format is 2, so a legacy 1 must be refused as mismatched.
+		Snapshot.InitialState.SchemaVersion = 1;
 		TestFalse(TEXT("Mismatched initial-state schema rejected"), Library.Publish(Snapshot).bSuccess);
 	}
 
@@ -1480,6 +1483,223 @@ bool FCortexReplayLibrarySelectorDigestStageConsistencyTest::RunTest(const FStri
 	FCortexEditorPhysicalInputSelectorBuilder::ClearSelectorDigestFailureForTests();
 	TestFalse(TEXT("A digest provider failure during load is rejected"), FailedReload.bSuccess);
 	TestFalse(TEXT("A digest provider failure yields no snapshot"), AfterFailure.IsValid());
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Format-2 cutover boundary: a legacy format-1 recording must be refused
+// explicitly and never mutated by the refusal.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryVersionOneUnsupportedPreservedTest,
+	"Cortex.Replay.Library.VersionOneUnsupportedPreserved",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryVersionOneUnsupportedPreservedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	if (!TestTrue(TEXT("Reserve a recording id"), Library.ReserveId(Id).bSuccess))
+	{
+		return false;
+	}
+
+	// The writer still emits the format-1 layout today; this recording is the legacy fixture the
+	// format-2 library must refuse explicitly rather than misread as playable.
+	const FCortexReplaySnapshot Legacy = Fixture.MakeRecording(Id, /*bAIEnabled=*/true, {});
+	if (!TestTrue(TEXT("Publish the legacy recording"), Library.Publish(Legacy).bSuccess))
+	{
+		return false;
+	}
+
+	// Byte-snapshot every file this recording owns, before any read happens.
+	const FString RecordingDir = FPaths::GetPath(Fixture.GetInputsPath(Id));
+
+	// Relabel the freshly written recording to the legacy format-1 schema so this is a genuine
+	// version-labelled legacy fixture, not a product legacy writer.
+	{
+		const FString MetadataPath = FPaths::Combine(RecordingDir, TEXT("metadata.json"));
+		TSharedPtr<FJsonObject> Metadata = LoadJsonObject(MetadataPath);
+		if (!TestTrue(TEXT("metadata.json is readable"), Metadata.IsValid()))
+		{
+			return false;
+		}
+		Metadata->SetNumberField(TEXT("schema_version"), 1);
+		TestTrue(TEXT("metadata relabelled to the legacy schema"), SaveJsonObject(MetadataPath, Metadata));
+	}
+	{
+		const FString InitialPath = Fixture.GetInitialStatePath(Id);
+		TSharedPtr<FJsonObject> InitialState = LoadJsonObject(InitialPath);
+		if (!TestTrue(TEXT("initial_state.json is readable"), InitialState.IsValid()))
+		{
+			return false;
+		}
+		InitialState->SetNumberField(TEXT("schema_version"), 1);
+		TestTrue(TEXT("initial state relabelled to the legacy schema"), SaveJsonObject(InitialPath, InitialState));
+	}
+
+	TArray<FString> FilesBefore;
+	IFileManager::Get().FindFilesRecursive(FilesBefore, *RecordingDir, TEXT("*"), /*Files=*/true, /*Directories=*/false);
+	TMap<FString, TArray<uint8>> BytesBefore;
+	for (const FString& File : FilesBefore)
+	{
+		TArray<uint8> Bytes;
+		FFileHelper::LoadFileToArray(Bytes, *File);
+		BytesBefore.Add(File, MoveTemp(Bytes));
+	}
+	TestTrue(TEXT("The legacy recording has on-disk files"), BytesBefore.Num() > 0);
+
+	// Explicit refusal: a format-1 recording must never be presented as a loadable snapshot.
+	TSharedPtr<const FCortexReplaySnapshot> Loaded;
+	const FCortexCommandResult LoadResult = Library.Load(Id, /*bAIOnly=*/false, Loaded);
+	TestFalse(TEXT("Loading a format-1 recording must fail explicitly"), LoadResult.bSuccess);
+	TestFalse(TEXT("A refused legacy load must not yield a snapshot"), Loaded.IsValid());
+
+	// AI listing must omit the unsupported recording entirely.
+	TArray<FCortexReplayMetadata> AIList;
+	TestTrue(TEXT("AI listing succeeds"), Library.List(/*bAIOnly=*/true, AIList).bSuccess);
+	TestFalse(TEXT("AI listing must omit the unsupported format-1 recording"),
+		AIList.ContainsByPredicate([Id](const FCortexReplayMetadata& Entry) { return Entry.RecordingId == Id; }));
+
+	// The refusal must not have mutated a single byte.
+	TArray<FString> FilesAfter;
+	IFileManager::Get().FindFilesRecursive(FilesAfter, *RecordingDir, TEXT("*"), true, false);
+	TestEqual(TEXT("The refusal must not add or remove files"), FilesAfter.Num(), BytesBefore.Num());
+	for (const FString& File : FilesAfter)
+	{
+		const TArray<uint8>* const Before = BytesBefore.Find(File);
+		if (Before == nullptr)
+		{
+			TestTrue(*FString::Printf(TEXT("unexpected new file after refusal: %s"), *File), false);
+			continue;
+		}
+		TArray<uint8> After;
+		FFileHelper::LoadFileToArray(After, *File);
+		TestTrue(*FString::Printf(TEXT("bytes unchanged for %s"), *FPaths::GetCleanFilename(File)), After == *Before);
+	}
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Format-2 frames stream boundary validation: each boundary is altered separately
+// and must be refused as an invalid recording, not merely fail on a stale digest.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryFramesStreamValidationTest,
+	"Cortex.Replay.Library.FramesStreamValidation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryFramesStreamValidationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	const auto MakeValidRecording = [&Fixture, &Library]()
+	{
+		int32 Id = 0;
+		Library.ReserveId(Id);
+		// Two events so sequence attribution has something to get wrong.
+		return Fixture.MakeRecording(Id, false, { MakeKeyDownEvent(0, 0.0), MakeKeyDownEvent(1, 0.1) });
+	};
+
+	// Baseline: the fixture's warmup + owned frames publish and round-trip.
+	{
+		FCortexReplaySnapshot Snapshot = MakeValidRecording();
+		TestTrue(TEXT("Valid frame set publishes"), Library.Publish(Snapshot).bSuccess);
+
+		TSharedPtr<const FCortexReplaySnapshot> Loaded;
+		TestTrue(TEXT("Valid frame set loads"), Library.Load(Snapshot.Metadata.RecordingId, false, Loaded).bSuccess);
+		if (Loaded.IsValid())
+		{
+			TestEqual(TEXT("Loaded frames match the published frame count"), Loaded->Frames.Num(), Snapshot.Frames.Num());
+			TestEqual(TEXT("Loaded timing matches"), Loaded->Metadata.Timing.InputEpochFrame, Snapshot.Metadata.Timing.InputEpochFrame);
+		}
+	}
+
+	// Each case below alters exactly one boundary of an otherwise valid recording.
+	struct FFrameBoundaryCase
+	{
+		const TCHAR* Label;
+		TFunction<void(FCortexReplaySnapshot&)> Alter;
+	};
+
+	// Alters the last frame that actually carries input, so a boundary case never degenerates into a
+	// no-op when the valid fixture's frame layout has more than one input frame.
+	const auto LastInputFrame = [](FCortexReplaySnapshot& S) -> FCortexReplayFrame&
+	{
+		for (int32 Index = S.Frames.Num() - 1; Index >= 0; --Index)
+		{
+			if (S.Frames[Index].EventCount > 0)
+			{
+				return S.Frames[Index];
+			}
+		}
+		return S.Frames[1];
+	};
+
+	const TArray<FFrameBoundaryCase> Cases = {
+		{ TEXT("Non-contiguous frame_index"), [](FCortexReplaySnapshot& S) { S.Frames[1].FrameIndex = 2; } },
+		{ TEXT("FirstSequence does not continue from the previous frame"), [](FCortexReplaySnapshot& S) { S.Frames[1].FirstSequence = 1; } },
+		{ TEXT("Frame attributes more events than the inputs stream"), [&](FCortexReplaySnapshot& S) { LastInputFrame(S).EventCount += 1; } },
+		{ TEXT("Frame attributes fewer events than the inputs stream"), [&](FCortexReplaySnapshot& S) { LastInputFrame(S).EventCount -= 1; } },
+		{ TEXT("timing.frame_count disagrees with the frame set"), [](FCortexReplaySnapshot& S) { S.Metadata.Timing.FrameCount = S.Frames.Num() + 1; } },
+		{ TEXT("input epoch frame is below 1"), [](FCortexReplaySnapshot& S) { S.Metadata.Timing.InputEpochFrame = 0; } },
+		{ TEXT("input epoch frame is not below frame_count"), [](FCortexReplaySnapshot& S) { S.Metadata.Timing.InputEpochFrame = S.Frames.Num(); } },
+		{ TEXT("Deadline moves backwards"), [](FCortexReplaySnapshot& S) { S.Frames[1].InputDeadlineSeconds = -1.0; } },
+		{ TEXT("Non-finite application delta"), [](FCortexReplaySnapshot& S) { S.Frames[1].AppDeltaSeconds = std::numeric_limits<double>::infinity(); } },
+		{ TEXT("Negative application delta"), [](FCortexReplaySnapshot& S) { S.Frames[1].AppDeltaSeconds = -0.5; } },
+		{ TEXT("Negative event count"), [](FCortexReplaySnapshot& S) { S.Frames[1].EventCount = -1; } },
+	};
+
+	for (const FFrameBoundaryCase& Case : Cases)
+	{
+		FCortexReplaySnapshot Snapshot = MakeValidRecording();
+		Case.Alter(Snapshot);
+
+		const FCortexCommandResult Result = Library.Publish(Snapshot);
+		TestFalse(*FString::Printf(TEXT("%s is refused"), Case.Label), Result.bSuccess);
+		TestEqual(*FString::Printf(TEXT("%s is classified as an invalid recording"), Case.Label),
+			Result.ErrorCode, FString(CortexReplayErrorCodes::InvalidRecording));
+
+		// A refused publication must leave no recording behind.
+		TSharedPtr<const FCortexReplaySnapshot> Loaded;
+		TestFalse(*FString::Printf(TEXT("%s leaves no loadable recording"), Case.Label),
+			Library.Load(Snapshot.Metadata.RecordingId, false, Loaded).bSuccess);
+	}
+
+	// On-disk change: tampering the frames stream must be caught by its recorded digest even though
+	// the mutable metadata is untouched.
+	{
+		FCortexReplaySnapshot Snapshot = MakeValidRecording();
+		TestTrue(TEXT("Tamper baseline publishes"), Library.Publish(Snapshot).bSuccess);
+
+		const FString FramesPath = FPaths::Combine(
+			FPaths::GetPath(Fixture.GetInputsPath(Snapshot.Metadata.RecordingId)), TEXT("frames.jsonl"));
+		TestTrue(TEXT("frames.jsonl exists"), FPaths::FileExists(FramesPath));
+
+		FString FramesText;
+		TestTrue(TEXT("frames.jsonl is readable"), FFileHelper::LoadFileToString(FramesText, *FramesPath));
+		// Insignificant trailing whitespace keeps the stream parseable and every frame valid, so only
+		// the recorded frames digest can catch the change.
+		FramesText.ReplaceInline(TEXT("\n"), TEXT(" \n"));
+		TestTrue(TEXT("Rewrite frames.jsonl with insignificant whitespace"),
+			FFileHelper::SaveStringToFile(FramesText, *FramesPath));
+
+		TSharedPtr<const FCortexReplaySnapshot> Loaded;
+		FCortexReplayLibrary Reopened(Fixture.GetProjectRoot());
+		const FCortexCommandResult Result = Reopened.Load(Snapshot.Metadata.RecordingId, false, Loaded);
+		TestFalse(TEXT("A changed frames stream denies load"), Result.bSuccess);
+		TestEqual(TEXT("A changed frames stream is an invalid recording"),
+			Result.ErrorCode, FString(CortexReplayErrorCodes::InvalidRecording));
+	}
 
 	return true;
 }

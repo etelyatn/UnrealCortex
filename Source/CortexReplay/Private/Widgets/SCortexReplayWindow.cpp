@@ -165,120 +165,6 @@ FReply SCortexReplayDeleteDialog::OnKeyDown(const FGeometry& /*MyGeometry*/, con
 	return FReply::Unhandled();
 }
 
-// ---------------------------------------------------------------------------------------------
-// SCortexReplayTargetChoiceDialog
-// ---------------------------------------------------------------------------------------------
-
-void SCortexReplayTargetChoiceDialog::Construct(const FArguments& InArgs)
-{
-	Candidates = InArgs._Candidates;
-	OnChosen = InArgs._OnChosen;
-	OnDismissed = InArgs._OnDismissed;
-	SelectedIndex = INDEX_NONE;
-
-	TSharedRef<SVerticalBox> List = SNew(SVerticalBox);
-	for (int32 Index = 0; Index < Candidates.Num(); ++Index)
-	{
-		List->AddSlot()
-		.AutoHeight()
-		.Padding(0.0f, 2.0f)
-		[
-			SNew(SButton)
-			.HAlign(HAlign_Left)
-			.ContentPadding(FMargin(8.0f, 4.0f))
-			.Text(FText::FromString(GetCandidateLabel(Index)))
-			.OnClicked_Lambda([this, Index]()
-			{
-				SelectCandidate(Index);
-				return FReply::Handled();
-			})
-		];
-	}
-
-	ChildSlot
-	[
-		SNew(SBorder)
-		.Padding(12.0f)
-		[
-			SNew(SBox)
-			.WidthOverride(420.0f)
-			[
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(0.0f, 0.0f, 0.0f, 6.0f)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("ChooseTargetTitle", "Choose the PIE target to record"))
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					List
-				]
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.HAlign(HAlign_Right)
-				.Padding(0.0f, 8.0f, 0.0f, 0.0f)
-				[
-					SAssignNew(CancelButton, SButton)
-					.Text(LOCTEXT("CancelLabel", "Cancel"))
-					.OnClicked(this, &SCortexReplayTargetChoiceDialog::OnCancelClicked)
-				]
-			]
-		]
-	];
-}
-
-int32 SCortexReplayTargetChoiceDialog::GetCandidateCount() const
-{
-	return Candidates.Num();
-}
-
-FString SCortexReplayTargetChoiceDialog::GetCandidateLabel(int32 Index) const
-{
-	if (!Candidates.IsValidIndex(Index))
-	{
-		return FString();
-	}
-	const FCortexReplayCaptureTargetChoice& Candidate = Candidates[Index];
-	return FString::Printf(TEXT("%s · player %d · %s"),
-		*FPaths::GetBaseFilename(Candidate.MapAssetPath),
-		Candidate.LocalPlayerIndex,
-		*Candidate.ViewportLabel);
-}
-
-int32 SCortexReplayTargetChoiceDialog::GetSelectedIndex() const
-{
-	return SelectedIndex;
-}
-
-void SCortexReplayTargetChoiceDialog::SelectCandidate(int32 Index)
-{
-	if (!Candidates.IsValidIndex(Index))
-	{
-		return;
-	}
-	SelectedIndex = Index;
-	OnChosen.ExecuteIfBound(Index);
-}
-
-void SCortexReplayTargetChoiceDialog::Cancel()
-{
-	SelectedIndex = INDEX_NONE;
-	OnDismissed.ExecuteIfBound();
-}
-
-FReply SCortexReplayTargetChoiceDialog::OnCancelClicked()
-{
-	Cancel();
-	return FReply::Handled();
-}
-
-// ---------------------------------------------------------------------------------------------
-// SCortexReplayWindow
-// ---------------------------------------------------------------------------------------------
-
 void SCortexReplayWindow::Construct(const FArguments& InArgs)
 {
 	Service = InArgs._Service;
@@ -454,71 +340,30 @@ void SCortexReplayWindow::BeginRecord()
 
 	LastStatusMessage.Reset();
 
-	// Genuinely absent PIE routes to an owned saved-map capture; existing-but-unready or
-	// ambiguous PIE stays a fatal selection error (never a first-world fallback).
-	const bool bHasPie = HasAnyPieWorldContext();
-	TArray<FCortexReplayCaptureTargetChoice> Candidates;
-	const FCortexCommandResult Enumerated = Service->EnumerateHumanCaptureTargets(Candidates);
-	if (Enumerated.bSuccess)
+	// Record ALWAYS starts an owned capture on the saved editor map. An unrelated PIE session is
+	// never borrowed or adopted: the owned request is refused as busy and the refusal stays visible.
+	if (!GEditor)
 	{
-		BeginRecordForCandidates(Candidates);
+		LastStatusMessage = TEXT("No editor world is available to record");
+		UpdateOperationLabel();
 		return;
 	}
-	if (bHasPie)
+	UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+	if (!EditorWorld)
 	{
-		SurfaceOperationError(Enumerated);
-		return;
-	}
-	BeginRecordForCandidates(TArray<FCortexReplayCaptureTargetChoice>());
-}
-
-void SCortexReplayWindow::BeginRecordForCandidates(
-	const TArray<FCortexReplayCaptureTargetChoice>& Candidates)
-{
-	if (!Service.IsValid())
-	{
+		LastStatusMessage = TEXT("No saved editor map is available to record");
+		UpdateOperationLabel();
 		return;
 	}
 
-	if (Candidates.Num() == 0)
+	const FCortexCommandResult Started = Service->StartCapture(
+		UWorld::RemovePIEPrefix(EditorWorld->GetPackage()->GetName()));
+	if (!Started.bSuccess)
 	{
-		// No PIE: capture with an owned session on the saved editor map.
-		if (!GEditor)
-		{
-			LastStatusMessage = TEXT("No editor world is available to record");
-			UpdateOperationLabel();
-			return;
-		}
-		UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
-		if (!EditorWorld)
-		{
-			LastStatusMessage = TEXT("No saved editor map is available to record");
-			UpdateOperationLabel();
-			return;
-		}
-
-		const FCortexCommandResult Started = Service->StartCapture(
-			UWorld::RemovePIEPrefix(EditorWorld->GetPackage()->GetName()));
-		if (!Started.bSuccess)
-		{
-			SurfaceOperationError(Started);
-			return;
-		}
-		RefreshLibrary();
+		SurfaceOperationError(Started);
 		return;
 	}
-
-	bPendingRecordStart = true;
-	TSharedPtr<SCortexReplayTargetChoiceDialog> PopupDialog = PromptForCaptureTarget(Candidates);
-	if (PopupDialog.IsValid())
-	{
-		ShowPopup(PopupDialog);
-		return;
-	}
-
-	// One ready candidate is selected explicitly (PromptForCaptureTarget chose index 0).
-	bPendingRecordStart = false;
-	StartBorrowedCaptureAtIndex(0);
+	RefreshLibrary();
 }
 
 void SCortexReplayWindow::StopActiveOperation()
@@ -557,45 +402,6 @@ FText SCortexReplayWindow::GetOperationLabel() const
 	return BuildOperationLabel();
 }
 
-TSharedPtr<SCortexReplayTargetChoiceDialog> SCortexReplayWindow::PromptForCaptureTarget(
-	const TArray<FCortexReplayCaptureTargetChoice>& Candidates)
-{
-	PendingCandidates = Candidates;
-	ChosenTargetIndex = INDEX_NONE;
-	TargetChoiceDialog.Reset();
-
-	if (Candidates.Num() == 0)
-	{
-		return nullptr;
-	}
-	if (Candidates.Num() == 1)
-	{
-		// Explicitly select the single displayed candidate; no popup is needed.
-		ChosenTargetIndex = 0;
-		return nullptr;
-	}
-
-	TargetChoiceDialog = SNew(SCortexReplayTargetChoiceDialog)
-		.Candidates(Candidates)
-		.OnChosen(this, &SCortexReplayWindow::HandleTargetChosen)
-		.OnDismissed(this, &SCortexReplayWindow::HandleTargetChoiceCancelled);
-	return TargetChoiceDialog;
-}
-
-bool SCortexReplayWindow::HasChosenCaptureTarget() const
-{
-	return ChosenTargetIndex != INDEX_NONE && PendingCandidates.IsValidIndex(ChosenTargetIndex);
-}
-
-FCortexReplayCaptureTargetChoice SCortexReplayWindow::GetChosenCaptureTarget() const
-{
-	if (HasChosenCaptureTarget())
-	{
-		return PendingCandidates[ChosenTargetIndex];
-	}
-	return FCortexReplayCaptureTargetChoice();
-}
-
 TSharedPtr<SCortexReplayMetadataDialog> SCortexReplayWindow::OpenMetadataDialog(int32 RecordingId)
 {
 	const int32 Index = FindRecordingIndex(RecordingId);
@@ -625,7 +431,7 @@ TSharedPtr<SCortexReplayMetadataDialog> SCortexReplayWindow::GetOpenMetadataDial
 void SCortexReplayWindow::CloseMetadataDialog()
 {
 	MetadataDialog.Reset();
-	if (!DeleteDialog.IsValid() && !TargetChoiceDialog.IsValid())
+	if (!DeleteDialog.IsValid())
 	{
 		HidePopup();
 	}
@@ -961,12 +767,9 @@ FText SCortexReplayWindow::BuildOperationLabel() const
 	}
 	else
 	{
-		// The backend reports borrowed capture as human origin, so ownership survives a
-		// window close/reopen instead of relying on window-local state.
-		FString Origin;
-		Operation.Data->TryGetStringField(TEXT("origin"), Origin);
-		const TCHAR* Ownership = Origin == TEXT("human") ? TEXT("borrowed") : TEXT("owned");
-		Label = FString::Printf(TEXT("Recording #%d · %s · %s"), RecordingId, Ownership, *State);
+		// Every capture is an owned fresh-PIE capture now that borrowing is removed, so the label no
+		// longer derives ownership from the origin field (which stays "human" for provenance).
+		Label = FString::Printf(TEXT("Recording #%d · %s · %s"), RecordingId, TEXT("owned"), *State);
 		if (Operation.Data->GetBoolField(TEXT("publication_failed")))
 		{
 			// The human must see why nothing was saved: name the retained publication reason.
@@ -1079,52 +882,6 @@ void SCortexReplayWindow::HidePopup()
 	}
 }
 
-void SCortexReplayWindow::HandleTargetChosen(int32 CandidateIndex)
-{
-	ChosenTargetIndex = CandidateIndex;
-	if (bPendingRecordStart)
-	{
-		bPendingRecordStart = false;
-		HidePopup();
-		TargetChoiceDialog.Reset();
-		StartBorrowedCaptureAtIndex(CandidateIndex);
-	}
-}
-
-void SCortexReplayWindow::HandleTargetChoiceCancelled()
-{
-	// Cancel selects no target; never fall back to the first candidate.
-	ChosenTargetIndex = INDEX_NONE;
-	bPendingRecordStart = false;
-	TargetChoiceDialog.Reset();
-	HidePopup();
-}
-
-void SCortexReplayWindow::StartBorrowedCaptureAtIndex(int32 CandidateIndex)
-{
-	if (!Service.IsValid() || !PendingCandidates.IsValidIndex(CandidateIndex))
-	{
-		return;
-	}
-
-	const FCortexReplayCaptureTargetChoice& Choice = PendingCandidates[CandidateIndex];
-	UWorld* World = Choice.World.Get();
-	if (!World)
-	{
-		LastStatusMessage = TEXT("The selected capture target is no longer available");
-		UpdateOperationLabel();
-		return;
-	}
-
-	const FCortexCommandResult Started = Service->StartCaptureAtTarget(*World, Choice.LocalPlayerIndex);
-	if (!Started.bSuccess)
-	{
-		// Vanished/ambiguous/held-input admission errors must be visible, not reported as Ready.
-		SurfaceOperationError(Started);
-		return;
-	}
-	RefreshLibrary();
-}
 
 void SCortexReplayWindow::HandleMetadataCommitted(int32 RecordingId, const FString& Name,
 	const FString& Description, bool bAIEnabled)

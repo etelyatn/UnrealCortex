@@ -231,3 +231,65 @@ bool FCortexEditorPIEStateCancelInputTickerDoesNotCancelGeneralCallbacksTest::Ru
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorPIEStateScopedEndPreservesForeignInputTest,
+	"Cortex.Editor.PIEState.ScopedEndRetiresOnlyOwnedInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorPIEStateScopedEndPreservesForeignInputTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexEditorPIEState PIEState;
+	PIEState.SetState(ECortexPIEState::Playing);
+
+	// Session-wide state a surviving foreign instance still depends on.
+	const TSharedRef<FThreadSafeBool> TokenBefore = PIEState.GetInputCancelToken();
+	bool bSessionInputCallbackFired = false;
+	FString SessionInputErrorCode;
+	PIEState.RegisterPendingInputCallback([&bSessionInputCallbackFired, &SessionInputErrorCode](FCortexCommandResult Result)
+	{
+		bSessionInputCallbackFired = true;
+		SessionInputErrorCode = Result.ErrorCode;
+	});
+
+	// An owned continuous run whose own deferred caller is provably this session's.
+	bool bOwnedRunCallbackFired = false;
+	FString OwnedRunErrorCode;
+	const uint32 OwnedRunCallbackId = PIEState.RegisterPendingInputCallback([&bOwnedRunCallbackFired, &OwnedRunErrorCode](FCortexCommandResult Result)
+	{
+		bOwnedRunCallbackFired = true;
+		OwnedRunErrorCode = Result.ErrorCode;
+	});
+	PIEState.TrackContinuousInputRun(nullptr, nullptr, /*bTimed=*/true, 0.5f, /*bHasCallback=*/true, OwnedRunCallbackId);
+
+	FCortexScopedPIESnapshot ScopedEnding;
+	ScopedEnding.Phase = ECortexScopedPIEPhase::Ending;
+	ScopedEnding.RequestSerial = 7;
+	ScopedEnding.bScopedEndQueued = true;
+	PIEState.HandleScopedPIELifecycle(ScopedEnding);
+
+	TestTrue(TEXT("A scoped owned end completes the owned run's own pending caller"), bOwnedRunCallbackFired);
+	TestEqual(TEXT("The owned run caller reports OperationCancelled"), OwnedRunErrorCode, FString(TEXT("OperationCancelled")));
+
+	TestFalse(TEXT("A scoped owned end must NOT flip the session-wide cancel token"), *TokenBefore);
+	TestTrue(TEXT("The session-wide cancel token identity must be unchanged"),
+		PIEState.GetInputCancelToken().Get() == TokenBefore.Get());
+	TestFalse(TEXT("A scoped owned end must NOT complete session-wide pending input callbacks (they may belong to a foreign owner)"),
+		bSessionInputCallbackFired);
+	TestEqual(TEXT("The global editor state stays Playing while a foreign instance survives"),
+		PIEState.GetState(), ECortexPIEState::Playing);
+
+	// A genuine global end still retires the surviving owner exactly once.
+	PIEState.OnPIEEnded();
+
+	TestTrue(TEXT("A global end completes the session-wide input callback"), bSessionInputCallbackFired);
+	TestEqual(TEXT("The globally cancelled callback reports OperationCancelled"),
+		SessionInputErrorCode, FString(TEXT("OperationCancelled")));
+	TestEqual(TEXT("A global end returns the state machine to Stopped"),
+		PIEState.GetState(), ECortexPIEState::Stopped);
+
+	return true;
+}
+
