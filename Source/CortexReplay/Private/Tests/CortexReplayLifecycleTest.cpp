@@ -2951,8 +2951,11 @@ bool FCortexReplayLifecycleNoResidualEngineClockTest::RunTest(const FString& Par
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
 		TEXT("Completed"), Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[](FAutomationTestBase& T)
+		[Service](FAutomationTestBase& T)
 		{
+			// The service shared reference is captured on purpose: it keeps the service - and therefore
+			// its clock lease - alive across this assertion, so passing here cannot be an artefact of the
+			// service having been destroyed first.
 			T.TestTrue(TEXT("A completed replay leaves no engine clock installed"),
 				GEngine == nullptr || GEngine->GetCustomTimeStep() == nullptr);
 		}, Fixture));

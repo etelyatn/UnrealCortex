@@ -2216,6 +2216,20 @@ bool FCortexReplayCommandsRetainedRecordContractTest::RunTest(const FString& Par
 				R.State = ECortexReplayState::Error;
 				R.ExecutionError = FCortexCommandResult();
 			} },
+		{ TEXT("a pre-frame record offered for writing"),
+			[](FCortexReplayRunRecord& R)
+			{
+				// A read may exempt a pre-frame record, but a write always emits the current format, so
+				// writing one would produce a file the loader refuses.
+				R.bLegacyFormat = true;
+				R.FramesSha256.Reset();
+			} },
+		{ TEXT("a zero-tick timestamp"),
+			[](FCortexReplayRunRecord& R)
+			{
+				R.StartedAtUtc = FDateTime(0);
+				R.FinalizedAtUtc = FDateTime(0);
+			} },
 	};
 	for (const FRefusalCase& Case : Refusals)
 	{

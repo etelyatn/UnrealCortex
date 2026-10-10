@@ -191,7 +191,8 @@ FString FCortexReplayRunStore::RecordPath(const FGuid& Id) const
 }
 
 /** The value-domain contract shared by the writer and the loader (defined below SaveTerminal). */
-bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, FString& OutReason);
+bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, bool bPreFrameAllowed,
+	FString& OutReason);
 
 FCortexCommandResult FCortexReplayRunStore::Initialize()
 {
@@ -346,7 +347,7 @@ FCortexCommandResult FCortexReplayRunStore::Initialize()
 		// The same contract the writer enforces: a record that violates it is skipped rather than
 		// indexed as a partially valid result.
 		FString RecordReason;
-		if (!StoreValidateTerminalRecord(Record, RecordReason))
+		if (!StoreValidateTerminalRecord(Record, /*bPreFrameAllowed=*/true, RecordReason))
 		{
 			UE_LOG(LogCortexReplay, Log, TEXT("Run store skipped record %s: %s"),
 				*GuidText, *RecordReason);
@@ -365,7 +366,8 @@ FCortexCommandResult FCortexReplayRunStore::Initialize()
  * would refuse to read - which would silently lose a terminal run - and the loader gains the same
  * authority in one place. OutReason receives the first violated invariant.
  */
-bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, FString& OutReason)
+bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, bool bPreFrameAllowed,
+	FString& OutReason)
 {
 	if (!Record.Id.IsValid())
 	{
@@ -392,6 +394,12 @@ bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, FString& 
 		OutReason = TEXT("Run record finalized before it started");
 		return false;
 	}
+	if (Record.StartedAtUtc.GetTicks() <= 0 || Record.FinalizedAtUtc.GetTicks() <= 0)
+	{
+		// A zero-tick date serializes to an empty string, which the loader refuses to parse back.
+		OutReason = TEXT("Run record carries a timestamp that cannot be written and read back");
+		return false;
+	}
 	if (Record.DispatchedEvents < 0 || Record.TotalEvents < 0
 		|| Record.DispatchedEvents > Record.TotalEvents)
 	{
@@ -411,9 +419,10 @@ bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, FString& 
 		OutReason = TEXT("Run record carries a digest that is not a SHA-256");
 		return false;
 	}
-	// A pre-frame record carries no frame identity at all, so the frame group is only required of a
-	// current-format record; every other invariant still holds for both.
-	if (!Record.bLegacyFormat)
+	// Only a read may exempt a pre-frame record, and only because such a record legitimately carries
+	// no frame identity at all. A write always emits the current format, so it must always supply
+	// frame identity - otherwise the file it writes is one the loader would refuse.
+	if (!(bPreFrameAllowed && Record.bLegacyFormat))
 	{
 		if (!StoreIsLowerHexSha256(Record.FramesSha256))
 		{
@@ -459,7 +468,7 @@ bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, FString& 
 FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunRecord& Record)
 {
 	FString Reason;
-	if (!StoreValidateTerminalRecord(Record, Reason))
+	if (!StoreValidateTerminalRecord(Record, /*bPreFrameAllowed=*/false, Reason))
 	{
 		return StoreError(CortexReplayErrorCodes::StorageFailure, Reason);
 	}
