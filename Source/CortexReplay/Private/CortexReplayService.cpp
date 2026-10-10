@@ -394,6 +394,11 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	void DetachTickerAndSession();
 	void ResetRun();
 	void ResetCapture();
+	/**
+	 * Uninstalls and drops the capture's frame observer. It must run before its session is released:
+	 * the observer detaches from that exact session when destroyed, and Uninstall clears the link.
+	 */
+	void ReleaseCaptureFrameObserver();
 	FCortexReplayGuardDecision EvaluateGuard(const FCortexReplayEvent& Event);
 	FCortexCommandResult DispatchEvent(const FCortexReplayEvent& Event);
 	FCortexCommandResult DispatchBlockError() const;
@@ -450,8 +455,24 @@ void FCortexReplayService::FImpl::EnsureTicker()
 		}));
 }
 
+void FCortexReplayService::FImpl::ReleaseCaptureFrameObserver()
+{
+	if (!CaptureFrameObserver.IsValid())
+	{
+		return;
+	}
+	// Uninstall detaches from the exact session and clears that link, so a later destructor call is
+	// harmless even after the session object is gone.
+	CaptureFrameObserver->Uninstall();
+	CaptureFrameObserver.Reset();
+}
+
 void FCortexReplayService::FImpl::DetachTickerAndSession()
 {
+	// The frame observer detaches from its exact session in its own destructor, so it must be
+	// uninstalled while that session is still alive. Uninstall clears the session link, which makes a
+	// later destructor call harmless.
+	ReleaseCaptureFrameObserver();
 	if (Session.IsValid())
 	{
 		Session->Shutdown();
@@ -972,6 +993,7 @@ void FCortexReplayService::FImpl::CompleteCaptureFinalization()
 			UE_LOG(LogCortexReplay, Display, TEXT("Capture %d publication succeeded"), CaptureRecordingId);
 		}
 	}
+	ReleaseCaptureFrameObserver();
 	if (Session.IsValid())
 	{
 		Session->Shutdown();
@@ -1003,7 +1025,7 @@ void FCortexReplayService::FImpl::ResetCapture()
 	CaptureInitialPose = FCortexEditorPhysicalInputPlayerPose();
 	CaptureEvents.Reset();
 	CaptureObservedFrames.Reset();
-	CaptureFrameObserver.Reset();
+	ReleaseCaptureFrameObserver();
 	CaptureEpochSeconds = 0.0;
 	CaptureStopSeconds = 0.0;
 	LastCapturePublishAttemptSeconds = 0.0;
@@ -1309,6 +1331,7 @@ void FCortexReplayService::FImpl::TickFinalization()
 	UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s finalized as %s"),
 		*ServiceGuidToString(ActiveRun.Id), *FString(ServiceStateToString(ActiveRun.State)));
 
+	ReleaseCaptureFrameObserver();
 	if (Session.IsValid())
 	{
 		Session->Shutdown();
