@@ -9527,9 +9527,9 @@ bool FCortexPhysicalInputNativeClockSuccessionTest::RunTest(const FString& Param
 	// the same duration satisfies it. Each phase therefore also samples application CurrentTime one
 	// engine frame apart and requires the recorded delta to have been applied, which neither a
 	// rejected nor an absent step can produce, and requires no latched lease failure. The comparison
-	// allows 1e-4 for the engine's application-time precision: that is 300x tighter than the gap to a
-	// host frame of the same order (0.0167 against 0.0333), and a frozen clock reads 0, so neither
-	// the retained-delta path nor a stopped clock can satisfy it.
+	// allows 1e-4 for the engine's application-time precision: that is about 166x tighter than the
+	// 0.0166 gap to a host frame of the same order (0.0167 against 0.0333), and a frozen clock reads
+	// 0, so neither the retained-delta path nor a stopped clock can satisfy it.
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
 		[Probe, FirstDeltaSeconds](FAutomationTestBase& Test)
 		{
