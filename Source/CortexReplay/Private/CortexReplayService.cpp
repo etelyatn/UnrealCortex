@@ -414,9 +414,17 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	/** Native engine frames since the replay epoch: the only trace a cadence bypass leaves while the
 	 *  consumed delta stays healthy, for example while the recording is idle between events. */
 	uint64 CadenceFrameCounterEpoch = 0;
-	/** Wall time at the previous pacing sample, and how long that frame took. */
+	/**
+	 * Wall time at the previous pacing sample, and how long that frame took.
+	 */
 	double CadenceLastWallSampleSeconds = 0.0;
 	double CadenceLastWallFrameSeconds = 0.0;
+	/**
+	 * The first application delta after the replay epoch spans from the producer that began before the
+	 * epoch, so it carries the preparation frame into a sum whose wall clock starts at the epoch. It is
+	 * discarded once; every later delta is producer-to-producer.
+	 */
+	bool bCadenceDeltaPrimed = false;
 	/**
 	 * Longest frame observed since the epoch. The cumulative comparison samples application deltas
 	 * between producers and wall time in the core ticker, so a frame that does much of its work after
@@ -750,7 +758,11 @@ void FCortexReplayService::FImpl::TickRun()
 		CadenceLastWallFrameSeconds = NowSeconds - CadenceLastWallSampleSeconds;
 		CadenceLastWallSampleSeconds = NowSeconds;
 		CadenceMaxWallFrameSeconds = FMath::Max(CadenceMaxWallFrameSeconds, CadenceLastWallFrameSeconds);
-		CadenceAppDeltaSum += FApp::GetDeltaTime();
+		if (bCadenceDeltaPrimed)
+		{
+			CadenceAppDeltaSum += FApp::GetDeltaTime();
+		}
+		bCadenceDeltaPrimed = true;
 	}
 
 	if (RunState == ECortexReplayState::Preparing)
@@ -841,6 +853,7 @@ void FCortexReplayService::FImpl::TickRun()
 		CadenceLastWallSampleSeconds = ReplayEpoch;
 		CadenceLastWallFrameSeconds = 0.0;
 		CadenceMaxWallFrameSeconds = 0.0;
+		bCadenceDeltaPrimed = false;
 
 		// Arm replay interference ownership at epoch establishment, before the first dispatch, so a
 		// foreign focus/input established during the pre-first-event window is treated as
@@ -906,7 +919,13 @@ void FCortexReplayService::FImpl::TickRun()
 			// application clock shows up in that evidence even when every visible setting still reads
 			// correctly.
 			const double WallAdvance = FPlatformTime::Seconds() - ReplayEpoch;
-			if (!bCadencePinned
+			// The verification only applies while the replay is actually pacing its owned world. Once
+			// that world is gone the run reports the loss through the interruption path, and the
+			// editor's own idle timing is no longer the replay's cadence.
+			const bool bPacingOwnedWorld =
+				!(Session.IsValid() && bOwnedPie && Session->IsOwnedPIEEnded());
+			if (bPacingOwnedWorld
+				&& (!bCadencePinned
 				|| GEngine == nullptr
 				|| GEngine->GetCustomTimeStep() != nullptr
 				|| FApp::UseFixedTimeStep()
@@ -918,7 +937,7 @@ void FCortexReplayService::FImpl::TickRun()
 				|| static_cast<double>(GFrameCounter - CadenceFrameCounterEpoch)
 					> WallAdvance / CadencePinnedCycleSeconds + ReplayTimebaseFrameSlack
 				|| FMath::Abs(CadenceAppDeltaSum - WallAdvance)
-					> ReplayTimebaseAdvanceAllowance + CadenceMaxWallFrameSeconds)
+					> ReplayTimebaseAdvanceAllowance + CadenceMaxWallFrameSeconds))
 			{
 				const FCortexCommandResult Lost = ServiceError(CortexReplayErrorCodes::ReplayTimebaseLost,
 					TEXT("The recorded application cadence was lost before the frame could be committed"));
