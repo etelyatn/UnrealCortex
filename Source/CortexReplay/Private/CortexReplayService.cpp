@@ -592,6 +592,14 @@ FCortexCommandResult FCortexReplayService::FImpl::ApplyCadencePin()
 		return ServiceError(CortexReplayErrorCodes::IncompatiblePrerequisites,
 			TEXT("The engine frame cap is unavailable, so replay cannot be pinned to the recorded cadence"));
 	}
+	// A cap only paces wall-clock frames through the engine's ordinary frame-rate wait. Fixed
+	// application stepping and benchmarking bypass that wait and advance application time per host
+	// frame instead, so a replay could not be paced to the recording at all.
+	if (FApp::UseFixedTimeStep() || FApp::IsBenchmarking())
+	{
+		return ServiceError(CortexReplayErrorCodes::IncompatiblePrerequisites,
+			TEXT("The editor is in fixed-step or benchmarking timing, so replay cannot be paced to the recorded cadence"));
+	}
 	// A recording's frames are the application frames its capture observed, so the dominant positive
 	// delta is the rate gameplay actually ran at. The median ignores a stray long frame at either end.
 	TArray<double> Deltas;
@@ -838,13 +846,16 @@ void FCortexReplayService::FImpl::TickRun()
 			}
 
 			// A frame may only be committed while the recording's pacing is still in force: the pin must
-			// still be held, no foreign custom time step may have taken the engine's clock, the cap must
-			// still be the recorded cadence, and application time must not advance faster than the
-			// recording. Otherwise the rest of the run would silently replay on the host's clock and
-			// still report completion.
+			// still be held, no custom time step may have taken the engine's clock, the engine must still
+			// be on its ordinary frame-rate wait rather than fixed application stepping or benchmarking,
+			// the cap must still be the recorded cadence, and application time must not advance faster
+			// than the recording. Otherwise the rest of the run would silently replay on the host's clock
+			// and still report completion.
 			if (!bCadencePinned
 				|| GEngine == nullptr
 				|| GEngine->GetCustomTimeStep() != nullptr
+				|| FApp::UseFixedTimeStep()
+				|| FApp::IsBenchmarking()
 				|| CadenceFrameCap == nullptr
 				|| CadenceFrameCap->GetFloat() != CadencePinnedFrameCapFps
 				|| FApp::GetDeltaTime() < CadencePinnedCycleSeconds - ReplayTimebaseDeltaTolerance)

@@ -3227,3 +3227,99 @@ bool FCortexReplayLifecycleRefusesRecordingWithoutCadenceTest::RunTest(const FSt
 	TestFalse(TEXT("The refused start left no operation behind"), Current.Data.IsValid());
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// A replay's pacing depends on the engine's ordinary frame-rate wait. If the editor switches to fixed
+// application stepping mid-run - the human's own setting, or another tool - application time advances
+// one fixed step per host frame regardless of the cap, so commits must refuse instead of reporting a
+// completed replay that outran the recording.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRefusesCommitWhenFixedSteppingTakesOverTest,
+	"Cortex.Replay.Lifecycle.ReplayRefusesCommitWhenFixedSteppingTakesOver",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleRefusesCommitWhenFixedSteppingTakesOverTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
+	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get()))
+	{
+		return false;
+	}
+	// Fixed stepping is not part of the service's pin, so this guard owns restoring it: a failing
+	// assertion must not leave the editor in fixed-step mode for later tests.
+	struct FFixedStepGuard
+	{
+		bool bSaved = false;
+		double SavedDelta = 0.0;
+		~FFixedStepGuard()
+		{
+			FApp::SetUseFixedTimeStep(bSaved);
+			FApp::SetFixedDeltaTime(SavedDelta);
+		}
+	};
+	const TSharedPtr<FFixedStepGuard> Guard = MakeShared<FFixedStepGuard>();
+	Guard->bSaved = FApp::UseFixedTimeStep();
+	Guard->SavedDelta = FApp::GetFixedDeltaTime();
+	FApp::SetUseFixedTimeStep(false);
+
+	constexpr int32 RecordedHz = 240;
+	constexpr double RecordedDeltaSeconds = 1.0 / RecordedHz;
+	{
+		FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
+			{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+			  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
+		Recording.Metadata.MapAssetPath = MapPath;
+		Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
+		FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
+		for (FCortexReplayFrame& Frame : Recording.Frames)
+		{
+			Frame.AppDeltaSeconds = RecordedDeltaSeconds;
+		}
+		FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+		TestTrue(TEXT("Fixed-step recording published"), Library.Publish(Recording).bSuccess);
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Fixed-step replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, Guard, RecordedDeltaSeconds](FAutomationTestBase& T)
+		{
+			// The fixed delta equals the recorded cycle, so the "never faster than the recording" bound
+			// alone would still be satisfied; only the fact that the engine left its ordinary
+			// frame-rate wait reveals that application time is no longer wall-synchronised.
+			FApp::SetFixedDeltaTime(RecordedDeltaSeconds);
+			FApp::SetUseFixedTimeStep(true);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, Guard, Service, RunId](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			const TSharedPtr<FJsonObject>* Error = nullptr;
+			T.TestTrue(TEXT("Terminal run carries an execution error"),
+				Run.bSuccess && Run.Data.IsValid()
+					&& Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
+					&& Error != nullptr);
+			T.TestTrue(TEXT("Execution error is REPLAY_TIMEBASE_LOST"),
+				Error != nullptr
+					&& (*Error)->GetStringField(TEXT("code")) == TEXT("REPLAY_TIMEBASE_LOST"));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
