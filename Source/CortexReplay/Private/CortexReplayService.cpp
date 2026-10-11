@@ -39,6 +39,14 @@ namespace
 /** The service's monotonic preparation deadline starts at native acceptance. */
 constexpr double ServicePreparationDeadlineSeconds = 30.0;
 
+/**
+ * Bound on the difference between the engine's live application delta and the pinned recorded
+ * cadence before a commit is refused. It covers the engine's own delta precision and smoothing; it is
+ * about 166x tighter than the gap to a host frame of the same order (0.0167 against 0.0333), so a run
+ * that quietly fell back to the host's clock cannot pass.
+ */
+constexpr double ReplayTimebaseDeltaTolerance = 1e-4;
+
 constexpr int32 ServiceRecentTerminalRunLimit = 100;
 constexpr double ServiceRecentTerminalWindowSeconds = 86400.0;
 
@@ -379,6 +387,8 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	// are pinned to the cadence the recording was captured at, and the human's exact pre-run values
 	// are kept so the pin is restored verbatim.
 	bool bCadencePinned = false;
+	/** The pinned application delta, kept for the run's lifetime so commits can be verified. */
+	double CadencePinnedDeltaSeconds = 0.0;
 	FString CadenceHumanFrameCap;
 	uint32 CadenceHumanFrameCapSetBy = 0;
 	bool bCadenceHumanUseFixedStep = false;
@@ -610,6 +620,7 @@ void FCortexReplayService::FImpl::ApplyCadencePin()
 	FApp::SetFixedDeltaTime(1.0 / static_cast<double>(RecordedHz));
 	FApp::SetUseFixedTimeStep(true);
 	bCadencePinned = true;
+	CadencePinnedDeltaSeconds = 1.0 / static_cast<double>(RecordedHz);
 
 	UE_LOG(LogCortexReplay, Display,
 		TEXT("Replay pinned the engine cadence to %d Hz (recorded median delta %.6f s; previous cap '%s')"),
@@ -661,6 +672,7 @@ void FCortexReplayService::FImpl::ResetRun()
 	ReplayEpoch = 0.0;
 	// The pin is a synchronous save/restore pair, so every reset path can release it immediately.
 	RestoreCadencePin();
+	CadencePinnedDeltaSeconds = 0.0;
 }
 
 void FCortexReplayService::FImpl::TickRun()
@@ -805,6 +817,25 @@ void FCortexReplayService::FImpl::TickRun()
 			if (!Advanced.bSuccess || Preparation != ECortexReplayFramePreparation::Ready)
 			{
 				break;
+			}
+
+			// A frame may only be committed while the recording's time base is still in force. Losing it
+			// mid-run - a foreign owner changing application timing - would silently replay the rest of
+			// the recording on the host's clock and still report completion, so the run fails with a
+			// precise error instead of claiming a replay that never ran on the recorded cadence.
+			if (CadencePinnedDeltaSeconds > 0.0
+				&& (!bCadencePinned
+					|| !FApp::UseFixedTimeStep()
+					|| FApp::GetFixedDeltaTime() != CadencePinnedDeltaSeconds
+					|| !FMath::IsNearlyEqual(FApp::GetDeltaTime(), CadencePinnedDeltaSeconds,
+						ReplayTimebaseDeltaTolerance)))
+			{
+				const FCortexCommandResult Lost = ServiceError(CortexReplayErrorCodes::ReplayTimebaseLost,
+					TEXT("The recorded application time base was lost before the frame could be committed"));
+				UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s lost its recorded time base: %s"),
+					*ServiceGuidToString(ActiveRun.Id), *Lost.ErrorMessage);
+				Owner->Finalize(ECortexReplayState::Error, Lost);
+				return;
 			}
 
 			Advanced = Scheduler->CommitFrame(Scheduler->GetCompletedFrameCount());

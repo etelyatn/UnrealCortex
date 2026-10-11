@@ -35,6 +35,8 @@ namespace CortexReplayErrorCodes
 	constexpr TCHAR UnsupportedRunFormat[] = TEXT("UNSUPPORTED_RUN_FORMAT");
 	constexpr TCHAR StorageFailure[] = TEXT("STORAGE_FAILURE");
 	constexpr TCHAR ReplayTimingError[] = TEXT("REPLAY_TIMING_ERROR");
+	/** The recorded application time base was lost, so a frame could not be committed truthfully. */
+	constexpr TCHAR ReplayTimebaseLost[] = TEXT("REPLAY_TIMEBASE_LOST");
 	constexpr TCHAR ReplayPoseGuardFailed[] = TEXT("REPLAY_POSE_GUARD_FAILED");
 	constexpr TCHAR ReplayUIGuardFailed[] = TEXT("REPLAY_UI_GUARD_FAILED");
 	constexpr TCHAR ReplayUIWaitTimeout[] = TEXT("REPLAY_UI_WAIT_TIMEOUT");

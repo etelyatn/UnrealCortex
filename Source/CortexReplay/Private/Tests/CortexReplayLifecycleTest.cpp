@@ -2964,6 +2964,50 @@ bool FCortexReplayLifecycleNoResidualEngineClockTest::RunTest(const FString& Par
 	return true;
 }
 
+/**
+ * The engine timing settings a replay pins and must hand back verbatim. The destructor restores the
+ * captured human values when the last reference dies, so a failing assertion cannot leave the editor
+ * running on a recording's cadence.
+ */
+struct FCortexReplayEngineTimingBaseline
+{
+	IConsoleVariable* FrameCap = nullptr;
+	FString HumanValue;
+	uint32 HumanSetBy = 0;
+	bool bHumanUseFixedStep = false;
+	double HumanFixedDelta = 0.0;
+
+	~FCortexReplayEngineTimingBaseline()
+	{
+		if (FrameCap)
+		{
+			FrameCap->Set(*HumanValue, ECVF_SetByConsole);
+			FrameCap->ClearFlags(ECVF_SetByMask);
+			FrameCap->SetFlags(static_cast<EConsoleVariableFlags>(HumanSetBy));
+		}
+		FApp::SetUseFixedTimeStep(bHumanUseFixedStep);
+		FApp::SetFixedDeltaTime(HumanFixedDelta);
+	}
+};
+
+/** Captures the human's engine timing settings; null when the engine frame cap is unavailable. */
+TSharedPtr<FCortexReplayEngineTimingBaseline> CaptureEngineTimingBaseline()
+{
+	IConsoleVariable* FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
+	if (FrameCap == nullptr)
+	{
+		return nullptr;
+	}
+	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline =
+		MakeShared<FCortexReplayEngineTimingBaseline>();
+	Baseline->FrameCap = FrameCap;
+	Baseline->HumanValue = FrameCap->GetString();
+	Baseline->HumanSetBy = FrameCap->GetFlags() & ECVF_SetByMask;
+	Baseline->bHumanUseFixedStep = FApp::UseFixedTimeStep();
+	Baseline->HumanFixedDelta = FApp::GetFixedDeltaTime();
+	return Baseline;
+}
+
 // ---------------------------------------------------------------------------
 // A replay reproduces the RECORDED engine cadence: for the duration of the run the engine's frame
 // cap and its fixed application step are pinned to the cadence the recording was captured at, so
@@ -2984,38 +3028,13 @@ bool FCortexReplayLifecyclePinsRecordedEngineCadenceTest::RunTest(const FString&
 	const FString MapPath = MakeReplayMapAssetPath();
 
 	// The pin is only observable against a baseline that differs from it, and the human's settings
-	// must survive the whole test, so both are captured here and restored by this struct.
-	struct FCortexReplayCadenceBaseline
-	{
-		IConsoleVariable* FrameCap = nullptr;
-		FString HumanValue;
-		uint32 HumanSetBy = 0;
-		bool bHumanUseFixedStep = false;
-		double HumanFixedDelta = 0.0;
-
-		~FCortexReplayCadenceBaseline()
-		{
-			if (FrameCap)
-			{
-				FrameCap->Set(*HumanValue, ECVF_SetByConsole);
-				FrameCap->ClearFlags(ECVF_SetByMask);
-				FrameCap->SetFlags(static_cast<EConsoleVariableFlags>(HumanSetBy));
-			}
-			FApp::SetUseFixedTimeStep(bHumanUseFixedStep);
-			FApp::SetFixedDeltaTime(HumanFixedDelta);
-		}
-	};
-	IConsoleVariable* FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
-	if (!TestNotNull(TEXT("Engine frame cap exists"), FrameCap))
+	// must survive the whole test, so both are captured here and restored by the baseline's destructor.
+	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
+	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get()))
 	{
 		return false;
 	}
-	const auto Baseline = MakeShared<FCortexReplayCadenceBaseline>();
-	Baseline->FrameCap = FrameCap;
-	Baseline->HumanValue = FrameCap->GetString();
-	Baseline->HumanSetBy = FrameCap->GetFlags() & ECVF_SetByMask;
-	Baseline->bHumanUseFixedStep = FApp::UseFixedTimeStep();
-	Baseline->HumanFixedDelta = FApp::GetFixedDeltaTime();
+	IConsoleVariable* FrameCap = Baseline->FrameCap;
 	FrameCap->Set(300.0f, ECVF_SetByConsole);
 	FApp::SetUseFixedTimeStep(false);
 	FApp::SetFixedDeltaTime(0.5);
@@ -3078,6 +3097,91 @@ bool FCortexReplayLifecyclePinsRecordedEngineCadenceTest::RunTest(const FString&
 			T.TestTrue(TEXT("Fixed application delta restored verbatim after the run"),
 				FApp::GetFixedDeltaTime() == 0.5);
 		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A frame may only be committed while the recording's time base is still in force. If the pinned
+// cadence is lost mid-run - a foreign owner changing application timing - committing further frames
+// would silently replay them on the host's clock, so the run has to fail with a precise error
+// instead of reporting a completed replay that never ran on the recorded time base.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRefusesCommitWithoutRecordedTimebaseTest,
+	"Cortex.Replay.Lifecycle.ReplayRefusesCommitWithoutRecordedTimebase",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleRefusesCommitWithoutRecordedTimebaseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
+	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get()))
+	{
+		return false;
+	}
+
+	constexpr int32 RecordedHz = 240;
+	constexpr double RecordedDeltaSeconds = 1.0 / RecordedHz;
+	{
+		// The second event sits far enough out that the run still owns frames once the time base is
+		// broken, so the failure is observed by a commit that a healthy run would perform.
+		FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
+			{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+			  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
+		Recording.Metadata.MapAssetPath = MapPath;
+		Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
+		FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
+		for (FCortexReplayFrame& Frame : Recording.Frames)
+		{
+			Frame.AppDeltaSeconds = RecordedDeltaSeconds;
+		}
+		FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+		TestTrue(TEXT("Time base recording published"), Library.Publish(Recording).bSuccess);
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Time base replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("The recorded time base is in force before the run loses it"),
+				FApp::UseFixedTimeStep());
+			// A foreign owner changes application timing mid-run: the engine is no longer on the
+			// recording's cadence, so the next commit must refuse.
+			FApp::SetUseFixedTimeStep(false);
+			FApp::SetFixedDeltaTime(0.5);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, Service, RunId](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			const TSharedPtr<FJsonObject>* Error = nullptr;
+			T.TestTrue(TEXT("Terminal run carries an execution error"),
+				Run.bSuccess && Run.Data.IsValid()
+					&& Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
+					&& Error != nullptr);
+			T.TestTrue(TEXT("Execution error is REPLAY_TIMEBASE_LOST"),
+				Error != nullptr
+					&& (*Error)->GetStringField(TEXT("code")) == TEXT("REPLAY_TIMEBASE_LOST"));
+			T.TestTrue(TEXT("The run did not complete after losing its time base"),
+				RunState(Run) != TEXT("Completed"));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 
 	return true;
 }
