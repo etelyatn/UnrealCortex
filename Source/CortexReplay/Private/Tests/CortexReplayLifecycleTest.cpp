@@ -3323,3 +3323,197 @@ bool FCortexReplayLifecycleRefusesCommitWhenFixedSteppingTakesOverTest::RunTest(
 
 	return true;
 }
+
+/** A console variable a test mutates; the destructor hands the human's value back exactly. */
+struct FCortexReplaySabotageGuard
+{
+	IConsoleVariable* Variable = nullptr;
+	FString Value;
+	uint32 SetBy = 0;
+
+	~FCortexReplaySabotageGuard()
+	{
+		if (Variable == nullptr)
+		{
+			return;
+		}
+		if ((SetBy & ECVF_SetByMask) == ECVF_SetByConsole)
+		{
+			Variable->Set(*Value, ECVF_SetByConsole);
+		}
+		else
+		{
+			Variable->Unset(ECVF_SetByConsole);
+		}
+	}
+};
+
+/** Captures a console variable for mutation; null when it does not exist. */
+TSharedPtr<FCortexReplaySabotageGuard> CaptureSabotageGuard(const TCHAR* Name)
+{
+	IConsoleVariable* Variable = IConsoleManager::Get().FindConsoleVariable(Name);
+	if (Variable == nullptr)
+	{
+		return nullptr;
+	}
+	const TSharedPtr<FCortexReplaySabotageGuard> Guard = MakeShared<FCortexReplaySabotageGuard>();
+	Guard->Variable = Variable;
+	Guard->Value = Variable->GetString();
+	Guard->SetBy = Variable->GetFlags() & ECVF_SetByMask;
+	return Guard;
+}
+
+/** Publishes a two-event recording whose every frame carries the given application delta. */
+FCortexCommandResult PublishCadenceRecording(const TSharedRef<FCortexReplayTestFixture>& Fixture,
+	double FrameDeltaSeconds, const FString& MapPath)
+{
+	FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
+	Recording.Metadata.MapAssetPath = MapPath;
+	Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
+	FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
+	for (FCortexReplayFrame& Frame : Recording.Frames)
+	{
+		Frame.AppDeltaSeconds = FrameDeltaSeconds;
+	}
+	FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+	return Library.Publish(Recording);
+}
+
+/** Asserts that a run failed with REPLAY_TIMEBASE_LOST rather than reporting completion. */
+void TestRunLostItsCadence(FAutomationTestBase& Test, const FCortexCommandResult& Run)
+{
+	const TSharedPtr<FJsonObject>* Error = nullptr;
+	Test.TestTrue(TEXT("Terminal run carries an execution error"),
+		Run.bSuccess && Run.Data.IsValid()
+			&& Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
+			&& Error != nullptr);
+	Test.TestTrue(TEXT("Execution error is REPLAY_TIMEBASE_LOST"),
+		Error != nullptr && (*Error)->GetStringField(TEXT("code")) == TEXT("REPLAY_TIMEBASE_LOST"));
+	Test.TestTrue(TEXT("The run did not complete after losing its cadence"),
+		Run.bSuccess && RunState(Run) != TEXT("Completed"));
+}
+
+// ---------------------------------------------------------------------------
+// The engine's frame cap can be bypassed without any of the FApp or custom-provider signals: with
+// t.UnsteadyFPS set, UEngine::GetMaxTickRate ignores t.MaxFPS entirely and runs 8-32 fps at random.
+// Application time still tracks wall time, so only native frame-cadence evidence reveals it.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleClockTakeoverCapBypassTest,
+	"Cortex.Replay.Lifecycle.ClockTakeover.CapBypass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleClockTakeoverCapBypassTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
+	const TSharedPtr<FCortexReplaySabotageGuard> Unsteady = CaptureSabotageGuard(TEXT("t.UnsteadyFPS"));
+	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get())
+		|| !TestNotNull(TEXT("t.UnsteadyFPS exists"), Unsteady.Get()))
+	{
+		return false;
+	}
+
+	// A 2 Hz recording: the pinned cadence allows two native frames per wall second, while unsteady
+	// pacing produces 8-32, so the bypass outruns the recording whatever rate the host can render.
+	if (!TestTrue(TEXT("Slow cadence recording published"),
+		PublishCadenceRecording(Fixture, 0.5, MapPath).bSuccess))
+	{
+		return false;
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Cap bypass replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, Unsteady](FAutomationTestBase& T)
+		{
+			// Unsteady pacing ignores the cap from this frame on.
+			Unsteady->Variable->Set(1.0f, ECVF_SetByConsole);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, Unsteady, Service, RunId](FAutomationTestBase& T)
+		{
+			TestRunLostItsCadence(T, Service->GetRun(RunId, true));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// t.OverrideFPS replaces the application delta after ordinary pacing, without any mode flag or custom
+// provider. Native frames still follow the cap and application time still tracks wall time, so only
+// the sum of the deltas actually consumed reveals that simulation left the recorded time base.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleClockTakeoverForcedDeltaTest,
+	"Cortex.Replay.Lifecycle.ClockTakeover.ForcedDelta",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleClockTakeoverForcedDeltaTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
+	const TSharedPtr<FCortexReplaySabotageGuard> Override = CaptureSabotageGuard(TEXT("t.OverrideFPS"));
+	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get())
+		|| !TestNotNull(TEXT("t.OverrideFPS exists"), Override.Get()))
+	{
+		return false;
+	}
+
+	constexpr int32 RecordedHz = 240;
+	if (!TestTrue(TEXT("Forced-delta recording published"),
+		PublishCadenceRecording(Fixture, 1.0 / RecordedHz, MapPath).bSuccess))
+	{
+		return false;
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Forced delta replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, Override](FAutomationTestBase& T)
+		{
+			// An override slower than the recording makes every consumed delta larger than the recorded
+			// cycle, which no single-frame bound can reject: only the accumulated deltas show that
+			// simulation is running on a clock the recording never had.
+			Override->Variable->Set(10.0f, ECVF_SetByConsole);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, Override, Service, RunId](FAutomationTestBase& T)
+		{
+			TestRunLostItsCadence(T, Service->GetRun(RunId, true));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}

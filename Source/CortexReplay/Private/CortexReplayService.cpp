@@ -40,10 +40,17 @@ namespace
 constexpr double ServicePreparationDeadlineSeconds = 30.0;
 
 /**
- * Slack under the pinned cycle time before a commit is refused. Application time may not advance
- * FASTER than the recording, and this bound covers the engine's own max-frame-rate rounding. It is
- * about 166x tighter than the gap to a host frame of the same order (0.0167 against 0.0333), so a run
- * that quietly fell back to the host's clock cannot pass.
+ * Slack on the cumulative application advance against wall time before a commit is refused. It is the
+ * documented 100 ms accidental-lateness allowance, and it exists because application time and wall
+ * time are sampled at different points of the same engine frame.
+ */
+constexpr double ReplayTimebaseAdvanceAllowance = 0.100;
+
+/**
+ * Slack under the pinned cycle before a single consumed application delta is refused. A native cadence
+ * faster than the recording leaves every delta below the recorded cycle, which is the only evidence a
+ * cadence bypass such as an unsteady or uncapped max-tick-rate leaves behind; the bound covers the
+ * engine's own frame-time rounding.
  */
 constexpr double ReplayTimebaseDeltaTolerance = 1e-4;
 
@@ -392,6 +399,12 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	IConsoleVariable* CadenceFrameCap = nullptr;
 	float CadencePinnedFrameCapFps = 0.0f;
 	double CadencePinnedCycleSeconds = 0.0;
+	/**
+	 * Sum of the application deltas the engine consumed since the replay epoch. FApp::GetCurrentTime
+	 * re-anchors to platform time every frame, so only the consumed deltas show that simulation left
+	 * the recording's time base.
+	 */
+	double CadenceAppDeltaSum = 0.0;
 	FString CadenceHumanFrameCap;
 	uint32 CadenceHumanFrameCapSetBy = 0;
 	bool bReadySeen = false;
@@ -595,7 +608,7 @@ FCortexCommandResult FCortexReplayService::FImpl::ApplyCadencePin()
 	// A cap only paces wall-clock frames through the engine's ordinary frame-rate wait. Fixed
 	// application stepping and benchmarking bypass that wait and advance application time per host
 	// frame instead, so a replay could not be paced to the recording at all.
-	if (FApp::UseFixedTimeStep() || FApp::IsBenchmarking())
+	if (FApp::UseFixedTimeStep() || FApp::IsBenchmarking() || GEngine->bUseFixedFrameRate)
 	{
 		return ServiceError(CortexReplayErrorCodes::IncompatiblePrerequisites,
 			TEXT("The editor is in fixed-step or benchmarking timing, so replay cannot be paced to the recorded cadence"));
@@ -633,6 +646,7 @@ FCortexCommandResult FCortexReplayService::FImpl::ApplyCadencePin()
 	CadenceFrameCap = FrameCap;
 	CadencePinnedFrameCapFps = RecordedFrameCapFps;
 	CadencePinnedCycleSeconds = 1.0 / static_cast<double>(RecordedFrameCapFps);
+	CadenceAppDeltaSum = 0.0;
 	bCadencePinned = true;
 
 	UE_LOG(LogCortexReplay, Display,
@@ -706,6 +720,14 @@ void FCortexReplayService::FImpl::TickRun()
 	if (!bRunActive || bFinalizing || !Snapshot.IsValid())
 	{
 		return;
+	}
+
+	// The core ticker runs once per engine frame, so this is the application delta the engine actually
+	// consumed for that frame - the quantity that reveals a forced or overridden application clock,
+	// which FApp::GetCurrentTime cannot because it re-anchors to platform time every frame.
+	if (bCadencePinned)
+	{
+		CadenceAppDeltaSum += FApp::GetDeltaTime();
 	}
 
 	if (RunState == ECortexReplayState::Preparing)
@@ -789,6 +811,9 @@ void FCortexReplayService::FImpl::TickRun()
 
 		Scheduler = MakeShared<FCortexReplayScheduler>(Snapshot.ToSharedRef());
 		ReplayEpoch = FPlatformTime::Seconds();
+		// Pacing is measured from the epoch, so the deltas consumed during preparation are not counted
+		// against a run that has not started advancing its recorded timeline yet.
+		CadenceAppDeltaSum = 0.0;
 
 		// Arm replay interference ownership at epoch establishment, before the first dispatch, so a
 		// foreign focus/input established during the pre-first-event window is treated as
@@ -847,18 +872,21 @@ void FCortexReplayService::FImpl::TickRun()
 
 			// A frame may only be committed while the recording's pacing is still in force: the pin must
 			// still be held, no custom time step may have taken the engine's clock, the engine must still
-			// be on its ordinary frame-rate wait rather than fixed application stepping or benchmarking,
-			// the cap must still be the recorded cadence, and application time must not advance faster
-			// than the recording. Otherwise the rest of the run would silently replay on the host's clock
-			// and still report completion.
+			// be on its ordinary frame-rate wait rather than fixed application stepping, benchmarking or a
+			// fixed frame rate, the cap must still be the recorded cadence, and the application deltas
+			// actually consumed must add up to wall time - a forced or overridden application clock shows
+			// up here even when every visible setting still reads correctly.
+			const double WallAdvance = FPlatformTime::Seconds() - ReplayEpoch;
 			if (!bCadencePinned
 				|| GEngine == nullptr
 				|| GEngine->GetCustomTimeStep() != nullptr
 				|| FApp::UseFixedTimeStep()
 				|| FApp::IsBenchmarking()
+				|| GEngine->bUseFixedFrameRate
 				|| CadenceFrameCap == nullptr
 				|| CadenceFrameCap->GetFloat() != CadencePinnedFrameCapFps
-				|| FApp::GetDeltaTime() < CadencePinnedCycleSeconds - ReplayTimebaseDeltaTolerance)
+				|| FApp::GetDeltaTime() < CadencePinnedCycleSeconds - ReplayTimebaseDeltaTolerance
+				|| FMath::Abs(CadenceAppDeltaSum - WallAdvance) > ReplayTimebaseAdvanceAllowance)
 			{
 				const FCortexCommandResult Lost = ServiceError(CortexReplayErrorCodes::ReplayTimebaseLost,
 					TEXT("The recorded application cadence was lost before the frame could be committed"));
