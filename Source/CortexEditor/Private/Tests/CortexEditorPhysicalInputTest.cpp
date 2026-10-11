@@ -9438,6 +9438,130 @@ bool FCortexPhysicalInputNativeForeignStandardNewInProcessRequestTest::RunTest(c
 // skip would let an unestablished admission precondition pass silently. The leaf
 // deliberately stays on the current three-argument Acquire signature.
 // ===========================================================================
+// ---------------------------------------------------------------------------
+// A completed handoff must return the engine to a state that grants the clock again: a successor
+// acquisition in the same process has to attach AND actually drive the engine's application clock.
+// The earlier wiring attempts could not tell "attached" from "driving", which is exactly this gap.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockSuccessionTest,
+	"Cortex.Editor.PhysicalInput.NativeClockSuccession",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexPhysicalInputNativeClockSuccessionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor || !GEngine)
+	{
+		AddError(TEXT("Editor engine missing"));
+		return false;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid())
+	{
+		AddError(TEXT("Editor world missing"));
+		return false;
+	}
+
+	constexpr double FirstDeltaSeconds = 1.0 / 30.0;
+	constexpr double SecondDeltaSeconds = 1.0 / 40.0;
+
+	struct FSuccessionProbe
+	{
+		TUniquePtr<FCortexEditorEngineClockLease> First;
+		TUniquePtr<FCortexEditorEngineClockLease> Second;
+		IConsoleVariable* FrameCap = nullptr;
+		FString SavedFrameCap;
+		uint32 SavedSetBy = 0;
+
+		~FSuccessionProbe()
+		{
+			if (FrameCap)
+			{
+				FrameCap->Set(*SavedFrameCap, ECVF_SetByConsole);
+				FrameCap->ClearFlags(ECVF_SetByMask);
+				FrameCap->SetFlags(static_cast<EConsoleVariableFlags>(SavedSetBy));
+			}
+		}
+	};
+	const auto Probe = MakeShared<FSuccessionProbe>();
+	Probe->FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
+	if (!TestNotNull(TEXT("Normal host FPS cap exists"), Probe->FrameCap))
+	{
+		return false;
+	}
+	Probe->SavedFrameCap = Probe->FrameCap->GetString();
+	Probe->SavedSetBy = Probe->FrameCap->GetFlags() & ECVF_SetByMask;
+	Probe->FrameCap->Set(120.0f, ECVF_SetByConsole);
+
+	const auto MakePacedStep = [](double DeltaSeconds)
+	{
+		return [DeltaSeconds](FCortexEditorAppClockStep& Step)
+		{
+			Step.LastSeconds = FApp::GetCurrentTime();
+			Step.DeltaSeconds = DeltaSeconds;
+			Step.CurrentSeconds = Step.LastSeconds + DeltaSeconds;
+			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
+			{
+				FPlatformProcess::SleepNoStats(0.001f);
+			}
+			FCortexCommandResult Result;
+			Result.bSuccess = true;
+			return Result;
+		};
+	};
+
+	Probe->First = MakeUnique<FCortexEditorEngineClockLease>();
+	const FCortexCommandResult FirstAcquire =
+		Probe->First->Acquire(*GEngine, 1, MakePacedStep(FirstDeltaSeconds));
+	if (!TestTrue(FString::Printf(TEXT("First acquisition admitted (%s: %s)"),
+		*FirstAcquire.ErrorCode, *FirstAcquire.ErrorMessage), FirstAcquire.bSuccess))
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
+		[Probe](FAutomationTestBase& Test)
+		{
+			Test.TestTrue(FString::Printf(
+				TEXT("First lease drives the application clock (observed %.4f)"),
+				FApp::GetDeltaTime()),
+				FMath::IsNearlyEqual(FApp::GetDeltaTime(),
+					static_cast<float>(FirstDeltaSeconds), 0.002f));
+			Test.TestTrue(TEXT("First handoff admitted"), Probe->First->BeginHandoff().bSuccess);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
+		[Probe, MakePacedStep](FAutomationTestBase& Test)
+		{
+			Test.TestTrue(TEXT("First handoff completed"), Probe->First->IsHandoffComplete());
+			Test.TestEqual(TEXT("First lease is released"), Probe->First->GetState(),
+				ECortexEditorClockState::Released);
+			Test.TestNull(TEXT("No provider remains after the first handoff"),
+				GEngine->GetCustomTimeStep());
+
+			Probe->Second = MakeUnique<FCortexEditorEngineClockLease>();
+			const FCortexCommandResult SecondAcquire =
+				Probe->Second->Acquire(*GEngine, 2, MakePacedStep(SecondDeltaSeconds));
+			Test.TestTrue(FString::Printf(TEXT("Successor acquisition admitted (%s: %s)"),
+				*SecondAcquire.ErrorCode, *SecondAcquire.ErrorMessage), SecondAcquire.bSuccess);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
+		[Probe](FAutomationTestBase& Test)
+		{
+			Test.TestTrue(FString::Printf(
+				TEXT("Successor lease drives the application clock (observed %.4f)"),
+				FApp::GetDeltaTime()),
+				FMath::IsNearlyEqual(FApp::GetDeltaTime(),
+					static_cast<float>(SecondDeltaSeconds), 0.002f));
+			Test.TestTrue(TEXT("Successor handoff admitted"), Probe->Second->BeginHandoff().bSuccess);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
+		[Probe](FAutomationTestBase& Test)
+		{
+			Test.TestTrue(TEXT("Successor handoff completed"), Probe->Second->IsHandoffComplete());
+		}));
+	return true;
+}
+
 #if !(defined(UE_SCOPED_PIE_SESSION_API_VERSION) && UE_SCOPED_PIE_SESSION_API_VERSION == 1)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockUnsupportedEngineAdmissionTest,
