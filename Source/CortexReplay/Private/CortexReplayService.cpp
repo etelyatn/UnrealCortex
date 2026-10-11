@@ -375,6 +375,14 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	TSharedPtr<FCortexReplayScheduler> Scheduler;
 	double PrepareDeadline = 0.0;
 	double ReplayEpoch = 0.0;
+	// Recorded-cadence pin: while a run owns time the engine's frame cap and fixed application step
+	// are pinned to the cadence the recording was captured at, and the human's exact pre-run values
+	// are kept so the pin is restored verbatim.
+	bool bCadencePinned = false;
+	FString CadenceHumanFrameCap;
+	uint32 CadenceHumanFrameCapSetBy = 0;
+	bool bCadenceHumanUseFixedStep = false;
+	double CadenceHumanFixedDelta = 0.0;
 	bool bReadySeen = false;
 	FCortexCommandResult PreparationResult;
 	bool bCancellationRequested = false;
@@ -393,6 +401,14 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	void EnsureTicker();
 	void DetachTickerAndSession();
 	void ResetRun();
+	/**
+	 * Pins the engine frame cap and the fixed application step to the cadence the recording was
+	 * captured at, keeping the human's pre-run values. Called before the owned PIE request so the
+	 * replayed world is born on the recorded time base.
+	 */
+	void ApplyCadencePin();
+	/** Restores the human's frame cap and application timing exactly. Idempotent. */
+	void RestoreCadencePin();
 	void ResetCapture();
 	/**
 	 * Uninstalls and drops the capture's frame observer. It must run before its session is released:
@@ -473,6 +489,8 @@ void FCortexReplayService::FImpl::DetachTickerAndSession()
 	// uninstalled while that session is still alive. Uninstall clears the session link, which makes a
 	// later destructor call harmless.
 	ReleaseCaptureFrameObserver();
+	// Teardown must not leave the engine pinned to a recording's cadence either.
+	RestoreCadencePin();
 	if (Session.IsValid())
 	{
 		Session->Shutdown();
@@ -549,6 +567,76 @@ bool FCortexReplayService::FImpl::CheckLivePermission()
 	return true;
 }
 
+void FCortexReplayService::FImpl::ApplyCadencePin()
+{
+	if (bCadencePinned || !Snapshot.IsValid() || GEngine == nullptr)
+	{
+		return;
+	}
+	// A recording's frames are the application frames its capture observed, so the dominant positive
+	// delta is the rate gameplay actually ran at. The median ignores a stray long frame at either end.
+	TArray<double> Deltas;
+	Deltas.Reserve(Snapshot->Frames.Num());
+	for (const FCortexReplayFrame& Frame : Snapshot->Frames)
+	{
+		if (FMath::IsFinite(Frame.AppDeltaSeconds) && Frame.AppDeltaSeconds > 0.0)
+		{
+			Deltas.Add(Frame.AppDeltaSeconds);
+		}
+	}
+	if (Deltas.Num() == 0)
+	{
+		return;
+	}
+	Deltas.Sort();
+	const double MedianDelta = Deltas[Deltas.Num() / 2];
+	if (!FMath::IsFinite(MedianDelta) || MedianDelta <= 0.0)
+	{
+		return;
+	}
+	const int32 RecordedHz = FMath::RoundToInt(1.0 / MedianDelta);
+	IConsoleVariable* FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
+	if (RecordedHz < 1 || FrameCap == nullptr)
+	{
+		return;
+	}
+
+	CadenceHumanFrameCap = FrameCap->GetString();
+	CadenceHumanFrameCapSetBy = FrameCap->GetFlags() & ECVF_SetByMask;
+	bCadenceHumanUseFixedStep = FApp::UseFixedTimeStep();
+	CadenceHumanFixedDelta = FApp::GetFixedDeltaTime();
+
+	FrameCap->Set(static_cast<float>(RecordedHz), ECVF_SetByConsole);
+	FApp::SetFixedDeltaTime(1.0 / static_cast<double>(RecordedHz));
+	FApp::SetUseFixedTimeStep(true);
+	bCadencePinned = true;
+
+	UE_LOG(LogCortexReplay, Display,
+		TEXT("Replay pinned the engine cadence to %d Hz (recorded median delta %.6f s; previous cap '%s')"),
+		RecordedHz, MedianDelta, *CadenceHumanFrameCap);
+}
+
+void FCortexReplayService::FImpl::RestoreCadencePin()
+{
+	if (!bCadencePinned)
+	{
+		return;
+	}
+	bCadencePinned = false;
+
+	FApp::SetUseFixedTimeStep(bCadenceHumanUseFixedStep);
+	FApp::SetFixedDeltaTime(CadenceHumanFixedDelta);
+	if (IConsoleVariable* FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS")))
+	{
+		FrameCap->Set(*CadenceHumanFrameCap, ECVF_SetByConsole);
+		FrameCap->ClearFlags(ECVF_SetByMask);
+		FrameCap->SetFlags(static_cast<EConsoleVariableFlags>(CadenceHumanFrameCapSetBy));
+	}
+
+	UE_LOG(LogCortexReplay, Display, TEXT("Replay restored the engine cadence (cap '%s')"),
+		*CadenceHumanFrameCap);
+}
+
 void FCortexReplayService::FImpl::ResetRun()
 {
 	bRunActive = false;
@@ -571,6 +659,8 @@ void FCortexReplayService::FImpl::ResetRun()
 	Scheduler.Reset();
 	PrepareDeadline = 0.0;
 	ReplayEpoch = 0.0;
+	// The pin is a synchronous save/restore pair, so every reset path can release it immediately.
+	RestoreCadencePin();
 }
 
 void FCortexReplayService::FImpl::TickRun()
@@ -1295,6 +1385,10 @@ void FCortexReplayService::FImpl::TickFinalization()
 		return;
 	}
 
+	// The owned teardown is complete here, so the recording's cadence can be released before the
+	// terminal result is published and before any successor operation is admitted.
+	RestoreCadencePin();
+
 	FCortexReplayRunRecord Terminal = ActiveRun;
 	Terminal.State = PendingTerminalState;
 	Terminal.FinalizedAtUtc = FDateTime::UtcNow();
@@ -1595,6 +1689,10 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	State.bOwnedPie = true;
 	State.SetRunState(ECortexReplayState::Preparing);
 	State.PrepareDeadline = AcceptanceSeconds + ServicePreparationDeadlineSeconds;
+
+	// Pin the recorded cadence before the owned PIE request so the replayed world is born on the
+	// recording's time base rather than the host's frame rate.
+	State.ApplyCadencePin();
 
 	State.Session = MakeShared<FCortexEditorPhysicalInputSession>();
 

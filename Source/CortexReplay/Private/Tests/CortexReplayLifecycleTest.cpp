@@ -2963,3 +2963,121 @@ bool FCortexReplayLifecycleNoResidualEngineClockTest::RunTest(const FString& Par
 
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// A replay reproduces the RECORDED engine cadence: for the duration of the run the engine's frame
+// cap and its fixed application step are pinned to the cadence the recording was captured at, so
+// frame-rate-dependent gameplay replays on the recorded time base instead of the host's frame rate.
+// The human's own settings come back exactly, which is why the pin is a saved/restored pair rather
+// than a one-way change.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecyclePinsRecordedEngineCadenceTest,
+	"Cortex.Replay.Lifecycle.ReplayPinsRecordedEngineCadence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecyclePinsRecordedEngineCadenceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	// The pin is only observable against a baseline that differs from it, and the human's settings
+	// must survive the whole test, so both are captured here and restored by this struct.
+	struct FCortexReplayCadenceBaseline
+	{
+		IConsoleVariable* FrameCap = nullptr;
+		FString HumanValue;
+		uint32 HumanSetBy = 0;
+		bool bHumanUseFixedStep = false;
+		double HumanFixedDelta = 0.0;
+
+		~FCortexReplayCadenceBaseline()
+		{
+			if (FrameCap)
+			{
+				FrameCap->Set(*HumanValue, ECVF_SetByConsole);
+				FrameCap->ClearFlags(ECVF_SetByMask);
+				FrameCap->SetFlags(static_cast<EConsoleVariableFlags>(HumanSetBy));
+			}
+			FApp::SetUseFixedTimeStep(bHumanUseFixedStep);
+			FApp::SetFixedDeltaTime(HumanFixedDelta);
+		}
+	};
+	IConsoleVariable* FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
+	if (!TestNotNull(TEXT("Engine frame cap exists"), FrameCap))
+	{
+		return false;
+	}
+	const auto Baseline = MakeShared<FCortexReplayCadenceBaseline>();
+	Baseline->FrameCap = FrameCap;
+	Baseline->HumanValue = FrameCap->GetString();
+	Baseline->HumanSetBy = FrameCap->GetFlags() & ECVF_SetByMask;
+	Baseline->bHumanUseFixedStep = FApp::UseFixedTimeStep();
+	Baseline->HumanFixedDelta = FApp::GetFixedDeltaTime();
+	FrameCap->Set(300.0f, ECVF_SetByConsole);
+	FApp::SetUseFixedTimeStep(false);
+	FApp::SetFixedDeltaTime(0.5);
+	const FString PreRunFrameCap = FrameCap->GetString();
+
+	constexpr int32 RecordedHz = 240;
+	constexpr double RecordedDeltaSeconds = 1.0 / RecordedHz;
+	{
+		FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
+			{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+			  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
+		Recording.Metadata.MapAssetPath = MapPath;
+		Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
+		FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
+		for (FCortexReplayFrame& Frame : Recording.Frames)
+		{
+			Frame.AppDeltaSeconds = RecordedDeltaSeconds;
+		}
+		FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+		TestTrue(TEXT("Cadence recording published"), Library.Publish(Recording).bSuccess);
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Cadence replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, FrameCap, RecordedHz](FAutomationTestBase& T)
+		{
+			T.TestTrue(FString::Printf(TEXT("Frame cap pinned to the recorded cadence (%.1f)"),
+				FrameCap->GetFloat()), FMath::IsNearlyEqual(FrameCap->GetFloat(),
+					static_cast<float>(RecordedHz), 0.5f));
+			T.TestTrue(TEXT("Fixed application step is enabled during replay"),
+				FApp::UseFixedTimeStep());
+			T.TestTrue(FString::Printf(
+				TEXT("Fixed application delta matches the recorded cadence (%.9f)"),
+				FApp::GetFixedDeltaTime()),
+				FMath::IsNearlyEqual(FApp::GetFixedDeltaTime(), 1.0 / RecordedHz, 1e-12));
+			T.TestTrue(FString::Printf(
+				TEXT("Gameplay frame delta is the recorded cadence, not the host's (%.9f)"),
+				FApp::GetDeltaTime()),
+				FMath::IsNearlyEqual(FApp::GetDeltaTime(), 1.0 / RecordedHz, 1e-4));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Completed"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, FrameCap, PreRunFrameCap](FAutomationTestBase& T)
+		{
+			T.TestEqual(TEXT("Frame cap restored verbatim after the run"),
+				FrameCap->GetString(), PreRunFrameCap);
+			T.TestFalse(TEXT("Fixed application step is off again after the run"),
+				FApp::UseFixedTimeStep());
+			T.TestTrue(TEXT("Fixed application delta restored verbatim after the run"),
+				FApp::GetFixedDeltaTime() == 0.5);
+		}, Fixture));
+
+	return true;
+}
