@@ -9472,6 +9472,8 @@ bool FCortexPhysicalInputNativeClockSuccessionTest::RunTest(const FString& Param
 		IConsoleVariable* FrameCap = nullptr;
 		FString SavedFrameCap;
 		uint32 SavedSetBy = 0;
+		/** Application CurrentTime at the previous per-frame sample. */
+		double LastSampleSeconds = 0.0;
 
 		~FSuccessionProbe()
 		{
@@ -9519,25 +9521,59 @@ bool FCortexPhysicalInputNativeClockSuccessionTest::RunTest(const FString& Param
 		return false;
 	}
 
+	// A lease that is attached but whose prepared steps are rejected keeps the PREVIOUS application
+	// delta (the engine's skip path advances GameTime without running its own clock), so reading
+	// FApp::GetDeltaTime() alone cannot separate "driving" from "attached" - an ordinary host frame of
+	// the same duration satisfies it. Each phase therefore also samples application CurrentTime one
+	// engine frame apart and requires the recorded delta to have been applied, which neither a
+	// rejected nor an absent step can produce, and requires no latched lease failure. The comparison
+	// allows 1e-4 for the engine's application-time precision: that is 300x tighter than the gap to a
+	// host frame of the same order (0.0167 against 0.0333), and a frozen clock reads 0, so neither
+	// the retained-delta path nor a stopped clock can satisfy it.
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
+		[Probe, FirstDeltaSeconds](FAutomationTestBase& Test)
 		{
 			Test.TestTrue(FString::Printf(
 				TEXT("First lease drives the application clock (observed %.4f)"),
 				FApp::GetDeltaTime()),
 				FMath::IsNearlyEqual(FApp::GetDeltaTime(),
 					static_cast<float>(FirstDeltaSeconds), 0.002f));
+			Test.TestTrue(TEXT("First lease latched no failure"),
+				Probe->First->GetLastFailure().ErrorCode.IsEmpty());
+			Probe->LastSampleSeconds = FApp::GetCurrentTime();
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 1,
+		[Probe, FirstDeltaSeconds](FAutomationTestBase& Test)
+		{
+			const double Now = FApp::GetCurrentTime();
+			Test.TestTrue(FString::Printf(
+				TEXT("First lease advances the application clock by the recorded delta (observed %.9f)"),
+				Now - Probe->LastSampleSeconds),
+				FMath::IsNearlyEqual(Now - Probe->LastSampleSeconds, FirstDeltaSeconds, 1e-4));
+			Probe->LastSampleSeconds = Now;
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 1,
+		[Probe, FirstDeltaSeconds](FAutomationTestBase& Test)
+		{
+			const double Now = FApp::GetCurrentTime();
+			Test.TestTrue(FString::Printf(
+				TEXT("First lease keeps advancing the application clock (observed %.9f)"),
+				Now - Probe->LastSampleSeconds),
+				FMath::IsNearlyEqual(Now - Probe->LastSampleSeconds, FirstDeltaSeconds, 1e-4));
 			Test.TestTrue(TEXT("First handoff admitted"), Probe->First->BeginHandoff().bSuccess);
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe, MakePacedStep](FAutomationTestBase& Test)
+		[Probe](FAutomationTestBase& Test)
 		{
 			Test.TestTrue(TEXT("First handoff completed"), Probe->First->IsHandoffComplete());
 			Test.TestEqual(TEXT("First lease is released"), Probe->First->GetState(),
 				ECortexEditorClockState::Released);
 			Test.TestNull(TEXT("No provider remains after the first handoff"),
 				GEngine->GetCustomTimeStep());
-
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
+		[Probe, MakePacedStep, SecondDeltaSeconds](FAutomationTestBase& Test)
+		{
 			Probe->Second = MakeUnique<FCortexEditorEngineClockLease>();
 			const FCortexCommandResult SecondAcquire =
 				Probe->Second->Acquire(*GEngine, 2, MakePacedStep(SecondDeltaSeconds));
@@ -9545,19 +9581,43 @@ bool FCortexPhysicalInputNativeClockSuccessionTest::RunTest(const FString& Param
 				*SecondAcquire.ErrorCode, *SecondAcquire.ErrorMessage), SecondAcquire.bSuccess);
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
+		[Probe, SecondDeltaSeconds](FAutomationTestBase& Test)
 		{
 			Test.TestTrue(FString::Printf(
 				TEXT("Successor lease drives the application clock (observed %.4f)"),
 				FApp::GetDeltaTime()),
 				FMath::IsNearlyEqual(FApp::GetDeltaTime(),
 					static_cast<float>(SecondDeltaSeconds), 0.002f));
+			Test.TestTrue(TEXT("Successor lease latched no failure"),
+				Probe->Second->GetLastFailure().ErrorCode.IsEmpty());
+			Probe->LastSampleSeconds = FApp::GetCurrentTime();
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 1,
+		[Probe, SecondDeltaSeconds](FAutomationTestBase& Test)
+		{
+			const double Now = FApp::GetCurrentTime();
+			Test.TestTrue(FString::Printf(
+				TEXT("Successor lease advances the application clock by the recorded delta (observed %.9f)"),
+				Now - Probe->LastSampleSeconds),
+				FMath::IsNearlyEqual(Now - Probe->LastSampleSeconds, SecondDeltaSeconds, 1e-4));
+			Probe->LastSampleSeconds = Now;
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 1,
+		[Probe, SecondDeltaSeconds](FAutomationTestBase& Test)
+		{
+			const double Now = FApp::GetCurrentTime();
+			Test.TestTrue(FString::Printf(
+				TEXT("Successor lease keeps advancing the application clock (observed %.9f)"),
+				Now - Probe->LastSampleSeconds),
+				FMath::IsNearlyEqual(Now - Probe->LastSampleSeconds, SecondDeltaSeconds, 1e-4));
 			Test.TestTrue(TEXT("Successor handoff admitted"), Probe->Second->BeginHandoff().bSuccess);
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
 		[Probe](FAutomationTestBase& Test)
 		{
 			Test.TestTrue(TEXT("Successor handoff completed"), Probe->Second->IsHandoffComplete());
+			Test.TestTrue(TEXT("Successor lease latched no failure after handoff"),
+				Probe->Second->GetLastFailure().ErrorCode.IsEmpty());
 		}));
 	return true;
 }
