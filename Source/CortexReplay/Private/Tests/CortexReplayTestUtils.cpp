@@ -231,6 +231,15 @@ void FCortexReplayTestFixture::ApplyCadenceFrames(FCortexReplaySnapshot& Recordi
 	Trailing.EventCount = 0;
 	Recording.Frames.Add(Trailing);
 
+	// Every frame carries the application delta its capture observed. A fixture recording is a 60 Hz
+	// stream, which is what replay pins the engine cadence to; a recording without a positive delta
+	// could not be pinned and is refused at admission, exactly as a real cadence-free recording is.
+	constexpr double FixtureFrameDeltaSeconds = 1.0 / 60.0;
+	for (FCortexReplayFrame& Frame : Recording.Frames)
+	{
+		Frame.AppDeltaSeconds = FixtureFrameDeltaSeconds;
+	}
+
 	Recording.Metadata.Timing.FrameCount = Recording.Frames.Num();
 	Recording.Metadata.Timing.InputEpochFrame = 1;
 }

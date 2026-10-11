@@ -40,8 +40,8 @@ namespace
 constexpr double ServicePreparationDeadlineSeconds = 30.0;
 
 /**
- * Bound on the difference between the engine's live application delta and the pinned recorded
- * cadence before a commit is refused. It covers the engine's own delta precision and smoothing; it is
+ * Slack under the pinned cycle time before a commit is refused. Application time may not advance
+ * FASTER than the recording, and this bound covers the engine's own max-frame-rate rounding. It is
  * about 166x tighter than the gap to a host frame of the same order (0.0167 against 0.0333), so a run
  * that quietly fell back to the host's clock cannot pass.
  */
@@ -383,16 +383,17 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	TSharedPtr<FCortexReplayScheduler> Scheduler;
 	double PrepareDeadline = 0.0;
 	double ReplayEpoch = 0.0;
-	// Recorded-cadence pin: while a run owns time the engine's frame cap and fixed application step
-	// are pinned to the cadence the recording was captured at, and the human's exact pre-run values
-	// are kept so the pin is restored verbatim.
+	// Recorded-cadence pin: while a run owns time the engine's frame cap is pinned to the cadence the
+	// recording was captured at, and the human's exact pre-run value is kept so the pin is restored.
+	// Only the cap is pinned: FApp's fixed application step would bypass the engine's max-frame-rate
+	// wait, which is precisely the branch that keeps application time synchronised with wall time.
 	bool bCadencePinned = false;
-	/** The pinned application delta, kept for the run's lifetime so commits can be verified. */
-	double CadencePinnedDeltaSeconds = 0.0;
+	/** The pinned frame cap and cycle, kept for the run's lifetime so commits can be verified. */
+	IConsoleVariable* CadenceFrameCap = nullptr;
+	float CadencePinnedFrameCapFps = 0.0f;
+	double CadencePinnedCycleSeconds = 0.0;
 	FString CadenceHumanFrameCap;
 	uint32 CadenceHumanFrameCapSetBy = 0;
-	bool bCadenceHumanUseFixedStep = false;
-	double CadenceHumanFixedDelta = 0.0;
 	bool bReadySeen = false;
 	FCortexCommandResult PreparationResult;
 	bool bCancellationRequested = false;
@@ -412,12 +413,13 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	void DetachTickerAndSession();
 	void ResetRun();
 	/**
-	 * Pins the engine frame cap and the fixed application step to the cadence the recording was
-	 * captured at, keeping the human's pre-run values. Called before the owned PIE request so the
-	 * replayed world is born on the recorded time base.
+	 * Pins the engine frame cap to the cadence the recording was captured at, keeping the human's
+	 * pre-run value. Called before the owned PIE request so the replayed world is born on the recorded
+	 * time base. Returns failure when no usable cadence can be derived: an unpinned replay could not be
+	 * verified at commit time, so it is refused rather than run on the host's clock.
 	 */
-	void ApplyCadencePin();
-	/** Restores the human's frame cap and application timing exactly. Idempotent. */
+	FCortexCommandResult ApplyCadencePin();
+	/** Restores the human's frame cap exactly. Idempotent. */
 	void RestoreCadencePin();
 	void ResetCapture();
 	/**
@@ -577,11 +579,18 @@ bool FCortexReplayService::FImpl::CheckLivePermission()
 	return true;
 }
 
-void FCortexReplayService::FImpl::ApplyCadencePin()
+FCortexCommandResult FCortexReplayService::FImpl::ApplyCadencePin()
 {
 	if (bCadencePinned || !Snapshot.IsValid() || GEngine == nullptr)
 	{
-		return;
+		return ServiceError(CortexReplayErrorCodes::IncompatiblePrerequisites,
+			TEXT("The engine is unavailable, so replay cannot be pinned to the recorded cadence"));
+	}
+	IConsoleVariable* FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
+	if (FrameCap == nullptr)
+	{
+		return ServiceError(CortexReplayErrorCodes::IncompatiblePrerequisites,
+			TEXT("The engine frame cap is unavailable, so replay cannot be pinned to the recorded cadence"));
 	}
 	// A recording's frames are the application frames its capture observed, so the dominant positive
 	// delta is the rate gameplay actually ran at. The median ignores a stray long frame at either end.
@@ -596,35 +605,32 @@ void FCortexReplayService::FImpl::ApplyCadencePin()
 	}
 	if (Deltas.Num() == 0)
 	{
-		return;
+		return ServiceError(CortexReplayErrorCodes::InvalidRecording,
+			TEXT("The recording carries no usable application cadence, so replay cannot be pinned to it"));
 	}
 	Deltas.Sort();
 	const double MedianDelta = Deltas[Deltas.Num() / 2];
 	if (!FMath::IsFinite(MedianDelta) || MedianDelta <= 0.0)
 	{
-		return;
-	}
-	const int32 RecordedHz = FMath::RoundToInt(1.0 / MedianDelta);
-	IConsoleVariable* FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
-	if (RecordedHz < 1 || FrameCap == nullptr)
-	{
-		return;
+		return ServiceError(CortexReplayErrorCodes::InvalidRecording,
+			TEXT("The recording carries no usable application cadence, so replay cannot be pinned to it"));
 	}
 
+	// The cap is stored as a float, so the cycle the check compares against is the one the engine will
+	// actually hold rather than the exact median.
+	const float RecordedFrameCapFps = static_cast<float>(1.0 / MedianDelta);
 	CadenceHumanFrameCap = FrameCap->GetString();
 	CadenceHumanFrameCapSetBy = FrameCap->GetFlags() & ECVF_SetByMask;
-	bCadenceHumanUseFixedStep = FApp::UseFixedTimeStep();
-	CadenceHumanFixedDelta = FApp::GetFixedDeltaTime();
-
-	FrameCap->Set(static_cast<float>(RecordedHz), ECVF_SetByConsole);
-	FApp::SetFixedDeltaTime(1.0 / static_cast<double>(RecordedHz));
-	FApp::SetUseFixedTimeStep(true);
+	FrameCap->Set(RecordedFrameCapFps, ECVF_SetByConsole);
+	CadenceFrameCap = FrameCap;
+	CadencePinnedFrameCapFps = RecordedFrameCapFps;
+	CadencePinnedCycleSeconds = 1.0 / static_cast<double>(RecordedFrameCapFps);
 	bCadencePinned = true;
-	CadencePinnedDeltaSeconds = 1.0 / static_cast<double>(RecordedHz);
 
 	UE_LOG(LogCortexReplay, Display,
-		TEXT("Replay pinned the engine cadence to %d Hz (recorded median delta %.6f s; previous cap '%s')"),
-		RecordedHz, MedianDelta, *CadenceHumanFrameCap);
+		TEXT("Replay pinned the engine cadence to %.3f fps (recorded median delta %.6f s; previous cap '%s')"),
+		RecordedFrameCapFps, MedianDelta, *CadenceHumanFrameCap);
+	return ServiceSuccess();
 }
 
 void FCortexReplayService::FImpl::RestoreCadencePin()
@@ -635,13 +641,26 @@ void FCortexReplayService::FImpl::RestoreCadencePin()
 	}
 	bCadencePinned = false;
 
-	FApp::SetUseFixedTimeStep(bCadenceHumanUseFixedStep);
-	FApp::SetFixedDeltaTime(CadenceHumanFixedDelta);
-	if (IConsoleVariable* FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS")))
+	IConsoleVariable* FrameCap = CadenceFrameCap;
+	CadenceFrameCap = nullptr;
+	if (FrameCap == nullptr)
 	{
-		FrameCap->Set(*CadenceHumanFrameCap, ECVF_SetByConsole);
-		FrameCap->ClearFlags(ECVF_SetByMask);
-		FrameCap->SetFlags(static_cast<EConsoleVariableFlags>(CadenceHumanFrameCapSetBy));
+		FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
+	}
+	if (FrameCap != nullptr)
+	{
+		// The pin was written at console priority. A human value that lives at that same priority is
+		// written back; otherwise the temporary entry is REMOVED, so the human's own lower-priority
+		// value (scalability, a game override or the constructor default) resurfaces. Rewriting the
+		// visible value instead would leave this pin retained in the console priority history.
+		if ((CadenceHumanFrameCapSetBy & ECVF_SetByMask) == ECVF_SetByConsole)
+		{
+			FrameCap->Set(*CadenceHumanFrameCap, ECVF_SetByConsole);
+		}
+		else
+		{
+			FrameCap->Unset(ECVF_SetByConsole);
+		}
 	}
 
 	UE_LOG(LogCortexReplay, Display, TEXT("Replay restored the engine cadence (cap '%s')"),
@@ -672,7 +691,6 @@ void FCortexReplayService::FImpl::ResetRun()
 	ReplayEpoch = 0.0;
 	// The pin is a synchronous save/restore pair, so every reset path can release it immediately.
 	RestoreCadencePin();
-	CadencePinnedDeltaSeconds = 0.0;
 }
 
 void FCortexReplayService::FImpl::TickRun()
@@ -819,20 +837,21 @@ void FCortexReplayService::FImpl::TickRun()
 				break;
 			}
 
-			// A frame may only be committed while the recording's time base is still in force. Losing it
-			// mid-run - a foreign owner changing application timing - would silently replay the rest of
-			// the recording on the host's clock and still report completion, so the run fails with a
-			// precise error instead of claiming a replay that never ran on the recorded cadence.
-			if (CadencePinnedDeltaSeconds > 0.0
-				&& (!bCadencePinned
-					|| !FApp::UseFixedTimeStep()
-					|| FApp::GetFixedDeltaTime() != CadencePinnedDeltaSeconds
-					|| !FMath::IsNearlyEqual(FApp::GetDeltaTime(), CadencePinnedDeltaSeconds,
-						ReplayTimebaseDeltaTolerance)))
+			// A frame may only be committed while the recording's pacing is still in force: the pin must
+			// still be held, no foreign custom time step may have taken the engine's clock, the cap must
+			// still be the recorded cadence, and application time must not advance faster than the
+			// recording. Otherwise the rest of the run would silently replay on the host's clock and
+			// still report completion.
+			if (!bCadencePinned
+				|| GEngine == nullptr
+				|| GEngine->GetCustomTimeStep() != nullptr
+				|| CadenceFrameCap == nullptr
+				|| CadenceFrameCap->GetFloat() != CadencePinnedFrameCapFps
+				|| FApp::GetDeltaTime() < CadencePinnedCycleSeconds - ReplayTimebaseDeltaTolerance)
 			{
 				const FCortexCommandResult Lost = ServiceError(CortexReplayErrorCodes::ReplayTimebaseLost,
-					TEXT("The recorded application time base was lost before the frame could be committed"));
-				UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s lost its recorded time base: %s"),
+					TEXT("The recorded application cadence was lost before the frame could be committed"));
+				UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s lost its recorded cadence: %s"),
 					*ServiceGuidToString(ActiveRun.Id), *Lost.ErrorMessage);
 				Owner->Finalize(ECortexReplayState::Error, Lost);
 				return;
@@ -1722,8 +1741,14 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	State.PrepareDeadline = AcceptanceSeconds + ServicePreparationDeadlineSeconds;
 
 	// Pin the recorded cadence before the owned PIE request so the replayed world is born on the
-	// recording's time base rather than the host's frame rate.
-	State.ApplyCadencePin();
+	// recording's time base rather than the host's frame rate. A recording with no usable cadence is
+	// refused here: an unpinned run could not be verified at commit time.
+	const FCortexCommandResult Cadence = State.ApplyCadencePin();
+	if (!Cadence.bSuccess)
+	{
+		State.ResetRun();
+		return Refuse(Cadence);
+	}
 
 	State.Session = MakeShared<FCortexEditorPhysicalInputSession>();
 
