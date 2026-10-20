@@ -1,5 +1,6 @@
 #include "CortexReplayTestUtils.h"
 
+#include "CortexCommandRouter.h"
 #include "CortexEditorPhysicalInputSession.h"
 
 #include "Framework/Application/SlateApplication.h"

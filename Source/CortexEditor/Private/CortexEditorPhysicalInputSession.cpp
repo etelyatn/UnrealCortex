@@ -3828,14 +3828,20 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 				GuardState->bHasScreenPointerPosition = true;
 			}
 			EngineEvent.Kind = ECortexEditorPhysicalInputKind::PointerMove;
-			ScreenSpacePosition = GuardState->LastScreenPointerPosition + Event.Delta;
+			const FVector2D PreviousScreenSpacePosition = GuardState->LastScreenPointerPosition;
+			ScreenSpacePosition = PreviousScreenSpacePosition + Event.Delta;
 			SetReplayPointerPosition(ScreenSpacePosition, ToViewportPosition(ScreenSpacePosition));
-			// Present an integral cursor position so a consumer that rounds or truncates the
-			// position on every event can never drift the accumulated motion. The delta the event
-			// applies stays the exact recorded delta: the builder derives the last position from it,
-			// never from the rounded positions.
+			// Present an integral cursor position and an equally integral delta: the PIE scene
+			// viewport accumulates GetCursorDelta() into an integer FIntPoint (SceneViewport.cpp
+			// OnMouseMove) and flushes it as the MouseX/MouseY axes, so a fractional per-event delta
+			// loses its fraction on every event. The exact accumulator above carries the remainder,
+			// so the whole-unit difference between the rounded positions transfers the recorded
+			// total instead of a truncated one.
 			PresentedScreenSpacePosition = FVector2D(
 				FMath::RoundToDouble(ScreenSpacePosition.X), FMath::RoundToDouble(ScreenSpacePosition.Y));
+			EngineEvent.Delta = PresentedScreenSpacePosition - FVector2D(
+				FMath::RoundToDouble(PreviousScreenSpacePosition.X),
+				FMath::RoundToDouble(PreviousScreenSpacePosition.Y));
 		}
 		else
 		{

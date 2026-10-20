@@ -4114,11 +4114,22 @@ bool FCortexPhysicalInputRelativeMotionExactnessTest::RunTest(const FString& Par
 
 			Test.TestEqual(TEXT("Every relative event presented through the consumer"),
 				F.ConsumerDeltas.Num(), Count);
+			FVector2D PresentedTotal = FVector2D::ZeroVector;
 			for (int32 Index = 0; Index < F.ConsumerDeltas.Num(); ++Index)
 			{
-				Test.TestTrue(TEXT("Presented delta is exactly the recorded delta"),
-					F.ConsumerDeltas[Index].Equals(Delta, 1e-6));
+				const FVector2D PresentedDelta = F.ConsumerDeltas[Index];
+				Test.TestTrue(TEXT("Presented delta is a whole number of screen units"),
+					PresentedDelta.X == FMath::RoundToDouble(PresentedDelta.X)
+						&& PresentedDelta.Y == FMath::RoundToDouble(PresentedDelta.Y));
+				PresentedTotal += PresentedDelta;
 			}
+			// A whole-unit consumer cannot apply a fraction per event, so the injector quantizes
+			// each delta and carries the remainder: the total is the recorded one (exact for an
+			// integral axis, rounded only at the two endpoints otherwise).
+			Test.TestEqual(TEXT("Presented X deltas preserve the recorded integral total"),
+				PresentedTotal.X, Delta.X * static_cast<double>(Count), 0.0);
+			Test.TestTrue(TEXT("Presented Y deltas preserve the recorded total within one unit"),
+				FMath::Abs(PresentedTotal.Y - Delta.Y * static_cast<double>(Count)) <= 1.0);
 			// Integral presentation: a consumer that rounds or truncates the cursor position on every
 			// event can never accumulate a fraction of a pixel.
 			Test.TestTrue(TEXT("Presented relative position is integral (X)"),
@@ -7623,6 +7634,292 @@ bool FCortexPhysicalInputNativePacketSamplesTest::RunTest(const FString& Paramet
 		}));
 	return true;
 }
+
+namespace
+{
+/** Recorded fractional motion the injector must reproduce through the native viewport consumer. */
+constexpr double CortexFractionalMotionDeltaX = 3.5;
+constexpr int32 CortexFractionalMotionEventCount = 6;
+constexpr double CortexFractionalMotionRecordedTotalX = 21.0;
+
+/**
+ * Observes the exact native consumer of replayed pointer motion: the PIE scene viewport
+ * accumulates GetCursorDelta() into an integer FIntPoint and flushes it into the bound
+ * UPlayerInput as the MouseX axis, so the pre-flush RawValueAccumulator is the value a
+ * gameplay consumer actually receives.
+ */
+struct FCortexFractionalMotionProbe
+{
+	TWeakObjectPtr<UWorld> SelectedWorld;
+	TWeakObjectPtr<UPlayerInput> BoundInput;
+	FDelegateHandle WorldStartHandle;
+	bool bArmed = false;
+	bool bSawSamples = false;
+	int32 SamplesX = -1;
+	double RawAccX = 0.0;
+	FVector2D DownViewportPosition = FVector2D::ZeroVector;
+
+	void RemoveHook()
+	{
+		if (WorldStartHandle.IsValid())
+		{
+			FWorldDelegates::OnWorldTickStart.Remove(WorldStartHandle);
+			WorldStartHandle.Reset();
+		}
+	}
+
+	~FCortexFractionalMotionProbe()
+	{
+		RemoveHook();
+	}
+};
+
+/** Binds a session to the externally started PIE session once its pawn is resolvable. */
+class FCortexBindExternalPIEInput : public IAutomationLatentCommand
+{
+public:
+	FCortexBindExternalPIEInput(FAutomationTestBase* InTest,
+		TSharedRef<FCortexEditorPhysicalInputTestFixture> InFixture)
+		: Test(InTest), Fixture(MoveTemp(InFixture)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		UWorld* PIE = GEditor ? GEditor->PlayWorld : nullptr;
+		if (PIE == nullptr)
+		{
+			if (FPlatformTime::Seconds() - StartTime <= CortexPhysicalInputReadyWatchdogSeconds) { return false; }
+			Test->AddError(TEXT("Externally started PIE world never appeared"));
+			return true;
+		}
+		if (!Fixture->BorrowedSession.IsValid())
+		{
+			Fixture->BorrowedSession = MakeShared<FCortexEditorPhysicalInputSession>();
+		}
+		const FCortexCommandResult Bound = Fixture->BorrowedSession->BindTarget(*PIE, 0);
+		if (Bound.bSuccess) { return true; }
+		if (FPlatformTime::Seconds() - StartTime <= CortexPhysicalInputReadyWatchdogSeconds) { return false; }
+		Test->AddError(FString::Printf(TEXT("Borrowed binding never resolved: %s (%s)"),
+			*Bound.ErrorCode, *Bound.ErrorMessage));
+		return true;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexEditorPhysicalInputTestFixture> Fixture;
+	double StartTime = 0.0;
+};
+
+/**
+ * Drives one balanced button-down plus N fractional relative packets through the bound PIE
+ * viewport. The native sample boundary is armed only after the pointer-down acquired the
+ * viewport's mouse capture, so only the recorded relative packets are accumulated.
+ */
+class FCortexDispatchFractionalMotion : public IAutomationLatentCommand
+{
+public:
+	FCortexDispatchFractionalMotion(FAutomationTestBase* InTest,
+		TSharedRef<FCortexEditorPhysicalInputTestFixture> InFixture,
+		TSharedRef<FCortexFractionalMotionProbe> InProbe)
+		: Test(InTest), Fixture(MoveTemp(InFixture)), Probe(MoveTemp(InProbe)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		if (!Fixture->BorrowedSession.IsValid())
+		{
+			Test->AddError(TEXT("Borrowed session missing before dispatch"));
+			return true;
+		}
+		UWorld* const World = Fixture->BorrowedSession->GetTargetBinding().World.Get();
+		APlayerController* const Controller = Fixture->BorrowedSession->GetTargetBinding().Controller.Get();
+		UPlayerInput* const PlayerInput = Controller ? Controller->PlayerInput : nullptr;
+		if (World == nullptr || PlayerInput == nullptr || World->GetGameViewport() == nullptr)
+		{
+			if (FPlatformTime::Seconds() - StartTime <= CortexPhysicalInputReadyWatchdogSeconds) { return false; }
+			Test->AddError(TEXT("Borrowed PIE native consumer never resolved"));
+			return true;
+		}
+		if (!Probe->BoundInput.IsValid())
+		{
+			Probe->SelectedWorld = World;
+			Probe->BoundInput = PlayerInput;
+			const TWeakPtr<FCortexFractionalMotionProbe> WeakProbe = Probe;
+			Probe->WorldStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
+				[WeakProbe](UWorld* TickWorld, ELevelTick, float)
+				{
+					const TSharedPtr<FCortexFractionalMotionProbe> Pinned = WeakProbe.Pin();
+					if (!Pinned.IsValid() || !Pinned->bArmed || Pinned->bSawSamples
+						|| TickWorld != Pinned->SelectedWorld.Get())
+					{
+						return;
+					}
+					const UPlayerInput* const Input = Pinned->BoundInput.Get();
+					const FKeyState* const XState = Input ? Input->GetKeyState(EKeys::MouseX) : nullptr;
+					if (XState == nullptr || XState->SampleCountAccumulator <= 0)
+					{
+						return;
+					}
+					Pinned->bSawSamples = true;
+					Pinned->SamplesX = XState->SampleCountAccumulator;
+					Pinned->RawAccX = XState->RawValueAccumulator.X;
+				});
+		}
+		FSlateApplication& Slate = FSlateApplication::Get();
+		const FCortexEditorPhysicalInputTargetBinding& Binding = Fixture->BorrowedSession->GetTargetBinding();
+		const int32 RouteUserIndex = Binding.SlateUserIndex;
+		const TSharedPtr<SViewport> Route = ResolveOwnedRouteRoot(*Fixture->BorrowedSession);
+		if (!Route.IsValid())
+		{
+			EnsureSelectedRouteWindowActive(*Fixture->BorrowedSession);
+			if (FPlatformTime::Seconds() - StartTime <= CortexPhysicalInputReadyWatchdogSeconds) { return false; }
+			Test->AddError(TEXT("Borrowed PIE route root never resolved"));
+			return true;
+		}
+		const TSharedPtr<SWindow> RouteWindow = Slate.FindWidgetWindow(Route.ToSharedRef());
+		if (!RouteWindow.IsValid())
+		{
+			if (FPlatformTime::Seconds() - StartTime <= CortexPhysicalInputReadyWatchdogSeconds) { return false; }
+			Test->AddError(TEXT("Borrowed PIE route window never resolved"));
+			return true;
+		}
+		// The engine's viewport only accumulates GetCursorDelta() while it holds the native
+		// mouse capture, which the first real button-down acquires. That down must actually hit the
+		// route, so wait until the freshly started PIE viewport is arranged and hit-testable at its
+		// reported centre instead of racing the docking layout, and until its window is active
+		// (the engine only grants capture while the Slate application is active).
+		if (!Slate.IsActive())
+		{
+			EnsureSelectedRouteWindowActive(*Fixture->BorrowedSession);
+			if (FPlatformTime::Seconds() - StartTime <= CortexPhysicalInputReadyWatchdogSeconds) { return false; }
+			Test->AddError(TEXT("Slate application never became active for the viewport capture"));
+			return true;
+		}
+		const FGeometry RouteGeometry = Route->GetCachedGeometry();
+		const FVector2D RouteLocalCenter = RouteGeometry.GetLocalSize() * 0.5;
+		const FVector2D RouteScreenCenter = RouteGeometry.LocalToAbsolute(RouteLocalCenter);
+		TArray<TSharedRef<SWindow>> RouteWindows;
+		RouteWindows.Add(RouteWindow.ToSharedRef());
+		const FWidgetPath HitPath = Slate.LocateWindowUnderMouse(
+			RouteScreenCenter, RouteWindows, false, RouteUserIndex);
+		if (!HitPath.IsValid() || !HitPath.ContainsWidget(Route.Get()))
+		{
+			if (FPlatformTime::Seconds() - StartTime <= CortexPhysicalInputReadyWatchdogSeconds) { return false; }
+			TSharedPtr<SWidget> HitWidget;
+			if (HitPath.IsValid()) { HitWidget = HitPath.GetLastWidget(); }
+			Test->AddError(FString::Printf(
+				TEXT("Borrowed PIE route is not hit-testable at its centre (screen=%.1f,%.1f abs=%.1f,%.1f size=%.1f,%.1f hit=%s)"),
+				RouteScreenCenter.X, RouteScreenCenter.Y,
+				RouteGeometry.GetAbsolutePosition().X, RouteGeometry.GetAbsolutePosition().Y,
+				RouteGeometry.GetLocalSize().X, RouteGeometry.GetLocalSize().Y,
+				HitWidget.IsValid() ? *HitWidget->GetType().ToString() : TEXT("none")));
+			return true;
+		}
+
+		FCortexEditorPhysicalInputEvent Down;
+		Down.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+		Down.Key = EKeys::LeftMouseButton;
+		Down.ViewportPosition = RouteLocalCenter;
+		Probe->DownViewportPosition = Down.ViewportPosition;
+		Test->TestTrue(TEXT("Borrowed pointer down dispatched"),
+			Fixture->BorrowedSession->Dispatch(Down).bSuccess);
+		Test->TestTrue(TEXT("Borrowed PIE viewport holds native mouse capture"),
+			Route->HasMouseCapture());
+		if (!Route->HasMouseCapture())
+		{
+			const TSharedPtr<SWidget> Focused = Slate.GetUserFocusedWidget(RouteUserIndex);
+			Test->AddError(FString::Printf(
+				TEXT("Borrowed PIE capture missing (focusedIsRoute=%d anyCapture=%d focusedType=%s)"),
+				Focused.Get() == Route.Get() ? 1 : 0,
+				Slate.HasUserMouseCapture(RouteUserIndex) ? 1 : 0,
+				Focused.IsValid() ? *Focused->GetType().ToString() : TEXT("none")));
+			return true;
+		}
+
+		Probe->bArmed = true;
+		for (int32 Index = 0; Index < CortexFractionalMotionEventCount; ++Index)
+		{
+			FCortexEditorPhysicalInputEvent Move;
+			Move.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
+			Move.Key = EKeys::Mouse2D;
+			Move.Delta = FVector2D(CortexFractionalMotionDeltaX, 0.0);
+			Test->TestTrue(TEXT("Fractional relative pointer move dispatched"),
+				Fixture->BorrowedSession->Dispatch(Move).bSuccess);
+		}
+		return true;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexEditorPhysicalInputTestFixture> Fixture;
+	TSharedRef<FCortexFractionalMotionProbe> Probe;
+	double StartTime = 0.0;
+};
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Fractional recorded pointer motion must survive the native viewport consumer. The PIE scene
+// viewport adds GetCursorDelta() into an integer FIntPoint (SceneViewport.cpp OnMouseMove) and
+// flushes it as the MouseX axis, so a fractional per-event delta loses its fraction on every
+// event. The injector must carry the exact remainder and emit whole units whose running total is
+// the recorded total.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputFractionalMotionCarryTest,
+	"Cortex.Editor.PhysicalInput.FractionalMotionCarry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputFractionalMotionCarryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	const auto Probe = MakeShared<FCortexFractionalMotionProbe>();
+
+	// The public PIE request path is the stock engine's own session lifecycle; the bug lives in
+	// the native viewport consumer, so this regression does not need the ownership-scoped PIE
+	// capability the owned-path suites require. A dedicated preview window keeps the game viewport
+	// hit-testable independently of which editor tab happens to be frontmost.
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this, [](FAutomationTestBase& Test)
+	{
+		if (!GEditor)
+		{
+			Test.AddError(TEXT("GEditor missing for the external PIE request"));
+			return;
+		}
+		FRequestPlaySessionParams Request;
+		// In-process without a destination viewport is the engine's floating preview window.
+		Request.SessionDestination = EPlaySessionDestinationType::InProcess;
+		Request.WorldType = EPlaySessionWorldType::PlayInEditor;
+		GEditor->RequestPlaySession(Request);
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitForExternalPIEPlaying(this));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexBindExternalPIEInput(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDispatchFractionalMotion(this, Fixture, Probe));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
+		[Fixture, Probe](FAutomationTestBase& Test)
+		{
+			Test.TestTrue(TEXT("Native pre-flush MouseX samples were observed"), Probe->bSawSamples);
+			Test.TestEqual(TEXT("Every fractional packet reached the native sample boundary"),
+				Probe->SamplesX, CortexFractionalMotionEventCount);
+			Test.TestEqual(TEXT("Native MouseX total equals the recorded fractional total"),
+				Probe->RawAccX, CortexFractionalMotionRecordedTotalX, 0.0);
+
+			Probe->RemoveHook();
+			if (Fixture->BorrowedSession.IsValid())
+			{
+				FCortexEditorPhysicalInputEvent Up;
+				Up.Kind = ECortexEditorPhysicalInputKind::PointerUp;
+				Up.Key = EKeys::LeftMouseButton;
+				Up.ViewportPosition = Probe->DownViewportPosition;
+				Fixture->BorrowedSession->Dispatch(Up);
+				Fixture->BorrowedSession->Shutdown();
+			}
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitForNoPIEWorlds(this));
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // Case 1: a producer failure must quiesce the exact owned session with no further
 // selected-world admission, even though the caller never calls EndOwnedPIE.
