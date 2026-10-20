@@ -3836,7 +3836,11 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 			// OnMouseMove) and flushes it as the MouseX/MouseY axes, so a fractional per-event delta
 			// loses its fraction on every event. The exact accumulator above carries the remainder,
 			// so the whole-unit difference between the rounded positions transfers the recorded
-			// total instead of a truncated one.
+			// total instead of a truncated one. Consecutive relative events therefore present
+			// consecutive rounded positions and their deltas telescope; after an unrounded absolute
+			// or button position the first relative step rounds against the rounded previous
+			// position, so its last position differs from that event's exact position by under one
+			// screen unit.
 			PresentedScreenSpacePosition = FVector2D(
 				FMath::RoundToDouble(ScreenSpacePosition.X), FMath::RoundToDouble(ScreenSpacePosition.Y));
 			EngineEvent.Delta = PresentedScreenSpacePosition - FVector2D(

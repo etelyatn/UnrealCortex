@@ -4156,8 +4156,11 @@ bool FCortexPhysicalInputRelativeMotionExactnessTest::RunTest(const FString& Par
 				PresentedAfterMany.Equals(PresentedAfterOne, 1e-6));
 			Test.TestTrue(TEXT("Derived viewport pointer is additive"),
 				ViewportAfterMany.Equals(ViewportAfterOne, 1e-6));
-			Test.TestTrue(TEXT("Single-event delta is exactly the recorded total delta"),
-				F.ConsumerDelta.Equals(Delta * static_cast<double>(Count), 1e-6));
+			// The single event carries the same quantized total as the six-event sequence: its
+			// delta is the whole-unit difference between the rounded endpoints, never the
+			// fractional recorded total itself.
+			Test.TestTrue(TEXT("Single-event delta equals the quantized six-event total"),
+				F.ConsumerDelta.Equals(PresentedTotal, 1e-6));
 		}));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
