@@ -26,12 +26,10 @@
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "GenericPlatform/GenericWindow.h"
 #include "HAL/PlatformInput.h"
-#include "IAssetViewport.h"
 #include "Input/DragAndDrop.h"
 #include "InputCoreTypes.h"
 #include "InputKeyEventArgs.h"
 #include "KeyState.h"
-#include "LevelEditor.h"
 #include "Layout/WidgetPath.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
@@ -707,13 +705,10 @@ void FCortexEditorPhysicalInputSession::PollTeardown()
 		{
 			if (IsOwnedRequestPending())
 			{
-				// Still queued: nothing of ours was ever created; cancel the exact request.
-				// Cancel only this session's still-queued request through the engine authority; never
-				// the stock whole-session reset, which also discards shared session state.
-				if (OwnedEngineScope.IsValid())
-				{
-					CortexEngineCompat::QuiesceOwnedPIE(OwnedEngineScope.ToSharedRef());
-				}
+				// Still queued: nothing of ours was ever created; cancel the exact request. The
+				// fingerprint check above proves the queued copy is ours, so the public cancel can
+				// never discard a successor's request.
+				GEditor->CancelRequestPlaySession();
 				RelinquishOwnedRequest();
 				bStartupResolved = true;
 				return;
@@ -840,13 +835,6 @@ void FCortexEditorPhysicalInputSession::RelinquishOwnedRequest()
 	bOwnedRequestOutstanding = false;
 	SubmittedRequestFingerprint = 0;
 	SubmittedQueuedRequestFingerprint = 0;
-	// The request can never be born under this operation now, so its engine authority is dropped: a
-	// stale authority must never be able to end a successor session.
-	if (OwnedEngineScope.IsValid() && GRetainedOwnedAuthority == OwnedEngineScope)
-	{
-		GRetainedOwnedAuthority.Reset();
-	}
-	OwnedEngineScope.Reset();
 }
 
 void FCortexEditorPhysicalInputSession::CompletePreparationFailure(const FString& ErrorCode, const FString& Message)
@@ -909,13 +897,9 @@ void FCortexEditorPhysicalInputSession::RequestOwnedTermination()
 	{
 		if (IsOwnedRequestPending())
 		{
-			// Our request is still queued: cancel it and drop ownership.
-			// Cancel only this session's still-queued request through the engine authority; never the
-			// stock whole-session reset, which also discards shared session state.
-			if (OwnedEngineScope.IsValid())
-			{
-				CortexEngineCompat::QuiesceOwnedPIE(OwnedEngineScope.ToSharedRef());
-			}
+			// Our request is still queued: cancel it and drop ownership. The fingerprint check
+			// proves the queued copy is ours, so the public cancel never discards a successor.
+			GEditor->CancelRequestPlaySession();
 			RelinquishOwnedRequest();
 		}
 		else
@@ -950,20 +934,10 @@ void FCortexEditorPhysicalInputSession::RequestOwnedTermination()
 		check(EndingWorld != nullptr);
 		EndingWorld->SetShouldTick(false);
 
-		// Ownership-scoped end: retires exactly this instance. Never the global aggregate request,
-		// which would tear down foreign/late-joined instances sharing the session.
-		if (!OwnedEngineScope.IsValid())
-		{
-			// Unreachable for an admitted owned session; keep the request outstanding rather than
-			// widening scope to a global end.
-			return;
-		}
-		const FCortexCommandResult EndResult = CortexEngineCompat::EndOwnedPIE(OwnedEngineScope.ToSharedRef());
-		if (!EndResult.bSuccess)
-		{
-			// Retry on a later poll instead of claiming completion or issuing a global end.
-			return;
-		}
+		// Stock engines expose only the aggregate end. This session refuses to start while another
+		// PIE session is active, so the aggregate teardown is the exact owned session in practice; a
+		// late join during teardown is no longer protected from it.
+		GEditor->RequestEndPlayMap();
 		bOwnedEndPlayRequested = true;
 	}
 }
@@ -1497,14 +1471,9 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	{
 		return MakeErrorResult(CortexErrorCodes::EditorNotReady, TEXT("Editor is not available"));
 	}
-	// Capability preflight before any provider/settings/serial mutation: an engine without the
-	// ownership-scoped PIE capability refuses explicitly instead of falling back to a stock request
-	// whose aggregate end would tear down foreign instances.
-	if (!CortexEngineCompat::SupportsScopedPIE(*GEngine))
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("This engine does not provide the ownership-scoped PIE session capability required by the frame-clock workflow."));
-	}
+	// Stock engines have no ownership-scoped PIE API. The owned end therefore uses the public
+	// aggregate end, and this session refuses to start while any unrelated PIE session, play
+	// request or pending teardown is active (checked below) so it never adopts or cancels one.
 	if (OwnedState == EOwnedState::Preparing)
 	{
 		return MakeErrorResult(CortexErrorCodes::EditorBusy, TEXT("Owned PIE preparation is already in progress"));
@@ -1558,27 +1527,15 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 			FString::Printf(TEXT("Map package '%s' does not exist"), *PackageName));
 	}
 
-	// The in-process destination needs an explicit, unambiguous selected Slate viewport.
-	FLevelEditorModule* LevelEditorModule =
-		FModuleManager::Get().GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor"));
-	if (LevelEditorModule == nullptr)
-	{
-		return MakeErrorResult(CortexErrorCodes::EditorNotReady,
-			TEXT("The level editor module is not available for the owned PIE session"));
-	}
-	const TSharedPtr<IAssetViewport> ActiveViewport = LevelEditorModule->GetFirstActiveViewport();
-	if (!ActiveViewport.IsValid())
-	{
-		return MakeErrorResult(CortexErrorCodes::EditorNotReady,
-			TEXT("No active level editor viewport is available for the owned PIE session"));
-	}
-
+	// Owned PIE runs in its own floating preview window (in-process, no destination Slate viewport).
+	// A stock editor does not guarantee that the level-editor viewport tab is the active, arranged
+	// and hit-testable route, and the owned session is automation/replay-facing: its input must
+	// reach the game viewport independently of the human's docking layout.
 	FRequestPlaySessionParams Request;
 	Request.SessionDestination = EPlaySessionDestinationType::InProcess;
 	Request.WorldType = EPlaySessionWorldType::PlayInEditor;
 	Request.GlobalMapOverride = MapAssetPath;
 	// StartLocation/StartRotation stay unset so the normal player start is used.
-	Request.DestinationSlateViewport = ActiveViewport;
 
 	// Record the request generation, deadline and baseline before the request is queued.
 	OwnedRequest = FOwnedRequest();
@@ -1624,26 +1581,10 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 
 	EnsureTicker();
 
-	// Admit through the engine capability: the engine issues authority for exactly this request, so
-	// the owned end later retires only this instance and never widens into the whole session.
-	{
-		TSharedPtr<FCortexScopedPIEAuthority> Authority;
-		const FCortexCommandResult AdmitResult = CortexEngineCompat::RequestOwnedPIE(*GEngine, Request, Authority);
-		if (!AdmitResult.bSuccess)
-		{
-			// No ownership was taken: roll the preparation state back so nothing half-owned leaks.
-			OwnedEngineScope.Reset();
-			ReadyCallback = nullptr;
-			bReadyCallbackInvoked = true;
-			bOwnsPIE = false;
-			bOwnedRequestOutstanding = false;
-			OwnedState = EOwnedState::None;
-			return AdmitResult;
-		}
-		OwnedEngineScope = Authority;
-		// Retain the exact authority for native terminal-loss cleanup (failed clock-producer read).
-		GRetainedOwnedAuthority = Authority;
-	}
+	// Queue the request through the public engine API. Stock builds expose no per-request teardown
+	// authority, so the owned end uses the aggregate end; the exact queued copy is fingerprinted
+	// below so this session never cancels or adopts a successor.
+	GEditor->RequestPlaySession(Request);
 
 	// Capture the identity of the request the engine actually queued in this same tick.
 	// DestinationSlateViewport is still present on the queued copy, so the queued identity

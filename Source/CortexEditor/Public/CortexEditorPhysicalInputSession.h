@@ -373,12 +373,6 @@ private:
 	bool bOwnedRequestOutstanding = false;
 	bool bStartupResolved = false;
 	uint64 Generation = 0;
-	/**
-	 * Engine-issued ownership-scoped PIE authority for this operation's owned request (opaque to
-	 * this module). Owned end/quiesce route through it so the engine retires exactly this instance
-	 * instead of the whole session; never the global aggregate request.
-	 */
-	TSharedPtr<FCortexScopedPIEAuthority> OwnedEngineScope;
 	/** Identity of the request the engine queued, excluding DestinationSlateViewport (nulled at start). */
 	uint64 SubmittedRequestFingerprint = 0;
 	/** Identity of the request while still queued, including DestinationSlateViewport. */
