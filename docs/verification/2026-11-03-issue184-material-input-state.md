@@ -6,10 +6,13 @@
 - Route: local implementation, PR delivery, merged integration; parent CortexSandbox gitlinks and pre-existing parent edits excluded.
 - Plugin base: `c1499002cf4cc53825f55361b39753f9b7413137`. Approved design + implementation plan: `75312b22`.
 - Plugin branch: `fix/material-input-state-184`. Toolkit branch: `fix/material-input-state-184` from `origin/main` `cc901ae0159f58813f4e48214ff55c86c8cb0bdc`.
-- Candidate source identity (SHA-256, verified with `sha256sum` on the working tree):
-  - `Source/CortexMaterial/Private/Operations/CortexMaterialAssetOps.cpp` — `b5930d637ca4c64ff93902ec04dab2c4c1b07b4400824ddfaff6f9f894f5c886`
-  - `Source/CortexMaterial/Private/Operations/CortexMaterialInputUtils.cpp` — `f2d487200aea01d7b0b8828bf96111e31ebfda8847113f18f49556ac8701f3b4`
-  - `Source/CortexMaterial/Private/Tests/CortexMaterialInputStateTest.cpp` — `6386a474554d09b0d322b3e699723689b6995d7628f06d25cf5381a5884565b9`
+- Candidate source identity (SHA-256). The repository blobs are LF while `core.autocrlf=true` materialises CRLF in the working tree, so both forms are recorded: `checkout` is what a fresh `git switch` produces and what `sha256sum` reports locally; `blob` is the committed content (`git show <rev>:<path>` with CRLF stripped). They differ only in line endings.
+  - `Source/CortexMaterial/Private/Operations/CortexMaterialAssetOps.cpp`
+    checkout `b5930d637ca4c64ff93902ec04dab2c4c1b07b4400824ddfaff6f9f894f5c886`, blob `756d2d431beebcc220cb32dadfe87f9953a492e4dd5adf1f857274ae00d44375`
+  - `Source/CortexMaterial/Private/Operations/CortexMaterialInputUtils.cpp`
+    checkout `68938fb47ae7e385f996e3a97f2e5beb684dc17625fa1854ad9eab1baed8de29`, blob `f2d487200aea01d7b0b8828bf96111e31ebfda8847113f18f49556ac8701f3b4`
+  - `Source/CortexMaterial/Private/Tests/CortexMaterialInputStateTest.cpp`
+    checkout `5885dee83ce750412ab984c254e40ba3ebefafcc3efddcb357b9ec0aa776a73e`, blob `6386a474554d09b0d322b3e699723689b6995d7628f06d25cf5381a5884565b9`
 
 ## What shipped
 
