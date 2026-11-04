@@ -5458,15 +5458,18 @@ bool FCortexGraphPatchOps::ValidateEligibility(
 		&& Params->TryGetObjectField(TEXT("migration"), Migration)
 		&& Migration && Migration->IsValid()
 		&& (*Migration)->TryGetStringField(TEXT("op"), Op);
-	// The two repair operations exist to clear a compiler-invalid state, so they are the only
-	// migrations a BS_Error asset accepts. Everything else still refuses to touch a broken asset.
-	const bool bRepairOp = bMigrationOp && (Op == TEXT("retire_entries") || Op == TEXT("replace_call_output"));
+	// The repair operations exist to clear a compiler-invalid state, so they are the only
+	// migrations a BS_Error asset accepts. prune_island is admitted because stale non-entry islands
+	// left by a reparent can be the remaining compiler errors; its entry-retention contract is unchanged.
+	// Everything else still refuses to touch a broken asset.
+	const bool bRepairOp = bMigrationOp
+		&& (Op == TEXT("retire_entries") || Op == TEXT("replace_call_output") || Op == TEXT("prune_island"));
 
 	if (Blueprint->Status == BS_Error && !bRepairOp)
 	{
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidOperation,
-			TEXT("Blueprint has pre-existing compiler errors; only retire_entries and replace_call_output may repair this state through graph.apply_patch"));
+			TEXT("Blueprint has pre-existing compiler errors; only retire_entries, replace_call_output and prune_island may repair this state through graph.apply_patch"));
 		return false;
 	}
 	return true;

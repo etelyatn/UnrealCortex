@@ -1721,4 +1721,89 @@ bool FCortexGraphMigrationPruneEnvelopeTest::RunTest(const FString& Parameters)
 	Fixture.Cleanup();
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// 12. CompileInvalidAssetStagedAndRollback
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationPruneCompileInvalidTest,
+	"Cortex.Graph.Authoring.Migration.Prune.CompileInvalidAssetStagedAndRollback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationPruneCompileInvalidTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationPruneTest;
+	ClearFaults();
+
+	FSharedProducerFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Build(TEXT("BP_PruneCompileInvalid_T107")));
+	if (!Fixture.Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UBlueprint* const Blueprint = Fixture.Fixture.Blueprint;
+	UEdGraph* const Graph = Fixture.Graph;
+
+	// An unrelated native-name collision is a real compiler error the stale island does not cause.
+	AddEntryNode(Graph, TEXT("ReceiveBeginPlay"), 0, 1200);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	AddExpectedError(TEXT("name conflicts with a native"), EAutomationExpectedErrorFlags::Contains, 0);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	TestEqual(TEXT("the fixture is a real compiler error"),
+		static_cast<int32>(Blueprint->Status), static_cast<int32>(BS_Error));
+
+	const TArray<FGuid> Approved = { Fixture.IslandPrint->NodeGuid };
+
+	// compile=true cannot succeed while the unrelated error remains: the prune rolls back exactly.
+	{
+		const FFixtureState Before = Observe(Blueprint);
+		const FString GraphBefore = CaptureGraphNative(Blueprint, Graph);
+		TSharedPtr<FJsonObject> Request = PruneRequest(Blueprint, TEXT("00000000-0000-0000-0000-000000107001"),
+			Graph, Fixture.Entry, Approved, true, true);
+		FCortexGraphPreparedPatch Prepared;
+		FCortexGraphMigrationPrunePlan Plan;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("the compile-invalid prune previews: %s"), *Error.ErrorMessage),
+			PrepareApply(Blueprint, Request, Prepared, Plan, Error));
+		FCortexGraphPatchOutcome Outcome;
+		TestFalse(TEXT("a compiling prune on a still-invalid asset fails"),
+			FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error));
+		TestFalse(TEXT("the compiling prune passes apply eligibility"),
+			Error.ErrorMessage.Contains(TEXT("pre-existing compiler errors")));
+		TestEqual(TEXT("the failed compile reports a restore"), Outcome.RollbackStatus, FString(TEXT("restored")));
+		TestFalse(TEXT("the exact error-state restore does not block"), Outcome.bBlocked);
+		TestEqual(TEXT("the graph is restored exactly"),
+			FirstCaptureDifference(GraphBefore, CaptureGraphNative(Blueprint, Graph)), FString());
+		TestEqual(TEXT("the restore keeps the node count"), CountNativeNodes(Blueprint), Before.Nodes);
+		TestEqual(TEXT("the restore keeps BS_Error"),
+			static_cast<int32>(Blueprint->Status), static_cast<int32>(BS_Error));
+	}
+
+	// compile=false, save=false stages the prune on the invalid asset without compiling.
+	{
+		const FFixtureState Before = Observe(Blueprint);
+		TSharedPtr<FJsonObject> Request = PruneRequest(Blueprint, TEXT("00000000-0000-0000-0000-000000107002"),
+			Graph, Fixture.Entry, Approved, true, false);
+		FCortexGraphPreparedPatch Prepared;
+		FCortexGraphMigrationPrunePlan Plan;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("the staged prune previews: %s"), *Error.ErrorMessage),
+			PrepareApply(Blueprint, Request, Prepared, Plan, Error));
+		FOperations Operations;
+		Operations.Begin();
+		FCortexGraphPatchOutcome Outcome;
+		const bool bApplied = FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error);
+		Operations.End();
+		TestTrue(FString::Printf(TEXT("the staged prune applies on BS_Error: %s"), *Error.ErrorMessage), bApplied);
+		TestEqual(TEXT("the staged prune is applied"), Outcome.ApplyStatus, FString(TEXT("applied")));
+		TestEqual(TEXT("the staged readback matches"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+		TestEqual(TEXT("the staged prune never compiles"), Operations.TargetCompiles, 0);
+		TestNull(TEXT("the approved island node is removed"), FindNodeByGuidInGraph(Graph, Fixture.IslandPrint->NodeGuid));
+		TestEqual(TEXT("exactly the approved node is removed"), CountNativeNodes(Blueprint), Before.Nodes - 1);
+		TestTrue(TEXT("the retained consumer keeps the shared producer"),
+			NodesLinked(Fixture.Producer, TEXT("ReturnValue"), Fixture.RetainedPrint, TEXT("InString")));
+		TestTrue(TEXT("the staged package stays dirty"), Fixture.Fixture.Package->IsDirty());
+	}
+
+	Fixture.Cleanup();
+	return true;
+}
 #endif
