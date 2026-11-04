@@ -1,4 +1,5 @@
 #include "Operations/CortexMaterialAssetOps.h"
+#include "Operations/CortexMaterialInputUtils.h"
 #include "CortexMaterialModule.h"
 #include "CortexEditorUtils.h"
 #include "Materials/Material.h"
@@ -19,6 +20,10 @@
 #include "ObjectTools.h"
 #include "CortexSerializer.h"
 #include "CortexBatchScope.h"
+#include "CortexPropertyUtils.h"
+#include "Misc/MemStack.h"
+#include "Misc/ScopeExit.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -68,6 +73,204 @@ static void CollectReferencedCollections(
 			FString::Printf(TEXT("References %d MaterialParameterCollections - SM6 limit is %d"),
 				UniqueCollections.Num(), SM6_MAX_COLLECTION_REFERENCES)));
 	}
+}
+
+bool ResolveOwnedMaterialPath(UMaterial* Material, const FString& Path, UObject*& OutOwner,
+	FProperty*& OutProperty, void*& OutAddress)
+{
+	TArray<FString> Segments;
+	Path.ParseIntoArray(Segments, TEXT("."), false);
+	if (Segments.IsEmpty() || Segments.ContainsByPredicate([](const FString& Part) { return Part.IsEmpty(); }))
+	{
+		return false;
+	}
+	UObject* Root = Material;
+	FString Relative = Path;
+	if (Segments[0].Equals(TEXT("EditorOnlyData"), ESearchCase::IgnoreCase))
+	{
+		Root = Material->GetEditorOnlyData();
+		if (!Root || Segments.Num() < 2)
+		{
+			return false;
+		}
+		Segments.RemoveAt(0);
+		Relative = FString::Join(Segments, TEXT("."));
+	}
+	OutOwner = Root;
+	UStruct* Type = Root->GetClass();
+	void* Container = Root;
+	for (int32 Index = 0; Index < Segments.Num(); ++Index)
+	{
+		FProperty* Field = Type->FindPropertyByName(*Segments[Index]);
+		if (!Field || Field->ArrayDim != 1)
+		{
+			return false;
+		}
+		if (Index == Segments.Num() - 1)
+		{
+			break;
+		}
+		void* Address = Field->ContainerPtrToValuePtr<void>(Container);
+		if (const auto* Struct = CastField<FStructProperty>(Field))
+		{
+			Type = Struct->Struct;
+			Container = Address;
+		}
+		else if (const auto* Object = CastField<FObjectProperty>(Field))
+		{
+			UObject* Child = Object->GetObjectPropertyValue(Address);
+			if (!Child || (Child != Material && !Child->IsIn(Material)))
+			{
+				return false;
+			}
+			OutOwner = Child;
+			Type = Child->GetClass();
+			Container = Child;
+		}
+		else
+		{
+			return false;
+		}
+	}
+	return FCortexPropertyUtils::ResolvePropertyPath(Root, Relative, OutProperty, OutAddress);
+}
+
+// Reflect the member chain inside a serialized input struct that owns LeafProperty, e.g. UseConstant, Constant
+// or Constant.R. Descent follows the resolved address; naming uses property identity, so a member that shares
+// the struct's first address (Expression, Constant.R) is still reported as itself.
+bool BuildInputLeafPath(const UStruct* Struct, void* Container, const void* Target, const FProperty* LeafProperty,
+	FString& OutLeaf, int32 Depth = 0)
+{
+	if (!Struct || !LeafProperty || Depth > 3)
+	{
+		return false;
+	}
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		FProperty* Field = *It;
+		if (Field == LeafProperty)
+		{
+			OutLeaf = Field->GetName();
+			return true;
+		}
+		const FStructProperty* StructField = CastField<FStructProperty>(Field);
+		if (StructField && Field->ArrayDim == 1)
+		{
+			void* FieldAddress = Field->ContainerPtrToValuePtr<void>(Container);
+			const uint8* Begin = static_cast<const uint8*>(FieldAddress);
+			const uint8* Test = static_cast<const uint8*>(Target);
+			if (Test >= Begin && Test < Begin + StructField->Struct->GetPropertiesSize())
+			{
+				FString Nested;
+				if (!BuildInputLeafPath(StructField->Struct, FieldAddress, Target, LeafProperty, Nested, Depth + 1))
+				{
+					return false;
+				}
+				OutLeaf = Field->GetName() + TEXT(".") + Nested;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// Detect protected root-input storage by the object identity the resolver actually reached. A whole-input
+// target yields an empty leaf so callers can refuse expression/whole-root replacement; any owned route that
+// lands on a representable leaf is canonicalized through the same typed patch as the direct form.
+bool ResolveRootInputLeaf(UMaterial* Material, const FProperty* LeafProperty, void* Address,
+	EMaterialProperty& OutProperty, FString& OutLeaf)
+{
+	UMaterialEditorOnlyData* EditorData = Material ? Material->GetEditorOnlyData() : nullptr;
+	if (!EditorData || !LeafProperty || !Address)
+	{
+		return false;
+	}
+	const uint8* Target = static_cast<const uint8*>(Address);
+	for (TFieldIterator<FProperty> It(EditorData->GetClass()); It; ++It)
+	{
+		const FStructProperty* Field = CastField<FStructProperty>(*It);
+		if (!Field || Field->ArrayDim != 1)
+		{
+			continue;
+		}
+		void* InputAddress = Field->ContainerPtrToValuePtr<void>(EditorData);
+		EMaterialProperty Property = MP_MAX;
+		for (int32 Index = 0; Index < MP_MAX; ++Index)
+		{
+			if (Material->GetExpressionInputForProperty(static_cast<EMaterialProperty>(Index)) == InputAddress)
+			{
+				Property = static_cast<EMaterialProperty>(Index);
+				break;
+			}
+		}
+		if (Property == MP_MAX)
+		{
+			continue;
+		}
+		const uint8* Begin = static_cast<const uint8*>(InputAddress);
+		if (Target < Begin || Target >= Begin + Field->Struct->GetPropertiesSize())
+		{
+			continue;
+		}
+		OutProperty = Property;
+		OutLeaf.Reset();
+		// Empty leaf means the input struct itself was the target; the caller refuses that replacement.
+		BuildInputLeafPath(Field->Struct, InputAddress, Address, LeafProperty, OutLeaf);
+		return true;
+	}
+	return false;
+}
+
+bool IsPropertyValueTypeValid(const FProperty* Property, const TSharedPtr<FJsonValue>& Value)
+{
+	if (CastField<FBoolProperty>(Property))
+	{
+		return Value->Type == EJson::Boolean;
+	}
+	if (const auto* Number = CastField<FNumericProperty>(Property))
+	{
+		if (Number->IsEnum())
+		{
+			return Value->Type == EJson::String || Value->Type == EJson::Number;
+		}
+		double Numeric;
+		if (Value->Type != EJson::Number || !Value->TryGetNumber(Numeric) || !FMath::IsFinite(Numeric))
+		{
+			return false;
+		}
+		if (CastField<FFloatProperty>(Property))
+		{
+			return FMath::Abs(Numeric) <= MAX_flt;
+		}
+		if (Number->IsInteger())
+		{
+			// The serializer narrows integer storage with a plain cast, so refuse values the native type
+			// cannot hold instead of committing a wrapped value.
+			if (Numeric != FMath::FloorToDouble(Numeric))
+			{
+				return false;
+			}
+			if (CastField<FByteProperty>(Property))
+			{
+				return Numeric >= 0.0 && Numeric <= 255.0;
+			}
+			if (CastField<FIntProperty>(Property))
+			{
+				return Numeric >= -2147483648.0 && Numeric < 2147483648.0;
+			}
+			if (CastField<FInt64Property>(Property))
+			{
+				return Numeric >= -9223372036854775808.0 && Numeric < 9223372036854775808.0;
+			}
+			// int8/int16/uint16/uint32/uint64 have no serializer branch and could only be narrowed.
+			return false;
+		}
+	}
+	if (CastField<FStrProperty>(Property) || CastField<FNameProperty>(Property))
+	{
+		return Value->Type == EJson::String;
+	}
+	return true;
 }
 }
 
@@ -177,6 +380,45 @@ FCortexCommandResult FCortexMaterialAssetOps::GetMaterial(const TSharedPtr<FJson
 	{
 		return LoadError;
 	}
+	bool bIncludeInputState = false;
+	if (Params->HasField(TEXT("include_input_state")) && !Params->TryGetBoolField(TEXT("include_input_state"), bIncludeInputState))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("include_input_state must be a boolean"));
+	}
+	TSharedPtr<FJsonObject> SelectedProperties;
+	if (Params->HasField(TEXT("properties")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Paths = nullptr;
+		if (!Params->TryGetArrayField(TEXT("properties"), Paths))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("properties must be an array of non-empty paths"));
+		}
+		if (!Paths->IsEmpty())
+		{
+			SelectedProperties = MakeShared<FJsonObject>();
+			for (const auto& PathValue : *Paths)
+			{
+				FString Path;
+				UObject* Owner = nullptr;
+				FProperty* Property = nullptr;
+				void* Address = nullptr;
+				if (!PathValue.IsValid() || !PathValue->TryGetString(Path) || Path.IsEmpty()
+					|| !ResolveOwnedMaterialPath(Material, Path, Owner, Property, Address))
+				{
+					return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Invalid owned material property path: %s"), *Path));
+				}
+				auto Value = FCortexSerializer::PropertyToJson(Property, Address);
+				// The serializer reports unreadable storage as JSON null, which is indistinguishable from a
+				// legitimately null object reference. Refuse the unsupported case instead of publishing a
+				// fabricated null in a projection the caller treats as complete.
+				if (!Value.IsValid() || (Value->IsNull() && !CastField<FObjectProperty>(Property)))
+				{
+					return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Unsupported material property read: %s"), *Path));
+				}
+				SelectedProperties->SetField(Path, Value);
+			}
+		}
+	}
 
 	// Material domain
 	FString DomainStr;
@@ -190,17 +432,8 @@ FCortexCommandResult FCortexMaterialAssetOps::GetMaterial(const TSharedPtr<FJson
 	default:                DomainStr = TEXT("Unknown"); break;
 	}
 
-	// Blend mode
-	FString BlendStr;
-	switch (Material->BlendMode)
-	{
-	case BLEND_Opaque:      BlendStr = TEXT("Opaque"); break;
-	case BLEND_Masked:      BlendStr = TEXT("Masked"); break;
-	case BLEND_Translucent: BlendStr = TEXT("Translucent"); break;
-	case BLEND_Additive:    BlendStr = TEXT("Additive"); break;
-	case BLEND_Modulate:    BlendStr = TEXT("Modulate"); break;
-	default:                BlendStr = TEXT("Unknown"); break;
-	}
+	// Blend mode: authored naming shares the complete enum helper with effective_blend_mode.
+	const FString BlendStr = CortexMaterialInputUtils::BlendModeName(Material->BlendMode);
 
 	// Shading model
 	FString ShadingStr;
@@ -269,6 +502,17 @@ FCortexCommandResult FCortexMaterialAssetOps::GetMaterial(const TSharedPtr<FJson
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("material_domain"), DomainStr);
 	Data->SetStringField(TEXT("blend_mode"), BlendStr);
+	Data->SetStringField(TEXT("effective_blend_mode"), CortexMaterialInputUtils::BlendModeName(Material->GetBlendMode()));
+	Data->SetBoolField(TEXT("can_masked_be_assumed_opaque"), !!Material->bCanMaskedBeAssumedOpaque);
+	if (SelectedProperties.IsValid())
+	{
+		Data->SetObjectField(TEXT("properties"), SelectedProperties);
+	}
+	Data->SetArrayField(TEXT("warnings"), CortexMaterialInputUtils::CollectWarnings(Material));
+	if (bIncludeInputState)
+	{
+		Data->SetArrayField(TEXT("root_inputs"), CortexMaterialInputUtils::SerializeInputs(Material));
+	}
 	Data->SetStringField(TEXT("shading_model"), ShadingStr);
 	Data->SetBoolField(TEXT("two_sided"), Material->IsTwoSided());
 	Data->SetBoolField(TEXT("is_masked"), Material->IsMasked());
@@ -700,40 +944,125 @@ FCortexCommandResult FCortexMaterialAssetOps::SetMaterialProperty(const TSharedP
 		return LoadError;
 	}
 
-	FProperty* Property = UMaterial::StaticClass()->FindPropertyByName(FName(*PropertyName));
-	if (Property == nullptr)
+	auto Invalid = [&](const FString& Reason)
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("Property '%s' not found on UMaterial"), *PropertyName));
-	}
-
-	void* PropertyAddress = Property->ContainerPtrToValuePtr<void>(Material);
-
-	TUniquePtr<FScopedTransaction> Transaction;
-	if (!FCortexCommandRouter::IsInBatch())
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Material property '%s': %s"), *PropertyName, *Reason));
+	};
+	UObject* Owner = nullptr;
+	FProperty* Property = nullptr;
+	void* PropertyAddress = nullptr;
+	if (!ResolveOwnedMaterialPath(Material, PropertyName, Owner, Property, PropertyAddress))
 	{
-		Transaction = MakeUnique<FScopedTransaction>(FText::FromString(
-			FString::Printf(TEXT("Cortex: Set Material Property %s"), *PropertyName)));
-		Material->Modify();
-		Material->PreEditChange(Property);
+		return Invalid(TEXT("property not found, null object, array path, or external ownership"));
 	}
-
+	// The editor-only data object holds every root input and nested editor property. Its wholesale replacement is
+	// already refused on the canonical form by the resolver prefix rule; refuse the same replacement when an owned
+	// alias route reaches the actual reflected reference, which would swap all root state or borrow a foreign one.
+	if (Property == FindFProperty<FObjectProperty>(UMaterial::StaticClass(), TEXT("EditorOnlyData")))
+	{
+		return Invalid(TEXT("editor-only data replacement is not permitted; author the properties it contains"));
+	}
+	EMaterialProperty RootProperty = MP_MAX;
+	FString Leaf;
+	if (ResolveRootInputLeaf(Material, Property, PropertyAddress, RootProperty, Leaf))
+	{
+		auto Patch = MakeShared<FJsonObject>();
+		Patch->SetStringField(TEXT("asset_path"), AssetPath);
+		Patch->SetStringField(TEXT("input"), CortexMaterialInputUtils::InputName(RootProperty));
+		FString PatchKey;
+		if (Leaf.Equals(TEXT("UseConstant"), ESearchCase::IgnoreCase))
+		{
+			PatchKey = TEXT("use_constant");
+		}
+		else if (Leaf.Equals(TEXT("Constant"), ESearchCase::IgnoreCase))
+		{
+			PatchKey = TEXT("constant");
+		}
+		else if (Leaf.StartsWith(TEXT("Constant."), ESearchCase::IgnoreCase))
+		{
+			auto State = CortexMaterialInputUtils::SerializeInput(Material, RootProperty);
+			const auto Constant = State->TryGetField(TEXT("constant"));
+			const TSharedPtr<FJsonObject>* Object = nullptr;
+			if (!Constant.IsValid() || !Constant->TryGetObject(Object))
+			{
+				return Invalid(TEXT("input has no component constant"));
+			}
+			const FString Component = Leaf.Mid(9).ToLower();
+			if (!(*Object)->HasField(Component))
+			{
+				return Invalid(TEXT("unknown constant component"));
+			}
+			(*Object)->SetField(Component, Value);
+			Patch->SetField(TEXT("constant"), Constant);
+		}
+		else
+		{
+			const TCHAR* NativeNames[] = {TEXT("OutputIndex"), TEXT("Mask"), TEXT("MaskR"), TEXT("MaskG"), TEXT("MaskB"), TEXT("MaskA")};
+			const TCHAR* Keys[] = {TEXT("output_index"), TEXT("mask"), TEXT("mask_r"), TEXT("mask_g"), TEXT("mask_b"), TEXT("mask_a")};
+			for (int32 Index = 0; Index < UE_ARRAY_COUNT(Keys); ++Index)
+			{
+				if (Leaf.Equals(NativeNames[Index], ESearchCase::IgnoreCase))
+				{
+					PatchKey = Keys[Index];
+					break;
+				}
+			}
+			if (PatchKey.IsEmpty())
+			{
+				return Invalid(TEXT("root inputs require typed field authoring; expression and whole-input replacement are not permitted"));
+			}
+		}
+		if (!PatchKey.IsEmpty())
+		{
+			Patch->SetField(PatchKey, Value);
+		}
+		auto Result = CortexMaterialInputUtils::ApplyPatch(Material, RootProperty, Patch);
+		if (!Result.bSuccess)
+		{
+			return Invalid(Result.ErrorMessage);
+		}
+		Result.Data->SetStringField(TEXT("property_name"), PropertyName);
+		return Result;
+	}
+	if (!IsPropertyValueTypeValid(Property, Value))
+	{
+		return Invalid(TEXT("value has the wrong type or is outside native numeric storage"));
+	}
+	FMemMark Mark(FMemStack::Get());
+	void* Staged = FMemStack::Get().Alloc(Property->GetSize(), Property->GetMinAlignment());
+	Property->InitializeValue(Staged);
+	ON_SCOPE_EXIT
+	{
+		Property->DestroyValue(Staged);
+	};
+	Property->CopyCompleteValue(Staged, PropertyAddress);
 	TArray<FString> Warnings;
-	if (!FCortexSerializer::JsonToProperty(Value, Property, PropertyAddress, Material, Warnings))
+	if (!FCortexSerializer::JsonToProperty(Value, Property, Staged, Owner, Warnings))
 	{
-		FString WarningStr = Warnings.Num() > 0
-			? FString::Join(Warnings, TEXT("; "))
-			: TEXT("unsupported type");
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("Failed to set property '%s': %s"), *PropertyName, *WarningStr));
+		return Invalid(Warnings.IsEmpty() ? TEXT("unsupported value") : FString::Join(Warnings, TEXT("; ")));
 	}
-
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Material Property")), !FCortexCommandRouter::IsInBatch());
+	Material->Modify();
+	Owner->SetFlags(RF_Transactional);
+	Owner->Modify();
 	if (!FCortexCommandRouter::IsInBatch())
 	{
-		FPropertyChangedEvent PropertyChangedEvent(Property);
-		Material->PostEditChangeProperty(PropertyChangedEvent);
+		Owner->PreEditChange(Property);
+		if (Owner != Material)
+		{
+			Material->PreEditChange(nullptr);
+		}
+	}
+	Property->CopyCompleteValue(PropertyAddress, Staged);
+	if (!FCortexCommandRouter::IsInBatch())
+	{
+		FPropertyChangedEvent Event(Property);
+		Owner->PostEditChangeProperty(Event);
+		if (Owner != Material)
+		{
+			Material->PostEditChange();
+		}
 	}
 	else
 	{

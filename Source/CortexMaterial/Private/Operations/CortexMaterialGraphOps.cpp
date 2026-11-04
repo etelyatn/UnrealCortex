@@ -1,5 +1,6 @@
 #include "Operations/CortexMaterialGraphOps.h"
 #include "Operations/CortexMaterialAssetOps.h"
+#include "Operations/CortexMaterialInputUtils.h"
 #include "CortexMaterialModule.h"
 #include "CortexPropertyUtils.h"
 #include "Misc/EngineVersionComparison.h"
@@ -43,62 +44,6 @@ struct FExpressionInputIterator
 #include "CortexGraphLayoutOps.h"
 #include "UObject/UnrealType.h"
 
-namespace
-{
-FString NormalizeMaterialPropertyToken(const FString& InName)
-{
-	FString Out = InName;
-	Out = Out.Replace(TEXT("_"), TEXT(""));
-	Out = Out.Replace(TEXT(" "), TEXT(""));
-	Out = Out.ToLower();
-	return Out;
-}
-
-FString MaterialPropertyToInputName(const EMaterialProperty Property)
-{
-	const UEnum* PropertyEnum = StaticEnum<EMaterialProperty>();
-	if (PropertyEnum == nullptr)
-	{
-		return TEXT("");
-	}
-
-	FString EnumName = PropertyEnum->GetNameStringByValue(static_cast<int64>(Property));
-	EnumName.RemoveFromStart(TEXT("MP_"));
-	return EnumName;
-}
-
-bool ResolveMaterialPropertyByInputName(const FString& InputName, EMaterialProperty& OutProperty)
-{
-	const UEnum* PropertyEnum = StaticEnum<EMaterialProperty>();
-	if (PropertyEnum == nullptr)
-	{
-		return false;
-	}
-
-	const FString NormalizedInput = NormalizeMaterialPropertyToken(InputName);
-	for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
-	{
-		const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
-		const FString EnumDerivedName = MaterialPropertyToInputName(Property);
-		const FString NormalizedProperty = NormalizeMaterialPropertyToken(EnumDerivedName);
-		if (NormalizedInput == NormalizedProperty)
-		{
-			OutProperty = Property;
-			return true;
-		}
-
-		// Accept "CustomizedUV0" alias for "CustomizedUVs0".
-		const FString CustomizedAlias = NormalizedProperty.Replace(TEXT("customizeduvs"), TEXT("customizeduv"));
-		if (NormalizedInput == CustomizedAlias)
-		{
-			OutProperty = Property;
-			return true;
-		}
-	}
-
-	return false;
-}
-}
 
 UMaterialExpression* FCortexMaterialGraphOps::FindExpression(UMaterial* Material, const FString& NodeId)
 {
@@ -513,7 +458,7 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 			Entry->SetStringField(TEXT("source_node"), Input->Expression->GetName());
 			Entry->SetNumberField(TEXT("source_output"), Input->OutputIndex);
 			Entry->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
-			Entry->SetStringField(TEXT("target_input"), MaterialPropertyToInputName(Property));
+			Entry->SetStringField(TEXT("target_input"), CortexMaterialInputUtils::InputName(Property));
 			ConnectionsArray.Add(MakeShared<FJsonValueObject>(Entry));
 		}
 	}
@@ -543,6 +488,15 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("connections"), ConnectionsArray);
 	Data->SetNumberField(TEXT("count"), ConnectionsArray.Num());
+	bool bIncludeInputState = false;
+	if (Params->HasField(TEXT("include_input_state")) && !Params->TryGetBoolField(TEXT("include_input_state"), bIncludeInputState))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("include_input_state must be a boolean"));
+	}
+	if (bIncludeInputState)
+	{
+		Data->SetArrayField(TEXT("root_inputs"), CortexMaterialInputUtils::SerializeInputs(Material));
+	}
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -550,274 +504,173 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath, SourceNode, TargetNode, TargetInput;
-
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: asset_path, source_node, source_output, target_node, target_input"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
 	}
-	// Accept from_node/to_node as aliases
 	if (!Params->TryGetStringField(TEXT("source_node"), SourceNode))
+	{
 		Params->TryGetStringField(TEXT("from_node"), SourceNode);
+	}
 	if (!Params->TryGetStringField(TEXT("target_node"), TargetNode))
+	{
 		Params->TryGetStringField(TEXT("to_node"), TargetNode);
+	}
 	if (!Params->TryGetStringField(TEXT("target_input"), TargetInput))
+	{
 		Params->TryGetStringField(TEXT("to_input"), TargetInput);
-
+	}
 	if (SourceNode.IsEmpty() || TargetNode.IsEmpty() || TargetInput.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: asset_path, source_node, source_output, target_node, target_input"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing source_node, target_node or target_input"));
 	}
-
-	// Parse source_output: try string first (name-based), then number (index-based)
-	FString SourceOutputStr;
-	double SourceOutputDouble = 0;
-	bool bSourceOutputIsString = Params->TryGetStringField(TEXT("source_output"), SourceOutputStr);
-	bool bSourceOutputIsNumber = Params->TryGetNumberField(TEXT("source_output"), SourceOutputDouble);
-
-	if (!bSourceOutputIsString && !bSourceOutputIsNumber)
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required param: source_output (string or number)"));
-	}
-
 	FCortexCommandResult LoadError;
 	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
+	if (!Material)
 	{
 		return LoadError;
 	}
-
-	if (!Material->GetEditorOnlyData())
+	UMaterialExpression* Source = FindExpression(Material, SourceNode);
+	if (!Source)
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::SerializationError,
-			TEXT("Material has no editor data"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::NodeNotFound, TEXT("Source material node not found"));
 	}
-
-	UMaterialExpression* SourceExpr = FindExpression(Material, SourceNode);
-	if (SourceExpr == nullptr)
+	const auto& Outputs = Source->GetOutputs();
+	int32 OutputIndex = INDEX_NONE;
+	FString OutputName;
+	double OutputNumber;
+	if (Params->TryGetStringField(TEXT("source_output"), OutputName))
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::NodeNotFound,
-			FString::Printf(TEXT("Source node not found: %s"), *SourceNode)
-		);
-	}
-
-	// Resolve source output index
-	int32 SourceOutputIndex = 0;
-	if (bSourceOutputIsString)
-	{
-		// Match by output name or index string
-		const TArray<FExpressionOutput>& Outputs = SourceExpr->GetOutputs();
-		bool bFound = false;
-		for (int32 i = 0; i < Outputs.Num(); ++i)
+		for (int32 Index = 0; Index < Outputs.Num(); ++Index)
 		{
-			FString OutputName = Outputs[i].OutputName.ToString();
-			if (OutputName == SourceOutputStr || FString::Printf(TEXT("%d"), i) == SourceOutputStr)
+			if (Outputs[Index].OutputName.ToString() == OutputName || FString::FromInt(Index) == OutputName)
 			{
-				SourceOutputIndex = i;
-				bFound = true;
+				OutputIndex = Index;
 				break;
 			}
 		}
-		if (!bFound)
+	}
+	else if (Params->TryGetNumberField(TEXT("source_output"), OutputNumber)
+		&& FMath::IsFinite(OutputNumber) && OutputNumber >= 0 && OutputNumber <= MAX_int32
+		&& OutputNumber == FMath::FloorToDouble(OutputNumber))
+	{
+		OutputIndex = static_cast<int32>(OutputNumber);
+	}
+	if (!Outputs.IsValidIndex(OutputIndex))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("source_output must select an existing output"));
+	}
+	FExpressionInput* Input = nullptr;
+	EMaterialProperty Property = MP_MAX;
+	UMaterialExpression* Target = nullptr;
+	const bool bRoot = TargetNode == TEXT("MaterialResult") || TargetNode == TEXT("Material");
+	if (bRoot)
+	{
+		if (!CortexMaterialInputUtils::ResolveInput(Material, TargetInput, Property, Input) || !Material->IsPropertySupported(Property))
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				FString::Printf(TEXT("Source output not found: %s"), *SourceOutputStr)
-			);
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Unknown or unsupported MaterialResult input"));
 		}
 	}
 	else
 	{
-		SourceOutputIndex = static_cast<int32>(SourceOutputDouble);
-	}
-
-	if (!FCortexCommandRouter::IsInBatch())
-	{
-		FScopedTransaction Transaction(FText::FromString(
-			FString::Printf(TEXT("Cortex: Connect Material Nodes"))
-		));
-		Material->PreEditChange(nullptr);
-	}
-
-	// Connect to MaterialResult or expression — accept "Material" as alias
-	if (TargetNode == TEXT("MaterialResult") || TargetNode == TEXT("Material"))
-	{
-		EMaterialProperty Property = MP_MAX;
-		if (!ResolveMaterialPropertyByInputName(TargetInput, Property))
+		Target = FindExpression(Material, TargetNode);
+		if (!Target)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidConnection,
-				FString::Printf(TEXT("Unknown MaterialResult input: %s"), *TargetInput)
-			);
+			return FCortexCommandRouter::Error(CortexErrorCodes::NodeNotFound, TEXT("Target material node not found"));
 		}
-
-		if (!Material->IsPropertySupported(Property))
+		for (FExpressionInputIterator It(Target); It; ++It)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidConnection,
-				FString::Printf(TEXT("MaterialResult input not supported: %s"), *TargetInput)
-			);
-		}
-
-		FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
-		if (Input == nullptr)
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidConnection,
-				FString::Printf(TEXT("MaterialResult input unavailable: %s"), *TargetInput)
-			);
-		}
-
-		Input->Expression = SourceExpr;
-		Input->OutputIndex = SourceOutputIndex;
-	}
-	else
-	{
-		// Expression-to-expression connection
-		UMaterialExpression* TargetExpr = FindExpression(Material, TargetNode);
-		if (TargetExpr == nullptr)
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::NodeNotFound,
-				FString::Printf(TEXT("Target node not found: %s"), *TargetNode)
-			);
-		}
-
-		// Find target input by name
-		FExpressionInput* TargetInputPtr = nullptr;
-		for (FExpressionInputIterator It(TargetExpr); It; ++It)
-		{
-			FString InputName = TargetExpr->GetInputName(It.Index).ToString();
-			if (InputName == TargetInput)
+			if (Target->GetInputName(It.Index).ToString() == TargetInput)
 			{
-				TargetInputPtr = It.Input;
+				Input = It.Input;
 				break;
 			}
 		}
-
-		if (TargetInputPtr == nullptr)
+		if (!Input)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidConnection,
-				FString::Printf(TEXT("Target input not found: %s on node %s"), *TargetInput, *TargetNode)
-			);
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Target input not found"));
 		}
-
-		TargetInputPtr->Expression = SourceExpr;
-		TargetInputPtr->OutputIndex = SourceOutputIndex;
 	}
-
-	if (!FCortexCommandRouter::IsInBatch())
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Connect Material Nodes")), !FCortexCommandRouter::IsInBatch());
+	CortexMaterialInputUtils::BeginEdit(Material);
+	if (Target)
 	{
-		Material->PostEditChange();
+		Target->Modify();
 	}
-	else
+	Input->Connect(OutputIndex, Source);
+	if (bRoot)
 	{
-		FCortexBatchScope::MarkMaterialDirty(Material);
+		CortexMaterialInputUtils::UpdateUseConstant(Material, Property, false);
 	}
-	Material->MarkPackageDirty();
-
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	CortexMaterialInputUtils::EndEdit(Material);
+	auto Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("source_node"), SourceNode);
-	Data->SetNumberField(TEXT("source_output"), SourceOutputIndex);
+	Data->SetNumberField(TEXT("source_output"), OutputIndex);
 	Data->SetStringField(TEXT("target_node"), TargetNode);
 	Data->SetStringField(TEXT("target_input"), TargetInput);
 	Data->SetBoolField(TEXT("connected"), true);
-
 	return FCortexCommandRouter::Success(Data);
 }
 
 FCortexCommandResult FCortexMaterialGraphOps::Disconnect(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath, TargetNode, TargetInput;
-
-	if (!Params.IsValid()
-		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
 		|| !Params->TryGetStringField(TEXT("target_node"), TargetNode)
 		|| !Params->TryGetStringField(TEXT("target_input"), TargetInput))
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: asset_path, target_node, target_input"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing asset_path, target_node or target_input"));
 	}
-
 	FCortexCommandResult LoadError;
 	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
+	if (!Material)
 	{
 		return LoadError;
 	}
-
-	if (!Material->GetEditorOnlyData())
+	if (TargetNode != TEXT("MaterialResult") && TargetNode != TEXT("Material"))
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::SerializationError,
-			TEXT("Material has no editor data"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Expression-to-expression disconnections not yet implemented"));
 	}
-
-	if (!FCortexCommandRouter::IsInBatch())
+	EMaterialProperty Property = MP_MAX;
+	FExpressionInput* Input = nullptr;
+	if (!CortexMaterialInputUtils::ResolveInput(Material, TargetInput, Property, Input))
 	{
-		FScopedTransaction Transaction(FText::FromString(
-			FString::Printf(TEXT("Cortex: Disconnect Material Nodes"))
-		));
-		Material->PreEditChange(nullptr);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Unknown or unavailable MaterialResult input"));
 	}
-
-	// Disconnect from MaterialResult
-	if (TargetNode == TEXT("MaterialResult"))
-	{
-		EMaterialProperty Property = MP_MAX;
-		if (!ResolveMaterialPropertyByInputName(TargetInput, Property))
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidConnection,
-				FString::Printf(TEXT("Unknown MaterialResult input: %s"), *TargetInput)
-			);
-		}
-
-		FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
-		if (Input == nullptr)
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidConnection,
-				FString::Printf(TEXT("MaterialResult input unavailable: %s"), *TargetInput)
-			);
-		}
-
-		Input->Expression = nullptr;
-		Input->OutputIndex = 0;
-	}
-	else
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidConnection,
-			TEXT("Expression-to-expression disconnections not yet implemented")
-		);
-	}
-
-	if (!FCortexCommandRouter::IsInBatch())
-	{
-		Material->PostEditChange();
-	}
-	else
-	{
-		FCortexBatchScope::MarkMaterialDirty(Material);
-	}
-	Material->MarkPackageDirty();
-
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Disconnect Material Nodes")), !FCortexCommandRouter::IsInBatch());
+	CortexMaterialInputUtils::BeginEdit(Material);
+	Input->Expression = nullptr;
+	Input->OutputIndex = 0;
+	CortexMaterialInputUtils::UpdateUseConstant(Material, Property, true);
+	CortexMaterialInputUtils::EndEdit(Material);
+	auto Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("target_node"), TargetNode);
 	Data->SetStringField(TEXT("target_input"), TargetInput);
 	Data->SetBoolField(TEXT("disconnected"), true);
-
 	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexMaterialGraphOps::SetMaterialInput(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath, Name;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("input"), Name))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing asset_path or input"));
+	}
+	FCortexCommandResult LoadError;
+	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
+	if (!Material)
+	{
+		return LoadError;
+	}
+	EMaterialProperty Property = MP_MAX;
+	FExpressionInput* Input = nullptr;
+	if (!CortexMaterialInputUtils::ResolveInput(Material, Name, Property, Input))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Unknown or unavailable material input"));
+	}
+	return CortexMaterialInputUtils::ApplyPatch(Material, Property, Params);
 }
 
 FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonObject>& Params)

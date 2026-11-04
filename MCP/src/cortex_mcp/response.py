@@ -48,6 +48,15 @@ _REFLECT_DETAIL_SELECTOR = "Request detail=summary, or narrow the class you insp
 _REFLECT_CONTEXT_SELECTOR = (
     "Request detail=summary, or read the parent properties only instead of the whole context."
 )
+# Both extended material reads can also refuse; the supported narrowing is their own caller-side
+# selectors, never a limit the read does not consume.
+_MATERIAL_INPUT_STATE_SELECTOR = (
+    "Select fewer 'properties', omit include_input_state, or read the root state separately "
+    "through material.get_material."
+)
+_MATERIAL_CONNECTIONS_SELECTOR = (
+    "Omit include_input_state, or read the root state separately through material.get_material."
+)
 _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
     "data.get_data_asset": (
         "Select the needed members with 'fields' instead of reading the whole DataAsset."
@@ -55,6 +64,8 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
     "material.get_node": (
         "Request only the needed 'properties' of the node, or read the node identity alone."
     ),
+    "material.get_material": _MATERIAL_INPUT_STATE_SELECTOR,
+    "material.list_connections": _MATERIAL_CONNECTIONS_SELECTOR,
     "umg.get_tree": (
         "Bound the traversal with 'depth' or 'max_nodes', use names_only=true for a lean "
         "hierarchy, or inspect one widget with umg.get_widget."

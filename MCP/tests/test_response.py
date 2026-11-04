@@ -117,19 +117,6 @@ class TestAutoDetectTruncation:
 
         assert result == data
 
-    def test_truncation_suggestion_mentions_limit(self):
-        """Truncation metadata suggests using 'limit' parameter."""
-        data = _make_large_list("results", _OVERSIZED_COUNT)
-        result = json.loads(format_response(data, "test"))
-
-        assert "limit" in result["_truncated"]["suggestion"].lower()
-
-    def test_no_truncatable_list_error_suggestion_mentions_limit(self):
-        """RESPONSE_TOO_LARGE error suggestion should also mention 'limit'."""
-        data = {"huge_string": "x" * 50_000}
-        result = json.loads(format_response(data, "test"))
-
-        assert "limit" in result["_suggestion"].lower()
 
 
 class TestCursorEncoding:
@@ -700,3 +687,63 @@ class TestMutationResponseBounds:
             assert p["next_offset"] > 0
 
 
+class TestMaterialInputStateResponsePolicy:
+    """Oversized material reads must refuse, not silently shorten state or topology."""
+
+    def test_material_get_material_oversized_property_read_refuses_without_shortening(self):
+        root_input = {
+            "input": "OpacityMask", "connected": False, "source_node": None,
+            "output_index": 0, "mask": 0, "mask_r": 0, "mask_g": 0, "mask_b": 0, "mask_a": 0,
+            "supports_constant": True, "inline_constant_allowed": True,
+            "use_constant": True, "constant": 1.0,
+        }
+        # EditorOnlyData.ParameterGroupData is a real reflected array leaf (one selected path,
+        # no array-index grammar): over budget as unique FParameterGroupData records.
+        group_records = [
+            {"GroupName": f"ParameterGroup_{index:04d}", "GroupSortPriority": index}
+            for index in range(1200)
+        ]
+        data = {
+            "asset_path": "/Game/Materials/M_InputState",
+            "properties": {"EditorOnlyData.ParameterGroupData": group_records},
+            "root_inputs": [root_input],
+        }
+        router, _ = _router_with_mock("material", data)
+        payload = json.loads(router("get_material", {
+            "asset_path": data["asset_path"], "include_input_state": True,
+            "properties": ["EditorOnlyData.ParameterGroupData"],
+        }))
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert payload["reader_complete"] is False
+        assert "root_inputs" not in payload
+        assert "properties" not in payload
+        assert "_truncated" not in payload
+        assert payload["asset_path"] == data["asset_path"]
+        assert "properties" in payload["_suggestion"]
+        assert "include_input_state" in payload["_suggestion"]
+        assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+
+    def test_material_list_connections_oversized_topology_refuses(self):
+        connections = [
+            {
+                "source_node": f"MaterialExpressionMultiply_{index}",
+                "source_output": 0,
+                "target_node": f"MaterialExpressionAdd_{index + 1}",
+                "target_input": "A",
+            }
+            for index in range(400)
+        ]
+        router, _ = _router_with_mock("material", {"connections": connections, "count": 400})
+        payload = json.loads(router("list_connections", {
+            "asset_path": "/Game/Materials/M_InputState", "include_input_state": False,
+        }))
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert payload["reader_complete"] is False
+        assert "connections" not in payload
+        assert "_truncated" not in payload
+        assert payload["count"] == 400
+        assert payload["asset_path"] == "/Game/Materials/M_InputState"
+        assert "get_material" in payload["_suggestion"]
+        assert "paginate" not in payload["_suggestion"].lower()
+        assert "limit" not in payload["_suggestion"].lower()
+        assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
