@@ -78,7 +78,11 @@ def register_material_asset_tools(mcp, connection: UEConnection):
             - name: Material name
             - asset_path: Full asset path
             - material_domain: Domain (Surface, DeferredDecal, LightFunction, PostProcess, UI)
-            - blend_mode: Blend mode (Opaque, Masked, Translucent, Additive, Modulate)
+            - blend_mode: Authored blend mode (Opaque, Masked, Translucent, Additive, Modulate,
+              AlphaComposite, AlphaHoldout)
+            - effective_blend_mode: Blend mode actually compiled; differs from blend_mode when a
+              legacy opaque override applies
+            - can_masked_be_assumed_opaque: Legacy override that promotes Masked to Opaque
             - shading_model: Shading model (Unlit, DefaultLit, Subsurface, ClearCoat, etc.)
             - two_sided: Whether material is two-sided
             - is_masked: Whether material uses masking
