@@ -2,6 +2,8 @@
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPSCSDiagnostics.h"
 #include "Operations/CortexBPTypeUtils.h"
+#include "Operations/CortexBPWidgetUtils.h"
+#include "Components/Widget.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
 #include "Curves/CurveFloat.h"
@@ -671,26 +673,10 @@ TArray<TSharedPtr<FJsonValue>> ExtractWidgetEntities(UBlueprint* BP, const TMap<
 		return Result;
 	}
 
-	const FObjectProperty* WidgetTreeProp = FindObjectProperty(BP->GetClass(), TEXT("WidgetTree"));
-	UObject* WidgetTreeObj = WidgetTreeProp ? WidgetTreeProp->GetObjectPropertyValue_InContainer(BP) : nullptr;
-	if (!WidgetTreeObj)
-	{
-		return Result;
-	}
-
-	const FArrayProperty* AllWidgetsProp = FindArrayProperty(WidgetTreeObj->GetClass(), TEXT("AllWidgets"));
-	const FObjectProperty* WidgetObjProp = AllWidgetsProp ? CastField<FObjectProperty>(AllWidgetsProp->Inner) : nullptr;
-	if (!AllWidgetsProp || !WidgetObjProp)
-	{
-		return Result;
-	}
-
-	FScriptArrayHelper WidgetsArray(AllWidgetsProp, AllWidgetsProp->ContainerPtrToValuePtr<void>(WidgetTreeObj));
 	static UClass* ListViewBaseClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.ListViewBase"));
 
-	for (int32 Index = 0; Index < WidgetsArray.Num(); ++Index)
+	for (UWidget* WidgetObject : CortexBPWidgetUtils::CollectWidgets(BP))
 	{
-		UObject* WidgetObject = WidgetObjProp->GetObjectPropertyValue(WidgetsArray.GetRawPtr(Index));
 		if (!WidgetObject)
 		{
 			continue;
