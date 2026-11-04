@@ -2194,6 +2194,16 @@ bool FCortexGraphMigrationRetirePatchEligibilityTest::RunTest(const FString& Par
 	PruneRequest->SetObjectField(TEXT("migration"), PruneMigration);
 	TestTrue(TEXT("prune_island is eligible for a compiler-error Blueprint"),
 		FCortexGraphPatchOps::ValidateEligibility(Fixture.Blueprint, PruneRequest, Error));
+	for (const TCHAR* OtherMigration : { TEXT("replace_entry"), TEXT("copy_subgraph"), TEXT("move_subgraph") })
+	{
+		Error = FCortexCommandResult();
+		const TSharedPtr<FJsonObject> OtherRequest = MakeShared<FJsonObject>();
+		const TSharedPtr<FJsonObject> OtherOp = MakeShared<FJsonObject>();
+		OtherOp->SetStringField(TEXT("op"), OtherMigration);
+		OtherRequest->SetObjectField(TEXT("migration"), OtherOp);
+		TestFalse(FString::Printf(TEXT("%s remains ineligible for a compiler-error Blueprint"), OtherMigration),
+			FCortexGraphPatchOps::ValidateEligibility(Fixture.Blueprint, OtherRequest, Error));
+	}
 	Error = FCortexCommandResult();
 	const TSharedPtr<FJsonObject> AuthoringRequest = MakeShared<FJsonObject>();
 	TestFalse(TEXT("ordinary authoring remains ineligible for a compiler-error Blueprint"),

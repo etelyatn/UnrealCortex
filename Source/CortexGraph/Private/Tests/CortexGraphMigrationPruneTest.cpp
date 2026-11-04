@@ -1756,6 +1756,7 @@ bool FCortexGraphMigrationPruneCompileInvalidTest::RunTest(const FString& Parame
 	{
 		const FFixtureState Before = Observe(Blueprint);
 		const FString GraphBefore = CaptureGraphNative(Blueprint, Graph);
+		const FString GeneratedBefore = FCortexGraphPatchState::ComputeGeneratedStateDigest(Blueprint);
 		TSharedPtr<FJsonObject> Request = PruneRequest(Blueprint, TEXT("00000000-0000-0000-0000-000000107001"),
 			Graph, Fixture.Entry, Approved, true, true);
 		FCortexGraphPreparedPatch Prepared;
@@ -1768,13 +1769,18 @@ bool FCortexGraphMigrationPruneCompileInvalidTest::RunTest(const FString& Parame
 			FCortexGraphPatchOps::Execute(Blueprint, Request, Outcome, Error));
 		TestFalse(TEXT("the compiling prune passes apply eligibility"),
 			Error.ErrorMessage.Contains(TEXT("pre-existing compiler errors")));
+		TestEqual(TEXT("the failure is the compile"), Error.ErrorCode, CortexErrorCodes::CompileFailed);
+		TestEqual(TEXT("the prune was applied before the compile"), Outcome.ApplyStatus, FString(TEXT("applied")));
+		TestEqual(TEXT("the compile reports failure"), Outcome.CompileStatus, FString(TEXT("failed")));
+		TestEqual(TEXT("exactly one target compile ran"), Outcome.TargetCompileCount, 1);
 		TestEqual(TEXT("the failed compile reports a restore"), Outcome.RollbackStatus, FString(TEXT("restored")));
 		TestFalse(TEXT("the exact error-state restore does not block"), Outcome.bBlocked);
 		TestEqual(TEXT("the graph is restored exactly"),
 			FirstCaptureDifference(GraphBefore, CaptureGraphNative(Blueprint, Graph)), FString());
 		TestEqual(TEXT("the restore keeps the node count"), CountNativeNodes(Blueprint), Before.Nodes);
-		TestEqual(TEXT("the restore keeps BS_Error"),
-			static_cast<int32>(Blueprint->Status), static_cast<int32>(BS_Error));
+		TestEqual(TEXT("the recovery compile reproduces the original generated state"),
+			FCortexGraphPatchState::ComputeGeneratedStateDigest(Blueprint), GeneratedBefore);
+		TestEqual(TEXT("the restore keeps the dirty flag"), Fixture.Fixture.Package->IsDirty(), Before.bDirty);
 	}
 
 	// compile=false, save=false stages the prune on the invalid asset without compiling.
@@ -1800,8 +1806,74 @@ bool FCortexGraphMigrationPruneCompileInvalidTest::RunTest(const FString& Parame
 		TestEqual(TEXT("exactly the approved node is removed"), CountNativeNodes(Blueprint), Before.Nodes - 1);
 		TestTrue(TEXT("the retained consumer keeps the shared producer"),
 			NodesLinked(Fixture.Producer, TEXT("ReturnValue"), Fixture.RetainedPrint, TEXT("InString")));
-		TestTrue(TEXT("the staged package stays dirty"), Fixture.Fixture.Package->IsDirty());
+		TestTrue(TEXT("the staged package is dirty after the apply"), Fixture.Fixture.Package->IsDirty());
 	}
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 13. CompileInvalidIslandRepairCompiles
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationPruneCompileInvalidRepairTest,
+	"Cortex.Graph.Authoring.Migration.Prune.CompileInvalidIslandRepairCompiles",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationPruneCompileInvalidRepairTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationPruneTest;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_PruneCompileInvalidRepair_T107")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+	UK2Node_CustomEvent* Entry = AddEntryNode(Graph, TEXT("CortexPruneRepairEntry"), 0, 0);
+	UK2Node_CustomEvent* RetainedEntry = AddEntryNode(Graph, TEXT("CortexPruneRepairRetained"), 0, 800);
+	UK2Node_CallFunction* RetainedPrint = AddPrintNode(Graph, TEXT("retained"), 600, 800);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	LinkNodes(Graph, RetainedEntry, TEXT("then"), RetainedPrint, TEXT("execute"));
+
+	// The stale island is the only compiler error: a linked call whose function disappeared, as after a
+	// reparent removes the member it called. The pins stay allocated from the valid function.
+	UK2Node_CallFunction* StaleCall = AddPrintNode(Graph, TEXT("stale"), 600, 0);
+	LinkNodes(Graph, Entry, TEXT("then"), StaleCall, TEXT("execute"));
+	StaleCall->FunctionReference.SetSelfMember(FName(TEXT("CortexPruneRemovedNativeFunction")));
+	AddExpectedError(TEXT("CortexPruneRemovedNativeFunction"), EAutomationExpectedErrorFlags::Contains, 0);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	TestEqual(TEXT("the stale island makes a real compiler error"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+	TestTrue(TEXT("the stale call is linked to its entry"), NodesLinked(Entry, TEXT("then"), StaleCall, TEXT("execute")));
+
+	const TArray<FGuid> Approved = { StaleCall->NodeGuid };
+	TSharedPtr<FJsonObject> Request = PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000107003"),
+		Graph, Entry, Approved, true, true);
+	FCortexGraphPreparedPatch Prepared;
+	FCortexGraphMigrationPrunePlan Plan;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("the repairing prune previews: %s"), *Error.ErrorMessage),
+		PrepareApply(Fixture.Blueprint, Request, Prepared, Plan, Error));
+	TestEqual(TEXT("the preview publishes exactly the stale call as removable"),
+		Plan.RemovableGuids, GuidStrings(Approved));
+	FOperations Operations;
+	Operations.Begin();
+	FCortexGraphPatchOutcome Outcome;
+	const bool bApplied = FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error);
+	Operations.End();
+	TestTrue(FString::Printf(TEXT("the repairing prune applies: %s [%s]"),
+		*Error.ErrorMessage, *FString::Join(Outcome.Diagnostics, TEXT("; "))), bApplied);
+	TestEqual(TEXT("the repair compiles"), Outcome.CompileStatus, FString(TEXT("compiled")));
+	TestEqual(TEXT("the repair reads back"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+	TestEqual(TEXT("exactly one target compile ran"), Operations.TargetCompiles, 1);
+	TestNotEqual(TEXT("the asset is no longer compile-invalid"),
+		static_cast<int32>(Fixture.Blueprint->Status), static_cast<int32>(BS_Error));
+	TestNull(TEXT("the stale call is removed"), FindNodeByGuidInGraph(Graph, StaleCall->NodeGuid));
+	TestNotNull(TEXT("prune keeps the entry terminator"), FindNodeByGuidInGraph(Graph, Entry->NodeGuid));
+	TestTrue(TEXT("unrelated retained logic is untouched"),
+		NodesLinked(RetainedEntry, TEXT("then"), RetainedPrint, TEXT("execute")));
 
 	Fixture.Cleanup();
 	return true;
