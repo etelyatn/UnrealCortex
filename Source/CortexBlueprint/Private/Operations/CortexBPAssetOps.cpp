@@ -1595,7 +1595,7 @@ FCortexCommandResult FCortexBPAssetOps::Duplicate(const TSharedPtr<FJsonObject>&
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& Params, const bool bSkipGarbageCollection)
 {
 	if (Params.IsValid() && Params->HasField(TEXT("items")))
 	{
@@ -1641,7 +1641,7 @@ FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& P
 	FCompilerResultsLog CompilerResults;
 	CompilerResults.bSilentMode = true;
 	CompilerResults.bAnnotateMentionedNodes = true;
-	const EBlueprintCompileOptions CompileOptions = Blueprint->IsA<ULevelScriptBlueprint>()
+	const EBlueprintCompileOptions CompileOptions = (bSkipGarbageCollection || Blueprint->IsA<ULevelScriptBlueprint>())
 		? EBlueprintCompileOptions::SkipGarbageCollection
 		: EBlueprintCompileOptions::None;
 	FKismetEditorUtilities::CompileBlueprint(Blueprint, CompileOptions, &CompilerResults);

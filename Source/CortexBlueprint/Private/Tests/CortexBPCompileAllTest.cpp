@@ -11,6 +11,7 @@
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "CortexAssetMutationGuard.h"
 #include "GameFramework/Actor.h"
 #include "K2Node_CustomEvent.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -289,6 +290,35 @@ bool FCortexBPCompileAllTest::RunTest(const FString& Parameters)
 				+ Total(Result.Data, TEXT("warning")), 0);
 		}
 		IFileManager::Get().Delete(*EngineReport);
+	}
+
+	// An asset blocked after a failed recovery is skipped with the guard's reason, like single and batch compile refuse it.
+	{
+		UBlueprint* Blocked = MakeCompileAllActor(Dir + TEXT("Blocked"), TEXT("BP_Blocked"));
+		if (TestNotNull(TEXT("blocked fixture created"), Blocked))
+		{
+			const FString BlockedPath = Blocked->GetPathName();
+			FCortexAssetMutationGuard::Block(Blocked, TEXT("forced recovery verification failure"));
+			const FString BlockedReport = OutputPath(TEXT("compile_all_blocked"), Suffix);
+			TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+			Params->SetArrayField(TEXT("paths"), StringValues({CleanPath, BlockedPath}));
+			Params->SetStringField(TEXT("out_path"), BlockedReport);
+			const FCortexCommandResult Result = RunCompileAll(Params);
+			if (TestTrue(TEXT("blocked compile_all succeeds"), Result.bSuccess && Result.Data.IsValid()))
+			{
+				TestEqual(TEXT("blocked asset skipped"), Total(Result.Data, TEXT("skipped")), 1);
+				TestEqual(TEXT("clean asset still compiled"), Total(Result.Data, TEXT("success")) + Total(Result.Data, TEXT("warning")), 1);
+			}
+			const TSharedPtr<FJsonObject> Report = ReadJsonFile(BlockedReport);
+			const TSharedPtr<FJsonObject> BlockedEntry = FindAsset(Report, BlockedPath);
+			if (TestTrue(TEXT("blocked entry"), BlockedEntry.IsValid()))
+			{
+				TestEqual(TEXT("blocked status"), BlockedEntry->GetStringField(TEXT("compile_status")), FString(TEXT("skipped")));
+				TestTrue(TEXT("blocked reason carries the guard reason"),
+					BlockedEntry->GetStringField(TEXT("reason")).Contains(TEXT("forced recovery verification failure")));
+			}
+			IFileManager::Get().Delete(*BlockedReport);
+		}
 	}
 
 	// Argument validation.

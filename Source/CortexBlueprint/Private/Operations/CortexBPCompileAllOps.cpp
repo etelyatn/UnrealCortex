@@ -5,6 +5,7 @@
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CortexCommandRouter.h"
+#include "CortexAssetMutationGuard.h"
 #include "CortexEditorUtils.h"
 #include "CortexSafeFileContract.h"
 #include "Dom/JsonObject.h"
@@ -13,6 +14,7 @@
 #include "Engine/LevelScriptBlueprint.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/GarbageCollection.h"
 #include "Operations/CortexBPAssetOps.h"
 
 namespace CortexBPCompileAllPrivate
@@ -86,9 +88,18 @@ namespace CortexBPCompileAllPrivate
 			return Entry;
 		}
 
+		// Same fail-closed guard the single and batch compile paths enforce.
+		FString BlockReason;
+		if (FCortexAssetMutationGuard::IsPathBlocked(Entry.AssetPath, BlockReason))
+		{
+			Entry.Status = EStatus::Skipped;
+			Entry.Reason = FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason);
+			return Entry;
+		}
+
 		TSharedPtr<FJsonObject> CompileParams = MakeShared<FJsonObject>();
 		CompileParams->SetStringField(TEXT("asset_path"), Entry.AssetPath);
-		const FCortexCommandResult Result = FCortexBPAssetOps::Compile(CompileParams);
+		const FCortexCommandResult Result = FCortexBPAssetOps::Compile(CompileParams, /*bSkipGarbageCollection=*/true);
 
 		// Compile answers a failed build with COMPILE_FAILED and the payload in the error details.
 		const TSharedPtr<FJsonObject> Payload = Result.bSuccess ? Result.Data : Result.ErrorDetails;
@@ -269,6 +280,7 @@ FCortexCommandResult FCortexBPCompileAllOps::CompileAll(const TSharedPtr<FJsonOb
 	}
 
 	int32 ExcludedByType = 0;
+	bool bCompiledAny = false;
 	for (const TPair<FString, FAssetData>& Pair : Found)
 	{
 		const FString Type = FCortexBPAssetOps::DetermineBlueprintTypeFromAssetData(Pair.Value);
@@ -278,6 +290,12 @@ FCortexCommandResult FCortexBPCompileAllOps::CompileAll(const TSharedPtr<FJsonOb
 			continue;
 		}
 		Entries.Add(CompileOne(Pair.Value, Type));
+		bCompiledAny = true;
+	}
+	if (bCompiledAny)
+	{
+		// CompileOne defers garbage collection per asset; one pass for the whole run.
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 	}
 	Algo::SortBy(Entries, &FEntry::AssetPath, [](const FString& A, const FString& B) { return A.Compare(B, ESearchCase::CaseSensitive) < 0; });
 

@@ -46,8 +46,9 @@ public:
 	/**
 	 * Compile Blueprint
 	 * Params: asset_path (string)
+	 * bSkipGarbageCollection: the caller compiles many assets and collects garbage once itself.
 	 */
-	static FCortexCommandResult Compile(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult Compile(const TSharedPtr<FJsonObject>& Params, bool bSkipGarbageCollection = false);
 
 	/**
 	 * Save Blueprint
