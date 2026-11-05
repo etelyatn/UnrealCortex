@@ -102,8 +102,9 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
             JSON with:
             - name: Blueprint name
             - asset_path: Full path
-            - type: Blueprint type
-            - parent_class: Parent class name
+            - type: Blueprint type (same vocabulary as blueprint.list's `type` filter)
+            - parent_class: Immediate parent class name (Blueprint parents are reported by asset name)
+            - native_parent_class: Nearest native (C++) ancestor class
             - variables: Array of variables, each with name and type
             - functions: Array of functions, each with name (and inputs/outputs when non-empty)
             - graphs: Array of all graphs

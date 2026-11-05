@@ -43,6 +43,7 @@ bool FCortexBPAnalysisWidgetEntitiesAfterReloadTest::RunTest(const FString& Para
 			ResetLoaders(Pkg);
 			if (UObject* Asset = FindObject<UObject>(nullptr, *ObjectPath))
 			{
+				Asset->ClearFlags(RF_Public | RF_Standalone);
 				Asset->MarkAsGarbage();
 			}
 			Pkg->MarkAsGarbage();
@@ -66,9 +67,9 @@ bool FCortexBPAnalysisWidgetEntitiesAfterReloadTest::RunTest(const FString& Para
 		const FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), CreateParams);
 		if (!CreateResult.bSuccess)
 		{
-			AddInfo(TEXT("Skipping: Widget Blueprint creation unavailable in current test environment"));
+			AddError(FString::Printf(TEXT("Widget Blueprint creation failed: %s"), *CreateResult.ErrorMessage));
 			Cleanup();
-			return true;
+			return false;
 		}
 	}
 

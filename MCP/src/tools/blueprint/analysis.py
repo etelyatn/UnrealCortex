@@ -49,7 +49,7 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
             asset_path: Full Blueprint asset path (e.g. "/Game/Blueprints/BP_Player")
             sections: Optional output sections to return (e.g. ["variables", "complexity_metrics"]).
                 Omitted or empty returns everything. The identity fields name, asset_path, type,
-                parent_class and parent_class_path are always included. Unknown names are refused
+                parent_class, native_parent_class and parent_class_path are always included. Unknown names are refused
                 with INVALID_FIELD listing the valid sections.
 
         Returns:

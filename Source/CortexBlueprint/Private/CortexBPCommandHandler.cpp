@@ -362,7 +362,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("sections"), TEXT("array"),
 			TEXT("Optional section names to return (omitted or empty = all). Identity fields name, asset_path, type, "
-				"parent_class, parent_class_path are always included. Valid: is_compiled, variables, functions, "
+				"parent_class, native_parent_class, parent_class_path are always included. Valid: is_compiled, variables, functions, "
 				"scs_components, scs_collisions, dynamic_components, graphs, per_graph_elements, latent_nodes, "
 				"timelines, event_dispatchers, interfaces_implemented, input_bindings, construction_script, widgets, "
 				"named_slots, widget_animations, widget_bindings, referenced_user_types, cdo_overrides, "

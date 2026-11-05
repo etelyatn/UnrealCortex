@@ -1046,7 +1046,8 @@ FString ResolveMemberDefaultValue(const UBlueprint* BP, const FBPVariableDescrip
 		return BoolProperty->GetPropertyValue(ValuePtr) ? TEXT("true") : TEXT("false");
 	}
 
-	// The value is passed as its own delta: a null delta skips values equal to the type default.
+	// Passing the value as its own delta makes ExportText_Direct take its `Data == Delta` branch (Property.cpp), which
+	// always exports; with a null delta, values identical to the type default (0, "", None) would export nothing.
 	FString Exported;
 	Property->ExportText_Direct(Exported, ValuePtr, ValuePtr, nullptr, PPF_None);
 	return Exported;
@@ -1581,11 +1582,12 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	const bool bIsWidgetBP = IsWidgetBlueprint(BP);
-	const FString BlueprintType = bIsWidgetBP ? TEXT("WidgetBlueprint") : FCortexBPAssetOps::DetermineBlueprintType(BP);
+	const FString BlueprintType = FCortexBPAssetOps::DetermineBlueprintType(BP);
 	Data->SetStringField(TEXT("name"), BP->GetName());
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("type"), BlueprintType);
-	Data->SetStringField(TEXT("parent_class"), BP->ParentClass ? BP->ParentClass->GetName() : TEXT(""));
+	Data->SetStringField(TEXT("parent_class"), FCortexBPAssetOps::ParentClassDisplayName(BP->ParentClass));
+	Data->SetStringField(TEXT("native_parent_class"), FCortexBPAssetOps::NativeParentClassName(BP->ParentClass));
 	Data->SetStringField(TEXT("parent_class_path"), BP->ParentClass ? BP->ParentClass->GetPathName() : TEXT(""));
 	Data->SetBoolField(TEXT("is_compiled"), BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings);
 	const TMap<FString, TSet<FString>> BoundEventsMap = DiscoverBoundEvents(BP);
@@ -2335,7 +2337,8 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	if (SelectedSections.Num() > 0)
 	{
 		static const TSet<FString> IdentityFields = {
-			TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("parent_class_path")};
+			TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("native_parent_class"),
+			TEXT("parent_class_path")};
 		for (auto It = Data->Values.CreateIterator(); It; ++It)
 		{
 			const FString KeyName(*It.Key());

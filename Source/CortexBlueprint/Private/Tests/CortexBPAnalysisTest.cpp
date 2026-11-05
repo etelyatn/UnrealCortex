@@ -343,7 +343,8 @@ bool FCortexBPAnalyzeForMigrationSectionsSelectorTest::RunTest(const FString& Pa
 			Keys.Add(FString(*Pair.Key));
 		}
 		const TSet<FString> Expected = {
-			TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("parent_class_path"),
+			TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("native_parent_class"),
+			TEXT("parent_class_path"),
 			TEXT("variables"), TEXT("complexity_metrics")};
 		TestTrue(TEXT("Output must be exactly identity fields plus the selected sections"),
 			Keys.Num() == Expected.Num() && Keys.Includes(Expected));
@@ -811,7 +812,7 @@ bool FCortexBPAnalysisWidgetTypeDetectionTest::RunTest(const FString& Parameters
 	{
 		FString Type;
 		Result.Data->TryGetStringField(TEXT("type"), Type);
-		TestEqual(TEXT("Type should be WidgetBlueprint"), Type, TEXT("WidgetBlueprint"));
+		TestEqual(TEXT("Type should be Widget"), Type, TEXT("Widget"));
 		TestTrue(TEXT("widgets should exist"), Result.Data->HasField(TEXT("widgets")));
 		TestTrue(TEXT("widget_animations should exist"), Result.Data->HasField(TEXT("widget_animations")));
 		TestTrue(TEXT("named_slots should exist"), Result.Data->HasField(TEXT("named_slots")));
@@ -842,7 +843,7 @@ bool FCortexBPAnalysisV4WidgetEntitiesTest::RunTest(const FString& Parameters)
 
 	FString Type;
 	Result.Data->TryGetStringField(TEXT("type"), Type);
-	TestEqual(TEXT("type is WidgetBlueprint"), Type, TEXT("WidgetBlueprint"));
+	TestEqual(TEXT("type is Widget"), Type, TEXT("Widget"));
 
 	const TArray<TSharedPtr<FJsonValue>>* Widgets = nullptr;
 	const TArray<TSharedPtr<FJsonValue>>* NamedSlots = nullptr;

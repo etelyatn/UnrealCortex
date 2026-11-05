@@ -13,7 +13,7 @@ public:
 	/**
 	 * Analyze a Blueprint for C++ migration.
 	 * Params: asset_path (string), sections (optional string[]; omitted/empty = all).
-	 * Identity fields (name, asset_path, type, parent_class, parent_class_path) are always emitted.
+	 * Identity fields (name, asset_path, type, parent_class, native_parent_class, parent_class_path) are always emitted.
 	 */
 	static FCortexCommandResult AnalyzeForMigration(const TSharedPtr<FJsonObject>& Params);
 

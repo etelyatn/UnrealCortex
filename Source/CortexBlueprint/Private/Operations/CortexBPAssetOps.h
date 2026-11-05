@@ -74,4 +74,13 @@ public:
 
 	/** Classify a loaded UBlueprint with the same rules used for Asset Registry rows (Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown) */
 	static FString DetermineBlueprintType(const UBlueprint* BP);
+
+	/** Immediate-parent display name shared by list/get_info/analyze/create: asset name for Blueprint generated classes (no "_C"), class name otherwise. Empty for null. */
+	static FString ParentClassDisplayName(const UClass* ParentClass);
+
+	/** Short name of the nearest native ancestor at or above ParentClass. Empty for null. */
+	static FString NativeParentClassName(const UClass* ParentClass);
+
+	/** Asset Registry class-path tag value to object path; empty for empty or "None" tags. */
+	static FString ClassTagToObjectPath(const FString& TagValue);
 };

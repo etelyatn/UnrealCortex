@@ -512,16 +512,36 @@ namespace
 		return List;
 	}
 
-	/** Short display name of a class object path; Blueprint generated classes report the asset name without "_C". */
-	FString ParentClassDisplayName(const FString& ClassObjectPath)
+	/** Short display name of a class object path; Blueprint generated classes (non-/Script/) report the asset name without "_C". */
+	FString ClassDisplayNameFromPath(const FString& ClassObjectPath)
 	{
 		FString Name = FPackageName::ObjectPathToObjectName(ClassObjectPath);
-		if (Name.EndsWith(TEXT("_C")))
+		if (Name.EndsWith(TEXT("_C")) && !ClassObjectPath.StartsWith(TEXT("/Script/")))
 		{
 			Name.LeftChopInline(2);
 		}
 		return Name;
 	}
+}
+
+FString FCortexBPAssetOps::ParentClassDisplayName(const UClass* ParentClass)
+{
+	return ParentClass ? ClassDisplayNameFromPath(ParentClass->GetPathName()) : FString();
+}
+
+FString FCortexBPAssetOps::NativeParentClassName(const UClass* ParentClass)
+{
+	const UClass* Native = FindNativeAncestor(ParentClass);
+	return Native ? Native->GetName() : FString();
+}
+
+FString FCortexBPAssetOps::ClassTagToObjectPath(const FString& TagValue)
+{
+	if (TagValue.IsEmpty() || TagValue == TEXT("None"))
+	{
+		return FString();
+	}
+	return FPackageName::ExportTextPathToObjectPath(TagValue);
 }
 
 FString FCortexBPAssetOps::DetermineBlueprintType(const UBlueprint* BP)
@@ -618,13 +638,10 @@ namespace
 		FString ParentTag;
 		AssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentTag);
 
-		const FString NativeParentPath = NativeParentTag.IsEmpty()
-			? FString()
-			: FPackageName::ExportTextPathToObjectPath(NativeParentTag);
+		const FString NativeParentPath = FCortexBPAssetOps::ClassTagToObjectPath(NativeParentTag);
 		// Older tag sets may only carry the native parent; treat it as the immediate parent then.
-		Row.ParentClassPath = ParentTag.IsEmpty()
-			? NativeParentPath
-			: FPackageName::ExportTextPathToObjectPath(ParentTag);
+		const FString ParentTagPath = FCortexBPAssetOps::ClassTagToObjectPath(ParentTag);
+		Row.ParentClassPath = ParentTagPath.IsEmpty() ? NativeParentPath : ParentTagPath;
 
 		if (!NativeParentPath.IsEmpty())
 		{
@@ -632,7 +649,7 @@ namespace
 		}
 		if (!Row.ParentClassPath.IsEmpty())
 		{
-			Row.ParentClass = ParentClassDisplayName(Row.ParentClassPath);
+			Row.ParentClass = ClassDisplayNameFromPath(Row.ParentClassPath);
 		}
 
 		const FString BlueprintTypeTag = AssetData.GetTagValueRef<FString>(FBlueprintTags::BlueprintType);
@@ -1124,7 +1141,7 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 		ResponseType = FCortexBPAssetOps::DetermineBlueprintType(NewBP);
 	}
 	Result.Data->SetStringField(TEXT("type"), ResponseType);
-	Result.Data->SetStringField(TEXT("parent_class"), ParentClass ? ParentClass->GetName() : TEXT(""));
+	Result.Data->SetStringField(TEXT("parent_class"), FCortexBPAssetOps::ParentClassDisplayName(ParentClass));
 	Result.Data->SetBoolField(TEXT("created"), true);
 
 	return Result;
@@ -1297,7 +1314,8 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	// Parent class
 	if (BP->ParentClass)
 	{
-		InfoObj->SetStringField(TEXT("parent_class"), BP->ParentClass->GetName());
+		InfoObj->SetStringField(TEXT("parent_class"), FCortexBPAssetOps::ParentClassDisplayName(BP->ParentClass));
+		InfoObj->SetStringField(TEXT("native_parent_class"), FCortexBPAssetOps::NativeParentClassName(BP->ParentClass));
 	}
 
 	// Compilation status

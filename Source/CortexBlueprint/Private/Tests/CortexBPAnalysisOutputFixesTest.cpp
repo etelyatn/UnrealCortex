@@ -477,3 +477,54 @@ bool FCortexBPAnalysisGhostTickNotCountedTest::RunTest(const FString& Parameters
 	TestTrue(TEXT("Linked Tick is counted in complexity_metrics"), bMetricsTick);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisNonBoolDefaultsFromCDOTest,
+	"Cortex.Blueprint.Analysis.NonBoolDefaultsFromCDO",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisNonBoolDefaultsFromCDOTest::RunTest(const FString& Parameters)
+{
+	FOutputFixesBlueprintScope Scope(AActor::StaticClass(), TEXT("BP_NonBoolDefaults"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	FEdGraphPinType IntType;
+	IntType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	FEdGraphPinType StringType;
+	StringType.PinCategory = UEdGraphSchema_K2::PC_String;
+	FEdGraphPinType VectorType;
+	VectorType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+	VectorType.PinSubCategoryObject = TBaseStructure<FVector>::Get();
+	FEdGraphPinType ObjectType;
+	ObjectType.PinCategory = UEdGraphSchema_K2::PC_Object;
+	ObjectType.PinSubCategoryObject = AActor::StaticClass();
+
+	const bool bAdded = FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("UntouchedInt"), IntType)
+		&& FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("UntouchedString"), StringType)
+		&& FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("UntouchedVector"), VectorType)
+		&& FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("UntouchedObject"), ObjectType)
+		&& FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("ExplicitInt"), IntType, TEXT("5"));
+	if (!TestTrue(TEXT("Members added"), bAdded)) { return false; }
+
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	const TSharedPtr<FJsonObject> Data = RunAnalysis(*this, Blueprint);
+	if (!Data.IsValid()) { return false; }
+
+	const auto ExpectDefault = [this, &Data](const TCHAR* Name, const TCHAR* Expected)
+	{
+		const TSharedPtr<FJsonObject> Member = FindNamedObject(Data, TEXT("variables"), Name);
+		if (TestTrue(FString::Printf(TEXT("%s reported"), Name), Member.IsValid()))
+		{
+			TestEqual(FString::Printf(TEXT("%s default_value"), Name), Member->GetStringField(TEXT("default_value")), FString(Expected));
+		}
+	};
+	// The self-delta export always emits the CDO value, so untouched members report the engine's textual zero value.
+	ExpectDefault(TEXT("UntouchedInt"), TEXT("0"));
+	ExpectDefault(TEXT("UntouchedString"), TEXT(""));
+	ExpectDefault(TEXT("UntouchedVector"), TEXT("(X=0.000000,Y=0.000000,Z=0.000000)"));
+	ExpectDefault(TEXT("UntouchedObject"), TEXT("None"));
+	ExpectDefault(TEXT("ExplicitInt"), TEXT("5"));
+	return true;
+}
