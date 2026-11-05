@@ -65,4 +65,9 @@ struct CORTEXCORE_API FCortexSafeFileContract
 	static FCortexJsonFileWriteResult WriteJsonReportAtomic(
 		const FCortexResolvedFilePath& Path,
 		const TSharedRef<FJsonObject>& Payload);
+
+	/** Write Contents (UTF-8, no BOM) to Path through a sibling temp file moved into place; used for non-JSON-document reports such as JSONL. */
+	static FCortexJsonFileWriteResult WriteTextReportAtomic(
+		const FCortexResolvedFilePath& Path,
+		const FString& Contents);
 };

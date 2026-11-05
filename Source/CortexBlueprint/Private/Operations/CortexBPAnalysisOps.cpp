@@ -1563,6 +1563,67 @@ TConstArrayView<const TCHAR*> FCortexBPAnalysisOps::GetMigrationSectionNames()
 	return MakeArrayView(Names);
 }
 
+bool FCortexBPAnalysisOps::ParseMigrationSections(
+	const TSharedPtr<FJsonObject>& Params,
+	TSet<FString>& OutSections,
+	FCortexCommandResult& OutError,
+	const bool bAcceptGraphMetrics)
+{
+	OutSections.Reset();
+	if (!Params->HasField(TEXT("sections")))
+	{
+		return true;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* SectionsArray = nullptr;
+	if (!Params->TryGetArrayField(TEXT("sections"), SectionsArray))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField, TEXT("'sections' must be an array of strings"));
+		return false;
+	}
+
+	TArray<FString> ValidNames;
+	for (const TCHAR* Valid : GetMigrationSectionNames())
+	{
+		ValidNames.Add(Valid);
+	}
+	if (bAcceptGraphMetrics)
+	{
+		ValidNames.Add(GraphMetricsSectionName);
+	}
+
+	TArray<FString> BadEntries;
+	for (const TSharedPtr<FJsonValue>& SectionValue : *SectionsArray)
+	{
+		FString SectionName;
+		if (!SectionValue.IsValid() || !SectionValue->TryGetString(SectionName))
+		{
+			BadEntries.Add(TEXT("<non-string entry>"));
+			continue;
+		}
+		if (!ValidNames.Contains(SectionName))
+		{
+			BadEntries.Add(FString::Printf(TEXT("'%s'"), *SectionName));
+			continue;
+		}
+		OutSections.Add(SectionName);
+	}
+
+	if (BadEntries.Num() > 0)
+	{
+		OutSections.Reset();
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(
+				TEXT("Invalid 'sections' entries (unknown name or non-string): %s. Valid sections: %s"),
+				*FString::Join(BadEntries, TEXT(", ")),
+				*FString::Join(ValidNames, TEXT(", "))));
+		return false;
+	}
+	return true;
+}
+
 FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -1575,55 +1636,10 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 
 	// Optional section selector: validated before any work so a bad request yields no partial output.
 	TSet<FString> SelectedSections;
-	if (Params->HasField(TEXT("sections")))
+	FCortexCommandResult SectionError;
+	if (!ParseMigrationSections(Params, SelectedSections, SectionError, /*bAcceptGraphMetrics=*/false))
 	{
-		const TArray<TSharedPtr<FJsonValue>>* SectionsArray = nullptr;
-		if (!Params->TryGetArrayField(TEXT("sections"), SectionsArray))
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField, TEXT("'sections' must be an array of strings"));
-		}
-
-		TArray<FString> BadEntries;
-		for (const TSharedPtr<FJsonValue>& SectionValue : *SectionsArray)
-		{
-			FString SectionName;
-			if (!SectionValue.IsValid() || !SectionValue->TryGetString(SectionName))
-			{
-				BadEntries.Add(TEXT("<non-string entry>"));
-				continue;
-			}
-			bool bKnown = false;
-			for (const TCHAR* Valid : GetMigrationSectionNames())
-			{
-				if (SectionName == Valid)
-				{
-					bKnown = true;
-					break;
-				}
-			}
-			if (!bKnown)
-			{
-				BadEntries.Add(FString::Printf(TEXT("'%s'"), *SectionName));
-				continue;
-			}
-			SelectedSections.Add(SectionName);
-		}
-
-		if (BadEntries.Num() > 0)
-		{
-			TArray<FString> ValidNames;
-			for (const TCHAR* Valid : GetMigrationSectionNames())
-			{
-				ValidNames.Add(Valid);
-			}
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				FString::Printf(
-					TEXT("Invalid 'sections' entries (unknown name or non-string): %s. Valid sections: %s"),
-					*FString::Join(BadEntries, TEXT(", ")),
-					*FString::Join(ValidNames, TEXT(", "))));
-		}
+		return SectionError;
 	}
 
 	FString LoadError;
@@ -1633,10 +1649,20 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
+	FString BuildError;
+	const TSharedPtr<FJsonObject> Data = BuildMigrationAnalysis(BP, AssetPath, SelectedSections, BuildError);
+	if (!Data.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, BuildError);
+	}
+	return FCortexCommandRouter::Success(Data);
+}
+
+TSharedPtr<FJsonObject> FCortexBPAnalysisOps::BuildFullMigrationAnalysis(UBlueprint* BP, const FString& AssetPath)
+{
 	// Force inner sub-objects (UTimelineTemplate, delegates, etc.) to load.
 	// LoadObject<UBlueprint> loads the outer but leaves inner sub-objects unresident.
 	FBlueprintEditorUtils::PreloadMembers(BP);
-
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	const bool bIsWidgetBP = IsWidgetBlueprint(BP);
 	const FString BlueprintType = FCortexBPAssetOps::DetermineBlueprintType(BP);
@@ -2390,23 +2416,39 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	Data->SetArrayField(TEXT("entity_summary"), BuildEntitySummary(Data));
 	Data->SetObjectField(TEXT("complexity_metrics"), BuildComplexityMetrics(BP));
 
+	return Data;
+}
+
+void FCortexBPAnalysisOps::TrimMigrationAnalysis(const TSharedPtr<FJsonObject>& Analysis, const TSet<FString>& Sections)
+{
 	// Later sections read earlier ones (widgets, entity summary), so everything is built and then trimmed.
-	if (SelectedSections.Num() > 0)
+	static const TSet<FString> IdentityFields = {
+		TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("native_parent_class"),
+		TEXT("parent_class_path")};
+	for (auto It = Analysis->Values.CreateIterator(); It; ++It)
 	{
-		static const TSet<FString> IdentityFields = {
-			TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("native_parent_class"),
-			TEXT("parent_class_path")};
-		for (auto It = Data->Values.CreateIterator(); It; ++It)
+		const FString KeyName(*It.Key());
+		if (!IdentityFields.Contains(KeyName) && !Sections.Contains(KeyName))
 		{
-			const FString KeyName(*It.Key());
-			if (!IdentityFields.Contains(KeyName) && !SelectedSections.Contains(KeyName))
-			{
-				It.RemoveCurrent();
-			}
+			It.RemoveCurrent();
 		}
 	}
+}
 
-	return FCortexCommandRouter::Success(Data);
+TSharedPtr<FJsonObject> FCortexBPAnalysisOps::BuildMigrationAnalysis(
+	UBlueprint* BP, const FString& AssetPath, const TSet<FString>& Sections, FString& OutError)
+{
+	if (BP == nullptr)
+	{
+		OutError = TEXT("Cannot analyze a null Blueprint");
+		return nullptr;
+	}
+	const TSharedPtr<FJsonObject> Data = BuildFullMigrationAnalysis(BP, AssetPath);
+	if (Sections.Num() > 0)
+	{
+		TrimMigrationAnalysis(Data, Sections);
+	}
+	return Data;
 }
 
 // ── Pre-scan and metadata helpers ────────────────────────────────────────────
