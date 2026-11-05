@@ -472,3 +472,49 @@ bool FCortexBPCompareSnapshotsEdgeCasesTest::RunTest(const FString& Parameters)
 	}
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPCompareSnapshotsNativeParentInsertionTest,
+	"Cortex.Blueprint.CompareSnapshotsNativeParentInsertion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPCompareSnapshotsNativeParentInsertionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexBPSnapshotTestSupport;
+
+	// Inserting a native class between a Blueprint and the native class that declares a component changes nothing
+	// about the component: owner_class names the declaring class, so no component difference appears.
+	const FString Suffix = NewSuffix();
+	TStrongObjectPtr<UBlueprint> OnParent(MakeBlueprint(FString::Printf(TEXT("CortexInsertA_%s"), *Suffix), ACortexBPSnapshotComponentParent::StaticClass()));
+	TStrongObjectPtr<UBlueprint> OnChild(MakeBlueprint(FString::Printf(TEXT("CortexInsertB_%s"), *Suffix), ACortexBPSnapshotComponentChild::StaticClass()));
+	if (!TestTrue(TEXT("Blueprints created"), OnParent.Get() && OnChild.Get()))
+	{
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(OnParent.Get());
+	FKismetEditorUtilities::CompileBlueprint(OnChild.Get());
+
+	const FString BeforePath = OutputPath(TEXT("insert_before"), Suffix);
+	const FString AfterPath = OutputPath(TEXT("insert_after"), Suffix);
+	const TArray<FString> Sections = {TEXT("components")};
+	TestTrue(TEXT("before export"), Export(OnParent->GetPathName(), BeforePath, &Sections).bSuccess);
+	TestTrue(TEXT("after export"), Export(OnChild->GetPathName(), AfterPath, &Sections).bSuccess);
+
+	const TSharedPtr<FJsonObject> Record = FindRecord(ReadJsonFile(AfterPath), TEXT("components"), TEXT("inherited:NativeMesh"));
+	if (TestTrue(TEXT("inherited native component recorded"), Record.IsValid()))
+	{
+		TestEqual(TEXT("owner_class is the declaring class"), Record->GetStringField(TEXT("owner_class")),
+			ACortexBPSnapshotComponentParent::StaticClass()->GetPathName());
+	}
+	const FCortexCommandResult Result = CompareSnapshotFiles(BeforePath, AfterPath);
+	if (TestTrue(*FString::Printf(TEXT("compare succeeds (%s)"), *Result.ErrorMessage), Result.bSuccess && Result.Data.IsValid()))
+	{
+		TestEqual(TEXT("no component difference"), static_cast<int32>(Result.Data->GetNumberField(TEXT("difference_count"))), 0);
+	}
+	IFileManager::Get().Delete(*BeforePath);
+	IFileManager::Get().Delete(*AfterPath);
+	Retire(OnParent.Get());
+	Retire(OnChild.Get());
+	return true;
+}

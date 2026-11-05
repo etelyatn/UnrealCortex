@@ -485,5 +485,50 @@ bool FCortexBPExportSnapshotInheritedComponentsTest::RunTest(const FString& Para
 		Retire(Child.Get());
 		Retire(Parent.Get());
 	}
+
+	// Grandparent -> parent -> child: the parent overrides the grandparent's component, the child does not; the child's
+	// snapshot shows the parent's override, not the grandparent's template.
+	{
+		TStrongObjectPtr<UBlueprint> Grand(MakeBlueprint(FString::Printf(TEXT("CortexSnapGrand_%s"), *Suffix), AActor::StaticClass()));
+		if (!TestNotNull(TEXT("grandparent Blueprint"), Grand.Get()))
+		{
+			return false;
+		}
+		USCS_Node* GrandNode = Grand->SimpleConstructionScript->CreateNode(UStaticMeshComponent::StaticClass(), TEXT("GrandMesh"));
+		Grand->SimpleConstructionScript->AddNode(GrandNode);
+		FKismetEditorUtilities::CompileBlueprint(Grand.Get());
+		TStrongObjectPtr<UBlueprint> Mid(MakeBlueprint(FString::Printf(TEXT("CortexSnapMid_%s"), *Suffix), Grand->GeneratedClass));
+		if (!TestNotNull(TEXT("middle Blueprint"), Mid.Get()))
+		{
+			Retire(Grand.Get());
+			return false;
+		}
+		FKismetEditorUtilities::CompileBlueprint(Mid.Get());
+		UBlueprintGeneratedClass* MidClass = Cast<UBlueprintGeneratedClass>(Mid->GeneratedClass);
+		UInheritableComponentHandler* MidHandler = MidClass ? MidClass->GetInheritableComponentHandler(true) : nullptr;
+		UActorComponent* MidOverride = MidHandler ? MidHandler->CreateOverridenComponentTemplate(FComponentKey(GrandNode)) : nullptr;
+		if (TestNotNull(TEXT("middle override template created"), MidOverride))
+		{
+			CastChecked<UStaticMeshComponent>(MidOverride)->bHiddenInGame = true;
+			TStrongObjectPtr<UBlueprint> Leaf(MakeBlueprint(FString::Printf(TEXT("CortexSnapLeaf_%s"), *Suffix), Mid->GeneratedClass));
+			if (TestNotNull(TEXT("leaf Blueprint"), Leaf.Get()))
+			{
+				FKismetEditorUtilities::CompileBlueprint(Leaf.Get());
+				const FString OutPath = OutputPath(TEXT("inherited_chain"), Suffix);
+				TestTrue(TEXT("chain export succeeds"), Export(Leaf->GetPathName(), OutPath).bSuccess);
+				const TSharedPtr<FJsonObject> Record = FindRecord(ReadJsonFile(OutPath), TEXT("components"), TEXT("inherited:GrandMesh"));
+				if (TestTrue(TEXT("grandparent component record"), Record.IsValid()))
+				{
+					const TSharedPtr<FJsonObject> Overrides = OverridesOf(Record);
+					TestTrue(TEXT("the parent's override of the grandparent's component is recorded"),
+						Overrides.IsValid() && Overrides->HasField(TEXT("bHiddenInGame")));
+				}
+				IFileManager::Get().Delete(*OutPath);
+				Retire(Leaf.Get());
+			}
+		}
+		Retire(Mid.Get());
+		Retire(Grand.Get());
+	}
 	return true;
 }

@@ -278,7 +278,6 @@ namespace CortexBPSnapshotPrivate
 		// subobjects are read from this Blueprint's generated-class CDO (whose subobjects carry its own overrides and
 		// whose archetype is the parent's subobject).
 		UBlueprintGeneratedClass* OwnClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
-		const UInheritableComponentHandler* OverrideHandler = OwnClass ? OwnClass->GetInheritableComponentHandler(false) : nullptr;
 		for (const UClass* Class = Blueprint->ParentClass; Class; Class = Class->GetSuperClass())
 		{
 			if (const UBlueprintGeneratedClass* BlueprintClass = Cast<UBlueprintGeneratedClass>(Class))
@@ -300,11 +299,16 @@ namespace CortexBPSnapshotPrivate
 					}
 					Keys.Add(Key);
 					const UActorComponent* Template = Node->ComponentTemplate;
-					if (OverrideHandler)
+					// The most derived override wins: child, then parent, ... down to (excluding) the node's owner class.
+					for (const UClass* Derived = OwnClass; Derived && Derived != Class; Derived = Derived->GetSuperClass())
 					{
-						if (const UActorComponent* Override = OverrideHandler->GetOverridenComponentTemplate(FComponentKey(Node)))
+						const UBlueprintGeneratedClass* DerivedBlueprintClass = Cast<UBlueprintGeneratedClass>(Derived);
+						UInheritableComponentHandler* Handler = DerivedBlueprintClass
+							? const_cast<UBlueprintGeneratedClass*>(DerivedBlueprintClass)->GetInheritableComponentHandler(false) : nullptr;
+						if (const UActorComponent* Override = Handler ? Handler->GetOverridenComponentTemplate(FComponentKey(Node)) : nullptr)
 						{
 							Template = Override;
+							break;
 						}
 					}
 					TSharedPtr<FJsonObject> Record = NewRecord(Key);
@@ -331,7 +335,18 @@ namespace CortexBPSnapshotPrivate
 				}
 				Keys.Add(Key);
 				TSharedPtr<FJsonObject> Record = NewRecord(Key);
-				Record->SetStringField(TEXT("owner_class"), Class->GetPathName());
+				// The class that declares the subobject: the topmost native class whose CDO still has it, so inserting a
+				// native class between the Blueprint and the declaring class does not change the record.
+				const UClass* Declaring = Class;
+				for (const UClass* Super = Class->GetSuperClass(); Super; Super = Super->GetSuperClass())
+				{
+					if (!Super->GetDefaultObject()->GetDefaultSubobjectByName(Subobject->GetFName()))
+					{
+						break;
+					}
+					Declaring = Super;
+				}
+				Record->SetStringField(TEXT("owner_class"), Declaring->GetPathName());
 				AddComponentFields(Record, Subobject);
 				Records.Add(Record);
 			}

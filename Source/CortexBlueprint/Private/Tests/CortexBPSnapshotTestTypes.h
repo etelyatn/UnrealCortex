@@ -54,3 +54,10 @@ public:
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UStaticMeshComponent> NativeMesh;
 };
+
+/** Native subclass inserted between a Blueprint and ACortexBPSnapshotComponentParent; declares no component itself. */
+UCLASS(Blueprintable)
+class ACortexBPSnapshotComponentChild : public ACortexBPSnapshotComponentParent
+{
+	GENERATED_BODY()
+};
