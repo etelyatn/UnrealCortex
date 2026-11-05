@@ -1,5 +1,6 @@
 #include "Operations/CortexBPDependentScan.h"
 
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Engine/Level.h"
 #include "Engine/LevelScriptBlueprint.h"
 #include "Engine/World.h"
@@ -261,6 +262,50 @@ void FCortexBPDependentScan::Find(UBlueprint* Owner, FName Member, EMemberKind K
 		}
 
 		if (Hit.Role == TEXT("child") || Hit.References.Num() > 0)
+		{
+			OutHits.Add(MoveTemp(Hit));
+		}
+	}
+
+	// Loaded Blueprints that are not in the registry yet (new, unsaved or edited since the last registry update) never
+	// reach the candidate loop above. Every loaded Blueprint not handled above is checked in place (never loaded, never
+	// dirtied): its dependencies are gathered fresh (the engine's cached set is stale until the next compile) and a
+	// Blueprint that depends on the owner is scanned. Transient in-memory packages are not assets.
+	TArray<UBlueprint*> LoadedBlueprints;
+	for (TObjectIterator<UBlueprint> It; It; ++It)
+	{
+		UBlueprint* Loaded = *It;
+		if (Loaded != Owner && IsValid(Loaded) && !Loaded->GetOutermost()->HasAnyPackageFlags(PKG_InMemoryOnly)
+			&& !Candidates.Contains(Loaded->GetOutermost()->GetFName()))
+		{
+			LoadedBlueprints.Add(Loaded);
+		}
+	}
+	LoadedBlueprints.Sort([](const UBlueprint& A, const UBlueprint& B) { return A.GetPathName() < B.GetPathName(); });
+	for (UBlueprint* Dependent : LoadedBlueprints)
+	{
+		TSet<TWeakObjectPtr<UBlueprint>> Dependencies;
+		TSet<TWeakObjectPtr<UStruct>> StructDependencies;
+		FBlueprintEditorUtils::GatherDependencies(Dependent, Dependencies, StructDependencies);
+		if (!Dependencies.Contains(MakeWeakObjectPtr(Owner)))
+		{
+			continue;
+		}
+
+		FCortexBPDependentHit Hit;
+		const bool bLevelScript = Dependent->IsA<ULevelScriptBlueprint>();
+		Hit.AssetPath = bLevelScript ? TEXT("__level_bp__:") + Dependent->GetOutermost()->GetName() : Dependent->GetPathName();
+		Hit.Role = bLevelScript ? TEXT("level_script") : TEXT("referencer");
+		Hit.bWasLoaded = true;
+		if (Kind == EMemberKind::Variable)
+		{
+			FCortexGraphMemberReferences::FindVariableReferences(Dependent, Member, Hit.References);
+		}
+		else
+		{
+			FCortexGraphMemberReferences::FindFunctionReferences(Dependent, Member, Hit.References);
+		}
+		if (Hit.References.Num() > 0)
 		{
 			OutHits.Add(MoveTemp(Hit));
 		}

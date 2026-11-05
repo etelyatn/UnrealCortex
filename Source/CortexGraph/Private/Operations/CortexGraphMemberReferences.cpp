@@ -5,6 +5,7 @@
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
 #include "K2Node.h"
+#include "K2Node_BaseMCDelegate.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CreateDelegate.h"
 #include "K2Node_Variable.h"
@@ -65,6 +66,14 @@ namespace CortexGraphMemberReferencesPrivate
 					{
 						// Same-named local variable: not a member reference.
 						bReferences = false;
+					}
+					if (!bReferences)
+					{
+						// Dispatcher (multicast delegate variable) nodes do not override ReferencesVariable.
+						if (const UK2Node_BaseMCDelegate* DelegateNode = Cast<UK2Node_BaseMCDelegate>(Node))
+						{
+							bReferences = DelegateNode->DelegateReference.GetMemberName() == Member;
+						}
 					}
 				}
 				else

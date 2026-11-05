@@ -210,3 +210,68 @@ bool FCortexBPDependentScanLevelBlueprintTest::RunTest(const FString& Parameters
 	GapDelete(MapFile);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPDependentScanLoadedUnsavedTest,
+	"Cortex.Blueprint.DependentScan.LoadedUnsaved",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPDependentScanLoadedUnsavedTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+
+	UBlueprint* Owner = MakeBlueprint(TEXT("BP_HotOwner"), AActor::StaticClass(), TEXT("CortexHotOwner"));
+	UBlueprint* Hot = MakeBlueprint(TEXT("BP_HotReferencer"), AActor::StaticClass(), TEXT("CortexHotReferencer"));
+	UBlueprint* Bystander = MakeBlueprint(TEXT("BP_HotBystander"), AActor::StaticClass(), TEXT("CortexHotBystander"));
+	if (!TestNotNull(TEXT("Owner"), Owner) || !TestNotNull(TEXT("Hot referencer"), Hot) || !TestNotNull(TEXT("Bystander"), Bystander))
+	{
+		return false;
+	}
+	FEdGraphPinType BoolPin;
+	BoolPin.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+	FBlueprintEditorUtils::AddMemberVariable(Owner, TEXT("Tracked"), BoolPin);
+	FBlueprintEditorUtils::AddMemberVariable(Bystander, TEXT("Tracked"), BoolPin);
+	FKismetEditorUtilities::CompileBlueprint(Owner);
+	FKismetEditorUtilities::CompileBlueprint(Bystander);
+
+	// Neither Blueprint was ever saved or compiled after the node was added: the registry and the engine's cached
+	// dependency sets know nothing about the reference.
+	const FGuid HotNode = GapAddExternalGet(Hot, TEXT("Tracked"), Owner->GeneratedClass)->NodeGuid;
+	const FGuid BystanderNode = [&Bystander]()
+	{
+		UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Bystander);
+		FGraphNodeCreator<UK2Node_VariableGet> Creator(*Graph);
+		UK2Node_VariableGet* Node = Creator.CreateNode();
+		Node->VariableReference.SetSelfMember(TEXT("Tracked"));
+		Creator.Finalize();
+		return Node->NodeGuid;
+	}();
+
+	TArray<FCortexBPDependentHit> Hits;
+	FCortexBPDependentScan::Find(Owner, TEXT("Tracked"), FCortexBPDependentScan::EMemberKind::Variable, Hits);
+	const FString HotPath = Hot->GetPathName();
+	const FCortexBPDependentHit* Hit = Hits.FindByPredicate([&HotPath](const FCortexBPDependentHit& H) { return H.AssetPath == HotPath; });
+	if (TestNotNull(TEXT("The loaded, unsaved referencer is found"), Hit))
+	{
+		TestEqual(TEXT("Referencer role"), Hit->Role, FString(TEXT("referencer")));
+		TestTrue(TEXT("It was already loaded"), Hit->bWasLoaded);
+		if (TestEqual(TEXT("One reference"), Hit->References.Num(), 1))
+		{
+			TestEqual(TEXT("Reference node GUID"), Hit->References[0].NodeGuid, HotNode);
+		}
+	}
+	const FString BystanderPath = Bystander->GetPathName();
+	TestNull(TEXT("A loaded Blueprint that merely has a same-named own variable is not a dependent"),
+		Hits.FindByPredicate([&BystanderPath](const FCortexBPDependentHit& H) { return H.AssetPath == BystanderPath; }));
+	TestTrue(TEXT("Bystander node exists"), BystanderNode.IsValid());
+
+	// Later tests that walk every loaded Blueprint must not resolve the discarded fixtures' nodes without a scope.
+	for (UBlueprint* Fixture : {Hot, Bystander, Owner})
+	{
+		FBlueprintEditorUtils::FindEventGraph(Fixture)->Nodes.Empty();
+	}
+	Discard(Hot);
+	Discard(Bystander);
+	Discard(Owner);
+	return true;
+}
