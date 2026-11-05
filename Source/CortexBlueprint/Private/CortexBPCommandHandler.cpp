@@ -12,6 +12,7 @@
 #include "Operations/CortexBPGraphMetricsOps.h"
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPReparentOps.h"
+#include "Operations/CortexBPRenameMemberOps.h"
 #include "Operations/CortexBPSearchOps.h"
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPSnapshotOps.h"
@@ -241,6 +242,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("reparent"))
 	{
 		return FCortexBPReparentOps::Execute(Params);
+	}
+
+	if (Command == TEXT("rename_member"))
+	{
+		return FCortexBPRenameMemberOps::Execute(Params);
 	}
 
 	if (Command == TEXT("add_interface"))
@@ -476,6 +482,18 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default false; requires compile)"))
 		.Optional(TEXT("acknowledged_collisions"), TEXT("array"), TEXT("Exactly the required_acknowledgment keys of the dry run (variable:<n>, scs:<n>, save_game:<n>)"))
 		.Optional(TEXT("report_path"), TEXT("string"), TEXT("Write the full CDO delta to this file (under Project Saved, Content or Config) and omit the inline list"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("rename_member"), TEXT("Rename a Blueprint variable, event dispatcher, function or function-local variable with its references, a dry_run listing the nodes that follow, an explicit compile/save and a fail-closed readback. Refuses (INVALID_OPERATION with the reference list) when another Blueprint (loaded, unsaved, a derived class or an Asset Registry referencer, Level Blueprints included) references the member, when the new name is taken in this Blueprint, its native parent or a child (NAME_COLLISION), for RepNotify/FieldNotify members, override/interface functions and component variables; a SaveGame variable needs acknowledged_losses=[save_game:<variable>] (POTENTIAL_DATA_LOSS)")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("kind"), TEXT("string"), TEXT("variable | function | dispatcher | local"))
+		.Required(TEXT("old"), TEXT("string"), TEXT("Current member name"))
+		.Required(TEXT("new"), TEXT("string"), TEXT("New member name"))
+		.Optional(TEXT("function"), TEXT("string"), TEXT("Function graph that owns the variable; required for kind=local, invalid otherwise"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true = report the plan, mutate and dirty nothing (default false)"))
+		.OptionalExpectedFingerprint(TEXT("Stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}; read it from a dry run"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the rename (default true; required for save)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default false; requires compile)"))
+		.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("Exactly the required_acknowledgment keys of the dry run (save_game:<variable>)"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("add_interface"), TEXT("Add an interface implementation to a Blueprint")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
