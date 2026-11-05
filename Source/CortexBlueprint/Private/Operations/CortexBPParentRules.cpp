@@ -56,7 +56,7 @@ bool FCortexBPClassResolver::Resolve(const FString& Input, UClass*& OutClass, FC
 		FString BlueprintError;
 		// A generated class path (/Game/Pkg.Name_C) names the Blueprint asset /Game/Pkg.Name; LoadBlueprint refuses class paths.
 		FString AssetPath = Input;
-		if (!Input.StartsWith(TEXT("/Script/")) && Input.EndsWith(TEXT("_C")))
+		if (!Input.StartsWith(TEXT("/Script/")) && Input.Contains(TEXT(".")) && FPackageName::ObjectPathToObjectName(Input).EndsWith(TEXT("_C")))
 		{
 			AssetPath.LeftChopInline(2);
 		}

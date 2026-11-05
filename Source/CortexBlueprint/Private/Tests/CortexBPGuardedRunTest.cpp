@@ -462,33 +462,56 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	// 14. A failing recovery compile is reported and is part of the verdict (I4).
+	// 14. A failing recovery compile alone (content fully restored) is not "restored" and is reported (I4).
 	if (UBlueprint* Blueprint = Make(TEXT("BP_GuardedRecoveryCompile")))
 	{
-		struct FPreRecoveryScope
+		struct FOverrideScope
 		{
-			explicit FPreRecoveryScope(TFunction<void(UBlueprint*)> Hook) { FCortexBPGuardedRun::SetPreRecoveryCompileHookForTest(MoveTemp(Hook)); }
-			~FPreRecoveryScope() { FCortexBPGuardedRun::ClearPreRecoveryCompileHookForTest(); }
-		};
-		const FPreRecoveryScope Scope([](UBlueprint* Target)
-		{
-			UEdGraph* EventGraph = Target->UbergraphPages[0];
-			for (int32 Index = 0; Index < 2; ++Index)
+			FOverrideScope()
 			{
-				UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(EventGraph);
-				Event->CreateNewGuid();
-				Event->CustomFunctionName = FName("RecoveryBreaker");
-				EventGraph->AddNode(Event, false, false);
-				Event->AllocateDefaultPins();
+				// Compile 1 is the apply compile; compile 2 is the single recovery compile.
+				FCortexBPCompileSupport::SetCompileOutcomeOverrideForTest([](int32 Index, FCortexBPCompileOutcome& Outcome)
+				{
+					if (Index == 2)
+					{
+						Outcome.ErrorCount = 1;
+						Outcome.Status = TEXT("error");
+					}
+				});
 			}
-		});
+			~FOverrideScope() { FCortexBPCompileSupport::ClearCompileOutcomeOverrideForTest(); }
+		};
+		const FOverrideScope Scope;
 		FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("Unused"));
 		Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
 		const FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
 		TestFalse(TEXT("Run fails"), Result.bSuccess);
 		TestEqual(TEXT("Recovery compile status is reported"), StringField(Result.ErrorDetails, TEXT("recovery_compile_status")), FString(TEXT("error")));
-		TestEqual(TEXT("A failing recovery compile is not 'restored'"), StringField(Result.ErrorDetails, TEXT("rollback_status")), FString(TEXT("unverified")));
+		TestTrue(TEXT("Content was fully restored"),
+			BoolField(Result.ErrorDetails, TEXT("rollback_snapshot_matches")) && BoolField(Result.ErrorDetails, TEXT("rollback_graphs_match"))
+			&& BoolField(Result.ErrorDetails, TEXT("rollback_fingerprint_matches")) && BoolField(Result.ErrorDetails, TEXT("rollback_content_restored")));
+		TestEqual(TEXT("Only the recovery compile fails the verdict"), StringField(Result.ErrorDetails, TEXT("rollback_status")), FString(TEXT("unverified")));
 		TestTrue(TEXT("Recovery diagnostics are emitted"), Result.ErrorDetails.IsValid() && Result.ErrorDetails->HasField(TEXT("recovery_diagnostics")));
+	}
+
+	// 15. Nested in an outer transaction (router batch): no undo is attempted, the journal restores, nothing is blocked (N1).
+	if (UBlueprint* Blueprint = Make(TEXT("BP_GuardedNested")))
+	{
+		const TSharedPtr<FJsonObject> Before = Snapshot(Blueprint);
+		FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("Nested"));
+		Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
+		FCortexCommandResult Result;
+		{
+			const FScopedTransaction Outer(FText::FromString(TEXT("outer batch")));
+			Result = FCortexBPGuardedRun::Execute(Spec);
+		}
+		TestFalse(TEXT("Run fails"), Result.bSuccess);
+		TestEqual(TEXT("Nested failure is restored from the journal"), StringField(Result.ErrorDetails, TEXT("rollback_status")), FString(TEXT("restored")));
+		TestFalse(TEXT("Not blocked"), BoolField(Result.ErrorDetails, TEXT("blocked")));
+		FString BlockReason;
+		TestFalse(TEXT("Asset not blocked"), FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason));
+		TestEqual(TEXT("Variable removed again"), Blueprint->NewVariables.Num(), 1);
+		TestTrue(TEXT("Snapshot restored"), SnapshotsEqual(Before, Snapshot(Blueprint)));
 	}
 
 	// 8. Stale expected_fingerprint refuses before any mutation.

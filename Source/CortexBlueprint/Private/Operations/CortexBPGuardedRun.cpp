@@ -423,11 +423,14 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 	}
 
 	const EBlueprintStatus StatusBefore = Blueprint->Status;
+	// Inside an outer transaction (router batch) our transaction is nested: it has no entry of its own and the editor refuses to
+	// undo while a transaction is active, so only the journal can restore.
+	const bool bOuterTransaction = GEditor != nullptr && GEditor->IsTransactionActive();
 	TUniquePtr<FScopedTransaction> Transaction = MakeUnique<FScopedTransaction>(
 		FText::FromString(FString::Printf(TEXT("Cortex: %s"), *Spec.OpName)));
 	Blueprint->Modify();
 	// The guarded transaction is identified by id, not by undo-list growth: redo history or eviction keeps the length flat.
-	const FGuid TransactionId = (GEditor && GEditor->Trans) ? GEditor->Trans->GetUndoContext(false).TransactionId : FGuid();
+	const FGuid TransactionId = (!bOuterTransaction && GEditor && GEditor->Trans) ? GEditor->Trans->GetUndoContext(false).TransactionId : FGuid();
 
 	FString FailurePhase;
 	FString FailureMessage;

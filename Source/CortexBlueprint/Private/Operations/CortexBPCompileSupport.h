@@ -34,5 +34,9 @@ public:
 	/** Test hook: observes every compile (Blueprint and the options actually forwarded to the engine). */
 	static void SetCompileObserverForTest(TFunction<void(UBlueprint*, EBlueprintCompileOptions)> Observer);
 	static void ClearCompileObserverForTest();
+
+	/** Test hook: may rewrite the outcome of the Nth compile since it was set (1-based), e.g. to force a failure without changing content. */
+	static void SetCompileOutcomeOverrideForTest(TFunction<void(int32 CompileIndex, FCortexBPCompileOutcome& Outcome)> Override);
+	static void ClearCompileOutcomeOverrideForTest();
 #endif
 };

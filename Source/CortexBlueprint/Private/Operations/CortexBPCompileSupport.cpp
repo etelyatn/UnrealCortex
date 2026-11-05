@@ -16,6 +16,8 @@
 namespace
 {
 	TFunction<void(UBlueprint*, EBlueprintCompileOptions)> GCompileObserverForTest;
+	TFunction<void(int32, FCortexBPCompileOutcome&)> GCompileOutcomeOverrideForTest;
+	int32 GCompileOutcomeOverrideIndex = 0;
 }
 #endif
 
@@ -188,12 +190,30 @@ void FCortexBPCompileSupport::Compile(UBlueprint* Blueprint, EBlueprintCompileOp
 
 		OutOutcome.Diagnostics.Add(MakeShared<FJsonValueObject>(BuildDiagnosticObject(Node)));
 	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (GCompileOutcomeOverrideForTest)
+	{
+		GCompileOutcomeOverrideForTest(++GCompileOutcomeOverrideIndex, OutOutcome);
+	}
+#endif
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
 void FCortexBPCompileSupport::SetCompileObserverForTest(TFunction<void(UBlueprint*, EBlueprintCompileOptions)> Observer)
 {
 	GCompileObserverForTest = MoveTemp(Observer);
+}
+
+void FCortexBPCompileSupport::SetCompileOutcomeOverrideForTest(TFunction<void(int32, FCortexBPCompileOutcome&)> Override)
+{
+	GCompileOutcomeOverrideForTest = MoveTemp(Override);
+	GCompileOutcomeOverrideIndex = 0;
+}
+
+void FCortexBPCompileSupport::ClearCompileOutcomeOverrideForTest()
+{
+	GCompileOutcomeOverrideForTest = nullptr;
 }
 
 void FCortexBPCompileSupport::ClearCompileObserverForTest()
