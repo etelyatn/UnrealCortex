@@ -252,11 +252,13 @@ FCortexBPSCSDiagnostics::FDirtyReport FCortexBPSCSDiagnostics::DetectSCSNodeDirt
 }
 
 TArray<FCortexBPSCSDiagnostics::FCollision> FCortexBPSCSDiagnostics::DetectSCSInheritedCollisions(
-	UBlueprint* BP)
+	UBlueprint* BP,
+	UClass* CandidateParent)
 {
 	TArray<FCollision> Collisions;
 
-	if (!BP || !BP->ParentClass || !BP->SimpleConstructionScript)
+	UClass* ParentClass = CandidateParent ? CandidateParent : (BP ? BP->ParentClass.Get() : nullptr);
+	if (!BP || !ParentClass || !BP->SimpleConstructionScript)
 	{
 		return Collisions;
 	}
@@ -277,7 +279,7 @@ TArray<FCortexBPSCSDiagnostics::FCollision> FCortexBPSCSDiagnostics::DetectSCSIn
 		}
 
 		// Pass A: inherited class properties/delegates.
-		for (TFieldIterator<FProperty> PropIt(BP->ParentClass, EFieldIterationFlags::IncludeSuper); PropIt; ++PropIt)
+		for (TFieldIterator<FProperty> PropIt(ParentClass, EFieldIterationFlags::IncludeSuper); PropIt; ++PropIt)
 		{
 			FProperty* Property = *PropIt;
 			if (!Property || Property->GetFName() != NodeName)
@@ -306,7 +308,7 @@ TArray<FCortexBPSCSDiagnostics::FCollision> FCortexBPSCSDiagnostics::DetectSCSIn
 		}
 
 		// Pass B: properties on implemented interfaces.
-		for (const FImplementedInterface& InterfaceDesc : BP->ParentClass->Interfaces)
+		for (const FImplementedInterface& InterfaceDesc : ParentClass->Interfaces)
 		{
 			UClass* InterfaceClass = InterfaceDesc.Class;
 			if (!InterfaceClass)
@@ -334,7 +336,7 @@ TArray<FCortexBPSCSDiagnostics::FCollision> FCortexBPSCSDiagnostics::DetectSCSIn
 		}
 
 		// Pass C: sparse class data fields.
-		if (UScriptStruct* SparseStruct = BP->ParentClass->GetSparseClassDataStruct())
+		if (UScriptStruct* SparseStruct = ParentClass->GetSparseClassDataStruct())
 		{
 			for (TFieldIterator<FProperty> PropIt(SparseStruct); PropIt; ++PropIt)
 			{
@@ -348,7 +350,7 @@ TArray<FCortexBPSCSDiagnostics::FCollision> FCortexBPSCSDiagnostics::DetectSCSIn
 				Collision.SCSNodeName = NodeName;
 				Collision.SCSComponentClass = SCSComponentClass;
 				Collision.InheritedProperty = Property;
-				Collision.InheritedFromClass = BP->ParentClass;
+				Collision.InheritedFromClass = ParentClass;
 				Collision.Kind = ECollisionInheritedKind::SparseClassData;
 				Collision.Severity = ECollisionSeverity::Blocking;
 				AddCollisionIfMissing(Collisions, Collision);
@@ -356,7 +358,7 @@ TArray<FCortexBPSCSDiagnostics::FCollision> FCortexBPSCSDiagnostics::DetectSCSIn
 		}
 
 		// Pass D: inherited SCS nodes from parent Blueprint classes.
-		for (UClass* ClassCursor = BP->ParentClass; ClassCursor; ClassCursor = ClassCursor->GetSuperClass())
+		for (UClass* ClassCursor = ParentClass; ClassCursor; ClassCursor = ClassCursor->GetSuperClass())
 		{
 			UBlueprintGeneratedClass* ParentBPGC = Cast<UBlueprintGeneratedClass>(ClassCursor);
 			if (!ParentBPGC || !ParentBPGC->SimpleConstructionScript)

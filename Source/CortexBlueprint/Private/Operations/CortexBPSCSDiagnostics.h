@@ -62,7 +62,8 @@ public:
 		ECollisionSeverity Severity = ECollisionSeverity::Blocking;
 	};
 
-	static TArray<FCollision> DetectSCSInheritedCollisions(UBlueprint* BP);
+	/** Collisions of the Blueprint's own SCS nodes against CandidateParent when given, otherwise against its current parent. */
+	static TArray<FCollision> DetectSCSInheritedCollisions(UBlueprint* BP, UClass* CandidateParent = nullptr);
 
 	struct FResolveResult
 	{
