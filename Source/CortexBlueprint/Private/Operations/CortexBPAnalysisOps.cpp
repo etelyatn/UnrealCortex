@@ -1,5 +1,6 @@
 #include "Operations/CortexBPAnalysisOps.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPGraphReachability.h"
 #include "Operations/CortexBPSCSDiagnostics.h"
 #include "Operations/CortexBPTypeUtils.h"
 #include "Operations/CortexBPWidgetUtils.h"
@@ -1024,6 +1025,33 @@ TArray<TSharedPtr<FJsonValue>> BuildEntitySummary(const TSharedPtr<FJsonObject>&
 	return Summary;
 }
 
+FString ResolveMemberDefaultValue(const UBlueprint* BP, const FBPVariableDescription& Variable)
+{
+	if (!Variable.DefaultValue.IsEmpty())
+	{
+		return Variable.DefaultValue;
+	}
+
+	const UClass* GeneratedClass = BP ? BP->GeneratedClass.Get() : nullptr;
+	const FProperty* Property = GeneratedClass ? FindFProperty<FProperty>(GeneratedClass, Variable.VarName) : nullptr;
+	const UObject* DefaultObject = GeneratedClass ? GeneratedClass->GetDefaultObject(false) : nullptr;
+	if (!Property || !DefaultObject)
+	{
+		return FString();
+	}
+
+	const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(DefaultObject);
+	if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
+	{
+		return BoolProperty->GetPropertyValue(ValuePtr) ? TEXT("true") : TEXT("false");
+	}
+
+	// The value is passed as its own delta: a null delta skips values equal to the type default.
+	FString Exported;
+	Property->ExportText_Direct(Exported, ValuePtr, ValuePtr, nullptr, PPF_None);
+	return Exported;
+}
+
 TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
 {
 	TArray<TSharedPtr<FJsonValue>> Bindings;
@@ -1048,7 +1076,13 @@ TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
 		}
 	}
 
-	if (!EIAClass && !EIAEventClass) { return Bindings; }
+	static UClass* DebugKeyClass = nullptr;
+	if (!DebugKeyClass)
+	{
+		DebugKeyClass = FindObject<UClass>(nullptr, TEXT("/Script/InputBlueprintNodes.K2Node_InputDebugKey"));
+	}
+
+	if (!EIAClass && !EIAEventClass && !DebugKeyClass) { return Bindings; }
 
 	TArray<UEdGraph*> AllGraphs;
 	BP->GetAllGraphs(AllGraphs);
@@ -1120,6 +1154,44 @@ TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
 					BindingObj->SetStringField(TEXT("trigger_event"), TriggerEvent);
 					Bindings.Add(MakeShared<FJsonValueObject>(BindingObj));
 				}
+			}
+			else if (DebugKeyClass && Node->IsA(DebugKeyClass))
+			{
+				TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
+				BindingObj->SetStringField(TEXT("kind"), TEXT("debug_key"));
+
+				FString KeyName;
+				if (const FProperty* KeyProp = Node->GetClass()->FindPropertyByName(TEXT("InputKey")))
+				{
+					KeyProp->ExportText_Direct(KeyName, KeyProp->ContainerPtrToValuePtr<void>(Node), nullptr, nullptr, PPF_None);
+				}
+				BindingObj->SetStringField(TEXT("key"), KeyName);
+
+				const auto ReadBool = [Node](const TCHAR* PropertyName)
+				{
+					const FBoolProperty* BoolProp = CastField<FBoolProperty>(Node->GetClass()->FindPropertyByName(PropertyName));
+					return BoolProp && BoolProp->GetPropertyValue_InContainer(Node);
+				};
+
+				TSharedPtr<FJsonObject> ModifiersObj = MakeShared<FJsonObject>();
+				ModifiersObj->SetBoolField(TEXT("ctrl"), ReadBool(TEXT("bControl")));
+				ModifiersObj->SetBoolField(TEXT("shift"), ReadBool(TEXT("bShift")));
+				ModifiersObj->SetBoolField(TEXT("alt"), ReadBool(TEXT("bAlt")));
+				ModifiersObj->SetBoolField(TEXT("cmd"), ReadBool(TEXT("bCommand")));
+				BindingObj->SetObjectField(TEXT("modifiers"), ModifiersObj);
+				BindingObj->SetBoolField(TEXT("execute_when_paused"), ReadBool(TEXT("bExecuteWhenPaused")));
+
+				TArray<TSharedPtr<FJsonValue>> TriggerEvents;
+				for (const TCHAR* PinName : { TEXT("Pressed"), TEXT("Released") })
+				{
+					const UEdGraphPin* ExecPin = Node->FindPin(PinName, EGPD_Output);
+					if (ExecPin && ExecPin->LinkedTo.Num() > 0)
+					{
+						TriggerEvents.Add(MakeShared<FJsonValueString>(PinName));
+					}
+				}
+				BindingObj->SetArrayField(TEXT("trigger_events"), TriggerEvents);
+				Bindings.Add(MakeShared<FJsonValueObject>(BindingObj));
 			}
 		}
 	}
@@ -1233,11 +1305,6 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	bool bHasInterfaces = BP && BP->ImplementedInterfaces.Num() > 0;
 
 	TSet<FString> UnsupportedNodeClasses;
-	TSet<FString> KnownNodePrefixes = {
-		TEXT("K2Node_"),
-		TEXT("EdGraphNode_Comment"),
-		TEXT("MaterialGraphNode_"),
-	};
 
 	TArray<UEdGraph*> AllGraphs;
 	BP->GetAllGraphs(AllGraphs);
@@ -1294,7 +1361,7 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
 			{
 				const FName EventName = EventNode->EventReference.GetMemberName();
-				if (EventName == TEXT("ReceiveTick") || EventName == TEXT("Tick"))
+				if ((EventName == TEXT("ReceiveTick") || EventName == TEXT("Tick")) && CortexBPGraphReachability::IsLiveEntry(EventNode))
 				{
 					bHasTick = true;
 				}
@@ -1306,16 +1373,10 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			}
 
 			const FString NodeClassName = Node->GetClass()->GetName();
-			bool bKnownPrefix = false;
-			for (const FString& Prefix : KnownNodePrefixes)
-			{
-				if (NodeClassName.StartsWith(Prefix))
-				{
-					bKnownPrefix = true;
-					break;
-				}
-			}
-			if (!bKnownPrefix)
+			const bool bSupportedNode = Node->IsA<UK2Node>()
+				|| Node->IsA<UEdGraphNode_Comment>()
+				|| NodeClassName.StartsWith(TEXT("MaterialGraphNode_"));
+			if (!bSupportedNode)
 			{
 				UnsupportedNodeClasses.Add(NodeClassName);
 				++UnsupportedNodeOccurrences;
@@ -1469,7 +1530,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		TSharedPtr<FJsonObject> VarObj = MakeShared<FJsonObject>();
 		VarObj->SetStringField(TEXT("name"), Variable.VarName.ToString());
 		VarObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Variable.VarType));
-		VarObj->SetStringField(TEXT("default_value"), Variable.DefaultValue);
+		VarObj->SetStringField(TEXT("default_value"), ResolveMemberDefaultValue(BP, Variable));
 		VarObj->SetBoolField(TEXT("is_exposed"), (Variable.PropertyFlags & CPF_BlueprintVisible) != 0);
 		VarObj->SetBoolField(TEXT("is_replicated"), (Variable.PropertyFlags & CPF_Net) != 0);
 		VarObj->SetBoolField(TEXT("is_instanced"), (Variable.PropertyFlags & CPF_PersistentInstance) != 0);
@@ -1573,6 +1634,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		TArray<TSharedPtr<FJsonValue>> OutputsArr;
 		TArray<TSharedPtr<FJsonValue>> LocalVariablesArr;
 		FString AccessSpec = TEXT("public");
+		TSet<FString> SeenOutputNames;
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (const UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node))
@@ -1600,7 +1662,13 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 					TSharedPtr<FJsonObject> LocalObj = MakeShared<FJsonObject>();
 					LocalObj->SetStringField(TEXT("name"), LocalVar.VarName.ToString());
 					LocalObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(LocalVar.VarType));
-					LocalObj->SetStringField(TEXT("default_value"), LocalVar.DefaultValue);
+					FString LocalDefault = LocalVar.DefaultValue;
+					if (LocalDefault.IsEmpty() && LocalVar.VarType.PinCategory == UEdGraphSchema_K2::PC_Boolean &&
+						LocalVar.VarType.ContainerType == EPinContainerType::None)
+					{
+						LocalDefault = TEXT("false");
+					}
+					LocalObj->SetStringField(TEXT("default_value"), LocalDefault);
 					LocalVariablesArr.Add(MakeShared<FJsonValueObject>(LocalObj));
 				}
 			}
@@ -1608,10 +1676,15 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 			{
 				for (const TSharedPtr<FUserPinInfo>& Pin : ResultNode->UserDefinedPins)
 				{
-					TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
-					PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
-					PinObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Pin->PinType));
-					OutputsArr.Add(MakeShared<FJsonValueObject>(PinObj));
+					const FString OutputName = Pin->PinName.ToString();
+					if (!SeenOutputNames.Contains(OutputName))
+					{
+						SeenOutputNames.Add(OutputName);
+						TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+						PinObj->SetStringField(TEXT("name"), OutputName);
+						PinObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Pin->PinType));
+						OutputsArr.Add(MakeShared<FJsonValueObject>(PinObj));
+					}
 				}
 			}
 		}
@@ -1794,12 +1867,26 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 
 			if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
 			{
-				const FString EventName = EventNode->EventReference.GetMemberName().ToString();
+				FString EventName;
+				if (const UK2Node_ComponentBoundEvent* BoundEventNode = Cast<UK2Node_ComponentBoundEvent>(EventNode))
+				{
+					EventName = FString::Printf(TEXT("%s.%s"),
+						*BoundEventNode->ComponentPropertyName.ToString(),
+						*BoundEventNode->DelegatePropertyName.ToString());
+				}
+				else
+				{
+					const FName MemberName = EventNode->EventReference.GetMemberName();
+					if (!MemberName.IsNone())
+					{
+						EventName = MemberName.ToString();
+					}
+				}
 				if (!EventName.IsEmpty())
 				{
 					EventsArr.Add(MakeShared<FJsonValueString>(EventName));
 				}
-				if (EventName == TEXT("ReceiveTick") || EventName == TEXT("Tick"))
+				if ((EventName == TEXT("ReceiveTick") || EventName == TEXT("Tick")) && CortexBPGraphReachability::IsLiveEntry(EventNode))
 				{
 					bGraphHasTick = true;
 				}
@@ -2108,6 +2195,39 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 			if (InterfaceGraph)
 			{
 				InterfaceFunctions.Add(MakeShared<FJsonValueString>(InterfaceGraph->GetName()));
+			}
+		}
+		for (const UEdGraph* UberGraph : BP->UbergraphPages)
+		{
+			if (!UberGraph)
+			{
+				continue;
+			}
+			for (const UEdGraphNode* UberNode : UberGraph->Nodes)
+			{
+				const UK2Node_Event* InterfaceEvent = Cast<UK2Node_Event>(UberNode);
+				if (!InterfaceEvent || Cast<UK2Node_ComponentBoundEvent>(InterfaceEvent))
+				{
+					continue;
+				}
+				const UClass* EventParent = InterfaceEvent->EventReference.GetMemberParentClass();
+				if (!EventParent || !EventParent->IsChildOf(InterfaceDesc.Interface))
+				{
+					continue;
+				}
+				const FString EventFunctionName = InterfaceEvent->EventReference.GetMemberName().ToString();
+				if (EventFunctionName.IsEmpty() || EventFunctionName == TEXT("None"))
+				{
+					continue;
+				}
+				const bool bAlreadyListed = InterfaceFunctions.ContainsByPredicate([&EventFunctionName](const TSharedPtr<FJsonValue>& Existing)
+				{
+					return Existing.IsValid() && Existing->AsString() == EventFunctionName;
+				});
+				if (!bAlreadyListed)
+				{
+					InterfaceFunctions.Add(MakeShared<FJsonValueString>(EventFunctionName));
+				}
 			}
 		}
 		InterfaceObj->SetArrayField(TEXT("functions"), InterfaceFunctions);
