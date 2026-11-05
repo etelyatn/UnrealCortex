@@ -717,3 +717,40 @@ bool FCortexBPGraphMetricsFunctionResultPureChainTest::RunTest(const FString& Pa
 		UnreachableCountForGraph(Metrics.Data, Function->GetName()), 0);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsWidgetSchemaGraphTest,
+	"Cortex.Blueprint.GraphMetrics.WidgetSchemaGraphMeasured",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsWidgetSchemaGraphTest::RunTest(const FString& Parameters)
+{
+	UClass* WidgetSchemaClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetGraphSchema"));
+	if (!WidgetSchemaClass || !WidgetSchemaClass->IsChildOf(UEdGraphSchema_K2::StaticClass()))
+	{
+		AddInfo(TEXT("UWidgetGraphSchema unavailable; skipping widget schema graph test"));
+		return true;
+	}
+
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsWidgetSchema"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* Function = FBlueprintEditorUtils::CreateNewGraph(
+		Blueprint, TEXT("WidgetFunction"), UEdGraph::StaticClass(), WidgetSchemaClass);
+	if (!TestNotNull(TEXT("Function graph"), Function)) { return false; }
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, Function, true, nullptr);
+	UEdGraphNode* Entry = FindFunctionEntry(Function);
+	if (!TestNotNull(TEXT("Function entry"), Entry)) { return false; }
+	UK2Node_CallFunction* Print = AddPrintString(Function);
+	if (!TestTrue(TEXT("Wired"), LinkExec(Entry, UEdGraphSchema_K2::PN_Then, Print))) { return false; }
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+	const TSharedPtr<FJsonObject> Row = FindEntry(Result.Data, TEXT("WidgetFunction"));
+	if (TestTrue(TEXT("Widget-schema function graph is measured"), Row.IsValid()))
+	{
+		TestEqual(TEXT("functional nodes"), static_cast<int32>(Row->GetNumberField(TEXT("functional_nodes"))), 1);
+	}
+	return true;
+}

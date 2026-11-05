@@ -305,13 +305,18 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
-	// Plain K2 graphs only. UAnimationGraphSchema derives from UEdGraphSchema_K2 but its graphs are pose-flow
-	// networks without event/exec semantics, and state machine schemas are not K2 at all, so the match is exact.
+	// K2-derived schemas (including UWidgetGraphSchema) except animation and state machine graphs, whose
+	// pose-flow networks have no event/exec semantics. The graph type is asked of the schema so no anim module is linked.
 	// Macro graphs are not measured on their own; they count only where a macro instance expands them.
 	TArray<const UEdGraph*> Graphs;
 	const auto AddMeasurableGraph = [&Graphs](const UEdGraph* Graph)
 	{
-		if (Graph && Graph->Schema == UEdGraphSchema_K2::StaticClass())
+		if (!Graph || !Graph->Schema || !Graph->Schema->IsChildOf(UEdGraphSchema_K2::StaticClass()))
+		{
+			return;
+		}
+		const EGraphType GraphType = GetDefault<UEdGraphSchema>(Graph->Schema)->GetGraphType(Graph);
+		if (GraphType != GT_Animation && GraphType != GT_StateMachine)
 		{
 			Graphs.Add(Graph);
 		}
