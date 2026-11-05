@@ -489,14 +489,19 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 	{
 		const bool bParentChanged = Blueprint->ParentClass != Journal.Parent;
 
-		// End the guarded transaction (recorded, not cancelled: Cancel restores nothing), then restore.
+		// End the guarded transaction (recorded, not cancelled: Cancel restores nothing), then restore. A run that opts out of the
+		// editor undo discards the record instead: the undo would re-apply a state the engine cannot rebuild (see FSpec::bUndoOnFailure).
+		if (!Spec.bUndoOnFailure && Transaction.IsValid())
+		{
+			Transaction->Cancel();
+		}
 		Transaction.Reset();
 		bool bUndone = true;
 		bool bSkipUndo = false;
 #if WITH_DEV_AUTOMATION_TESTS
 		bSkipUndo = GSkipUndoForTest;
 #endif
-		if (!bSkipUndo && TransactionId.IsValid() && GEditor != nullptr && GEditor->Trans != nullptr
+		if (Spec.bUndoOnFailure && !bSkipUndo && TransactionId.IsValid() && GEditor != nullptr && GEditor->Trans != nullptr
 			&& GEditor->Trans->GetUndoContext(false).TransactionId == TransactionId)
 		{
 			bUndone = GEditor->UndoTransaction(/*bCanRedo=*/false);
@@ -516,6 +521,8 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 				: EBlueprintCompileOptions::None;
 			FCortexBPCompileSupport::Compile(Blueprint, RecoveryOptions, Recovery);
 		}
+
+		const bool bPostRecovered = !Spec.PostRecovery || Spec.PostRecovery(Blueprint, RestoreError);
 
 #if WITH_DEV_AUTOMATION_TESTS
 		if (GPostRestoreHookForTest)
@@ -541,7 +548,7 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 			|| FCortexGraphFingerprint::ComputeGeneratedStateDigest(Blueprint) == Journal.GeneratedDigest;
 		const bool bExtraEqual = !Spec.DigestExtra || Spec.DigestExtra(Blueprint) == Journal.ExtraDigest;
 		const bool bRecoveryCompileOk = !Spec.bCompile || !Recovery.HasErrors() || StatusBefore == BS_Error;
-		const bool bVerified = bRestored && bRecoveryCompileOk && bSnapshotsEqual && bFingerprintEqual && bGraphEqual && bGeneratedEqual && bExtraEqual;
+		const bool bVerified = bRestored && bPostRecovered && bRecoveryCompileOk && bSnapshotsEqual && bFingerprintEqual && bGraphEqual && bGeneratedEqual && bExtraEqual;
 
 		if (bVerified)
 		{

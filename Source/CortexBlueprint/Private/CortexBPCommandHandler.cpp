@@ -9,6 +9,7 @@
 #include "Operations/CortexBPCompareOps.h"
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPGraphCleanupOps.h"
+#include "Operations/CortexBPAdoptMemberOps.h"
 #include "Operations/CortexBPGraphMetricsOps.h"
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPReparentOps.h"
@@ -247,6 +248,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("rename_member"))
 	{
 		return FCortexBPRenameMemberOps::Execute(Params);
+	}
+
+	if (Command == TEXT("adopt_native_member"))
+	{
+		return FCortexBPAdoptMemberOps::Execute(Params);
 	}
 
 	if (Command == TEXT("add_interface"))
@@ -494,6 +500,17 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the rename (default true; required for save)"))
 		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default false; requires compile)"))
 		.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("Exactly the required_acknowledgment keys of the dry run (save_game:<variable>)"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("adopt_native_member"), TEXT("Hand Blueprint variables over to properties the native parent already declares: every get/set node and AnimGraph binding is retargeted without being destroyed, the variable is removed, the Blueprint is compiled once, and the old default, loaded placed-instance values and loaded child CDOs are carried to the native property, then read back fail-closed (READBACK_MISMATCH restores the Blueprint). Handles state variable_present and engine_already_adopted. Refuses unknown or non-native properties, incompatible types (INVALID_FIELD), a Blueprint that is not compiled (STALE_PRECONDITION), unmapped variables the parent already declares (NAME_COLLISION), renames without a property redirect (MISSING_PROPERTY_REDIRECT with the exact [CoreRedirects] line unless instance_values:<variable> is acknowledged), dependents that reference a renamed variable (INVALID_OPERATION) and SaveGame variables until acknowledged_losses carries save_game:<variable> (POTENTIAL_DATA_LOSS)")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("mappings"), TEXT("array"), TEXT("[{bp_variable, native_property, default?}]; default only for engine_already_adopted"))
+		.Optional(TEXT("transfer_default"), TEXT("boolean"), TEXT("true = the old Blueprint default becomes the native default; false = the CDO takes the parent default (default true)"))
+		.Optional(TEXT("retarget_nodes"), TEXT("boolean"), TEXT("Retarget nodes that name the variable (default true; false is refused for renames)"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true = report the plan (state, type match, old default, nodes, loaded instances, SaveGame findings, redirect line), mutate and dirty nothing (default false)"))
+		.OptionalExpectedFingerprint(TEXT("Stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}; read it from a dry run"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the adoption (default true; required for save, transfer_default=false and renames)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default false; requires compile)"))
+		.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("save_game:<variable> keys equal to the dry run's required_acknowledgment, plus instance_values:<variable> for a rename without a property redirect"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("add_interface"), TEXT("Add an interface implementation to a Blueprint")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))

@@ -54,6 +54,19 @@ public:
 		/** Optional: puts the state recorded by Capture back; runs after the generic restore, before the recovery compile. */
 		TFunction<bool(UBlueprint* Blueprint, FString& OutError)> Restore;
 
+		/**
+		 * Whether a failure first undoes the guarded transaction in the editor (default). A migration whose pre-state is not a
+		 * state the engine can rebuild through the undo (a variable declared next to a native property of the same name: the
+		 * skeleton rebuild logs an internal compiler error) restores from the generic journal alone and discards the record.
+		 */
+		bool bUndoOnFailure = true;
+
+		/**
+		 * Optional: puts back state that only exists once the recovery compile has rebuilt the class (CDO defaults and loaded
+		 * instance values under the old member names). Runs after the recovery compile, before the restoration is verified.
+		 */
+		TFunction<bool(UBlueprint* Blueprint, FString& OutError)> PostRecovery;
+
 		/** Optional: digest of operation-owned state, compared before the run and after a restoration. */
 		TFunction<FString(UBlueprint* Blueprint)> DigestExtra;
 	};
