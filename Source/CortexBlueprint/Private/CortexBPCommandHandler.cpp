@@ -7,6 +7,7 @@
 #include "Operations/CortexBPCompareOps.h"
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPGraphCleanupOps.h"
+#include "Operations/CortexBPGraphMetricsOps.h"
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPSearchOps.h"
 #include "Operations/CortexBPStructureOps.h"
@@ -49,7 +50,7 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		|| Command == TEXT("get_class_defaults") || Command == TEXT("list_inherited_properties")
 		|| Command == TEXT("list_settable_defaults") || Command == TEXT("list_scs_components")
 		|| Command == TEXT("analyze_for_migration") || Command == TEXT("compare_blueprints")
-		|| Command == TEXT("search");
+		|| Command == TEXT("search") || Command == TEXT("graph_metrics");
 	if (!bReadOnly)
 	{
 		FCortexCommandResult GuardError;
@@ -159,6 +160,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("analyze_for_migration"))
 	{
 		return FCortexBPAnalysisOps::AnalyzeForMigration(Params);
+	}
+
+	if (Command == TEXT("graph_metrics"))
+	{
+		return FCortexBPGraphMetricsOps::GraphMetrics(Params);
 	}
 
 	if (Command == TEXT("cleanup_migration"))
@@ -354,6 +360,10 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding")));
 	Commands.Add(FCortexCommandInfo{TEXT("analyze_for_migration"), TEXT("Analyze a Blueprint for C++ migration")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path")));
+	Commands.Add(FCortexCommandInfo{TEXT("graph_metrics"),
+		TEXT("Reachability-aware logic metrics per entry node (events, custom/bound/input events, functions): functional node count, conditionals, variable getter fan-out, unreachable nodes, ghost (unconnected) entries, has_tick for live Tick events, and threshold violations")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("thresholds"), TEXT("object"), TEXT("{max_nodes_per_entry: int=10, max_nodes_per_blueprint: int=30}; positive integers")));
 	Commands.Add(FCortexCommandInfo{TEXT("cleanup_migration"), TEXT("Clean up a Blueprint after C++ migration")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("new_parent_class"), TEXT("string"), TEXT("New C++ parent class"))

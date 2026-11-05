@@ -51,4 +51,110 @@ namespace CortexBPGraphReachability
 		}
 		return false;
 	}
+
+	void GatherExecForward(const TArray<UEdGraphNode*>& Seeds, TSet<UEdGraphNode*>& OutReachable)
+	{
+		TArray<UEdGraphNode*> Queue;
+		for (UEdGraphNode* Seed : Seeds)
+		{
+			if (Seed)
+			{
+				OutReachable.Add(Seed);
+				Queue.Add(Seed);
+			}
+		}
+
+		int32 QueueIndex = 0;
+		while (QueueIndex < Queue.Num())
+		{
+			const UEdGraphNode* CurrentNode = Queue[QueueIndex++];
+			for (const UEdGraphPin* Pin : CurrentNode->Pins)
+			{
+				if (!Pin || Pin->Direction != EGPD_Output || Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+				{
+					continue;
+				}
+
+				for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+					if (LinkedNode && !OutReachable.Contains(LinkedNode))
+					{
+						OutReachable.Add(LinkedNode);
+						Queue.Add(LinkedNode);
+					}
+				}
+			}
+		}
+	}
+
+	void ExpandToLinkedDataDependencies(TSet<UEdGraphNode*>& InOutReachable)
+	{
+		TArray<UEdGraphNode*> Queue = InOutReachable.Array();
+		int32 QueueIndex = 0;
+		while (QueueIndex < Queue.Num())
+		{
+			const UEdGraphNode* CurrentNode = Queue[QueueIndex++];
+			if (!CurrentNode)
+			{
+				continue;
+			}
+
+			for (const UEdGraphPin* Pin : CurrentNode->Pins)
+			{
+				if (!Pin)
+				{
+					continue;
+				}
+
+				for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+					if (LinkedNode && !InOutReachable.Contains(LinkedNode))
+					{
+						InOutReachable.Add(LinkedNode);
+						Queue.Add(LinkedNode);
+					}
+				}
+			}
+		}
+	}
+
+	void ExpandBackwardDataClosure(TSet<UEdGraphNode*>& InOutReachable)
+	{
+		TArray<UEdGraphNode*> Queue = InOutReachable.Array();
+		int32 QueueIndex = 0;
+		while (QueueIndex < Queue.Num())
+		{
+			const UEdGraphNode* CurrentNode = Queue[QueueIndex++];
+			if (!CurrentNode)
+			{
+				continue;
+			}
+
+			for (const UEdGraphPin* Pin : CurrentNode->Pins)
+			{
+				if (!Pin || Pin->Direction != EGPD_Input || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+				{
+					continue;
+				}
+
+				for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+					if (LinkedNode && !InOutReachable.Contains(LinkedNode))
+					{
+						InOutReachable.Add(LinkedNode);
+						Queue.Add(LinkedNode);
+					}
+				}
+			}
+		}
+	}
+
+	void GatherReachableFromEntry(UEdGraphNode* Entry, TSet<UEdGraphNode*>& OutReachable)
+	{
+		GatherExecForward({Entry}, OutReachable);
+		ExpandBackwardDataClosure(OutReachable);
+	}
 }
