@@ -8,6 +8,7 @@
 #include "Operations/CortexUMGPropertyBindingOps.h"
 #include "Operations/CortexUMGNativeBindingOps.h"
 #include "Operations/CortexUMGEmbeddedValueOps.h"
+#include "Operations/CortexUMGCommonUIOps.h"
 #include "CortexAssetMutationGuard.h"
 #include "Engine/Blueprint.h"
 
@@ -55,7 +56,8 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
         || Command == TEXT("list_widget_classes") || Command == TEXT("get_property")
         || Command == TEXT("get_schema") || Command == TEXT("list_animations")
         || Command == TEXT("get_animation") || Command == TEXT("list_animation_bindings")
-        || Command == TEXT("check_native_bindings") || Command == TEXT("get_embedded_widget_values");
+        || Command == TEXT("check_native_bindings") || Command == TEXT("get_embedded_widget_values")
+        || Command == TEXT("get_commonui_info");
     if (!bReadOnly)
     {
         FCortexCommandResult GuardError;
@@ -177,6 +179,10 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     if (Command == TEXT("get_embedded_widget_values"))
     {
         return FCortexUMGEmbeddedValueOps::GetEmbeddedWidgetValues(Params);
+    }
+    if (Command == TEXT("get_commonui_info"))
+    {
+        return FCortexUMGCommonUIOps::GetCommonUIInfo(Params);
     }
     if (Command == TEXT("set_animation_property_track"))
     {
@@ -362,6 +368,9 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
         FCortexCommandInfo{ TEXT("get_embedded_widget_values"), TEXT("Read per-instance values of embedded UserWidgets with is_override against the class default (read-only)") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Optional(TEXT("widget_name"), TEXT("string"), TEXT("Exact embedded widget name; omitted reads every embedded UserWidget"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("get_commonui_info"), TEXT("Read CommonUI activatable settings, implemented overrides, button/text/border styles and style_assets of a Widget Blueprint, or the style kind and referenced styles of a CommonUI style Blueprint; commonui_available is false when the CommonUI plugin is not loaded (read-only)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint or CommonUI style Blueprint asset path"))
             .StrictParams(),
     };
     return Infos;
