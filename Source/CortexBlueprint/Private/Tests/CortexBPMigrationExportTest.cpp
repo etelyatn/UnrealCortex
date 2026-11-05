@@ -25,6 +25,13 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectIterator.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraphSchema_K2.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_Event.h"
+#include "K2Node_IfThenElse.h"
+#include "Kismet/KismetSystemLibrary.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 
 namespace CortexBPMigrationExportTestSupport
 {
@@ -342,10 +349,25 @@ bool FCortexBPMigrationExportPrefixTest::RunTest(const FString& Parameters)
 				const TSharedPtr<FJsonObject>* Metrics = nullptr;
 				if (TestTrue(TEXT("child metrics"), Child->TryGetObjectField(TEXT("metrics"), Metrics)))
 				{
-					TestTrue(TEXT("metrics.functional_nodes"), (*Metrics)->HasTypedField<EJson::Number>(TEXT("functional_nodes")));
-					TestTrue(TEXT("metrics.has_tick"), (*Metrics)->HasTypedField<EJson::Boolean>(TEXT("has_tick")));
-					TestTrue(TEXT("metrics.unreachable_nodes"), (*Metrics)->HasTypedField<EJson::Number>(TEXT("unreachable_nodes")));
-					TestTrue(TEXT("metrics.conditionals"), (*Metrics)->HasTypedField<EJson::Number>(TEXT("conditionals")));
+					const TSharedPtr<FJsonObject> Single = SingleCall(*this, TEXT("graph_metrics"), Fixture.ChildPath);
+					if (Single.IsValid())
+					{
+						const TSharedPtr<FJsonObject> SingleTotals = Single->GetObjectField(TEXT("totals"));
+						int32 LiveConditionals = 0;
+						for (const TSharedPtr<FJsonValue>& EntryValue : Single->GetArrayField(TEXT("entries")))
+						{
+							const TSharedPtr<FJsonObject> Entry = EntryValue->AsObject();
+							LiveConditionals += Entry->GetBoolField(TEXT("live")) ? static_cast<int32>(Entry->GetNumberField(TEXT("conditionals"))) : 0;
+						}
+						TestEqual(TEXT("metrics.functional_nodes equals graph_metrics totals"),
+							(*Metrics)->GetNumberField(TEXT("functional_nodes")), SingleTotals->GetNumberField(TEXT("functional_nodes")));
+						TestEqual(TEXT("metrics.unreachable_nodes equals graph_metrics totals"),
+							(*Metrics)->GetNumberField(TEXT("unreachable_nodes")), SingleTotals->GetNumberField(TEXT("unreachable_nodes")));
+						TestEqual(TEXT("metrics.has_tick equals graph_metrics"),
+							(*Metrics)->GetBoolField(TEXT("has_tick")), Single->GetBoolField(TEXT("has_tick")));
+						TestEqual(TEXT("metrics.conditionals equals live entry sum"),
+							static_cast<int32>((*Metrics)->GetNumberField(TEXT("conditionals"))), LiveConditionals);
+					}
 				}
 				TestTrue(TEXT("child violations array"), Child->HasTypedField<EJson::Array>(TEXT("violations")));
 				TestTrue(TEXT("child unsupported_node_types array"), Child->HasTypedField<EJson::Array>(TEXT("unsupported_node_types")));
@@ -603,6 +625,124 @@ bool FCortexBPMigrationExportMissingPathTest::RunTest(const FString& Parameters)
 	if (TestEqual(TEXT("index lists only exported Blueprints"), IndexEntries.Num(), 1))
 	{
 		TestEqual(TEXT("index row is the child"), IndexEntries[0]->GetStringField(TEXT("asset_path")), Fixture.ChildPath);
+	}
+
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPMigrationExportIndexContentTest,
+	"Cortex.Blueprint.MigrationExport.IndexContent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPMigrationExportIndexContentTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexBPMigrationExportTestSupport;
+	FExportFixture Fixture;
+	UBlueprint* Logic = Fixture.MakeSaved(TEXT(""), TEXT("BP_Logic"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("logic fixture saved"), Logic))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	const FString LogicPath = Logic->GetPathName();
+
+	// BeginPlay -> Branch(then) -> Delay -> PrintString; one PrintString left unconnected; one Timeline template.
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Logic);
+	UEdGraphNode* BeginPlay = nullptr;
+	if (EventGraph)
+	{
+		for (UEdGraphNode* Node : EventGraph->Nodes)
+		{
+			const UK2Node_Event* Event = Cast<UK2Node_Event>(Node);
+			if (Event && Event->EventReference.GetMemberName() == TEXT("ReceiveBeginPlay"))
+			{
+				BeginPlay = Node;
+			}
+		}
+	}
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	const auto AddCall = [EventGraph](const TCHAR* Function)
+	{
+		UK2Node_CallFunction* Call = NewObject<UK2Node_CallFunction>(EventGraph);
+		Call->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(Function));
+		Call->CreateNewGuid();
+		EventGraph->AddNode(Call, false, false);
+		Call->AllocateDefaultPins();
+		return Call;
+	};
+	UK2Node_IfThenElse* Branch = NewObject<UK2Node_IfThenElse>(EventGraph);
+	Branch->CreateNewGuid();
+	EventGraph->AddNode(Branch, false, false);
+	Branch->AllocateDefaultPins();
+	UK2Node_CallFunction* Delay = AddCall(TEXT("Delay"));
+	UK2Node_CallFunction* Print = AddCall(TEXT("PrintString"));
+	AddCall(TEXT("PrintString")); // unconnected: unreachable
+	const auto Link = [](UEdGraphNode* From, const FName FromPin, UEdGraphNode* To)
+	{
+		UEdGraphPin* Output = From->FindPin(FromPin, EGPD_Output);
+		UEdGraphPin* Input = To->FindPin(UEdGraphSchema_K2::PN_Execute, EGPD_Input);
+		return Output && Input && GetDefault<UEdGraphSchema_K2>()->TryCreateConnection(Output, Input);
+	};
+	const bool bWired = Link(BeginPlay, UEdGraphSchema_K2::PN_Then, Branch)
+		&& Link(Branch, UEdGraphSchema_K2::PN_Then, Delay)
+		&& Link(Delay, UEdGraphSchema_K2::PN_Then, Print);
+	if (!TestTrue(TEXT("logic wired"), bWired) || !TestNotNull(TEXT("timeline added"), FBlueprintEditorUtils::AddNewTimeline(Logic, TEXT("ExportTimeline"))))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Logic);
+	if (!TestTrue(TEXT("logic fixture re-saved"), FExportFixture::Save(Logic)))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+
+	const FString OutPath = Fixture.ReportPath(TEXT("content"));
+	const FCortexCommandResult Result = Run(TEXT("export_migration_analysis"), ExportParams(Fixture.Dir, OutPath));
+	if (!TestTrue(*FString::Printf(TEXT("export succeeds (%s)"), *Result.ErrorMessage), Result.bSuccess))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	const TArray<TSharedPtr<FJsonObject>> IndexEntries = IndexRows(ReadJsonDocument(IndexPathOf(OutPath)));
+	if (TestEqual(TEXT("one index row"), IndexEntries.Num(), 1))
+	{
+		const TSharedPtr<FJsonObject> Row = IndexEntries[0];
+		const TSharedPtr<FJsonObject>* Metrics = nullptr;
+		if (TestTrue(TEXT("metrics present"), Row->TryGetObjectField(TEXT("metrics"), Metrics)))
+		{
+			TestEqual(TEXT("functional_nodes: Branch, Delay, PrintString"), static_cast<int32>((*Metrics)->GetNumberField(TEXT("functional_nodes"))), 3);
+			TestEqual(TEXT("conditionals: the Branch"), static_cast<int32>((*Metrics)->GetNumberField(TEXT("conditionals"))), 1);
+			TestEqual(TEXT("unreachable_nodes: the unconnected PrintString"), static_cast<int32>((*Metrics)->GetNumberField(TEXT("unreachable_nodes"))), 1);
+			TestFalse(TEXT("has_tick"), (*Metrics)->GetBoolField(TEXT("has_tick")));
+		}
+		TArray<FString> Blockers;
+		for (const TSharedPtr<FJsonValue>& Blocker : Row->GetArrayField(TEXT("blockers")))
+		{
+			Blockers.Add(Blocker->AsString());
+		}
+		TestTrue(TEXT("Delay is a latent_nodes blocker"), Blockers.Contains(TEXT("latent_nodes")));
+		TestTrue(TEXT("Timeline is a timelines blocker"), Blockers.Contains(TEXT("timelines")));
+		TestFalse(TEXT("no unsupported nodes"), Blockers.Contains(TEXT("unsupported_nodes")));
+		TestEqual(TEXT("unsupported_node_types empty"), Row->GetArrayField(TEXT("unsupported_node_types")).Num(), 0);
+		TestEqual(TEXT("low confidence blocker follows migration_confidence"), Blockers.Contains(TEXT("low_migration_confidence")),
+			Row->GetStringField(TEXT("migration_confidence")) == TEXT("low"));
+
+		// The index agrees with the analysis document of the same run.
+		const TSharedPtr<FJsonObject> Analysis = ReadJsonLines(OutPath)[0]->GetObjectField(TEXT("analysis"));
+		const TSharedPtr<FJsonObject> Complexity = Analysis->GetObjectField(TEXT("complexity_metrics"));
+		TestTrue(TEXT("analysis reports latent nodes"), Complexity->GetBoolField(TEXT("has_latent_nodes")));
+		TestTrue(TEXT("analysis reports timelines"), Complexity->GetBoolField(TEXT("has_timelines")));
+		TestEqual(TEXT("index confidence is the analysis confidence"),
+			Row->GetStringField(TEXT("migration_confidence")), Complexity->GetStringField(TEXT("migration_confidence")));
 	}
 
 	Fixture.Cleanup();

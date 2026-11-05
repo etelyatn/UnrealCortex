@@ -252,12 +252,19 @@ FCortexCommandResult FCortexBPMigrationExportOps::ExportMigrationAnalysis(const 
 	TSharedPtr<FJsonObject> ByType = MakeShared<FJsonObject>();
 	TArray<TSharedPtr<FJsonValue>> IndexRows;
 	TArray<TSharedPtr<FJsonValue>> FirstFailures;
-	FString Jsonl;
+	int32 JsonlChars = 0;
 	for (const FRow& Row : Rows)
+	{
+		JsonlChars += Row.Line.Len() + 1;
+	}
+	FString Jsonl;
+	Jsonl.Reserve(JsonlChars);
+	for (FRow& Row : Rows)
 	{
 		++Counts[static_cast<int32>(Row.Status)];
 		Jsonl.Append(Row.Line);
 		Jsonl.AppendChar(TEXT('\n'));
+		Row.Line.Empty();
 		if (Row.Status != EStatus::NotFound)
 		{
 			ByType->SetNumberField(Row.Type, ByType->HasField(Row.Type) ? ByType->GetNumberField(Row.Type) + 1 : 1);

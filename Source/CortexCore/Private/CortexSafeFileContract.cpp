@@ -636,12 +636,13 @@ FCortexJsonFileWriteResult FCortexSafeFileContract::WriteJsonReportAtomic(
 	const FCortexResolvedFilePath& Path,
 	const TSharedRef<FJsonObject>& Payload)
 {
-	return WriteTextReportAtomic(Path, SerializeCanonicalJson(Payload));
+	return WriteTextReportAtomic(Path, SerializeCanonicalJson(Payload), TEXT("JSON file"));
 }
 
 FCortexJsonFileWriteResult FCortexSafeFileContract::WriteTextReportAtomic(
 	const FCortexResolvedFilePath& Path,
-	const FString& Contents)
+	const FString& Contents,
+	const TCHAR* FileNoun)
 {
 	FCortexJsonFileWriteResult Result;
 
@@ -665,7 +666,7 @@ FCortexJsonFileWriteResult FCortexSafeFileContract::WriteTextReportAtomic(
 	if (!FFileHelper::SaveStringToFile(Contents, *TempPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 	{
 		Result.ErrorCode = CortexErrorCodes::SaveFailed;
-		Result.ErrorMessage = FString::Printf(TEXT("Failed to write temporary file: %s"), *TempPath);
+		Result.ErrorMessage = FString::Printf(TEXT("Failed to write temporary %s: %s"), FileNoun, *TempPath);
 		return Result;
 	}
 
@@ -673,7 +674,7 @@ FCortexJsonFileWriteResult FCortexSafeFileContract::WriteTextReportAtomic(
 	{
 		IFileManager::Get().Delete(*TempPath);
 		Result.ErrorCode = CortexErrorCodes::SaveFailed;
-		Result.ErrorMessage = FString::Printf(TEXT("Failed to replace file: %s"), *Path.AbsolutePath);
+		Result.ErrorMessage = FString::Printf(TEXT("Failed to replace %s: %s"), FileNoun, *Path.AbsolutePath);
 		return Result;
 	}
 
