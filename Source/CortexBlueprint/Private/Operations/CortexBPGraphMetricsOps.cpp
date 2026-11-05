@@ -322,6 +322,7 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 	}
 
 	TArray<FEntryMetrics> Entries;
+	TSet<UEdGraphNode*> LiveUnion;
 	TArray<TSharedPtr<FJsonValue>> UnreachableArray;
 	int32 TotalUnreachable = 0;
 
@@ -348,6 +349,13 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 			if (Metrics.bLive)
 			{
 				MeasureEntry(Reachable, Metrics);
+				for (UEdGraphNode* Reached : Reachable)
+				{
+					if (Reached && !CortexBPGraphReachability::IsEntryNode(Reached))
+					{
+						LiveUnion.Add(Reached);
+					}
+				}
 			}
 			Entries.Add(MoveTemp(Metrics));
 		}
@@ -380,7 +388,16 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 	}
 
 	bool bHasTick = false;
-	int32 TotalFunctional = 0;
+	const int32 TotalFunctional = [&LiveUnion]()
+	{
+		FLogicCounts Distinct;
+		TSet<const UEdGraph*> GraphsInProgress;
+		for (const UEdGraphNode* Node : LiveUnion)
+		{
+			AddNodeCounts(Node, GraphsInProgress, Distinct);
+		}
+		return Distinct.Functional;
+	}();
 	int32 GhostCount = 0;
 	TArray<TSharedPtr<FJsonValue>> EntryArray;
 	TArray<TSharedPtr<FJsonValue>> GhostArray;
@@ -411,7 +428,6 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 			continue;
 		}
 
-		TotalFunctional += Metrics.Counts.Functional;
 		if (Metrics.Kind == EEntryKind::Event && (Metrics.Name == TEXT("ReceiveTick") || Metrics.Name == TEXT("Tick")))
 		{
 			bHasTick = true;

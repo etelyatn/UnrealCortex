@@ -12,6 +12,12 @@
 #include "K2Node_Composite.h"
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
+#include "EdGraphNode_Comment.h"
+#include "K2Node_Composite.h"
+#include "K2Node_FunctionResult.h"
+#include "K2Node_Knot.h"
+#include "K2Node_MacroInstance.h"
+#include "K2Node_Tunnel.h"
 #include "K2Node_IfThenElse.h"
 #include "K2Node_VariableGet.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -145,6 +151,17 @@ bool FCortexBPGraphMetricsGhostTickTest::RunTest(const FString& Parameters)
 	if (TestTrue(TEXT("ghost_entries present"), Result.Data->TryGetArrayField(TEXT("ghost_entries"), Ghosts)))
 	{
 		TestTrue(TEXT("ghost_entries not empty"), Ghosts->Num() >= 2);
+		int32 NotLive = 0;
+		const TArray<TSharedPtr<FJsonValue>>* AllEntries = nullptr;
+		if (Result.Data->TryGetArrayField(TEXT("entries"), AllEntries))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *AllEntries)
+			{
+				const TSharedPtr<FJsonObject> Item = Value->AsObject();
+				NotLive += (Item.IsValid() && !Item->GetBoolField(TEXT("live"))) ? 1 : 0;
+			}
+		}
+		TestEqual(TEXT("ghost_entries lists exactly the non-live entries"), Ghosts->Num(), NotLive);
 	}
 	return true;
 }
@@ -298,6 +315,51 @@ bool FCortexBPGraphMetricsMacroAndCompositeExpandedTest::RunTest(const FString& 
 	UK2Node_Composite* Cyclic = MakeComposite(Inner1);
 	Cyclic->BoundGraph = Inner1;
 
+	// Standard macro instance: counted as its macro graph's functional nodes.
+	UBlueprint* StandardMacros = LoadObject<UBlueprint>(nullptr, TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros"));
+	UEdGraph* MacroGraph = nullptr;
+	if (StandardMacros)
+	{
+		for (UEdGraph* Candidate : StandardMacros->MacroGraphs)
+		{
+			if (Candidate && Candidate->GetFName() == TEXT("IsValid"))
+			{
+				MacroGraph = Candidate;
+				break;
+			}
+		}
+	}
+	if (!TestNotNull(TEXT("IsValid standard macro graph"), MacroGraph)) { return false; }
+
+	int32 ExpectedMacroNodes = 0;
+	for (const UEdGraphNode* MacroNode : MacroGraph->Nodes)
+	{
+		if (MacroNode && !MacroNode->IsA<UK2Node_Tunnel>() && !MacroNode->IsA<UEdGraphNode_Comment>() && !MacroNode->IsA<UK2Node_Knot>()
+			&& !MacroNode->IsA<UK2Node_FunctionResult>() && !MacroNode->IsA<UK2Node_MacroInstance>() && !MacroNode->IsA<UK2Node_Composite>())
+		{
+			++ExpectedMacroNodes;
+		}
+	}
+	if (!TestTrue(TEXT("macro has logic nodes"), ExpectedMacroNodes > 0)) { return false; }
+
+	UK2Node_MacroInstance* MacroInstance = NewObject<UK2Node_MacroInstance>(EventGraph);
+	MacroInstance->SetMacroGraph(MacroGraph);
+	MacroInstance->CreateNewGuid();
+	EventGraph->AddNode(MacroInstance, false, false);
+	MacroInstance->AllocateDefaultPins();
+	UEdGraphPin* MacroExecIn = nullptr;
+	for (UEdGraphPin* Pin : MacroInstance->Pins)
+	{
+		if (Pin && Pin->Direction == EGPD_Input && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+		{
+			MacroExecIn = Pin;
+			break;
+		}
+	}
+	UEdGraphPin* CompositeOut = Outer->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
+	if (!TestTrue(TEXT("Macro wired"), MacroExecIn && CompositeOut
+		&& GetDefault<UEdGraphSchema_K2>()->TryCreateConnection(CompositeOut, MacroExecIn))) { return false; }
+
 	if (!TestTrue(TEXT("Composite wired"), LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, Outer))) { return false; }
 
 	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
@@ -305,8 +367,8 @@ bool FCortexBPGraphMetricsMacroAndCompositeExpandedTest::RunTest(const FString& 
 
 	const TSharedPtr<FJsonObject> Entry = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
 	if (!TestTrue(TEXT("BeginPlay entry"), Entry.IsValid())) { return false; }
-	TestEqual(TEXT("composite replaced by inner functional count (2 + nested 1 + cycle 0)"),
-		(int32)Entry->GetNumberField(TEXT("functional_nodes")), 3);
+	TestEqual(TEXT("composites + macro instance replaced by inner functional counts"),
+		(int32)Entry->GetNumberField(TEXT("functional_nodes")), 3 + ExpectedMacroNodes);
 	return true;
 }
 
@@ -409,6 +471,75 @@ bool FCortexBPGraphMetricsInvalidPathTest::RunTest(const FString& Parameters)
 		const FCortexCommandResult Result = RunGraphMetrics(Scope.Blueprint, Thresholds);
 		TestFalse(FString::Printf(TEXT("threshold %g rejected"), Bad), Result.bSuccess);
 		TestEqual(TEXT("threshold code"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsSharedNodeTotalsTest,
+	"Cortex.Blueprint.GraphMetrics.SharedNodeTotals",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsSharedNodeTotalsTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsShared"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	UEdGraphNode* Tick = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveTick")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay) || !TestNotNull(TEXT("Tick node"), Tick)) { return false; }
+
+	// Both live entries reach the same two-node chain.
+	UK2Node_CallFunction* First = AddPrintString(EventGraph);
+	UK2Node_CallFunction* Second = AddPrintString(EventGraph);
+	const bool bLinked = LinkExec(First, UEdGraphSchema_K2::PN_Then, Second)
+		&& LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, First)
+		&& LinkExec(Tick, UEdGraphSchema_K2::PN_Then, First);
+	if (!TestTrue(TEXT("Graph wired"), bLinked)) { return false; }
+
+	TSharedPtr<FJsonObject> Thresholds = MakeShared<FJsonObject>();
+	Thresholds->SetNumberField(TEXT("max_nodes_per_blueprint"), 3);
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint, Thresholds);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	for (const TCHAR* Name : { TEXT("ReceiveBeginPlay"), TEXT("ReceiveTick") })
+	{
+		const TSharedPtr<FJsonObject> Entry = FindEntry(Result.Data, Name);
+		if (TestTrue(FString::Printf(TEXT("%s entry"), Name), Entry.IsValid()))
+		{
+			TestEqual(FString::Printf(TEXT("%s per-entry count unchanged"), Name), (int32)Entry->GetNumberField(TEXT("functional_nodes")), 2);
+		}
+	}
+
+	const TSharedPtr<FJsonObject>* Totals = nullptr;
+	if (TestTrue(TEXT("totals present"), Result.Data->TryGetObjectField(TEXT("totals"), Totals)))
+	{
+		TestEqual(TEXT("totals are the distinct union"), (int32)(*Totals)->GetNumberField(TEXT("functional_nodes")), 2);
+	}
+	const TArray<TSharedPtr<FJsonValue>>* Violations = nullptr;
+	if (TestTrue(TEXT("violations present"), Result.Data->TryGetArrayField(TEXT("violations"), Violations)))
+	{
+		TestEqual(TEXT("per-entry sum (4) must not raise a blueprint violation at limit 3"), Violations->Num(), 0);
+	}
+
+	Thresholds->SetNumberField(TEXT("max_nodes_per_blueprint"), 1);
+	const FCortexCommandResult Over = RunGraphMetrics(Blueprint, Thresholds);
+	if (TestTrue(TEXT("graph_metrics succeeded (limit 1)"), Over.bSuccess) && Over.Data.IsValid()
+		&& Over.Data->TryGetArrayField(TEXT("violations"), Violations))
+	{
+		bool bBlueprintViolation = false;
+		for (const TSharedPtr<FJsonValue>& Value : *Violations)
+		{
+			const TSharedPtr<FJsonObject> Item = Value->AsObject();
+			if (Item.IsValid() && Item->GetStringField(TEXT("scope")) == TEXT("blueprint"))
+			{
+				bBlueprintViolation = true;
+				TestEqual(TEXT("violation reports the union"), (int32)Item->GetNumberField(TEXT("functional_nodes")), 2);
+			}
+		}
+		TestTrue(TEXT("blueprint violation fires at the union value"), bBlueprintViolation);
 	}
 	return true;
 }
