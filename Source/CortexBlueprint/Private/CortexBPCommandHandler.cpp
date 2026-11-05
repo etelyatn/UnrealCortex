@@ -397,6 +397,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("max_results"), TEXT("number"), TEXT("Maximum matches to return")));
 	Commands.Add(FCortexCommandInfo{TEXT("export_text_inventory"), TEXT("Export every FText of a Blueprint (class defaults, widgets, text pin defaults) as a sorted inventory with source kind and string table identity (read-only)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full inventory JSON to this file (under Project Saved, Content or Config) and return only asset_path, out_path and counts; required when the inline response would exceed 40000 characters"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))

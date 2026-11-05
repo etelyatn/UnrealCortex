@@ -1,5 +1,6 @@
 #include "Operations/CortexBPTextInventoryOps.h"
 
+#include "CortexSafeFileContract.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Dom/JsonObject.h"
@@ -21,8 +22,8 @@
 
 namespace
 {
-	/** Compact-JSON ceiling of one inventory response; larger inventories refuse instead of truncating. */
-	constexpr int32 MaxInventoryResponseChars = 200000;
+	/** Compact-JSON ceiling of one inline response, shared with the other bounded Cortex reads. */
+	constexpr int32 MaxInlineResponseChars = 40000;
 
 	namespace Location
 	{
@@ -261,6 +262,20 @@ FCortexCommandResult FCortexBPTextInventoryOps::ExportTextInventory(const TShare
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
 	}
 
+	// An unusable out_path is refused before any asset work.
+	FString OutPath;
+	FCortexResolvedFilePath ResolvedOutPath;
+	const bool bFileOutput = Params->TryGetStringField(TEXT("out_path"), OutPath);
+	if (bFileOutput)
+	{
+		FString PathErrorCode;
+		FString PathErrorMessage;
+		if (!FCortexSafeFileContract::ResolveWritePath(OutPath, ResolvedOutPath, PathErrorCode, PathErrorMessage))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, PathErrorMessage);
+		}
+	}
+
 	FString LoadError;
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (!Blueprint)
@@ -308,18 +323,35 @@ FCortexCommandResult FCortexBPTextInventoryOps::ExportTextInventory(const TShare
 	Data->SetObjectField(TEXT("counts"), CountsJson);
 	Data->SetArrayField(TEXT("entries"), EntryValues);
 
+	if (bFileOutput)
+	{
+		const FCortexJsonFileWriteResult WriteResult = FCortexSafeFileContract::WriteJsonReportAtomic(ResolvedOutPath, Data.ToSharedRef());
+		if (!WriteResult.bWritten)
+		{
+			return FCortexCommandRouter::Error(
+				WriteResult.ErrorCode.IsEmpty() ? CortexErrorCodes::SaveFailed : WriteResult.ErrorCode,
+				WriteResult.ErrorMessage);
+		}
+		TSharedPtr<FJsonObject> FileData = MakeShared<FJsonObject>();
+		FileData->SetStringField(TEXT("asset_path"), AssetPath);
+		FileData->SetStringField(TEXT("out_path"), ResolvedOutPath.AbsolutePath);
+		FileData->SetObjectField(TEXT("counts"), CountsJson);
+		return FCortexCommandRouter::Success(FileData);
+	}
+
 	FString CompactText;
 	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
 		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&CompactText);
 	FJsonSerializer::Serialize(Data.ToSharedRef(), Writer);
-	if (CompactText.Len() > MaxInventoryResponseChars)
+	if (CompactText.Len() > MaxInlineResponseChars)
 	{
 		TSharedPtr<FJsonObject> Bounded = MakeShared<FJsonObject>();
 		Bounded->SetStringField(TEXT("_error"), TEXT("RESPONSE_TOO_LARGE"));
 		Bounded->SetBoolField(TEXT("reader_complete"), false);
 		Bounded->SetStringField(TEXT("asset_path"), AssetPath);
 		Bounded->SetObjectField(TEXT("counts"), CountsJson);
-		Bounded->SetNumberField(TEXT("max_response_chars"), MaxInventoryResponseChars);
+		Bounded->SetNumberField(TEXT("max_response_chars"), MaxInlineResponseChars);
+		Bounded->SetStringField(TEXT("hint"), TEXT("Pass out_path to write the full inventory to a file."));
 		return FCortexCommandRouter::Success(Bounded);
 	}
 
