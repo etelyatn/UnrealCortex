@@ -94,6 +94,25 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
     "reflect.class_detail": _REFLECT_DETAIL_SELECTOR,
     "query_class_context": _REFLECT_CONTEXT_SELECTOR,
     "reflect.class_context": _REFLECT_CONTEXT_SELECTOR,
+    "batch_query": (
+        "The batch has already executed and must not be re-run; its response could not be "
+        "snapshotted for paging, so narrow the steps of a new, read-only query instead."
+    ),
+    "reflect.find_duplicate_graphs": (
+        "Pass 'out_path' to write the full result to a file and get a compact summary, or narrow "
+        "'path_prefixes' to fewer content folders, raise 'min_nodes', or raise 'similarity' so fewer "
+        "groups are reported."
+    ),
+    "reflect.find_name_lookups": (
+        "Pass 'out_path' to write the full result to a file and get a compact summary, or narrow "
+        "'path_prefixes' to fewer content folders, or pass 'symbols' to report only the names you "
+        "are checking."
+    ),
+    "reflect.find_broken_config_paths": (
+        "find_broken_config_paths has no row selector: fix the broken config paths reported so far "
+        "and re-run, or use reflect.find_usages / reflect.get_referencers (include_config) on the "
+        "specific assets in question."
+    ),
 }
 
 

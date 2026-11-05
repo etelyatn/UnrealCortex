@@ -5,6 +5,7 @@
 #include "Operations/CortexBPCleanupOps.h"
 #include "Operations/CortexBPClassDefaultsOps.h"
 #include "Operations/CortexBPCompileAllOps.h"
+#include "Operations/CortexBPMigrationExportOps.h"
 #include "Operations/CortexBPCompareOps.h"
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPGraphCleanupOps.h"
@@ -231,6 +232,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPCompileAllOps::CompileAll(Params);
 	}
 
+	if (Command == TEXT("export_migration_analysis"))
+	{
+		return FCortexBPMigrationExportOps::ExportMigrationAnalysis(Params);
+	}
+
 	if (Command == TEXT("reparent"))
 	{
 		return FCortexBPAssetOps::Reparent(Params);
@@ -452,6 +458,13 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("path_prefix"), TEXT("string"), TEXT("Content folder compiled recursively (exactly one of path_prefix or paths)"))
 		.Optional(TEXT("paths"), TEXT("array"), TEXT("Explicit Blueprint asset paths (exactly one of path_prefix or paths)"))
 		.Optional(TEXT("types"), TEXT("array"), TEXT("Only compile these Blueprint types (case-insensitive, same vocabulary as list): Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown (from registry tags, no load)"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("export_migration_analysis"), TEXT("Analyze every Blueprint of a folder (recursive) or an explicit asset list in one call with the same builders as analyze_for_migration and graph_metrics, and write a JSONL file (one {asset_path, analysis, graph_metrics} row per Blueprint, sorted by asset_path; error rows {asset_path, status, error_code, error_message} for failed, skipped and not found assets) plus <out_path without extension>.index.json (per exported Blueprint: name, asset_path, type, parent_class, native_parent_class, parent_chain = Blueprint ancestors immediate parent first ending before the first native class, metrics {functional_nodes, has_tick, unreachable_nodes, conditionals = sum over live entries}, violations, migration_confidence, unsupported_node_types, blockers = unsupported_nodes when unsupported_node_types is non-empty, latent_nodes, timelines, low_migration_confidence when migration_confidence is low; plus totals and by_type). Returns out_path, index_path, totals {total, exported, failed, not_found, skipped, excluded_by_type, matched_assets (Blueprints found under path_prefix before the types filter)}, by_type, the first failures and warnings (a path_prefix that matched no Blueprint). Index violations always use the default graph_metrics thresholds (max_nodes_per_entry 10, max_nodes_per_blueprint 30); this command has no thresholds parameter, call graph_metrics on single assets for custom thresholds. Assets are loaded but never modified or saved (only the two report files are written), assets blocked after a failed recovery are skipped with a reason, level script Blueprints are not enumerated; synchronous, garbage is collected once at the end, large prefixes take minutes")}
+		.Required(TEXT("out_path"), TEXT("string"), TEXT("File to write the JSONL export to (under Project Saved, Content or Config); the index goes next to it as <name>.index.json under the same policy"))
+		.Optional(TEXT("path_prefix"), TEXT("string"), TEXT("Content folder analysed recursively (exactly one of path_prefix or paths)"))
+		.Optional(TEXT("paths"), TEXT("array"), TEXT("Explicit Blueprint asset paths (exactly one of path_prefix or paths); paths without a registered Blueprint become not_found rows"))
+		.Optional(TEXT("types"), TEXT("array"), TEXT("Only export these Blueprint types (case-insensitive, same vocabulary as list): Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown (from registry tags, no load)"))
+		.Optional(TEXT("sections"), TEXT("array"), TEXT("Documents to put in each row (omitted or empty = all): any analyze_for_migration section (identity fields are always present) plus graph_metrics; the index always carries its summary fields"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))

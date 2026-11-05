@@ -29,8 +29,6 @@
 
 namespace
 {
-	constexpr int32 DefaultMaxNodesPerEntry = 10;
-	constexpr int32 DefaultMaxNodesPerBlueprint = 30;
 	constexpr int32 MaxUnreachableNodeIds = 50;
 
 	struct FLogicCounts
@@ -416,8 +414,7 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 			TEXT("Missing required param: asset_path"));
 	}
 
-	int32 MaxNodesPerEntry = DefaultMaxNodesPerEntry;
-	int32 MaxNodesPerBlueprint = DefaultMaxNodesPerBlueprint;
+	FThresholds Thresholds;
 	const TSharedPtr<FJsonValue> ThresholdsValue = Params->TryGetField(TEXT("thresholds"));
 	if (ThresholdsValue.IsValid() && !ThresholdsValue->IsNull())
 	{
@@ -437,8 +434,8 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 		}
 
 		FString ThresholdError;
-		if (!ReadThreshold(*ThresholdsPtr, TEXT("max_nodes_per_entry"), MaxNodesPerEntry, ThresholdError)
-			|| !ReadThreshold(*ThresholdsPtr, TEXT("max_nodes_per_blueprint"), MaxNodesPerBlueprint, ThresholdError))
+		if (!ReadThreshold(*ThresholdsPtr, TEXT("max_nodes_per_entry"), Thresholds.MaxNodesPerEntry, ThresholdError)
+			|| !ReadThreshold(*ThresholdsPtr, TEXT("max_nodes_per_blueprint"), Thresholds.MaxNodesPerBlueprint, ThresholdError))
 		{
 			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ThresholdError);
 		}
@@ -450,6 +447,15 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
+
+	return FCortexCommandRouter::Success(BuildGraphMetrics(Blueprint, AssetPath, Thresholds));
+}
+
+TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
+	const UBlueprint* Blueprint, const FString& AssetPath, const FThresholds& Thresholds)
+{
+	const int32 MaxNodesPerEntry = Thresholds.MaxNodesPerEntry;
+	const int32 MaxNodesPerBlueprint = Thresholds.MaxNodesPerBlueprint;
 
 	// K2-derived schemas (including UWidgetGraphSchema) except animation and state machine graphs, whose
 	// pose-flow networks have no event/exec semantics. The graph type is asked of the schema so no anim module is linked.
@@ -666,5 +672,5 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 	Data->SetArrayField(TEXT("ghost_entries"), GhostArray);
 	Data->SetObjectField(TEXT("thresholds"), ThresholdsOut);
 	Data->SetArrayField(TEXT("violations"), ViolationArray);
-	return FCortexCommandRouter::Success(Data);
+	return Data;
 }

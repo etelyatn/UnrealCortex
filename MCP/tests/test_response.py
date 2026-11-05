@@ -206,16 +206,16 @@ class TestPaginationCache:
         page2, _ = cache.get_page(key2, offset=0, limit=2)
         assert page2 == [4, 5]
 
-    def test_same_command_reuses_cache_key(self):
+    def test_identical_requests_get_distinct_snapshots(self):
         cache = PaginationCache(max_entries=5, ttl_seconds=60)
 
         key1 = cache.store("data.list", {"type": "Blueprint"}, "items", [1, 2], {})
         key2 = cache.store("data.list", {"type": "Blueprint"}, "items", [3, 4], {})
 
-        assert key1 == key2
-        # Second store overwrites — returns fresh data
-        page, _ = cache.get_page(key2, offset=0, limit=10)
-        assert page == [3, 4]
+        assert key1 != key2
+        assert cache.get_page(key1, offset=0, limit=10)[0] == [1, 2]
+        assert cache.get_page(key2, offset=0, limit=10)[0] == [3, 4]
+        assert cache.snapshot_id(key2) > cache.snapshot_id(key1)
 
     def test_cache_key_excludes_limit_and_cursor(self):
         cache = PaginationCache(max_entries=5, ttl_seconds=60)
@@ -223,7 +223,7 @@ class TestPaginationCache:
         key1 = cache.store("data.list", {"type": "BP"}, "items", [1], {})
         key2 = cache.store("data.list", {"type": "BP", "limit": 50, "cursor": "abc"}, "items", [2], {})
 
-        assert key1 == key2
+        assert key1.rsplit("-", 1)[0] == key2.rsplit("-", 1)[0]
 
     def test_rebuild_response(self):
         cache = PaginationCache(max_entries=5, ttl_seconds=60)

@@ -23,6 +23,7 @@ public class CortexReflect : ModuleRules
 			"Json",
 			"BlueprintGraph",
 			"Kismet",
+			"UMG",
 		});
 	}
 }

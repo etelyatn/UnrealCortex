@@ -18,6 +18,7 @@ def encode_cursor(
     *,
     command: str | None = None,
     array: str | None = None,
+    snapshot_id: int | None = None,
 ) -> str:
     """Encode pagination state as an opaque base64 cursor token.
 
@@ -25,6 +26,8 @@ def encode_cursor(
     against an unrelated read; callers that still build a bare cursor keep working.
     """
     payload: dict = {"key": key, "offset": offset, "limit": limit}
+    if snapshot_id is not None:
+        payload["snapshot_id"] = snapshot_id
     if command is not None:
         payload["command"] = command
     if array is not None:
@@ -49,6 +52,9 @@ def decode_cursor(cursor: str) -> dict:
 
     if not isinstance(data["key"], str) or not isinstance(data["offset"], int) or not isinstance(data["limit"], int):
         raise ValueError("INVALID_CURSOR")
+    snapshot_id = data.get("snapshot_id")
+    if snapshot_id is not None and (isinstance(snapshot_id, bool) or not isinstance(snapshot_id, int)):
+        raise ValueError("INVALID_CURSOR")
 
     return data
 
@@ -61,13 +67,19 @@ def _make_cache_key(qualified_command: str, params: dict) -> str:
 
 
 class PaginationCache:
-    """LRU + TTL cache for paginated response data."""
+    """LRU + TTL cache of paginated response snapshots.
 
-    def __init__(self, max_entries: int = 5, ttl_seconds: float = 60.0):
+    Every store mints a monotonically increasing snapshot id that is part of the cache key, so
+    identical requests never overwrite each other's snapshot: a cursor always addresses the exact
+    result set it was minted from, or expires.
+    """
+
+    def __init__(self, max_entries: int = 16, ttl_seconds: float = 600.0):
         self._max_entries = max_entries
         self._ttl_seconds = ttl_seconds
-        # (stored_at, qualified_command, array_key, full_list, response_template)
-        self._entries: OrderedDict[str, tuple[float, str, str, list, dict]] = OrderedDict()
+        self._next_snapshot_id = 1
+        # (stored_at, qualified_command, array_key, full_list, response_template, snapshot_id)
+        self._entries: OrderedDict[str, tuple[float, str, str, list, dict, int]] = OrderedDict()
 
     def store(
         self,
@@ -77,13 +89,12 @@ class PaginationCache:
         full_list: list,
         response_template: dict,
     ) -> str:
-        """Cache a full result list. Returns the cache key."""
-        key = _make_cache_key(qualified_command, params)
+        """Cache a full result list as a new snapshot. Returns the snapshot's cache key."""
+        snapshot_id = self._next_snapshot_id
+        self._next_snapshot_id += 1
+        key = f"{_make_cache_key(qualified_command, params)}-{snapshot_id}"
 
-        # Remove old entry if exists (to update LRU position)
-        self._entries.pop(key, None)
-
-        # Evict oldest if at capacity
+        # Evict least recently used snapshots when at capacity
         while len(self._entries) >= self._max_entries:
             evicted_key, _ = self._entries.popitem(last=False)
             logger.debug("Evicted cache entry %s", evicted_key)
@@ -94,22 +105,36 @@ class PaginationCache:
             array_key,
             list(full_list),
             dict(response_template),
+            snapshot_id,
         )
         return key
+
+    def snapshot_id(self, key: str) -> int:
+        """Snapshot id of a live entry. Raises KeyError('CURSOR_EXPIRED') when missing/expired."""
+        entry = self._live_entry(key)
+        if entry is None:
+            raise KeyError("CURSOR_EXPIRED")
+        return entry[5]
+
+    def _live_entry(self, key: str):
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        if time.monotonic() - entry[0] > self._ttl_seconds:
+            del self._entries[key]
+            return None
+        return entry
 
     def get_page(self, key: str, offset: int, limit: int) -> tuple[list, dict]:
         """Retrieve a page slice. Returns (page_items, pagination_meta).
 
         Raises KeyError with 'CURSOR_EXPIRED' if entry is missing or expired.
         """
-        entry = self._entries.get(key)
+        entry = self._live_entry(key)
         if entry is None:
             raise KeyError("CURSOR_EXPIRED")
 
-        timestamp, _qualified_command, array_key, full_list, _template = entry
-        if time.monotonic() - timestamp > self._ttl_seconds:
-            del self._entries[key]
-            raise KeyError("CURSOR_EXPIRED")
+        _timestamp, qualified_command, array_key, full_list, _template, snapshot_id = entry
 
         # Move to end (most recently used)
         self._entries.move_to_end(key)
@@ -123,25 +148,27 @@ class PaginationCache:
             "returned": len(page),
             "total": total,
             "has_more": has_more,
-            "next_cursor": encode_cursor(key, next_offset, limit) if has_more else None,
+            "snapshot_id": snapshot_id,
+            "next_cursor": (
+                encode_cursor(key, next_offset, limit, snapshot_id=snapshot_id)
+                if has_more
+                else None
+            ),
         }
 
         return page, meta
 
-    def entry_provenance(self, key: str) -> tuple[str, str] | None:
-        """Owner command and primary array of a live entry, or None when missing/expired.
+    def entry_provenance(self, key: str) -> tuple[str, str, int] | None:
+        """Owner command, primary array and snapshot id of a live entry, or None when missing/expired.
 
         Used to validate a cursor's self-declared provenance against the snapshot it addresses
         before any value is sliced or rebuilt.
         """
-        entry = self._entries.get(key)
+        entry = self._live_entry(key)
         if entry is None:
             return None
-        timestamp, qualified_command, array_key, _full_list, _template = entry
-        if time.monotonic() - timestamp > self._ttl_seconds:
-            del self._entries[key]
-            return None
-        return qualified_command, array_key
+        _timestamp, qualified_command, array_key, _full_list, _template, snapshot_id = entry
+        return qualified_command, array_key, snapshot_id
 
     def clear(self) -> None:
         """Clear all cache entries. Intended for testing."""
@@ -149,11 +176,11 @@ class PaginationCache:
 
     def rebuild_response(self, key: str, page: list, meta: dict) -> dict:
         """Rebuild a full response dict from template + page + pagination metadata."""
-        entry = self._entries.get(key)
+        entry = self._live_entry(key)
         if entry is None:
             raise KeyError("CURSOR_EXPIRED")
 
-        _, _qualified_command, array_key, _, template = entry
+        _, _qualified_command, array_key, _, template, _snapshot_id = entry
         response = dict(template)
         response[array_key] = page
         response["_pagination"] = meta
