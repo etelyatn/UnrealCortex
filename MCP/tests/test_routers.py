@@ -754,6 +754,29 @@ def test_core_router_dispatches_normal_commands_via_tcp():
     )
 
 
+@pytest.mark.parametrize(
+    ("command", "params", "expected_timeout"),
+    [
+        ("wait_ready", {}, 150.0),
+        ("wait_ready", {"timeout": 300}, 330.0),
+        ("live_coding_compile", {}, 600.0),
+    ],
+)
+def test_editor_router_widens_receive_window_for_deferred_turnaround_commands(command, params, expected_timeout):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {"ready": True}}
+
+    router = make_router("editor", connection, "editor docs")
+    payload = json.loads(router(command, params))
+
+    assert payload["ready"] is True
+    connection.send_command.assert_called_once_with(
+        f"editor.{command}",
+        params,
+        timeout=expected_timeout,
+    )
+
+
 def test_blueprint_router_uses_cached_send_for_discovery_reads():
     connection = MagicMock()
     connection.send_command_cached.return_value = {

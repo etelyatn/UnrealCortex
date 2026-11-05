@@ -33,6 +33,26 @@ logger = logging.getLogger(__name__)
 _TTL_CATALOG = 600
 _CACHED_READ_TTL = 300
 
+# Deferred editor commands answer after the native work completes, which can outlast the 60 s default
+# socket window: wait_ready waits up to its own `timeout` (default 120 s); live_coding_compile has no
+# native bound, so it gets a fixed window.
+_WAIT_READY_DEFAULT_SECONDS = 120.0
+_DEFERRED_TIMEOUT_MARGIN = 30.0
+_LIVE_CODING_COMPILE_WINDOW = 600.0
+
+
+def _dispatch_timeout(qualified: str, params: dict) -> float | None:
+    """Per-command receive window in seconds, or None to keep the connection default."""
+    if qualified == "editor.live_coding_compile":
+        return _LIVE_CODING_COMPILE_WINDOW
+    if qualified == "editor.wait_ready":
+        requested = params.get("timeout")
+        if isinstance(requested, bool) or not isinstance(requested, (int, float)):
+            requested = _WAIT_READY_DEFAULT_SECONDS
+        return float(requested) + _DEFERRED_TIMEOUT_MARGIN
+    return None
+
+
 _pagination_cache = PaginationCache(max_entries=5, ttl_seconds=60.0)
 _CACHED_READ_COMMANDS = {
     ("blueprint", "list_scs_components"),
@@ -556,7 +576,11 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                     request_params=route_params,
                 )
 
-            response = connection.send_command(qualified, route_params)
+            dispatch_timeout = _dispatch_timeout(qualified, route_params)
+            if dispatch_timeout is None:
+                response = connection.send_command(qualified, route_params)
+            else:
+                response = connection.send_command(qualified, route_params, timeout=dispatch_timeout)
             return format_response(
                 response.get("data", {}),
                 f"{domain}_cmd",
