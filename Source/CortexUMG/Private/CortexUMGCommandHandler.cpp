@@ -6,6 +6,9 @@
 #include "Operations/CortexUMGWidgetAnimationOps.h"
 #include "Operations/CortexUMGAnimationAuthoringOps.h"
 #include "Operations/CortexUMGPropertyBindingOps.h"
+#include "Operations/CortexUMGNativeBindingOps.h"
+#include "Operations/CortexUMGEmbeddedValueOps.h"
+#include "Operations/CortexUMGCommonUIOps.h"
 #include "CortexAssetMutationGuard.h"
 #include "Engine/Blueprint.h"
 
@@ -52,7 +55,9 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     const bool bReadOnly = Command == TEXT("get_tree") || Command == TEXT("get_widget")
         || Command == TEXT("list_widget_classes") || Command == TEXT("get_property")
         || Command == TEXT("get_schema") || Command == TEXT("list_animations")
-        || Command == TEXT("get_animation") || Command == TEXT("list_animation_bindings");
+        || Command == TEXT("get_animation") || Command == TEXT("list_animation_bindings")
+        || Command == TEXT("check_native_bindings") || Command == TEXT("get_embedded_widget_values")
+        || Command == TEXT("get_commonui_info");
     if (!bReadOnly)
     {
         FCortexCommandResult GuardError;
@@ -167,6 +172,18 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     {
         return FCortexUMGAnimationAuthoringOps::EnsureAnimationBinding(Params);
     }
+    if (Command == TEXT("check_native_bindings"))
+    {
+        return FCortexUMGNativeBindingOps::CheckNativeBindings(Params);
+    }
+    if (Command == TEXT("get_embedded_widget_values"))
+    {
+        return FCortexUMGEmbeddedValueOps::GetEmbeddedWidgetValues(Params);
+    }
+    if (Command == TEXT("get_commonui_info"))
+    {
+        return FCortexUMGCommonUIOps::GetCommonUIInfo(Params);
+    }
     if (Command == TEXT("set_animation_property_track"))
     {
         return FCortexUMGAnimationAuthoringOps::SetAnimationPropertyTrack(Params);
@@ -221,7 +238,10 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Exact current widget name"))
             .Required(TEXT("new_name"), TEXT("string"), TEXT("Literal identifier; no silent sanitizing or case-only rename"))
-            .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Complete current UMG tree fingerprint, including compiled_signature_crc")),
+            .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Complete current UMG tree fingerprint, including compiled_signature_crc"))
+            .Optional(TEXT("scope"), TEXT("string"), TEXT("asset (default, single-asset contract) or dependents (also renames the member references in child and referencing Blueprints, loading unloaded ones)"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("scope=dependents only; defaults to true and returns the plan (assets with role, fingerprint and references, plus conflicts) without mutating"))
+            .Optional(TEXT("expected_dependent_fingerprints"), TEXT("object"), TEXT("scope=dependents apply: object keyed by asset_path whose key set equals the plan's modified dependents exactly, each value that dependent's plan fingerprint")),
         FCortexCommandInfo{ TEXT("set_widget_variable"), TEXT("Set whether a designer widget becomes a Blueprint variable") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
@@ -344,6 +364,17 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .Required(TEXT("track"), TEXT("object"), TEXT("Track object with optional section completion_mode 'RestoreState' (default) or 'KeepState', or explicit null to clear the one property track"))
             .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Content guard fingerprint from prior read"))
             .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("If true, previews changes without mutating (default: true)")),
+        FCortexCommandInfo{ TEXT("check_native_bindings"), TEXT("Check BindWidget/BindWidgetAnim members of a native UserWidget base against a Widget Blueprint, including graph reads of members that are not Blueprint visible (read-only)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Optional(TEXT("native_class"), TEXT("string"), TEXT("UserWidget class path or name to check against; defaults to the Blueprint's parent class"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("get_embedded_widget_values"), TEXT("Read per-instance values of embedded UserWidgets with is_override against the class default (read-only)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Optional(TEXT("widget_name"), TEXT("string"), TEXT("Exact embedded widget name; omitted reads every embedded UserWidget"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("get_commonui_info"), TEXT("Read CommonUI activatable settings, implemented overrides, button/text/border styles and style_assets of a Widget Blueprint, or the style kind and referenced styles of a CommonUI style Blueprint; commonui_available is false when the CommonUI plugin is not loaded (read-only)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint or CommonUI style Blueprint asset path"))
+            .StrictParams(),
     };
     return Infos;
 }

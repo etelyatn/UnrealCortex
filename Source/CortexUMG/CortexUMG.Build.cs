@@ -15,6 +15,7 @@ public class CortexUMG : ModuleRules
         PrivateDependencyModuleNames.AddRange(new string[]
         {
             "CoreUObject",
+            "AssetRegistry",
             "Engine",
             "Json",
             "JsonUtilities",

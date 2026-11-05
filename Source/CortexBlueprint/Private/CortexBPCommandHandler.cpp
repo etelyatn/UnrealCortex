@@ -10,6 +10,7 @@
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPSearchOps.h"
 #include "Operations/CortexBPStructureOps.h"
+#include "Operations/CortexBPTextInventoryOps.h"
 #include "Operations/CortexBPTimelineOps.h"
 #include "Operations/CortexBPClassSettingsOps.h"
 #include "CortexAssetMutationGuard.h"
@@ -49,7 +50,7 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		|| Command == TEXT("get_class_defaults") || Command == TEXT("list_inherited_properties")
 		|| Command == TEXT("list_settable_defaults") || Command == TEXT("list_scs_components")
 		|| Command == TEXT("analyze_for_migration") || Command == TEXT("compare_blueprints")
-		|| Command == TEXT("search");
+		|| Command == TEXT("search") || Command == TEXT("export_text_inventory");
 	if (!bReadOnly)
 	{
 		FCortexCommandResult GuardError;
@@ -199,6 +200,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("search"))
 	{
 		return FCortexBPSearchOps::Search(Params);
+	}
+
+	if (Command == TEXT("export_text_inventory"))
+	{
+		return FCortexBPTextInventoryOps::ExportTextInventory(Params);
 	}
 
 	if (Command == TEXT("reparent"))
@@ -389,6 +395,10 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("search_in"), TEXT("array"), TEXT("Search scopes"))
 		.Optional(TEXT("case_sensitive"), TEXT("boolean"), TEXT("Case-sensitive matching"))
 		.Optional(TEXT("max_results"), TEXT("number"), TEXT("Maximum matches to return")));
+	Commands.Add(FCortexCommandInfo{TEXT("export_text_inventory"), TEXT("Export every FText of a Blueprint (class defaults, widgets, text pin defaults) as a sorted inventory with source kind and string table identity (read-only)")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full inventory JSON to this file (under Project Saved, Content or Config) and return only asset_path, out_path and counts; required when the inline response would exceed 40000 characters"))
+		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("new_parent"), TEXT("string"), TEXT("New parent class (Blueprint path or C++ class name)")));
