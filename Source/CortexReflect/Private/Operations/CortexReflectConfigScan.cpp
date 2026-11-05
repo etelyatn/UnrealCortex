@@ -11,16 +11,81 @@ namespace CortexReflectConfigScan
 namespace
 {
 /**
- * True for every character that can be part of a content path token. A token ends at whitespace or at a character
- * that is invalid in object paths (INVALID_OBJECTPATH_CHARACTERS: quotes, comma, parentheses, braces, brackets, '=',
- * ';', '|', ...) or that ends the package part (':' sub-object separator, '\', '<', '>'). Everything FPackageName
- * accepts in a long package name, including '+' and '-', stays inside the token. Wildcards '*' and '?' stay inside
- * too so a wildcard path is recognised as one token and skipped instead of being cut into a false directory.
+ * Characters that end the package part of a content path token: whitespace and the characters FPackageName rejects in a
+ * long package name (INVALID_LONGPACKAGE_CHARACTERS: \ : * ? " < > | ' , . & ! ~ @ #), except '.', which starts the
+ * object part, and the wildcards '*' and '?', which stay inside so a wildcard path is recognised as one token and skipped
+ * instead of being cut into a false directory. Everything else FPackageName accepts in a folder or package name stays
+ * inside the token: '+', '-', '(', ')', '{', '}', '[', ']', '=', ';', '^', '%', '$' and '`'.
  */
-bool IsPathChar(const TCHAR Ch)
+bool IsPackageDelimiter(const TCHAR Ch)
+{
+	static const TCHAR* const Delimiters = TEXT("\"' ,|&!~@#:\\<>");
+	return Ch <= TEXT(' ') || FCString::Strchr(Delimiters, Ch) != nullptr;
+}
+
+/**
+ * Characters that end the object part (after the first '.'): INVALID_OBJECTPATH_CHARACTERS (quotes, comma, parentheses,
+ * braces, brackets, '=', ';', '|', ...) plus the ':' sub-object separator, '\', '<' and '>'.
+ */
+bool IsObjectDelimiter(const TCHAR Ch)
 {
 	static const TCHAR* const Delimiters = TEXT("\"' ,|&!~@#(){}[]=;^%$`:\\<>");
-	return Ch > TEXT(' ') && FCString::Strchr(Delimiters, Ch) == nullptr;
+	return Ch <= TEXT(' ') || FCString::Strchr(Delimiters, Ch) != nullptr;
+}
+
+/**
+ * True when the character belongs to an ordinary content word, so a '/' directly after it is mid-word ("abc/Game/X") and
+ * not the start of a content path. Structural characters of INI values, such as '=' or '(', are boundaries.
+ */
+bool IsTokenCharBefore(const TCHAR Ch)
+{
+	return !IsObjectDelimiter(Ch);
+}
+
+/** End (exclusive) of the content path token starting at Start. A closing bracket ends the token unless the token opened it. */
+int32 FindTokenEnd(const FString& Value, const int32 Start)
+{
+	const int32 Len = Value.Len();
+	bool bInObjectPart = false;
+	TArray<TCHAR, TInlineAllocator<8>> ExpectedClosers;
+	int32 End = Start;
+	for (; End < Len; ++End)
+	{
+		const TCHAR Ch = Value[End];
+		if (bInObjectPart ? IsObjectDelimiter(Ch) : IsPackageDelimiter(Ch))
+		{
+			break;
+		}
+		if (bInObjectPart)
+		{
+			continue;
+		}
+		if (Ch == TEXT('('))
+		{
+			ExpectedClosers.Add(TEXT(')'));
+		}
+		else if (Ch == TEXT('{'))
+		{
+			ExpectedClosers.Add(TEXT('}'));
+		}
+		else if (Ch == TEXT('['))
+		{
+			ExpectedClosers.Add(TEXT(']'));
+		}
+		else if (Ch == TEXT(')') || Ch == TEXT('}') || Ch == TEXT(']'))
+		{
+			if (ExpectedClosers.IsEmpty() || ExpectedClosers.Last() != Ch)
+			{
+				break;
+			}
+			ExpectedClosers.Pop();
+		}
+		else if (Ch == TEXT('.'))
+		{
+			bInObjectPart = true;
+		}
+	}
+	return End;
 }
 
 /** Name of the "Name=" attribute that directly precedes the token at Index, e.g. OldName for OldName="/Game/X". */
@@ -120,17 +185,13 @@ void ScanLine(
 	const int32 Len = Value.Len();
 	for (int32 Index = 0; Index < Len; ++Index)
 	{
-		if (Value[Index] != TEXT('/') || (Index > 0 && IsPathChar(Value[Index - 1])))
+		if (Value[Index] != TEXT('/') || (Index > 0 && IsTokenCharBefore(Value[Index - 1])))
 		{
 			continue;
 		}
 
 		const int32 TokenStart = Index;
-		int32 End = Index;
-		while (End < Len && IsPathChar(Value[End]))
-		{
-			++End;
-		}
+		const int32 End = FindTokenEnd(Value, TokenStart);
 
 		FString Token = Value.Mid(TokenStart, End - TokenStart);
 		Index = End - 1;

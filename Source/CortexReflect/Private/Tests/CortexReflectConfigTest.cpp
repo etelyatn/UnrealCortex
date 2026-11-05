@@ -293,6 +293,46 @@ bool FCortexReflectConfigTokenAndSkipTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectConfigPackageFolderCharsTest,
+	"Cortex.Reflect.Config.PackageFolderCharacters",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectConfigPackageFolderCharsTest::RunTest(const FString& Parameters)
+{
+	// Every character FPackageName accepts in a long package name stays inside the token: it only rejects
+	// \ : * ? " < > | ' , . & ! ~ @ # and whitespace (INVALID_LONGPACKAGE_CHARACTERS), so parentheses, braces, brackets,
+	// '=', ';', '^', '%', '$' and '`' are legal folder characters. An unbalanced closing bracket still ends a token,
+	// which keeps unquoted struct syntax such as (Map=/Game/Maps/Arena) working.
+	FTempConfigFixture Fixture(
+		TEXT("[/Script/Test.Settings]\n")
+		TEXT("Paren=\"/Game/Folder(Variant)/BP_A.BP_A_C\"\n")
+		TEXT("Brace=\"/Game/Set{One}/BP_B.BP_B_C\"\n")
+		TEXT("Bracket=(Path=\"/Game/Dir[2]/BP_C.BP_C_C\")\n")
+		TEXT("Odd=\"/Game/Odd^Folder%100$x`y/BP_D.BP_D_C\"\n")
+		TEXT("Struct=(Map=/Game/Maps/Arena)\n")
+		TEXT("Nested=(Map=/Game/Maps(Alt)/Arena)\n"));
+	if (!TestTrue(TEXT("fixture ini written"), Fixture.bWritten))
+	{
+		return false;
+	}
+
+	const TArray<CortexReflectConfigScan::FConfigReference> Refs = RefsFromFile(Fixture.IniName);
+	if (!TestEqual(TEXT("one reference per line"), Refs.Num(), 6))
+	{
+		return false;
+	}
+	TestEqual(TEXT("parentheses inside a folder name"), Refs[0].Path, FString(TEXT("/Game/Folder(Variant)/BP_A.BP_A_C")));
+	TestEqual(TEXT("package of the parenthesised folder"), Refs[0].PackageName, FString(TEXT("/Game/Folder(Variant)/BP_A")));
+	TestEqual(TEXT("braces inside a folder name"), Refs[1].Path, FString(TEXT("/Game/Set{One}/BP_B.BP_B_C")));
+	TestEqual(TEXT("brackets inside a folder name"), Refs[2].Path, FString(TEXT("/Game/Dir[2]/BP_C.BP_C_C")));
+	TestEqual(TEXT("^ % $ and ` inside a folder name"), Refs[3].Path, FString(TEXT("/Game/Odd^Folder%100$x`y/BP_D.BP_D_C")));
+	TestEqual(TEXT("an unbalanced ) ends an unquoted token"), Refs[4].Path, FString(TEXT("/Game/Maps/Arena")));
+	TestEqual(TEXT("a balanced pair stays inside an unquoted token"), Refs[5].Path, FString(TEXT("/Game/Maps(Alt)/Arena")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexReflectConfigUnreadableTest,
 	"Cortex.Reflect.Config.UnreadableFiles",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
