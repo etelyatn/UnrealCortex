@@ -754,6 +754,13 @@ def test_core_router_dispatches_normal_commands_via_tcp():
     )
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_wait_ready_non_finite_timeout_falls_back_to_default_window(bad):
+    from cortex_mcp.tools.routers import _dispatch_timeout
+
+    assert _dispatch_timeout("editor.wait_ready", {"timeout": bad}) == 150.0
+
+
 @pytest.mark.parametrize(
     ("command", "params", "expected_timeout"),
     [

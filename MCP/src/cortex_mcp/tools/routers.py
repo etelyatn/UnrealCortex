@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Annotated, Any, Callable
 
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
@@ -53,7 +54,11 @@ def _dispatch_timeout(qualified: str, params: dict) -> float | None:
         return _LONG_SYNCHRONOUS_WINDOW
     if qualified == "editor.wait_ready":
         requested = params.get("timeout")
-        if isinstance(requested, bool) or not isinstance(requested, (int, float)):
+        if (
+            isinstance(requested, bool)
+            or not isinstance(requested, (int, float))
+            or not math.isfinite(requested)
+        ):
             requested = _WAIT_READY_DEFAULT_SECONDS
         return float(requested) + _DEFERRED_TIMEOUT_MARGIN
     return None
