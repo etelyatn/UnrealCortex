@@ -296,6 +296,8 @@ bool FCortexBPMigrationExportPrefixTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("not_found"), TotalOf(Result.Data, TEXT("not_found")), 0);
 	TestEqual(TEXT("skipped"), TotalOf(Result.Data, TEXT("skipped")), 0);
 	TestEqual(TEXT("excluded_by_type"), TotalOf(Result.Data, TEXT("excluded_by_type")), 0);
+	TestEqual(TEXT("matched_assets counts the folder's Blueprints"), TotalOf(Result.Data, TEXT("matched_assets")), 3);
+	TestFalse(TEXT("no warning when the folder matched"), Result.Data->HasField(TEXT("warnings")));
 	const TSharedPtr<FJsonObject>* ByType = nullptr;
 	if (TestTrue(TEXT("by_type present"), Result.Data->TryGetObjectField(TEXT("by_type"), ByType)))
 	{
@@ -554,6 +556,34 @@ bool FCortexBPMigrationExportRefusalsTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("analyze_for_migration still refuses graph_metrics"), AnalyzeResult.bSuccess);
 	TestEqual(TEXT("analyze refusal code"), AnalyzeResult.ErrorCode, CortexErrorCodes::InvalidField);
 
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPMigrationExportEmptyPrefixTest,
+	"Cortex.Blueprint.MigrationExport.EmptyPrefixWarning",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPMigrationExportEmptyPrefixTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexBPMigrationExportTestSupport;
+	FExportFixture Fixture;
+	const FString OutPath = Fixture.ReportPath(TEXT("emptyprefix"));
+
+	// A folder that holds no Blueprint succeeds with zero rows and says so instead of looking like an empty project.
+	const FCortexCommandResult Result = Run(TEXT("export_migration_analysis"), ExportParams(Fixture.Dir + TEXT("/NoSuchFolder"), OutPath));
+	if (TestTrue(*FString::Printf(TEXT("export succeeds (%s: %s)"), *Result.ErrorCode, *Result.ErrorMessage), Result.bSuccess && Result.Data.IsValid()))
+	{
+		TestEqual(TEXT("no rows"), TotalOf(Result.Data, TEXT("total")), 0);
+		TestEqual(TEXT("matched_assets is zero"), TotalOf(Result.Data, TEXT("matched_assets")), 0);
+		const TArray<TSharedPtr<FJsonValue>>* Warnings = nullptr;
+		if (TestTrue(TEXT("warnings present"), Result.Data->TryGetArrayField(TEXT("warnings"), Warnings)))
+		{
+			TestEqual(TEXT("one warning names the folder"), Warnings->Num(), 1);
+		}
+	}
 	Fixture.Cleanup();
 	return true;
 }

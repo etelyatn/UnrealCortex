@@ -286,6 +286,10 @@ FCortexCommandResult FCortexBPMigrationExportOps::ExportMigrationAnalysis(const 
 	Totals->SetNumberField(TEXT("not_found"), Counts[3]);
 	Totals->SetNumberField(TEXT("skipped"), Counts[2]);
 	Totals->SetNumberField(TEXT("excluded_by_type"), Enumeration.ExcludedByType);
+	if (Request.bHasPrefix)
+	{
+		Totals->SetNumberField(TEXT("matched_assets"), Enumeration.MatchedAssets);
+	}
 
 	TSharedRef<FJsonObject> Index = MakeShared<FJsonObject>();
 	FCortexBPAssetEnumeration::WriteRequestFields(Request, *Index);
@@ -312,5 +316,12 @@ FCortexCommandResult FCortexBPMigrationExportOps::ExportMigrationAnalysis(const 
 	Data->SetObjectField(TEXT("totals"), Totals);
 	Data->SetObjectField(TEXT("by_type"), ByType);
 	Data->SetArrayField(TEXT("first_failures"), FirstFailures);
+	if (Request.bHasPrefix && Enumeration.MatchedAssets == 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> Warnings;
+		Warnings.Add(MakeShared<FJsonValueString>(
+			FString::Printf(TEXT("path_prefix '%s' matched no Blueprints"), *Request.Prefix)));
+		Data->SetArrayField(TEXT("warnings"), Warnings);
+	}
 	return FCortexCommandRouter::Success(Data);
 }

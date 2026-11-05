@@ -39,6 +39,8 @@ struct FCortexBPEnumeration
 	TArray<FString> NotFound;
 	/** Found Blueprints dropped by the types filter. */
 	int32 ExcludedByType = 0;
+	/** Blueprints the registry holds under the requested folder before the types filter (path_prefix requests only). */
+	int32 MatchedAssets = 0;
 };
 
 /** Request validation and Asset Registry enumeration (nothing is loaded) of the bulk Blueprint commands. */

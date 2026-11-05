@@ -183,6 +183,11 @@ FCortexBPEnumeration FCortexBPAssetEnumeration::Enumerate(const FCortexBPEnumera
 		}
 	}
 
+	if (Request.bHasPrefix)
+	{
+		Result.MatchedAssets = Found.Num();
+	}
+
 	for (const TPair<FString, FAssetData>& Pair : Found)
 	{
 		const FString Type = FCortexBPAssetOps::DetermineBlueprintTypeFromAssetData(Pair.Value);
