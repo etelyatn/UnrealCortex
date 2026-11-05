@@ -154,7 +154,7 @@ bool FCortexBPExportTextInventoryFileOutputTest::RunTest(const FString& Paramete
 	OutsideParams->SetStringField(TEXT("out_path"), OutsidePath);
 	const FCortexCommandResult Outside = Handler.Execute(TEXT("export_text_inventory"), OutsideParams);
 	TestFalse(TEXT("out_path outside allowed roots is refused"), Outside.bSuccess);
-	TestEqual(TEXT("outside refusal code"), Outside.ErrorCode, CortexErrorCodes::InvalidField);
+	TestEqual(TEXT("outside refusal code is the safe-file contract's own"), Outside.ErrorCode, CortexErrorCodes::InvalidFilePath);
 	TestFalse(TEXT("nothing written outside allowed roots"), IFileManager::Get().FileExists(*OutsidePath));
 	TestTrue(TEXT("outside refusal names the allowed roots"), Outside.ErrorMessage.Contains(TEXT("Project Saved")));
 

@@ -272,7 +272,7 @@ FCortexCommandResult FCortexBPTextInventoryOps::ExportTextInventory(const TShare
 		FString PathErrorMessage;
 		if (!FCortexSafeFileContract::ResolveWritePath(OutPath, ResolvedOutPath, PathErrorCode, PathErrorMessage))
 		{
-			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, PathErrorMessage);
+			return FCortexCommandRouter::Error(PathErrorCode, PathErrorMessage);
 		}
 	}
 
