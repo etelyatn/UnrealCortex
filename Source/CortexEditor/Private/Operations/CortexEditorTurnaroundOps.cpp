@@ -2,7 +2,7 @@
 
 #include "AssetCompilingManager.h"
 #include "AssetRegistry/IAssetRegistry.h"
-#include "BlueprintCompilationManager.h"
+#include "Engine/World.h"
 #include "Containers/Ticker.h"
 #include "CortexCommandRouter.h"
 #include "CortexDeferredExec.h"
@@ -25,6 +25,10 @@ namespace CortexEditorTurnaroundPrivate
 {
 	constexpr double DefaultTimeoutSeconds = 120.0;
 	constexpr double MaxTimeoutSeconds = 3600.0;
+	/** Added to wait_ready's own timeout so the transport never cuts the TIMEOUT answer off. */
+	constexpr double TransportGraceSeconds = 15.0;
+	/** A Live Coding build blocks the game thread until the patch is done; this bounds it. */
+	constexpr double LiveCodingTransportTimeoutSeconds = 1800.0;
 
 	struct FWaitReadyParams
 	{
@@ -90,8 +94,24 @@ namespace CortexEditorTurnaroundPrivate
 			}
 			const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
 
+			// Maps are never reopened: opening one switches the editor world and may prompt to save.
+			const TCHAR* MapRefusal = TEXT("Asset is a map; maps are not reopened (it would switch the editor world)");
 			UObject* Asset = FindObject<UObject>(nullptr, *ObjectPath);
-			if (!Asset)
+			if (Asset && Asset->IsA<UWorld>())
+			{
+				Failure = MapRefusal;
+				Asset = nullptr;
+			}
+			else if (!Asset)
+			{
+				const IAssetRegistry* Registry = IAssetRegistry::Get();
+				const FAssetData AssetData = Registry ? Registry->GetAssetByObjectPath(FSoftObjectPath(ObjectPath)) : FAssetData();
+				if (AssetData.AssetClassPath == UWorld::StaticClass()->GetClassPathName())
+				{
+					Failure = MapRefusal;
+				}
+			}
+			if (!Asset && Failure.IsEmpty())
 			{
 				if (!FPackageName::IsValidLongPackageName(PackageName) || !FPackageName::DoesPackageExist(PackageName))
 				{
@@ -215,7 +235,8 @@ FCortexCommandResult FCortexEditorTurnaroundOps::LiveCodingCompile(
 			LiveCoding->Compile(ELiveCodingCompileFlags::WaitForCompletion, &Result);
 			return MapLiveCodingResult(Result);
 		},
-		MoveTemp(DeferredCallback));
+		MoveTemp(DeferredCallback),
+		LiveCodingTransportTimeoutSeconds);
 #else
 	(void)DeferredCallback;
 	return FCortexCommandRouter::Error(CortexErrorCodes::NotAvailable,
@@ -242,6 +263,7 @@ FCortexCommandResult FCortexEditorTurnaroundOps::WaitReadyWithProbe(
 	}
 
 	const double StartSeconds = FPlatformTime::Seconds();
+	const double TransportTimeoutSeconds = Parsed.TimeoutSeconds;
 	FString Blocker;
 	if (Probe(Blocker))
 	{
@@ -278,6 +300,8 @@ FCortexCommandResult FCortexEditorTurnaroundOps::WaitReadyWithProbe(
 
 	FCortexCommandResult Deferred;
 	Deferred.bIsDeferred = true;
+	// The transport must wait as long as this command may legitimately take, plus time to deliver the answer.
+	Deferred.DeferredTimeoutSeconds = TransportTimeoutSeconds + TransportGraceSeconds;
 	return Deferred;
 }
 
@@ -293,12 +317,6 @@ bool FCortexEditorTurnaroundOps::IsEditorReady(FString& OutBlocker)
 	if (!Registry || Registry->IsLoadingAssets())
 	{
 		OutBlocker = TEXT("the Asset Registry is still loading assets");
-		return false;
-	}
-
-	if (GCompilingBlueprint || !FBlueprintCompilationManager::IsGeneratedClassLayoutReady())
-	{
-		OutBlocker = TEXT("a Blueprint compilation is in progress");
 		return false;
 	}
 

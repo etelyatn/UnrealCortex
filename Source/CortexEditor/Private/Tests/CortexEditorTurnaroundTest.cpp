@@ -14,6 +14,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Editor.h"
+#include "Engine/World.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/Guid.h"
 #include "Modules/ModuleManager.h"
@@ -131,11 +132,13 @@ bool FCortexEditorWaitReadyTest::RunTest(const FString& Parameters)
 	FAssetRegistryModule::AssetCreated(Asset);
 	TWeakObjectPtr<UCurveFloat> WeakAsset(Asset);
 
+	const FString EditorWorldPath = GEditor->GetEditorWorldContext().World()
+		? GEditor->GetEditorWorldContext().World()->GetPathName() : FString();
 	const TSharedRef<FDeferredResponse> Response = MakeShared<FDeferredResponse>();
 	Response->StartSeconds = FPlatformTime::Seconds();
 	const FCortexCommandResult Immediate = Handler->Execute(
 		TEXT("wait_ready"),
-		MakeWaitParams({ObjectPath, MissingPath}, TOptional<double>(60.0)),
+		MakeWaitParams({ObjectPath, MissingPath, EditorWorldPath}, TOptional<double>(60.0)),
 		[Response](FCortexCommandResult Result) { Response->Result = MoveTemp(Result); });
 	if (!Immediate.bIsDeferred)
 	{
@@ -143,7 +146,7 @@ bool FCortexEditorWaitReadyTest::RunTest(const FString& Parameters)
 	}
 
 	// The editor may need a few ticks (compilation queue) before it answers: poll for the response.
-	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Handler, Response, WeakAsset, AssetEditors, ObjectPath, MissingPath]()
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Handler, Response, WeakAsset, AssetEditors, ObjectPath, MissingPath, EditorWorldPath]()
 	{
 		const bool bTimedOut = (FPlatformTime::Seconds() - Response->StartSeconds) > 90.0;
 		if (!Response->Result.IsSet() && !bTimedOut)
@@ -162,13 +165,22 @@ bool FCortexEditorWaitReadyTest::RunTest(const FString& Parameters)
 				const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
 				if (TestTrue(TEXT("failed array present"), Result.Data->TryGetArrayField(TEXT("failed"), Failed)))
 				{
-					TestEqual(TEXT("exactly the unknown asset failed"), Failed->Num(), 1);
-					if (Failed->Num() == 1)
+					TestEqual(TEXT("the unknown asset and the map failed"), Failed->Num(), 2);
+					for (const TSharedPtr<FJsonValue>& FailedValue : *Failed)
 					{
-						const TSharedPtr<FJsonObject> Entry = (*Failed)[0]->AsObject();
-						TestEqual(TEXT("failed asset path"), Entry->GetStringField(TEXT("asset_path")), MissingPath);
+						const TSharedPtr<FJsonObject> Entry = FailedValue->AsObject();
+						const FString FailedPath = Entry->GetStringField(TEXT("asset_path"));
 						TestFalse(TEXT("failure carries a reason"), Entry->GetStringField(TEXT("reason")).IsEmpty());
+						if (FailedPath == EditorWorldPath)
+						{
+							TestTrue(TEXT("a map is refused, not opened"), Entry->GetStringField(TEXT("reason")).Contains(TEXT("map")));
+						}
 					}
+					const bool bMissingListed = Failed->ContainsByPredicate([&MissingPath](const TSharedPtr<FJsonValue>& V)
+					{
+						return V->AsObject()->GetStringField(TEXT("asset_path")) == MissingPath;
+					});
+					TestTrue(TEXT("the unknown asset is reported failed"), bMissingListed);
 				}
 			}
 		}
@@ -205,6 +217,16 @@ bool FCortexEditorWaitReadyDeferralTest::RunTest(const FString& Parameters)
 		0.05f,
 		[TimedOut](FCortexCommandResult Result) { TimedOut->Result = MoveTemp(Result); });
 	TestTrue(TEXT("a not-ready editor defers the answer"), NeverReady.bIsDeferred);
+	TestTrue(TEXT("the transport waits at least the requested timeout for the deferred answer"),
+		NeverReady.DeferredTimeoutSeconds >= 0.3);
+	TestTrue(TEXT("the transport bound is the requested timeout plus a bounded grace, not the 30 s default"),
+		NeverReady.DeferredTimeoutSeconds > 0.3 && NeverReady.DeferredTimeoutSeconds < 0.3 + 60.0);
+	const FCortexCommandResult LongWait = FCortexEditorTurnaroundOps::WaitReadyWithProbe(
+		MakeWaitParams({}, TOptional<double>(600.0)),
+		[](FString& Blocker) { Blocker = TEXT("still loading"); return false; },
+		0.05f,
+		[](FCortexCommandResult) { });
+	TestTrue(TEXT("a 600 s wait_ready is not cut off by the 30 s deferred default"), LongWait.DeferredTimeoutSeconds > 600.0);
 
 	// A probe that becomes ready on its third call: the deferred callback receives the ready answer.
 	const TSharedRef<FDeferredResponse> BecameReady = MakeShared<FDeferredResponse>();
