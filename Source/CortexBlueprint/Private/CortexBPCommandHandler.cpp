@@ -11,6 +11,7 @@
 #include "Operations/CortexBPGraphCleanupOps.h"
 #include "Operations/CortexBPGraphMetricsOps.h"
 #include "Operations/CortexBPRedirectorOps.h"
+#include "Operations/CortexBPReparentOps.h"
 #include "Operations/CortexBPSearchOps.h"
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPSnapshotOps.h"
@@ -239,7 +240,7 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 
 	if (Command == TEXT("reparent"))
 	{
-		return FCortexBPAssetOps::Reparent(Params);
+		return FCortexBPReparentOps::Execute(Params);
 	}
 
 	if (Command == TEXT("add_interface"))
@@ -466,9 +467,16 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("types"), TEXT("array"), TEXT("Only export these Blueprint types (case-insensitive, same vocabulary as list): Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown (from registry tags, no load)"))
 		.Optional(TEXT("sections"), TEXT("array"), TEXT("Documents to put in each row (omitted or empty = all): any analyze_for_migration section (identity fields are always present) plus graph_metrics; the index always carries its summary fields"))
 		.StrictParams());
-	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
+	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class with a collision preflight (variables the engine replaces or renames, native function clashes, SCS collisions, SaveGame findings, interface overlap), a dry_run, the editor's reparent compile flags (the new native parent's defaults win), compile diagnostics, a CDO delta and an explicit save. Refuses an ambiguous class name (AMBIGUOUS_CLASS), a family change (INVALID_PARENT_CLASS), blocking collisions (NAME_COLLISION) and unacknowledged losses (POTENTIAL_DATA_LOSS with required_acknowledgment); a compile error or readback mismatch restores the Blueprint. reparented is true only after readback.")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
-		.Required(TEXT("new_parent"), TEXT("string"), TEXT("New parent class (Blueprint path or C++ class name)")));
+		.Required(TEXT("new_parent"), TEXT("string"), TEXT("New parent class: Blueprint asset path, full class path or unique short name"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true = report the plan, mutate and dirty nothing (default false)"))
+		.OptionalExpectedFingerprint(TEXT("Stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}; read it from a dry run"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the parent change with the editor's reparent flags (default true; required for save)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default false; requires compile)"))
+		.Optional(TEXT("acknowledged_collisions"), TEXT("array"), TEXT("Exactly the required_acknowledgment keys of the dry run (variable:<n>, scs:<n>, save_game:<n>)"))
+		.Optional(TEXT("report_path"), TEXT("string"), TEXT("Write the full CDO delta to this file (under Project Saved, Content or Config) and omit the inline list"))
+		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("add_interface"), TEXT("Add an interface implementation to a Blueprint")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
