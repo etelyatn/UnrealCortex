@@ -7,6 +7,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
+#include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Operations/CortexBPAnalysisOps.h"
 #include "Operations/CortexBPAssetEnumeration.h"
@@ -228,6 +229,21 @@ FCortexCommandResult FCortexBPMigrationExportOps::ExportMigrationAnalysis(const 
 		}
 	}
 
+	// Preserve the previous JSONL up front (fail-closed) so a failed index publication can restore the pair.
+	FString PreviousJsonl;
+	const bool bHadPreviousJsonl = IFileManager::Get().FileExists(*Request.OutPath.AbsolutePath);
+	if (bHadPreviousJsonl)
+	{
+		FString ReadCode;
+		FString ReadMessage;
+		if (!FCortexSafeFileContract::ReadTextFile(Request.OutPath, PreviousJsonl, ReadCode, ReadMessage))
+		{
+			return FCortexCommandRouter::Error(
+				ReadCode.IsEmpty() ? CortexErrorCodes::SaveFailed : ReadCode,
+				FString::Printf(TEXT("Cannot preserve the previous export at '%s' before replacing it: %s"),
+					*Request.OutPath.AbsolutePath, *ReadMessage));
+		}
+	}
 	const FCortexBPEnumeration Enumeration = FCortexBPAssetEnumeration::Enumerate(Request);
 
 	TArray<FRow> Rows;
@@ -297,6 +313,8 @@ FCortexCommandResult FCortexBPMigrationExportOps::ExportMigrationAnalysis(const 
 	Index->SetObjectField(TEXT("by_type"), ByType);
 	Index->SetArrayField(TEXT("assets"), IndexRows);
 
+	// The JSONL and its index are one export. Publish the JSONL, then the index; when the index cannot be published the
+	// previous JSONL is restored (or the new one removed) so the pair on disk never mixes two runs.
 	const FCortexJsonFileWriteResult JsonlResult = FCortexSafeFileContract::WriteTextReportAtomic(Request.OutPath, Jsonl);
 	if (!JsonlResult.bWritten)
 	{
@@ -306,8 +324,23 @@ FCortexCommandResult FCortexBPMigrationExportOps::ExportMigrationAnalysis(const 
 	const FCortexJsonFileWriteResult IndexResult = FCortexSafeFileContract::WriteJsonReportAtomic(IndexPath, Index);
 	if (!IndexResult.bWritten)
 	{
+		FString Recovery;
+		if (bHadPreviousJsonl)
+		{
+			const FCortexJsonFileWriteResult Restored = FCortexSafeFileContract::WriteTextReportAtomic(Request.OutPath, PreviousJsonl);
+			Recovery = Restored.bWritten
+				? TEXT("The previous JSONL export was restored beside the previous index.")
+				: FString::Printf(TEXT("The previous JSONL export could NOT be restored (%s); the JSONL and the index are from different runs."), *Restored.ErrorMessage);
+		}
+		else
+		{
+			Recovery = IFileManager::Get().Delete(*Request.OutPath.AbsolutePath, false, true, true)
+				? TEXT("The new JSONL export was removed because its index could not be published.")
+				: TEXT("The new JSONL export could NOT be removed; it has no matching index.");
+		}
 		return FCortexCommandRouter::Error(
-			IndexResult.ErrorCode.IsEmpty() ? CortexErrorCodes::SaveFailed : IndexResult.ErrorCode, IndexResult.ErrorMessage);
+			IndexResult.ErrorCode.IsEmpty() ? CortexErrorCodes::SaveFailed : IndexResult.ErrorCode,
+			FString::Printf(TEXT("%s %s"), *IndexResult.ErrorMessage, *Recovery));
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
