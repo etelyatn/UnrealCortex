@@ -1,5 +1,6 @@
 #include "Operations/CortexReflectOps.h"
 #include "Operations/CortexReflectConfigScan.h"
+#include "Operations/CortexReflectNodeRefs.h"
 #include "HAL/FileManager.h"
 #include "CortexReflectModule.h"
 #include "UObject/UObjectIterator.h"
@@ -14,8 +15,6 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "K2Node_CallFunction.h"
-#include "K2Node_DynamicCast.h"
-#include "K2Node_SpawnActorFromClass.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Blueprint/BlueprintSupport.h"
@@ -1749,8 +1748,8 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 					}
 				}
 
-				UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(Node);
-				if (CastNode && CastNode->TargetType && CastNode->TargetType->IsChildOf(OwnerClass))
+				const UClass* CastTarget = CortexReflectNodeRefs::GetCastTargetClass(Node);
+				if (CastTarget && CastTarget->IsChildOf(OwnerClass))
 				{
 					TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
 					RefObj->SetStringField(TEXT("context"), Graph->GetName());
@@ -1759,22 +1758,14 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 					ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
 				}
 
-				UK2Node_SpawnActorFromClass* SpawnNode = Cast<UK2Node_SpawnActorFromClass>(Node);
-				if (SpawnNode)
+				const UClass* SpawnClass = CortexReflectNodeRefs::GetSpawnedClass(Node);
+				if (SpawnClass && SpawnClass->IsChildOf(OwnerClass))
 				{
-					UEdGraphPin* ClassPin = SpawnNode->GetClassPin();
-					if (ClassPin && ClassPin->DefaultObject)
-					{
-						UClass* SpawnClass = Cast<UClass>(ClassPin->DefaultObject);
-						if (SpawnClass && SpawnClass->IsChildOf(OwnerClass))
-						{
-							TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
-							RefObj->SetStringField(TEXT("context"), Graph->GetName());
-							RefObj->SetStringField(TEXT("type"), TEXT("spawn"));
-							RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_SpawnActorFromClass"));
-							ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
-						}
-					}
+					TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
+					RefObj->SetStringField(TEXT("context"), Graph->GetName());
+					RefObj->SetStringField(TEXT("type"), TEXT("spawn"));
+					RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_SpawnActorFromClass"));
+					ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
 				}
 			}
 		}

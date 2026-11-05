@@ -1,6 +1,7 @@
 #include "CortexReflectCommandHandler.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexReflectOps.h"
+#include "Operations/CortexReflectDependencyGraphOps.h"
 
 FCortexCommandResult FCortexReflectCommandHandler::Execute(
 	const FString& Command,
@@ -54,6 +55,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 		return FCortexReflectOps::FindBrokenConfigPaths(Params);
 	}
 
+	if (Command == TEXT("export_dependency_graph"))
+	{
+		return FCortexReflectDependencyGraphOps::ExportDependencyGraph(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown reflect command: %s"), *Command)
@@ -102,5 +108,9 @@ TArray<FCortexCommandInfo> FCortexReflectCommandHandler::GetSupportedCommands() 
 			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum referencers to return; counts config rows too"))
 			.Optional(TEXT("include_config"), TEXT("boolean"), TEXT("Include config/INI references as type 'config' rows (default true)")),
 		FCortexCommandInfo{ TEXT("find_broken_config_paths"), TEXT("Report content package and directory paths in project and project-plugin INI files that do not exist") },
+		FCortexCommandInfo{ TEXT("export_dependency_graph"), TEXT("Write a typed asset dependency graph (inherits, implements, calls_message, casts, spawns, creates_widget, widget_tree_child, listview_entry, level_placement, struct_use, enum_use, config) with wave order for content folders to a report file") }
+			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose assets form the graph (e.g. /Game/MyFeature)"))
+			.Required(TEXT("out_path"), TEXT("string"), TEXT("Report file under the project Saved, Content or Config directory"))
+			.Optional(TEXT("edge_kinds"), TEXT("array"), TEXT("Edge kinds to derive (default all): inherits, implements, calls_message, casts, spawns, creates_widget, widget_tree_child, listview_entry, level_placement, struct_use, enum_use, config")),
 	};
 }
