@@ -7,6 +7,7 @@
 #include "Operations/CortexUMGAnimationAuthoringOps.h"
 #include "Operations/CortexUMGPropertyBindingOps.h"
 #include "Operations/CortexUMGNativeBindingOps.h"
+#include "Operations/CortexUMGEmbeddedValueOps.h"
 #include "CortexAssetMutationGuard.h"
 #include "Engine/Blueprint.h"
 
@@ -54,7 +55,7 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
         || Command == TEXT("list_widget_classes") || Command == TEXT("get_property")
         || Command == TEXT("get_schema") || Command == TEXT("list_animations")
         || Command == TEXT("get_animation") || Command == TEXT("list_animation_bindings")
-        || Command == TEXT("check_native_bindings");
+        || Command == TEXT("check_native_bindings") || Command == TEXT("get_embedded_widget_values");
     if (!bReadOnly)
     {
         FCortexCommandResult GuardError;
@@ -172,6 +173,10 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     if (Command == TEXT("check_native_bindings"))
     {
         return FCortexUMGNativeBindingOps::CheckNativeBindings(Params);
+    }
+    if (Command == TEXT("get_embedded_widget_values"))
+    {
+        return FCortexUMGEmbeddedValueOps::GetEmbeddedWidgetValues(Params);
     }
     if (Command == TEXT("set_animation_property_track"))
     {
@@ -353,6 +358,10 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
         FCortexCommandInfo{ TEXT("check_native_bindings"), TEXT("Check BindWidget/BindWidgetAnim members of a native UserWidget base against a Widget Blueprint (read-only)") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Optional(TEXT("native_class"), TEXT("string"), TEXT("UserWidget class path or name to check against; defaults to the Blueprint's parent class"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("get_embedded_widget_values"), TEXT("Read per-instance values of embedded UserWidgets with is_override against the class default (read-only)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Optional(TEXT("widget_name"), TEXT("string"), TEXT("Exact embedded widget name; omitted reads every embedded UserWidget"))
             .StrictParams(),
     };
     return Infos;
