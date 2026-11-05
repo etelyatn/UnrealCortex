@@ -264,9 +264,9 @@ namespace CortexReflectDependencyGraphTestSupport
 			Node->GetClassPin()->DefaultObject = SpawnClass;
 		}
 
-		static void AddMessage(UBlueprint* Blueprint, const FName FunctionName, UClass* InterfaceClass)
+		static void AddMessage(UEdGraph* Graph, const FName FunctionName, UClass* InterfaceClass)
 		{
-			FGraphNodeCreator<UK2Node_Message> Creator(*EventGraph(Blueprint));
+			FGraphNodeCreator<UK2Node_Message> Creator(*Graph);
 			UK2Node_Message* Node = Creator.CreateNode();
 			Node->FunctionReference.SetExternalMember(FunctionName, InterfaceClass);
 			Creator.Finalize();
@@ -401,9 +401,10 @@ bool FCortexReflectDependencyGraphEdgesTest::RunTest(const FString& Parameters)
 	UBlueprint* CycleB = Fixture.MakeBlueprint(TEXT("BP_CycleB"), AActor::StaticClass());
 	UBlueprint* Caller = Fixture.MakeBlueprint(TEXT("BP_Caller"), AActor::StaticClass());
 	UBlueprint* Host = Fixture.MakeWidgetBlueprint(TEXT("WBP_Host"), false);
+	UBlueprint* Downstream = Fixture.MakeBlueprint(TEXT("BP_Downstream"), AActor::StaticClass(), false);
 	if (!TestNotNull(TEXT("child"), Child) || !TestNotNull(TEXT("implementer"), Implementer)
 		|| !TestNotNull(TEXT("cycle a"), CycleA) || !TestNotNull(TEXT("cycle b"), CycleB)
-		|| !TestNotNull(TEXT("caller"), Caller) || !TestNotNull(TEXT("host widget"), Host))
+		|| !TestNotNull(TEXT("caller"), Caller) || !TestNotNull(TEXT("host widget"), Host) || !TestNotNull(TEXT("downstream"), Downstream))
 	{
 		Fixture.Cleanup();
 		return false;
@@ -413,12 +414,16 @@ bool FCortexReflectDependencyGraphEdgesTest::RunTest(const FString& Parameters)
 		FBlueprintEditorUtils::ImplementNewInterface(Implementer, InterfaceClass->GetClassPathName()));
 	FKismetEditorUtilities::CompileBlueprint(Implementer);
 
-	FGraphFixture::AddMessage(Caller, TEXT("Ping"), InterfaceClass);
+	UEdGraph* CallPing = FBlueprintEditorUtils::CreateNewGraph(
+		Caller, TEXT("CallPing"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Caller, CallPing, true, nullptr);
+	FGraphFixture::AddMessage(CallPing, TEXT("Ping"), InterfaceClass);
 	FGraphFixture::AddCast(Caller, BaseClass);
 	FGraphFixture::AddSpawn(Caller, Child->GeneratedClass);
 	const bool bCreateWidgetNode = FGraphFixture::AddCreateWidget(Caller, LeafClass);
 	FGraphFixture::AddCast(CycleA, CycleB->GeneratedClass);
 	FGraphFixture::AddCast(CycleB, CycleA->GeneratedClass);
+	FGraphFixture::AddCast(Downstream, CycleA->GeneratedClass);
 
 	UWidgetTree* HostTree = FGraphFixture::GetWidgetTree(Host);
 	if (!TestTrue(TEXT("create-widget node"), bCreateWidgetNode) || !TestNotNull(TEXT("host widget tree"), HostTree))
@@ -445,7 +450,7 @@ bool FCortexReflectDependencyGraphEdgesTest::RunTest(const FString& Parameters)
 	EntryProperty->SetObjectPropertyValue_InContainer(List, EntryWidget->GeneratedClass);
 	Root->AddChild(List);
 
-	for (UBlueprint* Blueprint : {Interface, Base, LeafWidget, EntryWidget, Child, Implementer, CycleA, CycleB, Caller, Host})
+	for (UBlueprint* Blueprint : {Interface, Base, LeafWidget, EntryWidget, Child, Implementer, CycleA, CycleB, Caller, Host, Downstream})
 	{
 		if (!TestTrue(*FString::Printf(TEXT("save %s"), *Blueprint->GetName()), Fixture.SaveAsset(Blueprint, *FPackageName::GetAssetPackageExtension())))
 		{
@@ -456,7 +461,7 @@ bool FCortexReflectDependencyGraphEdgesTest::RunTest(const FString& Parameters)
 	Fixture.RegisterSavedFiles();
 
 	const FString BasePath = Base->GetPathName();
-	FTempIni Ini(FString::Printf(TEXT("[/Script/Test.Settings]\n+Items=%s_C\n"), *BasePath));
+	FTempIni Ini(FString::Printf(TEXT("[/Script/Test.Settings]\n+Items=%s_C\n+Other=/Game/Blueprints/BP_SimpleActor.BP_SimpleActor_C\n"), *BasePath));
 	TestTrue(TEXT("temp ini written"), Ini.bWritten);
 
 	const FString OutPath = Fixture.ReportPath(TEXT("edges"));
@@ -483,6 +488,10 @@ bool FCortexReflectDependencyGraphEdgesTest::RunTest(const FString& Parameters)
 	const FString LeafPath = LeafWidget->GetPathName();
 	const FString EntryPath = EntryWidget->GetPathName();
 	const FString HostPath = Host->GetPathName();
+	const FString DownstreamPath = Downstream->GetPathName();
+	const FString OutsideObjectPath = TEXT("/Game/Blueprints/BP_SimpleActor.BP_SimpleActor");
+	TestTrue(TEXT("outside config target exists in the sandbox"), FPackageName::DoesPackageExist(TEXT("/Game/Blueprints/BP_SimpleActor")));
+	TestTrue(TEXT("casts: downstream -> cycle a"), HasEdge(Report, DownstreamPath, CycleAPath, TEXT("casts")));
 
 	TestTrue(TEXT("inherits: child -> base"), HasEdge(Report, ChildPath, BasePath, TEXT("inherits")));
 	TestTrue(TEXT("inherits: base -> native Actor"), HasEdge(Report, BasePath, TEXT("/Script/Engine.Actor"), TEXT("inherits")));
@@ -512,9 +521,10 @@ bool FCortexReflectDependencyGraphEdgesTest::RunTest(const FString& Parameters)
 		if (Edge->GetStringField(TEXT("kind")) == TEXT("config") && Edge->GetStringField(TEXT("from")).EndsWith(Ini.IniName))
 		{
 			ConfigFrom = Edge->GetStringField(TEXT("from"));
-			TestEqual(TEXT("config edge targets the Blueprint asset"), Edge->GetStringField(TEXT("to")), BasePath);
+			// Both ini lines (inside and outside the prefix) produce edges from the same ini node.
 		}
 	}
+	TestTrue(TEXT("config edge targets the Blueprint asset"), HasEdge(Report, ConfigFrom, BasePath, TEXT("config")));
 	if (TestFalse(TEXT("config edge from the temp ini"), ConfigFrom.IsEmpty()))
 	{
 		const TSharedPtr<FJsonObject> IniNode = FindNode(Report, ConfigFrom);
@@ -533,41 +543,99 @@ bool FCortexReflectDependencyGraphEdgesTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("native parent flagged external"), ActorNode->GetBoolField(TEXT("external")));
 	}
 
-	// Waves: dependencies come before dependants; cycles land in the final wave; ini/external nodes are never scheduled.
+	// Config target outside the prefixes: kept as an external node with its edge.
+	const TSharedPtr<FJsonObject> OutsideNode = FindNode(Report, OutsideObjectPath);
+	if (TestTrue(TEXT("outside config target node"), OutsideNode.IsValid()))
+	{
+		TestTrue(TEXT("outside config target flagged external"), OutsideNode->GetBoolField(TEXT("external")));
+	}
+	TestTrue(TEXT("config edge to the outside target"), HasEdge(Report, ConfigFrom, OutsideObjectPath, TEXT("config")));
+
+	// The Message node inside a function graph carries that graph's name.
+	bool bFunctionGraphMessage = false;
+	for (const TSharedPtr<FJsonObject>& Edge : ObjectArray(Report, TEXT("edges")))
+	{
+		if (Edge->GetStringField(TEXT("kind")) == TEXT("calls_message") && Edge->GetStringField(TEXT("from")) == CallerPath
+			&& Edge->GetStringField(TEXT("graph")) == TEXT("CallPing"))
+		{
+			bFunctionGraphMessage = true;
+		}
+	}
+	TestTrue(TEXT("calls_message edge from the function graph"), bFunctionGraphMessage);
+
+	// Default ordering uses hard kinds only: soft kinds (casts, spawns, ...) are edges but never order waves.
 	const TArray<TArray<FString>> Waves = StringGroups(Report, TEXT("waves"));
 	const TArray<TArray<FString>> Cycles = StringGroups(Report, TEXT("cycles"));
-	const auto Before = [&Waves, this](const FString& Dependency, const FString& Dependant, const TCHAR* What)
+	const auto Before = [this](const TArray<TArray<FString>>& InWaves, const FString& Dependency, const FString& Dependant, const TCHAR* What)
 	{
-		const int32 DependencyWave = WaveOf(Waves, Dependency);
-		const int32 DependantWave = WaveOf(Waves, Dependant);
+		const int32 DependencyWave = WaveOf(InWaves, Dependency);
+		const int32 DependantWave = WaveOf(InWaves, Dependant);
 		TestTrue(*FString::Printf(TEXT("%s: both scheduled"), What), DependencyWave != INDEX_NONE && DependantWave != INDEX_NONE);
 		TestTrue(*FString::Printf(TEXT("%s: dependency wave %d before dependant wave %d"), What, DependencyWave, DependantWave),
 			DependencyWave < DependantWave);
 	};
-	Before(InterfacePath, ImplPath, TEXT("interface before implementer"));
-	Before(BasePath, ChildPath, TEXT("base before child"));
-	Before(InterfacePath, CallerPath, TEXT("interface before caller"));
-	Before(BasePath, CallerPath, TEXT("cast target before caller"));
-	Before(ChildPath, CallerPath, TEXT("spawn target before caller"));
-	Before(LeafPath, CallerPath, TEXT("created widget before caller"));
-	Before(LeafPath, HostPath, TEXT("child widget before host"));
-	Before(EntryPath, HostPath, TEXT("entry widget before host"));
-
-	if (TestEqual(TEXT("one cycle"), Cycles.Num(), 1))
-	{
-		TestTrue(TEXT("cycle holds both cast peers"), Cycles[0].Contains(CycleAPath) && Cycles[0].Contains(CycleBPath));
-		TestEqual(TEXT("cycle has exactly two members"), Cycles[0].Num(), 2);
-		TestFalse(TEXT("an acyclic dependant is not reported as a cycle"), Cycles[0].Contains(CallerPath));
-	}
-	if (TestTrue(TEXT("waves present"), Waves.Num() > 0))
-	{
-		TestTrue(TEXT("cycle members form the final wave"),
-			Waves.Last().Contains(CycleAPath) && Waves.Last().Contains(CycleBPath));
-		TestEqual(TEXT("cycle peers share one wave"), WaveOf(Waves, CycleAPath), WaveOf(Waves, CycleBPath));
-	}
-	TestTrue(TEXT("caller is scheduled"), WaveOf(Waves, CallerPath) != INDEX_NONE);
+	Before(Waves, InterfacePath, ImplPath, TEXT("interface before implementer"));
+	Before(Waves, BasePath, ChildPath, TEXT("base before child"));
+	Before(Waves, LeafPath, HostPath, TEXT("child widget before host"));
+	Before(Waves, EntryPath, HostPath, TEXT("entry widget before host"));
+	TestEqual(TEXT("default ordering: a mutual cast pair is not a cycle"), Cycles.Num(), 0);
+	TestEqual(TEXT("default ordering: cast peers are not ordered"), WaveOf(Waves, CycleAPath), 0);
+	TestEqual(TEXT("default ordering: cast peers share wave 0"), WaveOf(Waves, CycleBPath), 0);
+	TestEqual(TEXT("default ordering: a soft dependant is not pushed later"), WaveOf(Waves, DownstreamPath), 0);
 	TestEqual(TEXT("external native parent is never scheduled"), WaveOf(Waves, TEXT("/Script/Engine.Actor")), static_cast<int32>(INDEX_NONE));
+	TestEqual(TEXT("external config target is never scheduled"), WaveOf(Waves, OutsideObjectPath), static_cast<int32>(INDEX_NONE));
 	TestEqual(TEXT("ini node is never scheduled"), WaveOf(Waves, ConfigFrom), static_cast<int32>(INDEX_NONE));
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Used = nullptr;
+		if (TestTrue(TEXT("response ordering_kinds"), Result.Data->TryGetArrayField(TEXT("ordering_kinds"), Used)))
+		{
+			TArray<FString> UsedNames;
+			for (const TSharedPtr<FJsonValue>& Value : *Used)
+			{
+				UsedNames.Add(Value->AsString());
+			}
+			TestEqual(TEXT("default ordering kinds are the hard kinds"), UsedNames,
+				TArray<FString>({TEXT("enum_use"), TEXT("implements"), TEXT("inherits"), TEXT("listview_entry"), TEXT("struct_use"), TEXT("widget_tree_child")}));
+		}
+		const TSharedPtr<FJsonObject>* Unresolved = nullptr;
+		if (TestTrue(TEXT("response unresolved summary"), Result.Data->TryGetObjectField(TEXT("unresolved"), Unresolved)))
+		{
+			TestEqual(TEXT("no unresolved parents"), static_cast<int32>((*Unresolved)->GetNumberField(TEXT("parents"))), 0);
+			TestEqual(TEXT("no unresolved interfaces"), static_cast<int32>((*Unresolved)->GetNumberField(TEXT("interfaces"))), 0);
+		}
+	}
+
+	// Soft ordering on request: casts/spawns/messages/create-widget order the waves and the cast pair is a cycle.
+	TSharedPtr<FJsonObject> Soft = Fixture.ExportParams(Fixture.ReportPath(TEXT("soft")));
+	Soft->SetArrayField(TEXT("ordering_kinds"), JsonStrings({TEXT("calls_message"), TEXT("casts"), TEXT("spawns"), TEXT("creates_widget")}));
+	const FCortexCommandResult SoftResult = Run(Soft);
+	if (TestTrue(TEXT("soft ordering export succeeds"), SoftResult.bSuccess && SoftResult.Data.IsValid()))
+	{
+		const TSharedPtr<FJsonObject> SoftReport = ReadJsonDocument(Soft->GetStringField(TEXT("out_path")));
+		if (TestTrue(TEXT("soft report parses"), SoftReport.IsValid()))
+		{
+			const TArray<TArray<FString>> SoftWaves = StringGroups(SoftReport, TEXT("waves"));
+			const TArray<TArray<FString>> SoftCycles = StringGroups(SoftReport, TEXT("cycles"));
+			Before(SoftWaves, InterfacePath, CallerPath, TEXT("message target before caller"));
+			Before(SoftWaves, BasePath, CallerPath, TEXT("cast target before caller"));
+			Before(SoftWaves, ChildPath, CallerPath, TEXT("spawn target before caller"));
+			Before(SoftWaves, LeafPath, CallerPath, TEXT("created widget before caller"));
+			if (TestEqual(TEXT("one cycle"), SoftCycles.Num(), 1))
+			{
+				TestEqual(TEXT("cycle has exactly two members"), SoftCycles[0].Num(), 2);
+				TestTrue(TEXT("cycle holds both cast peers"), SoftCycles[0].Contains(CycleAPath) && SoftCycles[0].Contains(CycleBPath));
+			}
+			TestEqual(TEXT("cycle peers share one wave"), WaveOf(SoftWaves, CycleAPath), WaveOf(SoftWaves, CycleBPath));
+			const int32 CycleWave = WaveOf(SoftWaves, CycleAPath);
+			TestTrue(TEXT("a node depending on a cycle member lands in a strictly later wave"),
+				CycleWave != INDEX_NONE && WaveOf(SoftWaves, DownstreamPath) > CycleWave);
+			const TArray<TSharedPtr<FJsonValue>>* SoftUsed = nullptr;
+			if (TestTrue(TEXT("soft response ordering_kinds"), SoftResult.Data->TryGetArrayField(TEXT("ordering_kinds"), SoftUsed)))
+			{
+				TestEqual(TEXT("ordering_kinds echoes the request"), SoftUsed->Num(), 4);
+			}
+		}
+	}
 
 	// Compact response mirrors the file.
 	for (const TCHAR* Kind : {TEXT("inherits"), TEXT("implements"), TEXT("calls_message"), TEXT("casts"), TEXT("spawns"),
@@ -726,7 +794,9 @@ bool FCortexReflectDependencyGraphLevelPlacementTest::RunTest(const FString& Par
 	Fixture.RegisterSavedFiles();
 
 	const FString OutPath = Fixture.ReportPath(TEXT("level"));
-	const FCortexCommandResult Result = Run(Fixture.ExportParams(OutPath));
+	TSharedPtr<FJsonObject> LevelParams = Fixture.ExportParams(OutPath);
+	LevelParams->SetArrayField(TEXT("ordering_kinds"), JsonStrings({TEXT("level_placement")})); // soft kind, ordering on request
+	const FCortexCommandResult Result = Run(LevelParams);
 	if (!TestTrue(*FString::Printf(TEXT("export succeeds (%s: %s)"), *Result.ErrorCode, *Result.ErrorMessage), Result.bSuccess && Result.Data.IsValid()))
 	{
 		Fixture.Cleanup();
@@ -776,6 +846,14 @@ bool FCortexReflectDependencyGraphRefusalsTest::RunTest(const FString& Parameter
 	EmptyKinds->SetArrayField(TEXT("edge_kinds"), {});
 	Expect(TEXT("empty edge_kinds"), EmptyKinds, CortexErrorCodes::InvalidField);
 
+	TSharedPtr<FJsonObject> UnknownOrdering = Fixture.ExportParams(OutPath);
+	UnknownOrdering->SetArrayField(TEXT("ordering_kinds"), JsonStrings({TEXT("inherits"), TEXT("imports")}));
+	Expect(TEXT("unknown ordering kind"), UnknownOrdering, CortexErrorCodes::InvalidField);
+
+	TSharedPtr<FJsonObject> EmptyOrdering = Fixture.ExportParams(OutPath);
+	EmptyOrdering->SetArrayField(TEXT("ordering_kinds"), {});
+	Expect(TEXT("empty ordering_kinds"), EmptyOrdering, CortexErrorCodes::InvalidField);
+
 	TSharedPtr<FJsonObject> NoPrefixes = MakeShared<FJsonObject>();
 	NoPrefixes->SetStringField(TEXT("out_path"), OutPath);
 	Expect(TEXT("missing path_prefixes"), NoPrefixes, CortexErrorCodes::InvalidField);
@@ -797,6 +875,7 @@ bool FCortexReflectDependencyGraphRefusalsTest::RunTest(const FString& Parameter
 
 	// A well-formed request over an empty folder writes an empty graph rather than failing.
 	TSharedPtr<FJsonObject> Empty = Fixture.ExportParams(OutPath);
+	Empty->SetArrayField(TEXT("edge_kinds"), JsonStrings({TEXT("inherits")})); // config edges would add nodes from the real project ini files
 	const FCortexCommandResult EmptyResult = Run(Empty);
 	if (TestTrue(*FString::Printf(TEXT("empty folder exports (%s)"), *EmptyResult.ErrorMessage), EmptyResult.bSuccess && EmptyResult.Data.IsValid()))
 	{

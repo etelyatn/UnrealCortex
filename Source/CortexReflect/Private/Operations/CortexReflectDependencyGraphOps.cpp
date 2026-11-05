@@ -75,6 +75,8 @@ namespace CortexReflectDependencyGraphPrivate
 	{
 		TArray<FString> Prefixes;
 		TSet<FString> EdgeKinds;
+		/** Kinds that order the waves; hard kinds by default. */
+		TSet<FString> OrderingKinds;
 		FCortexResolvedFilePath OutPath;
 
 		bool Wants(const TCHAR* Kind) const { return EdgeKinds.Contains(Kind); }
@@ -151,6 +153,35 @@ namespace CortexReflectDependencyGraphPrivate
 		else
 		{
 			OutRequest.EdgeKinds.Append(Known);
+		}
+
+		// Ordering uses hard kinds unless the caller names others; soft kinds are still emitted as edges.
+		if (Params->HasField(TEXT("ordering_kinds")))
+		{
+			const TArray<TSharedPtr<FJsonValue>>* OrderingValues = nullptr;
+			if (!Params->TryGetArrayField(TEXT("ordering_kinds"), OrderingValues) || OrderingValues->Num() == 0)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+					TEXT("ordering_kinds must be a non-empty array of edge kind names"));
+				return false;
+			}
+			for (const TSharedPtr<FJsonValue>& Value : *OrderingValues)
+			{
+				FString Kind;
+				if (!Value.IsValid() || !Value->TryGetString(Kind) || !Known.Contains(Kind))
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						FString::Printf(TEXT("Unknown ordering kind '%s' (valid: %s)"), *Kind, *FString::Join(Known, TEXT(", "))));
+					return false;
+				}
+				OutRequest.OrderingKinds.Add(Kind);
+			}
+		}
+		else
+		{
+			OutRequest.OrderingKinds = {
+				EdgeKind::Inherits, EdgeKind::Implements, EdgeKind::StructUse, EdgeKind::EnumUse,
+				EdgeKind::WidgetTreeChild, EdgeKind::ListViewEntry };
 		}
 
 		FString OutPath;
@@ -381,14 +412,30 @@ namespace CortexReflectDependencyGraphPrivate
 		return Property ? Cast<UWidgetTree>(Property->GetObjectPropertyValue_InContainer(Blueprint)) : nullptr;
 	}
 
-	/** Edges read from a loaded Blueprint: interfaces, graph nodes and the widget tree. */
-	void CollectLoadedBlueprintEdges(const FRequest& Request, const FString& Id, UBlueprint* Blueprint, FGraph& Graph, bool& bInOutHasParentEdge)
+	struct FUnresolved
 	{
-		if (Request.Wants(EdgeKind::Inherits) && !bInOutHasParentEdge && Blueprint->ParentClass)
+		/** Blueprints whose parent class could not be resolved (no tag path, no loaded ParentClass). */
+		int32 Parents = 0;
+		/** Implemented-interface entries without a resolvable class. */
+		int32 Interfaces = 0;
+	};
+
+	/** Edges read from a loaded Blueprint: interfaces, graph nodes and the widget tree. */
+	void CollectLoadedBlueprintEdges(
+		const FRequest& Request, const FString& Id, UBlueprint* Blueprint, FGraph& Graph, bool& bInOutHasParentEdge, FUnresolved& InOutUnresolved)
+	{
+		if (Request.Wants(EdgeKind::Inherits) && !bInOutHasParentEdge)
 		{
-			Graph.EnsureNode(NormaliseClass(Blueprint->ParentClass), NodeKind::Blueprint);
-			Graph.AddEdge(Id, NormaliseClass(Blueprint->ParentClass), EdgeKind::Inherits);
-			bInOutHasParentEdge = true;
+			if (Blueprint->ParentClass)
+			{
+				Graph.EnsureNode(NormaliseClass(Blueprint->ParentClass), NodeKind::Blueprint);
+				Graph.AddEdge(Id, NormaliseClass(Blueprint->ParentClass), EdgeKind::Inherits);
+				bInOutHasParentEdge = true;
+			}
+			else
+			{
+				++InOutUnresolved.Parents;
+			}
 		}
 
 		if (Request.Wants(EdgeKind::Implements))
@@ -400,6 +447,10 @@ namespace CortexReflectDependencyGraphPrivate
 					const FString Target = NormaliseClass(InterfaceClass);
 					Graph.EnsureNode(Target, NodeKind::Blueprint);
 					Graph.AddEdge(Id, Target, EdgeKind::Implements);
+				}
+				else
+				{
+					++InOutUnresolved.Interfaces;
 				}
 			}
 		}
@@ -490,13 +541,19 @@ namespace CortexReflectDependencyGraphPrivate
 		}
 	}
 
-	/** Wave order over the schedulable nodes. Dependencies come first; unresolved leftovers form the final wave. */
+	/** Wave order over the schedulable nodes. Dependencies come first; each strongly connected component is one unit. */
 	struct FSchedule
 	{
 		TArray<TArray<FString>> Waves;
+		/** Strongly connected components with more than one member. */
 		TArray<TArray<FString>> Cycles;
 	};
 
+	/**
+	 * Condenses the dependency graph into strongly connected components (Tarjan, iterative) and places each
+	 * component on its longest-path level: level 0 depends on nothing, otherwise 1 + the deepest dependency.
+	 * All members of a cycle share a wave and everything downstream of a cycle lands in a strictly later wave.
+	 */
 	FSchedule BuildSchedule(const TArray<FString>& SortedIds, const TArray<FGraphEdge>& Edges, const TSet<FString>& DependencyKinds)
 	{
 		const int32 Count = SortedIds.Num();
@@ -507,11 +564,9 @@ namespace CortexReflectDependencyGraphPrivate
 			IndexOf.Add(SortedIds[Index], Index);
 		}
 
-		// Dependencies[i] = distinct nodes that i depends on; Dependants is the reverse relation.
-		TArray<TSet<int32>> Dependencies;
+		// Dependencies[i] = distinct nodes that i depends on (sorted for determinism).
+		TArray<TArray<int32>> Dependencies;
 		Dependencies.SetNum(Count);
-		TArray<TArray<int32>> Dependants;
-		Dependants.SetNum(Count);
 		for (const FGraphEdge& Edge : Edges)
 		{
 			if (!DependencyKinds.Contains(Edge.Kind))
@@ -520,79 +575,34 @@ namespace CortexReflectDependencyGraphPrivate
 			}
 			const int32* From = IndexOf.Find(Edge.From);
 			const int32* To = IndexOf.Find(Edge.To);
-			if (From && To && *From != *To && !Dependencies[*From].Contains(*To))
+			if (From && To && *From != *To)
 			{
-				Dependencies[*From].Add(*To);
-				Dependants[*To].Add(*From);
+				Dependencies[*From].AddUnique(*To);
 			}
 		}
-
-		FSchedule Schedule;
-		TArray<int32> Remaining;
-		Remaining.SetNum(Count);
-		TArray<int32> Current;
-		for (int32 Index = 0; Index < Count; ++Index)
+		for (TArray<int32>& Targets : Dependencies)
 		{
-			Remaining[Index] = Dependencies[Index].Num();
-			if (Remaining[Index] == 0)
-			{
-				Current.Add(Index);
-			}
+			Targets.Sort();
 		}
 
-		TArray<bool> Scheduled;
-		Scheduled.Init(false, Count);
-		while (Current.Num() > 0)
-		{
-			Current.Sort(); // indices follow the sorted ids
-			TArray<int32> Next;
-			TArray<FString>& Wave = Schedule.Waves.AddDefaulted_GetRef();
-			for (const int32 Index : Current)
-			{
-				Scheduled[Index] = true;
-				Wave.Add(SortedIds[Index]);
-				for (const int32 Dependant : Dependants[Index])
-				{
-					if (--Remaining[Dependant] == 0)
-					{
-						Next.Add(Dependant);
-					}
-				}
-			}
-			Current = MoveTemp(Next);
-		}
-
-		TArray<int32> Leftover;
-		for (int32 Index = 0; Index < Count; ++Index)
-		{
-			if (!Scheduled[Index])
-			{
-				Leftover.Add(Index);
-			}
-		}
-		if (Leftover.IsEmpty())
-		{
-			return Schedule;
-		}
-
-		// Tarjan over the leftover subgraph (iterative: dependency chains can be long). Components of two or
-		// more nodes are the cycles; leftovers that merely wait on a cycle still land in the final wave.
 		TArray<int32> Order;
 		Order.Init(INDEX_NONE, Count);
 		TArray<int32> Low;
 		Low.Init(0, Count);
 		TArray<bool> OnStack;
 		OnStack.Init(false, Count);
+		TArray<int32> ComponentOf;
+		ComponentOf.Init(INDEX_NONE, Count);
 		TArray<int32> Stack;
+		TArray<TArray<int32>> Components; // emitted dependencies-first
 		int32 NextOrder = 0;
 		struct FFrame
 		{
 			int32 Node;
-			TArray<int32> Targets;
 			int32 Cursor;
 		};
 
-		for (const int32 Root : Leftover)
+		for (int32 Root = 0; Root < Count; ++Root)
 		{
 			if (Order[Root] != INDEX_NONE)
 			{
@@ -604,25 +614,15 @@ namespace CortexReflectDependencyGraphPrivate
 				Order[Node] = Low[Node] = NextOrder++;
 				Stack.Add(Node);
 				OnStack[Node] = true;
-				FFrame& Frame = Frames.AddDefaulted_GetRef();
-				Frame.Node = Node;
-				Frame.Cursor = 0;
-				for (const int32 Target : Dependencies[Node])
-				{
-					if (!Scheduled[Target])
-					{
-						Frame.Targets.Add(Target);
-					}
-				}
-				Frame.Targets.Sort();
+				Frames.Add({Node, 0});
 			};
 			Enter(Root);
 			while (Frames.Num() > 0)
 			{
 				FFrame& Frame = Frames.Last();
-				if (Frame.Cursor < Frame.Targets.Num())
+				if (Frame.Cursor < Dependencies[Frame.Node].Num())
 				{
-					const int32 Target = Frame.Targets[Frame.Cursor++];
+					const int32 Target = Dependencies[Frame.Node][Frame.Cursor++];
 					if (Order[Target] == INDEX_NONE)
 					{
 						Enter(Target);
@@ -643,33 +643,63 @@ namespace CortexReflectDependencyGraphPrivate
 				}
 				if (Low[Node] == Order[Node])
 				{
-					TArray<int32> Component;
+					TArray<int32>& Component = Components.AddDefaulted_GetRef();
 					int32 Member;
 					do
 					{
 						Member = Stack.Pop();
 						OnStack[Member] = false;
+						ComponentOf[Member] = Components.Num() - 1;
 						Component.Add(Member);
 					} while (Member != Node);
-					if (Component.Num() > 1)
-					{
-						Component.Sort();
-						TArray<FString>& Cycle = Schedule.Cycles.AddDefaulted_GetRef();
-						for (const int32 Index : Component)
-						{
-							Cycle.Add(SortedIds[Index]);
-						}
-					}
+					Component.Sort();
 				}
 			}
 		}
 
-		Algo::Sort(Schedule.Cycles, [](const TArray<FString>& A, const TArray<FString>& B) { return CompareIds(A[0], B[0]) < 0; });
-		TArray<FString>& FinalWave = Schedule.Waves.AddDefaulted_GetRef();
-		for (const int32 Index : Leftover)
+		// Components are emitted dependencies-first, so every dependency's level is known when it is needed.
+		TArray<int32> Level;
+		Level.Init(0, Components.Num());
+		int32 MaxLevel = -1;
+		for (int32 ComponentIndex = 0; ComponentIndex < Components.Num(); ++ComponentIndex)
 		{
-			FinalWave.Add(SortedIds[Index]);
+			int32 Deepest = -1;
+			for (const int32 Member : Components[ComponentIndex])
+			{
+				for (const int32 Target : Dependencies[Member])
+				{
+					if (ComponentOf[Target] != ComponentIndex)
+					{
+						Deepest = FMath::Max(Deepest, Level[ComponentOf[Target]]);
+					}
+				}
+			}
+			Level[ComponentIndex] = Deepest + 1;
+			MaxLevel = FMath::Max(MaxLevel, Level[ComponentIndex]);
 		}
+
+		FSchedule Schedule;
+		Schedule.Waves.SetNum(MaxLevel + 1);
+		for (int32 ComponentIndex = 0; ComponentIndex < Components.Num(); ++ComponentIndex)
+		{
+			for (const int32 Member : Components[ComponentIndex])
+			{
+				Schedule.Waves[Level[ComponentIndex]].Add(SortedIds[Member]);
+			}
+			if (Components[ComponentIndex].Num() > 1)
+			{
+				TArray<FString>& Cycle = Schedule.Cycles.AddDefaulted_GetRef();
+				for (const int32 Member : Components[ComponentIndex])
+				{
+					Cycle.Add(SortedIds[Member]);
+				}
+			}
+		}
+		for (TArray<FString>& Wave : Schedule.Waves)
+		{
+			Algo::Sort(Wave, [](const FString& A, const FString& B) { return CompareIds(A, B) < 0; });
+		}
+		Algo::Sort(Schedule.Cycles, [](const TArray<FString>& A, const TArray<FString>& B) { return CompareIds(A[0], B[0]) < 0; });
 		return Schedule;
 	}
 
@@ -786,6 +816,7 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 	const UE::AssetRegistry::FDependencyQuery HardQuery(UE::AssetRegistry::EDependencyQuery::Hard);
 	bool bLoadedAny = false;
 	TArray<FString> LoadFailures;
+	FUnresolved Unresolved;
 
 	for (const FAssetEntry& Entry : Entries)
 	{
@@ -822,7 +853,7 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 			if (Blueprint)
 			{
 				bLoadedAny = true;
-				CollectLoadedBlueprintEdges(Request, Entry.Id, Blueprint, Graph, bHasParentEdge);
+				CollectLoadedBlueprintEdges(Request, Entry.Id, Blueprint, Graph, bHasParentEdge, Unresolved);
 			}
 			else
 			{
@@ -864,12 +895,13 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 		}
 	}
 
-	// config: INI references to assets under the prefixes. The ini file is a node of its own.
+	// config: INI references to existing packages. The ini file is a node of its own; targets outside the
+	// prefixes become external nodes, in-prefix targets that are not Blueprint/World/struct/enum are plain "asset" nodes.
 	if (Request.Wants(EdgeKind::Config))
 	{
 		for (const CortexReflectConfigScan::FConfigReference& Reference : CortexReflectConfigScan::Scan())
 		{
-			if (Reference.bDirectory || !Graph.IsInPrefix(Reference.PackageName))
+			if (Reference.bDirectory)
 			{
 				continue;
 			}
@@ -890,18 +922,17 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 	}
 
-	// Waves: in-prefix asset nodes only; config files and external targets are never scheduled.
+	// Waves: Blueprint/World/struct/enum nodes under the prefixes; config files, plain assets and external targets are never scheduled.
 	TArray<FString> SchedulableIds;
 	for (const TPair<FString, FNode>& Pair : Graph.Nodes)
 	{
-		if (!Pair.Value.bExternal && Pair.Value.Kind != NodeKind::ConfigFile)
+		if (!Pair.Value.bExternal && Pair.Value.Kind != NodeKind::ConfigFile && Pair.Value.Kind != NodeKind::Asset)
 		{
 			SchedulableIds.Add(Pair.Key);
 		}
 	}
 	Algo::Sort(SchedulableIds, [](const FString& A, const FString& B) { return CompareIds(A, B) < 0; });
-	TSet<FString> DependencyKinds = Request.EdgeKinds;
-	DependencyKinds.Remove(EdgeKind::Config);
+	TSet<FString> DependencyKinds = Request.OrderingKinds.Intersect(Request.EdgeKinds);
 	const FSchedule Schedule = BuildSchedule(SchedulableIds, Graph.Edges, DependencyKinds);
 
 	TArray<FNode> SortedNodes;
@@ -936,9 +967,16 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 
 	TArray<FString> SortedKinds = Request.EdgeKinds.Array();
 	Algo::Sort(SortedKinds, [](const FString& A, const FString& B) { return CompareIds(A, B) < 0; });
+	TArray<FString> UsedOrderingKinds = DependencyKinds.Array();
+	Algo::Sort(UsedOrderingKinds, [](const FString& A, const FString& B) { return CompareIds(A, B) < 0; });
+	TSharedRef<FJsonObject> UnresolvedJson = MakeShared<FJsonObject>();
+	UnresolvedJson->SetNumberField(TEXT("parents"), Unresolved.Parents);
+	UnresolvedJson->SetNumberField(TEXT("interfaces"), Unresolved.Interfaces);
 	TSharedRef<FJsonObject> Report = MakeShared<FJsonObject>();
 	Report->SetArrayField(TEXT("path_prefixes"), StringValues(Request.Prefixes));
 	Report->SetArrayField(TEXT("edge_kinds"), StringValues(SortedKinds));
+	Report->SetArrayField(TEXT("ordering_kinds"), StringValues(UsedOrderingKinds));
+	Report->SetObjectField(TEXT("unresolved"), UnresolvedJson);
 	Report->SetArrayField(TEXT("nodes"), NodeValues);
 	Report->SetArrayField(TEXT("edges"), EdgeValues);
 	Report->SetArrayField(TEXT("waves"), GroupValues(Schedule.Waves));
@@ -965,6 +1003,8 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 	Result->SetObjectField(TEXT("edges_by_kind"), EdgesByKind);
 	Result->SetArrayField(TEXT("waves"), WaveSizes);
 	Result->SetNumberField(TEXT("cycles"), Schedule.Cycles.Num());
+	Result->SetArrayField(TEXT("ordering_kinds"), StringValues(UsedOrderingKinds));
+	Result->SetObjectField(TEXT("unresolved"), UnresolvedJson);
 	if (LoadFailures.Num() > 0)
 	{
 		Result->SetArrayField(TEXT("load_failures"), StringValues(LoadFailures));
