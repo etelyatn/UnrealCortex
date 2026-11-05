@@ -161,6 +161,8 @@ struct CORTEXCORE_API FCortexCommandResult
 {
 	bool bSuccess = false;
 	bool bIsDeferred = false;
+	/** Only meaningful with bIsDeferred: how long the server waits for the deferred callback. 0 = server default (30 s). */
+	double DeferredTimeoutSeconds = 0.0;
 	TSharedPtr<FJsonObject> Data;
 	FString ErrorCode;
 	FString ErrorMessage;

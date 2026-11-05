@@ -479,3 +479,167 @@ bool FCortexDeferredTimeoutTest::RunTest(const FString& Parameters)
 	Server.Stop();
 	return true;
 }
+
+class FTestPerCommandTimeoutHandler : public ICortexDomainHandler
+{
+public:
+	virtual FCortexCommandResult Execute(
+		const FString& Command,
+		const TSharedPtr<FJsonObject>& Params,
+		FDeferredResponseCallback DeferredCallback = nullptr) override
+	{
+		(void)Params;
+		(void)DeferredCallback;
+		FCortexCommandResult Result;
+		Result.bIsDeferred = true;
+		if (Command == TEXT("short_op"))
+		{
+			Result.DeferredTimeoutSeconds = 0.3;
+			return Result;
+		}
+		if (Command == TEXT("long_op"))
+		{
+			Result.DeferredTimeoutSeconds = 600.0;
+			return Result;
+		}
+		if (Command == TEXT("default_op"))
+		{
+			return Result;
+		}
+		return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, TEXT("Unknown"));
+	}
+
+	virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override
+	{
+		return { { TEXT("short_op"), TEXT("short") }, { TEXT("long_op"), TEXT("long") }, { TEXT("default_op"), TEXT("default") } };
+	}
+};
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDeferredPerCommandTimeoutTest,
+	"Cortex.Core.Deferred.PerCommandTimeout",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDeferredPerCommandTimeoutTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	auto Handler = MakeShared<FTestPerCommandTimeoutHandler>();
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("test"), TEXT("Test"), TEXT("1.0.1"), Handler);
+
+	FCortexTcpServer Server;
+	const bool bStarted = Server.Start(
+		0,
+		[&Router](const FString& Command, const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
+		{
+			return Router.Execute(Command, Params, MoveTemp(DeferredCallback));
+		});
+	TestTrue(TEXT("Server should start"), bStarted);
+	if (!bStarted)
+	{
+		return true;
+	}
+
+	FString PortText;
+	const FString PortFilePath = FPaths::ProjectSavedDir() / FString::Printf(TEXT("CortexPort-%u.txt"), FPlatformProcess::GetCurrentProcessId());
+	FFileHelper::LoadFileToString(PortText, *PortFilePath);
+	const int32 TestPort = ParsePortFromPortFileText(PortText);
+	TestTrue(TEXT("Port from file should be > 0"), TestPort > 0);
+	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	FSocket* Client = TestPort > 0 ? SocketSubsystem->CreateSocket(NAME_Stream, TEXT("DeferredPerCommandTimeoutClient"), false) : nullptr;
+	if (Client == nullptr || !Client->Connect(*FIPv4Endpoint(FIPv4Address::InternalLoopback, TestPort).ToInternetAddr()))
+	{
+		AddError(TEXT("Could not connect a client to the test server"));
+		if (Client != nullptr)
+		{
+			SocketSubsystem->DestroySocket(Client);
+		}
+		Server.Stop();
+		return true;
+	}
+	FPlatformProcess::Sleep(0.1f);
+
+	FString Pending;
+	// Sends one command and returns the next complete response line (ticking the server), empty if none arrives in MaxSeconds.
+	auto SendCommand = [&](const FString& Id, const FString& Command)
+	{
+		const FString Line = FString::Printf(TEXT("{\"id\":\"%s\",\"command\":\"test.%s\",\"params\":{}}\n"), *Id, *Command);
+		FTCHARToUTF8 Utf8(*Line);
+		int32 BytesSent = 0;
+		Client->Send(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length(), BytesSent);
+	};
+	auto ReadLine = [&](double MaxSeconds) -> TSharedPtr<FJsonObject>
+	{
+		const double Deadline = FPlatformTime::Seconds() + MaxSeconds;
+		uint8 Buffer[4096];
+		while (FPlatformTime::Seconds() < Deadline)
+		{
+			int32 Newline = INDEX_NONE;
+			if (Pending.FindChar(TEXT('\n'), Newline))
+			{
+				const FString Line = Pending.Left(Newline);
+				Pending.RightChopInline(Newline + 1);
+				TSharedPtr<FJsonObject> Json;
+				FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Line), Json);
+				return Json;
+			}
+			FTSTicker::GetCoreTicker().Tick(0.016f);
+			FPlatformProcess::Sleep(0.05f);
+			uint32 PendingData = 0;
+			while (Client->HasPendingData(PendingData) && PendingData > 0)
+			{
+				int32 BytesRead = 0;
+				if (!Client->Recv(Buffer, sizeof(Buffer) - 1, BytesRead) || BytesRead <= 0)
+				{
+					break;
+				}
+				FUTF8ToTCHAR Conv(reinterpret_cast<const ANSICHAR*>(Buffer), BytesRead);
+				Pending.Append(Conv.Get(), Conv.Length());
+			}
+		}
+		return nullptr;
+	};
+	auto AckTimeout = [](const TSharedPtr<FJsonObject>& Ack) -> double
+	{
+		const TSharedPtr<FJsonObject>* Data = nullptr;
+		double Value = -1.0;
+		if (Ack.IsValid() && Ack->TryGetObjectField(TEXT("data"), Data))
+		{
+			(*Data)->TryGetNumberField(TEXT("timeout_seconds"), Value);
+		}
+		return Value;
+	};
+
+	SendCommand(TEXT("long"), TEXT("long_op"));
+	TestEqual(TEXT("A handler-provided deferred timeout is advertised in the ack"), AckTimeout(ReadLine(3.0)), 600.0);
+
+	SendCommand(TEXT("default"), TEXT("default_op"));
+	TestEqual(TEXT("Commands without a handler timeout keep the 30 s default"), AckTimeout(ReadLine(3.0)), 30.0);
+
+	SendCommand(TEXT("short"), TEXT("short_op"));
+	TestEqual(TEXT("Short op ack advertises its own timeout"), AckTimeout(ReadLine(3.0)), 0.3);
+	TSharedPtr<FJsonObject> Final = ReadLine(3.0);
+	TestTrue(TEXT("The short op is timed out by its own bound, not the 30 s default"), Final.IsValid());
+	if (Final.IsValid())
+	{
+		FString Id;
+		FString Status;
+		FString Code;
+		Final->TryGetStringField(TEXT("id"), Id);
+		Final->TryGetStringField(TEXT("status"), Status);
+		const TSharedPtr<FJsonObject>* ErrorObj = nullptr;
+		if (Final->TryGetObjectField(TEXT("error"), ErrorObj))
+		{
+			(*ErrorObj)->TryGetStringField(TEXT("code"), Code);
+		}
+		TestEqual(TEXT("Timed-out response id"), Id, TEXT("short"));
+		TestEqual(TEXT("Timed-out response code"), Code, CortexErrorCodes::InvalidOperation);
+	}
+	TestFalse(TEXT("The long and default ops are still pending, not timed out"), ReadLine(0.2).IsValid());
+
+	SocketSubsystem->DestroySocket(Client);
+	Server.Stop();
+	return true;
+}
