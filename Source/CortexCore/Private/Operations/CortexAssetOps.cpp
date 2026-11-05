@@ -9,6 +9,12 @@
 #include "FileHelpers.h"
 #include "Engine/Blueprint.h"
 #include "Misc/PackageName.h"
+#include "AssetRegistry/ARFilter.h"
+#include "CortexEditorUtils.h"
+#include "HAL/FileManager.h"
+#include "Modules/ModuleManager.h"
+#include "UObject/ObjectRedirector.h"
+#include "UObject/UObjectIterator.h"
 #include "PackageTools.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/SavePackage.h"
@@ -900,4 +906,155 @@ FCortexCommandResult FCortexAssetOps::ReloadAsset(const TSharedPtr<FJsonObject>&
 #else
 	return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("Editor not available"));
 #endif
+}
+
+FCortexCommandResult FCortexAssetOps::ListRedirectors(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));
+	}
+
+	FString Path;
+	if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: path"));
+	}
+	bool bRecursive = true;
+	if (Params->HasField(TEXT("recursive")) && !Params->TryGetBoolField(TEXT("recursive"), bRecursive))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("recursive must be a boolean"));
+	}
+
+	Path = FCortexEditorUtils::NormalizeMountedContentPath(Path);
+	FString FolderOnDisk;
+	if (!FPackageName::IsValidLongPackageName(Path, /*bIncludeReadOnlyRoots=*/true)
+		|| !FPackageName::TryConvertLongPackageNameToFilename(Path, FolderOnDisk))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Not a content folder under a mounted root: %s"), *Path));
+	}
+
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+	if (IFileManager::Get().DirectoryExists(*FolderOnDisk))
+	{
+		// Synchronous scan of just this folder so redirectors written since the last scan are listed.
+		Registry.ScanPathsSynchronous({Path}, /*bForceRescan=*/false);
+	}
+
+	struct FRedirectorRow
+	{
+		FString ObjectPath;
+		FString PackageName;
+		FString Destination;
+	};
+	TMap<FString, FRedirectorRow> Rows;
+
+	const auto InScope = [&Path, bRecursive](const FString& PackageName)
+	{
+		return bRecursive
+			? (PackageName == Path || PackageName.StartsWith(Path + TEXT("/")))
+			: FPackageName::GetLongPackagePath(PackageName) == Path;
+	};
+
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UObjectRedirector::StaticClass()->GetClassPathName());
+	Filter.PackagePaths.Add(FName(*Path));
+	Filter.bRecursivePaths = bRecursive;
+	TArray<FAssetData> RedirectorAssets;
+	Registry.GetAssets(Filter, RedirectorAssets);
+	for (const FAssetData& AssetData : RedirectorAssets)
+	{
+		FRedirectorRow Row;
+		Row.ObjectPath = AssetData.GetObjectPathString();
+		Row.PackageName = AssetData.PackageName.ToString();
+
+		// The destination is a registry tag: no redirector (and so no destination asset) is loaded for it.
+		FString TaggedDestination;
+		if (AssetData.GetTagValue(FName(TEXT("DestinationObject")), TaggedDestination) && !TaggedDestination.IsEmpty())
+		{
+			Row.Destination = FPackageName::ExportTextPathToObjectPath(TaggedDestination);
+		}
+		else if (const UObjectRedirector* Resident = FindObject<UObjectRedirector>(nullptr, *Row.ObjectPath))
+		{
+			Row.Destination = Resident->DestinationObject ? Resident->DestinationObject->GetPathName() : FString();
+		}
+		else if (const UObjectRedirector* Loaded = Cast<UObjectRedirector>(AssetData.GetAsset()))
+		{
+			// Only reached for a redirector the registry holds no destination tag for.
+			Row.Destination = Loaded->DestinationObject ? Loaded->DestinationObject->GetPathName() : FString();
+		}
+		Rows.Add(Row.ObjectPath, MoveTemp(Row));
+	}
+
+	// Redirectors that exist in memory but are unknown to the registry (the fallback fixup_redirectors uses).
+	for (TObjectIterator<UObjectRedirector> It; It; ++It)
+	{
+		const UObjectRedirector* Redirector = *It;
+		if (!IsValid(Redirector) || Redirector->HasAnyFlags(RF_Transient | RF_ClassDefaultObject))
+		{
+			continue;
+		}
+		const FString PackageName = Redirector->GetOutermost()->GetName();
+		const FString ObjectPath = Redirector->GetPathName();
+		if (InScope(PackageName) && !Rows.Contains(ObjectPath))
+		{
+			FRedirectorRow Row;
+			Row.ObjectPath = ObjectPath;
+			Row.PackageName = PackageName;
+			Row.Destination = Redirector->DestinationObject ? Redirector->DestinationObject->GetPathName() : FString();
+			Rows.Add(ObjectPath, MoveTemp(Row));
+		}
+	}
+
+	TArray<FString> SortedKeys;
+	Rows.GetKeys(SortedKeys);
+	SortedKeys.Sort([](const FString& A, const FString& B) { return A.Compare(B, ESearchCase::CaseSensitive) < 0; });
+
+	TArray<TSharedPtr<FJsonValue>> RedirectorValues;
+	for (const FString& Key : SortedKeys)
+	{
+		const FRedirectorRow& Row = Rows[Key];
+
+		TArray<FAssetIdentifier> Referencers;
+		Registry.GetReferencers(FAssetIdentifier(FName(*Row.PackageName)), Referencers, UE::AssetRegistry::EDependencyCategory::Package);
+		TArray<FString> ReferencerPackages;
+		for (const FAssetIdentifier& Referencer : Referencers)
+		{
+			const FString ReferencerPackage = Referencer.PackageName.ToString();
+			if (ReferencerPackage != Row.PackageName)
+			{
+				ReferencerPackages.AddUnique(ReferencerPackage);
+			}
+		}
+		ReferencerPackages.Sort([](const FString& A, const FString& B) { return A.Compare(B, ESearchCase::CaseSensitive) < 0; });
+
+		TArray<TSharedPtr<FJsonValue>> ReferencerValues;
+		for (const FString& ReferencerPackage : ReferencerPackages)
+		{
+			ReferencerValues.Add(MakeShared<FJsonValueString>(ReferencerPackage));
+		}
+
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("redirector_path"), Row.ObjectPath);
+		Entry->SetStringField(TEXT("package"), Row.PackageName);
+		if (Row.Destination.IsEmpty())
+		{
+			Entry->SetField(TEXT("destination"), MakeShared<FJsonValueNull>());
+		}
+		else
+		{
+			Entry->SetStringField(TEXT("destination"), Row.Destination);
+		}
+		Entry->SetNumberField(TEXT("referencer_count"), ReferencerPackages.Num());
+		Entry->SetArrayField(TEXT("referencers"), ReferencerValues);
+		RedirectorValues.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("path"), Path);
+	Data->SetBoolField(TEXT("recursive"), bRecursive);
+	Data->SetNumberField(TEXT("count"), RedirectorValues.Num());
+	Data->SetArrayField(TEXT("redirectors"), RedirectorValues);
+	return FCortexCommandRouter::Success(Data);
 }
