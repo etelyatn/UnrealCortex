@@ -751,6 +751,100 @@ bool FCortexReflectDuplicateGraphClusterTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectDuplicateGraphLooseTest,
+	"Cortex.Reflect.DuplicateGraphs.SiblingClasses",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectDuplicateGraphLooseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectDuplicateGraphTestSupport;
+
+	// Parallel sibling child widgets A1/A2 (same native parent). Host H1 uses A1, H2 uses A2, with identical widget
+	// names and a function that casts to its child class and calls a member of it: strict forms differ, the loose
+	// forms (native ancestor class instead of the sibling class) are identical.
+	FDuplicateFixture Fixture;
+	UBlueprint* A1 = Fixture.MakeWidgetBlueprint(TEXT("WBP_ChildA1"), {});
+	UBlueprint* A2 = Fixture.MakeWidgetBlueprint(TEXT("WBP_ChildA2"), {});
+	if (!TestNotNull(TEXT("A1"), A1) || !TestNotNull(TEXT("A2"), A2))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	for (UBlueprint* Child : {A1, A2})
+	{
+		UEdGraph* Ping = FBlueprintEditorUtils::CreateNewGraph(
+			Child, TEXT("Ping"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+		FBlueprintEditorUtils::AddFunctionGraph<UClass>(Child, Ping, true, nullptr);
+		FKismetEditorUtilities::CompileBlueprint(Child);
+	}
+	if (!TestNotNull(TEXT("A1 class"), A1->GeneratedClass.Get()) || !TestNotNull(TEXT("A2 class"), A2->GeneratedClass.Get()))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	UBlueprint* Hosts[2] = {Fixture.MakeWidgetBlueprint(TEXT("WBP_HostH1"), {}), Fixture.MakeWidgetBlueprint(TEXT("WBP_HostH2"), {})};
+	UBlueprint* Children[2] = {A1, A2};
+	for (int32 Slot = 0; Slot < 2; ++Slot)
+	{
+		UBlueprint* Host = Hosts[Slot];
+		if (!TestNotNull(TEXT("host"), Host))
+		{
+			Fixture.Cleanup();
+			return false;
+		}
+		UClass* ChildClass = Children[Slot]->GeneratedClass;
+		UWidgetTree* Tree = FDuplicateFixture::GetWidgetTree(Host);
+		UCanvasPanel* Root = Tree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("Root"));
+		Tree->RootWidget = Root;
+		for (const TCHAR* Name : {TEXT("Btn1"), TEXT("Btn2"), TEXT("Btn3")})
+		{
+			Root->AddChild(Tree->ConstructWidget<UUserWidget>(ChildClass, Name));
+		}
+		Root->AddChild(Tree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("Label")));
+
+		UEdGraph* Work = FDuplicateFixture::AddFunction(Host, TEXT("Work"), FourTexts, 0, false);
+		FGraphNodeCreator<UK2Node_DynamicCast> CastCreator(*Work);
+		UK2Node_DynamicCast* Cast = CastCreator.CreateNode();
+		Cast->TargetType = ChildClass;
+		CastCreator.Finalize();
+		FGraphNodeCreator<UK2Node_CallFunction> CallCreator(*Work);
+		UK2Node_CallFunction* Call = CallCreator.CreateNode();
+		Call->FunctionReference.SetExternalMember(TEXT("Ping"), ChildClass);
+		CallCreator.Finalize();
+	}
+	if (!TestTrue(TEXT("save A1"), Fixture.SaveAsset(A1)) || !TestTrue(TEXT("save A2"), Fixture.SaveAsset(A2))
+		|| !TestTrue(TEXT("save H1"), Fixture.SaveAsset(Hosts[0])) || !TestTrue(TEXT("save H2"), Fixture.SaveAsset(Hosts[1])))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FCortexCommandResult Run = Fixture.Run({}, {});
+	if (TestTrue(TEXT("run succeeds"), Run.bSuccess) && TestTrue(TEXT("data"), Run.Data.IsValid()))
+	{
+		TestEqual(TEXT("sibling-class copies are not exact"), ObjectArray(Run.Data, TEXT("exact_groups")).Num(), 0);
+		const TArray<TSharedPtr<FJsonObject>> Similar = ObjectArray(Run.Data, TEXT("similar_groups"));
+		const TSharedPtr<FJsonObject> Function = FindGroup(Similar, TEXT("function"));
+		if (TestNotNull(TEXT("function similar group"), Function.Get()))
+		{
+			TestEqual(TEXT("function members"), MemberLabels(Function), TArray<FString>{TEXT("WBP_HostH1:Work"), TEXT("WBP_HostH2:Work")});
+			TestEqual(TEXT("loose marker"), Function->GetBoolField(TEXT("loose")), true);
+			TestEqual(TEXT("loose forms are identical"), Function->GetNumberField(TEXT("min_similarity")), 1.0, 0.0001);
+		}
+		const TArray<TSharedPtr<FJsonObject>> Pairs = ObjectArray(Run.Data, TEXT("blueprint_pairs"));
+		const TSharedPtr<FJsonObject> HostPair = FindPair(Pairs, TEXT("WBP_HostH1"), TEXT("WBP_HostH2"));
+		if (TestNotNull(TEXT("host pair"), HostPair.Get()))
+		{
+			TestEqual(TEXT("widget_tree_similarity ignores the sibling class"), HostPair->GetNumberField(TEXT("widget_tree_similarity")), 1.0, 0.0001);
+		}
+	}
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexReflectDuplicateGraphParamsTest,
 	"Cortex.Reflect.DuplicateGraphs.Params",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

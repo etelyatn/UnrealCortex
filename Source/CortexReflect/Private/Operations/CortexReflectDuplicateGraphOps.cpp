@@ -31,6 +31,8 @@
 #include "Modules/ModuleManager.h"
 #include "UObject/GarbageCollection.h"
 #include "UObject/UnrealType.h"
+#include "Internationalization/Regex.h"
+#include "Components/PanelWidget.h"
 
 namespace CortexReflectDuplicateGraphPrivate
 {
@@ -123,6 +125,35 @@ namespace CortexReflectDuplicateGraphPrivate
 		return Text.Replace(TEXT(" "), TEXT("")).Replace(TEXT("_"), TEXT("")).ToLower();
 	}
 
+	/** Name of the nearest native ancestor of a Blueprint-generated class (the class itself when native). */
+	FString NativeAncestorName(const UClass* Class)
+	{
+		while (Class && Class->ClassGeneratedBy)
+		{
+			Class = Class->GetSuperClass();
+		}
+		return Class ? Class->GetName() : FString(TEXT("BlueprintClass"));
+	}
+
+	/**
+	 * Loose form of a text holding object paths: every `<path>_C` Blueprint-generated class path becomes the name
+	 * of its nearest native ancestor, so parallel sibling Blueprint classes compare equal.
+	 */
+	FString LoosenClasses(const FString& Value)
+	{
+		static const FRegexPattern Pattern(TEXT("/[A-Za-z0-9_/.\\-]+_C(?![A-Za-z0-9_])"));
+		FRegexMatcher Matcher(Pattern, Value);
+		FString Result;
+		int32 Last = 0;
+		while (Matcher.FindNext())
+		{
+			Result += Value.Mid(Last, Matcher.GetMatchBeginning() - Last);
+			const UClass* Class = FindObject<UClass>(nullptr, *Matcher.GetCaptureGroup(0));
+			Result += Class ? NativeAncestorName(Class) : FString(TEXT("BlueprintClass"));
+			Last = Matcher.GetMatchEnding();
+		}
+		return Result + Value.Mid(Last);
+	}
 	/**
 	 * The Blueprint that owns the graphs being normalised. Every textual reference to the Blueprint itself (its
 	 * generated class, skeleton class, `_C` class path, object path) becomes `self`, so two copies of a graph
@@ -149,13 +180,15 @@ namespace CortexReflectDuplicateGraphPrivate
 			CastPinName = StripSeparators(Name);
 		}
 
+		bool bLoose = false;
+
 		FString Text(FString Value) const
 		{
 			for (const FString& SelfText : SelfTexts)
 			{
 				Value.ReplaceInline(*SelfText, TEXT("self"), ESearchCase::CaseSensitive);
 			}
-			return Value;
+			return bLoose ? LoosenClasses(Value) : Value;
 		}
 
 		FString PinName(const FName Name) const
@@ -199,7 +232,7 @@ namespace CortexReflectDuplicateGraphPrivate
 		}
 		else if (const UClass* Parent = Reference.GetMemberParentClass())
 		{
-			Owner = Self.Text(Parent->GetPathName());
+			Owner = (Self.bLoose && Parent->ClassGeneratedBy) ? FString(TEXT("bp")) : Self.Text(Parent->GetPathName());
 		}
 		return FString::Printf(TEXT("%s.%s"), *Owner, *Reference.GetMemberName().ToString());
 	}
@@ -490,7 +523,14 @@ namespace CortexReflectDuplicateGraphPrivate
 
 		OutUnit.NodeCount = Count;
 		OutUnit.Hash = HashText(FString::Join(NodeLines, TEXT("\n")) + TEXT("\n") + FString::Join(EdgeLines, TEXT("\n")));
-		OutUnit.Descriptors = MoveTemp(Descriptors);
+		// Similarity compares the loose descriptors; the hash above stays strict.
+		FSelfContext LooseSelf = Self;
+		LooseSelf.bLoose = true;
+		OutUnit.Descriptors.Reset(Count);
+		for (const UEdGraphNode* Node : Nodes)
+		{
+			OutUnit.Descriptors.Add(DescribeNode(Node, LooseSelf));
+		}
 		OutUnit.Descriptors.Sort();
 	}
 
@@ -633,12 +673,17 @@ namespace CortexReflectDuplicateGraphPrivate
 				Unit.BlueprintIndex = BlueprintIndex;
 				Unit.Kind = UnitKind::WidgetTree;
 				Unit.NodeCount = Widgets.Num();
+				TArray<FString> Strict;
 				for (const UWidget* Widget : Widgets)
 				{
-					Unit.Descriptors.Add(FString::Printf(TEXT("%s|%s"), *Widget->GetClass()->GetName(), *Widget->GetName()));
+					const UPanelWidget* Parent = Widget->GetParent();
+					Unit.Descriptors.Add(FString::Printf(TEXT("%s|%s|%s"), *Widget->GetName(),
+						*NativeAncestorName(Widget->GetClass()), Parent ? *Parent->GetName() : TEXT("")));
+					Strict.Add(FString::Printf(TEXT("%s|%s"), *Widget->GetClass()->GetName(), *Widget->GetName()));
 				}
 				Unit.Descriptors.Sort();
-				Unit.Hash = HashText(FString::Join(Unit.Descriptors, TEXT("\n")));
+				Strict.Sort();
+				Unit.Hash = HashText(FString::Join(Strict, TEXT("\n")));
 				OutUnits.Add(MoveTemp(Unit));
 			}
 		}
@@ -755,6 +800,7 @@ namespace CortexReflectDuplicateGraphPrivate
 				Json->SetStringField(TEXT("representative"), BlueprintPaths[Units[Group.Representative].BlueprintIndex]);
 				Json->SetNumberField(TEXT("min_similarity"), Group.MinSimilarity);
 				Json->SetNumberField(TEXT("max_similarity"), Group.MaxSimilarity);
+				Json->SetBoolField(TEXT("loose"), true);
 			}
 			TArray<TSharedPtr<FJsonValue>> Members;
 			for (const int32 Member : Group.Members)
