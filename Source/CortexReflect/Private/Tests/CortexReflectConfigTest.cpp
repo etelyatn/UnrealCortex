@@ -389,3 +389,36 @@ bool FCortexReflectConfigUnreadableTest::RunTest(const FString& Parameters)
 	}
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectConfigQuotedBracketsTest,
+	"Cortex.Reflect.Config.QuotedUnmatchedBrackets",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectConfigQuotedBracketsTest::RunTest(const FString& Parameters)
+{
+	// Inside quotes only the closing quote ends the path: an unmatched closer is part of the folder name.
+	FTempConfigFixture Fixture(
+		TEXT("[/Script/Test.Settings]\n")
+		TEXT("Paren=\"/Game/Folder)Variant/BP_A.BP_A_C\"\n")
+		TEXT("Bracket=\"/Game/Dir]2/BP_B.BP_B_C\"\n")
+		TEXT("Brace=\"/Game/Set}One/BP_C.BP_C_C\"\n")
+		TEXT("Struct=(Map=/Game/Maps/Arena)\n")
+		TEXT("QuotedStruct=(Map=\"/Game/Maps/Arena\")\n"));
+	if (!TestTrue(TEXT("fixture ini written"), Fixture.bWritten))
+	{
+		return false;
+	}
+	const TArray<CortexReflectConfigScan::FConfigReference> Refs = RefsFromFile(Fixture.IniName);
+	if (!TestEqual(TEXT("one reference per line"), Refs.Num(), 5))
+	{
+		return false;
+	}
+	TestEqual(TEXT("quoted unmatched )"), Refs[0].Path, FString(TEXT("/Game/Folder)Variant/BP_A.BP_A_C")));
+	TestEqual(TEXT("quoted unmatched ]"), Refs[1].Path, FString(TEXT("/Game/Dir]2/BP_B.BP_B_C")));
+	TestEqual(TEXT("quoted unmatched }"), Refs[2].Path, FString(TEXT("/Game/Set}One/BP_C.BP_C_C")));
+	TestEqual(TEXT("unquoted struct closer still ends the token"), Refs[3].Path, FString(TEXT("/Game/Maps/Arena")));
+	TestEqual(TEXT("quoted path in a struct ends at the quote"), Refs[4].Path, FString(TEXT("/Game/Maps/Arena")));
+	return true;
+}

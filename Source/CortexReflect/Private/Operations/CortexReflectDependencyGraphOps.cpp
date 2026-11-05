@@ -867,7 +867,26 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 				TSet<FName> ActorPackages;
 				for (const FAssetData& ActorAsset : ActorAssets)
 				{
-					ActorPackages.Add(ActorAsset.PackageName);
+					// Nested maps (/Maps/Arena and /Maps/Arena/Sub) share a folder prefix: the longest owning World wins.
+					const FString ActorPackageName = ActorAsset.PackageName.ToString();
+					FString Owner;
+					for (const FAssetEntry& Other : Entries)
+					{
+						if (Other.Kind != NodeKind::World)
+						{
+							continue;
+						}
+						const FString OtherPackage = Other.Asset->PackageName.ToString();
+						const FString OtherActors = ULevel::GetExternalActorsPath(OtherPackage);
+						if (!OtherActors.IsEmpty() && ActorPackageName.StartsWith(OtherActors + TEXT("/")) && OtherPackage.Len() > Owner.Len())
+						{
+							Owner = OtherPackage;
+						}
+					}
+					if (Owner == Asset.PackageName.ToString())
+					{
+						ActorPackages.Add(ActorAsset.PackageName);
+					}
 				}
 				for (const FName ActorPackage : ActorPackages)
 				{

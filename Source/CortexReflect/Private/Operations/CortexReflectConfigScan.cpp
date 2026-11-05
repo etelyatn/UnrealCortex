@@ -42,9 +42,33 @@ bool IsTokenCharBefore(const TCHAR Ch)
 	return !IsObjectDelimiter(Ch);
 }
 
-/** End (exclusive) of the content path token starting at Start. A closing bracket ends the token unless the token opened it. */
+/** True when Start lies inside a quoted section of Value (an odd number of unescaped quotes of one kind opened before it). */
+bool IsInsideQuotes(const FString& Value, const int32 Start)
+{
+	TCHAR Open = 0;
+	for (int32 Index = 0; Index < Start; ++Index)
+	{
+		const TCHAR Ch = Value[Index];
+		if (Open == 0 && (Ch == TEXT('"') || Ch == TEXT('\'')))
+		{
+			Open = Ch;
+		}
+		else if (Ch == Open)
+		{
+			Open = 0;
+		}
+	}
+	return Open != 0;
+}
+
+/**
+ * End (exclusive) of the content path token starting at Start. Inside a quoted value only the closing quote and the
+ * characters invalid in package names end the package part, so an unmatched ')' ']' '}' belongs to the folder name.
+ * Outside quotes a closing bracket ends the token unless the token opened it (unquoted struct syntax).
+ */
 int32 FindTokenEnd(const FString& Value, const int32 Start)
 {
+	const bool bQuoted = IsInsideQuotes(Value, Start);
 	const int32 Len = Value.Len();
 	bool bInObjectPart = false;
 	TArray<TCHAR, TInlineAllocator<8>> ExpectedClosers;
@@ -56,8 +80,12 @@ int32 FindTokenEnd(const FString& Value, const int32 Start)
 		{
 			break;
 		}
-		if (bInObjectPart)
+		if (bInObjectPart || bQuoted)
 		{
+			if (!bInObjectPart && Ch == TEXT('.'))
+			{
+				bInObjectPart = true;
+			}
 			continue;
 		}
 		if (Ch == TEXT('('))
