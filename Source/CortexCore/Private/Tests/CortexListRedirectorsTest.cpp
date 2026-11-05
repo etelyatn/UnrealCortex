@@ -238,7 +238,6 @@ bool FCortexListRedirectorsTest::RunTest(const FString& Parameters)
 	{
 		TestTrue(TEXT("dangling destination is null"), DanglingEntry->HasTypedField<EJson::Null>(TEXT("destination")));
 	}
-
 	// recursive:false excludes the subfolder redirector.
 	const FCortexCommandResult Flat = RunListRedirectors(Dir, TOptional<bool>(false));
 	if (TestTrue(TEXT("non-recursive listing succeeds"), Flat.bSuccess))
