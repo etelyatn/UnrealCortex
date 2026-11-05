@@ -9,6 +9,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CallParentFunction.h"
 #include "K2Node_Composite.h"
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
@@ -116,6 +117,46 @@ namespace
 	bool LinkExec(UEdGraphNode* From, const FName FromPin, UEdGraphNode* To)
 	{
 		return Link(From, FromPin, To, UEdGraphSchema_K2::PN_Execute);
+	}
+
+	/** Adds an inner-graph boundary tunnel with one exec pin: an entry (outputs only) or an exit (inputs only). */
+	UK2Node_Tunnel* AddBoundaryTunnel(UEdGraph* Graph, const bool bEntry)
+	{
+		UK2Node_Tunnel* Tunnel = NewObject<UK2Node_Tunnel>(Graph);
+		Tunnel->bCanHaveInputs = !bEntry;
+		Tunnel->bCanHaveOutputs = bEntry;
+		Tunnel->CreateNewGuid();
+		Graph->AddNode(Tunnel, false, false);
+		Tunnel->CreatePin(bEntry ? EGPD_Output : EGPD_Input, UEdGraphSchema_K2::PC_Exec,
+			bEntry ? UEdGraphSchema_K2::PN_Then : UEdGraphSchema_K2::PN_Execute);
+		return Tunnel;
+	}
+
+	/** Sum of the row counts of an array field (unreachable / disabled) restricted to rows with the given subgraph ("" = outer rows). */
+	int32 RowCount(const TSharedPtr<FJsonObject>& Data, const TCHAR* ArrayField, const FString& Subgraph)
+	{
+		int32 Count = 0;
+		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+		if (Data.IsValid() && Data->TryGetArrayField(ArrayField, Rows))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Rows)
+			{
+				const TSharedPtr<FJsonObject> Row = Value->AsObject();
+				FString RowSubgraph;
+				Row->TryGetStringField(TEXT("subgraph"), RowSubgraph);
+				if (Row.IsValid() && RowSubgraph == Subgraph)
+				{
+					Count += static_cast<int32>(Row->GetNumberField(TEXT("count")));
+				}
+			}
+		}
+		return Count;
+	}
+
+	int32 TotalField(const TSharedPtr<FJsonObject>& Data, const TCHAR* Field)
+	{
+		const TSharedPtr<FJsonObject>* Totals = nullptr;
+		return (Data.IsValid() && Data->TryGetObjectField(TEXT("totals"), Totals)) ? static_cast<int32>((*Totals)->GetNumberField(Field)) : -1;
 	}
 }
 
@@ -300,21 +341,31 @@ bool FCortexBPGraphMetricsMacroAndCompositeExpandedTest::RunTest(const FString& 
 		return Composite;
 	};
 
+	// Every inner graph is entered through an entry tunnel; only nodes reachable from it count.
 	UK2Node_Composite* Outer = MakeComposite(EventGraph);
 	UEdGraph* Inner1 = MakeInnerGraph(Outer, TEXT("Inner1"));
 	Outer->BoundGraph = Inner1;
-	AddPrintString(Inner1);
-	AddPrintString(Inner1);
+	UK2Node_Tunnel* Entry1 = AddBoundaryTunnel(Inner1, true);
+	UK2Node_CallFunction* PrintOne = AddPrintString(Inner1);
+	UK2Node_CallFunction* PrintTwo = AddPrintString(Inner1);
 
 	// Nested composite with its own one-node graph.
 	UK2Node_Composite* Nested = MakeComposite(Inner1);
 	UEdGraph* Inner2 = MakeInnerGraph(Nested, TEXT("Inner2"));
 	Nested->BoundGraph = Inner2;
-	AddPrintString(Inner2);
+	UK2Node_Tunnel* Entry2 = AddBoundaryTunnel(Inner2, true);
+	UK2Node_CallFunction* PrintNested = AddPrintString(Inner2);
 
 	// Cycle: a composite inside Inner1 that is bound back to Inner1.
 	UK2Node_Composite* Cyclic = MakeComposite(Inner1);
 	Cyclic->BoundGraph = Inner1;
+
+	if (!TestTrue(TEXT("Inner graphs wired"),
+		LinkExec(Entry1, UEdGraphSchema_K2::PN_Then, PrintOne)
+		&& LinkExec(PrintOne, UEdGraphSchema_K2::PN_Then, PrintTwo)
+		&& LinkExec(PrintTwo, UEdGraphSchema_K2::PN_Then, Nested)
+		&& LinkExec(Nested, UEdGraphSchema_K2::PN_Then, Cyclic)
+		&& LinkExec(Entry2, UEdGraphSchema_K2::PN_Then, PrintNested))) { return false; }
 
 	// Standard macro instance: counted as its macro graph's functional nodes.
 	UBlueprint* StandardMacros = LoadObject<UBlueprint>(nullptr, TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros"));
@@ -752,5 +803,300 @@ bool FCortexBPGraphMetricsWidgetSchemaGraphTest::RunTest(const FString& Paramete
 	{
 		TestEqual(TEXT("functional nodes"), static_cast<int32>(Row->GetNumberField(TEXT("functional_nodes"))), 1);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsGhostLinkedParentCallTest,
+	"Cortex.Blueprint.GraphMetrics.GhostEventLinkedToDisabledParentCall",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsGhostLinkedParentCallTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsGhostParentCall"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* Tick = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveTick")) : nullptr;
+	if (!TestNotNull(TEXT("Tick node"), Tick)) { return false; }
+	TestFalse(TEXT("default Tick ghost is disabled by the engine"), Tick->IsNodeEnabled());
+
+	// AddDefaultEventNode links a ghost event's `then` to an auto-placed CallParentFunction when a callable parent exists
+	// and only then marks both nodes as ghosts (linking converts connected ghosts to real nodes, so the order matters).
+	UK2Node_CallParentFunction* ParentCall = NewObject<UK2Node_CallParentFunction>(EventGraph);
+	ParentCall->SetFromFunction(AActor::StaticClass()->FindFunctionByName(TEXT("ReceiveTick")));
+	ParentCall->CreateNewGuid();
+	EventGraph->AddNode(ParentCall, false, false);
+	ParentCall->AllocateDefaultPins();
+	if (!TestTrue(TEXT("Event linked to the parent call"), LinkExec(Tick, UEdGraphSchema_K2::PN_Then, ParentCall))) { return false; }
+	ParentCall->MakeAutomaticallyPlacedGhostNode();
+	Tick->MakeAutomaticallyPlacedGhostNode();
+	TestFalse(TEXT("parent call ghost is disabled"), ParentCall->IsNodeEnabled());
+	TestFalse(TEXT("event ghost is disabled"), Tick->IsNodeEnabled());
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	TestFalse(TEXT("a linked ghost Tick is not has_tick"), Result.Data->GetBoolField(TEXT("has_tick")));
+	const TSharedPtr<FJsonObject> Entry = FindEntry(Result.Data, TEXT("ReceiveTick"));
+	if (TestTrue(TEXT("ReceiveTick entry"), Entry.IsValid()))
+	{
+		TestFalse(TEXT("ReceiveTick is not live"), Entry->GetBoolField(TEXT("live")));
+		TestEqual(TEXT("ReceiveTick functional nodes"), static_cast<int32>(Entry->GetNumberField(TEXT("functional_nodes"))), 0);
+	}
+
+	bool bListedAsGhost = false;
+	const TArray<TSharedPtr<FJsonValue>>* Ghosts = nullptr;
+	if (Result.Data->TryGetArrayField(TEXT("ghost_entries"), Ghosts))
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *Ghosts)
+		{
+			const TSharedPtr<FJsonObject> Ghost = Value->AsObject();
+			bListedAsGhost |= Ghost.IsValid() && Ghost->GetStringField(TEXT("name")) == TEXT("ReceiveTick");
+		}
+	}
+	TestTrue(TEXT("ReceiveTick listed in ghost_entries"), bListedAsGhost);
+	TestEqual(TEXT("no functional nodes in totals"), TotalField(Result.Data, TEXT("functional_nodes")), 0);
+	TestEqual(TEXT("the disabled parent call is not reported unreachable"), RowCount(Result.Data, TEXT("unreachable"), FString()), 0);
+	TestTrue(TEXT("disabled event and parent call are reported as disabled nodes"), TotalField(Result.Data, TEXT("disabled_nodes")) >= 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsDisabledNodeInLiveChainTest,
+	"Cortex.Blueprint.GraphMetrics.DisabledNodeInLiveChain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsDisabledNodeInLiveChainTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsDisabledChain"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay)) { return false; }
+
+	// BeginPlay -> A -> B (user-disabled) -> C, and a disabled pure feeder into A.
+	UK2Node_CallFunction* PrintA = AddPrintString(EventGraph);
+	UK2Node_CallFunction* PrintB = AddPrintString(EventGraph);
+	UK2Node_CallFunction* PrintC = AddPrintString(EventGraph);
+	UK2Node_CallFunction* DisabledFeeder = AddPureNot(EventGraph);
+	UK2Node_CallFunction* LiveFeeder = AddPureNot(EventGraph);
+	if (!TestTrue(TEXT("Graph wired"),
+		LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, PrintA)
+		&& LinkExec(PrintA, UEdGraphSchema_K2::PN_Then, PrintB)
+		&& LinkExec(PrintB, UEdGraphSchema_K2::PN_Then, PrintC)
+		&& Link(LiveFeeder, TEXT("ReturnValue"), PrintA, TEXT("bPrintToScreen"))
+		&& Link(DisabledFeeder, TEXT("ReturnValue"), PrintA, TEXT("bPrintToLog")))) { return false; }
+	PrintB->SetEnabledState(ENodeEnabledState::Disabled);
+	DisabledFeeder->SetEnabledState(ENodeEnabledState::Disabled);
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	const TSharedPtr<FJsonObject> Entry = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
+	if (!TestTrue(TEXT("BeginPlay entry"), Entry.IsValid())) { return false; }
+	TestEqual(TEXT("only A and its enabled feeder count; the disabled node blocks the rest"),
+		static_cast<int32>(Entry->GetNumberField(TEXT("functional_nodes"))), 2);
+	TestEqual(TEXT("totals match"), TotalField(Result.Data, TEXT("functional_nodes")), 2);
+	const auto RowsListNode = [&Result](const UEdGraphNode* Node)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+		if (Result.Data->TryGetArrayField(TEXT("disabled"), Rows))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Rows)
+			{
+				for (const TSharedPtr<FJsonValue>& Id : Value->AsObject()->GetArrayField(TEXT("node_ids")))
+				{
+					if (Id->AsString() == Node->GetName())
+					{
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	};
+	TestTrue(TEXT("the user-disabled node is reported under disabled"), RowsListNode(PrintB));
+	TestTrue(TEXT("the disabled feeder is reported under disabled"), RowsListNode(DisabledFeeder));
+	TestEqual(TEXT("disabled totals equal the disabled rows"), TotalField(Result.Data, TEXT("disabled_nodes")),
+		RowCount(Result.Data, TEXT("disabled"), FString()));
+	TestEqual(TEXT("C is enabled but only reachable through the disabled node, so it is unreachable"),
+		RowCount(Result.Data, TEXT("unreachable"), FString()), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsCompositeInnerReachabilityTest,
+	"Cortex.Blueprint.GraphMetrics.CompositeInnerReachability",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsCompositeInnerReachabilityTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsCompositeInner"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay)) { return false; }
+
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(EventGraph);
+	Composite->CreateNewGuid();
+	EventGraph->AddNode(Composite, false, false);
+	Composite->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Execute);
+	Composite->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Then);
+	UEdGraph* Inner = NewObject<UEdGraph>(Composite, TEXT("CollapsedInner"));
+	Inner->Schema = UEdGraphSchema_K2::StaticClass();
+	Composite->BoundGraph = Inner;
+
+	UK2Node_Tunnel* InnerEntry = AddBoundaryTunnel(Inner, true);
+	UK2Node_CallFunction* Connected = AddPrintString(Inner);
+	AddPrintString(Inner); // disconnected
+	AddPrintString(Inner); // disconnected
+	if (!TestTrue(TEXT("Composite wired"),
+		LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, Composite)
+		&& LinkExec(InnerEntry, UEdGraphSchema_K2::PN_Then, Connected))) { return false; }
+
+	// A macro instance whose macro graph cannot be resolved still counts as one node of the budget.
+	UK2Node_MacroInstance* BrokenMacro = NewObject<UK2Node_MacroInstance>(EventGraph);
+	BrokenMacro->CreateNewGuid();
+	EventGraph->AddNode(BrokenMacro, false, false);
+	BrokenMacro->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Execute);
+	if (!TestTrue(TEXT("Broken macro wired"), LinkExec(Composite, UEdGraphSchema_K2::PN_Then, BrokenMacro))) { return false; }
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	const TSharedPtr<FJsonObject> Entry = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
+	if (!TestTrue(TEXT("BeginPlay entry"), Entry.IsValid())) { return false; }
+	TestEqual(TEXT("one reached inner node + one unresolved macro; disconnected inner nodes do not count"),
+		static_cast<int32>(Entry->GetNumberField(TEXT("functional_nodes"))), 2);
+	TestEqual(TEXT("totals match"), TotalField(Result.Data, TEXT("functional_nodes")), 2);
+	TestEqual(TEXT("disconnected inner nodes are reported unreachable under the subgraph"),
+		RowCount(Result.Data, TEXT("unreachable"), Inner->GetName()), 2);
+	TestEqual(TEXT("nothing unreachable in the outer graph"), RowCount(Result.Data, TEXT("unreachable"), FString()), 0);
+	TestEqual(TEXT("inner orphans are part of the unreachable total"), TotalField(Result.Data, TEXT("unreachable_nodes")), 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsUnwiredSecondResultTest,
+	"Cortex.Blueprint.GraphMetrics.UnwiredSecondResultUnreachable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsUnwiredSecondResultTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsSecondResult"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* Function = FBlueprintEditorUtils::CreateNewGraph(
+		Blueprint, TEXT("TwoReturns"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	if (!TestNotNull(TEXT("Function graph"), Function)) { return false; }
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, Function, true, nullptr);
+	UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(FindFunctionEntry(Function));
+	if (!TestNotNull(TEXT("Function entry"), Entry)) { return false; }
+
+	UK2Node_FunctionResult* WiredResult = FBlueprintEditorUtils::FindOrCreateFunctionResultNode(Entry);
+	if (!TestNotNull(TEXT("Wired result"), WiredResult)) { return false; }
+	FEdGraphPinType BoolType;
+	BoolType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+	if (!TestNotNull(TEXT("Wired result pin"), WiredResult->CreateUserDefinedPin(TEXT("Out"), BoolType, EGPD_Input))) { return false; }
+
+	// A second return node that nothing executes, fed by a pure node.
+	UK2Node_FunctionResult* DeadResult = NewObject<UK2Node_FunctionResult>(Function);
+	DeadResult->FunctionReference = WiredResult->FunctionReference;
+	DeadResult->CreateNewGuid();
+	Function->AddNode(DeadResult, false, false);
+	DeadResult->AllocateDefaultPins();
+	if (!TestNotNull(TEXT("Dead result pin"), DeadResult->CreateUserDefinedPin(TEXT("Out"), BoolType, EGPD_Input))) { return false; }
+	UK2Node_CallFunction* DeadFeeder = AddPureNot(Function);
+	if (!TestTrue(TEXT("Dead feeder wired"), Link(DeadFeeder, TEXT("ReturnValue"), DeadResult, TEXT("Out")))) { return false; }
+	TestTrue(TEXT("Entry exec reaches the first result"), Entry->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output)->LinkedTo.Num() > 0);
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	const TSharedPtr<FJsonObject> Row = FindEntry(Result.Data, TEXT("TwoReturns"));
+	if (!TestTrue(TEXT("Function entry reported"), Row.IsValid())) { return false; }
+	TestEqual(TEXT("the dead result's feeder is not logic"), static_cast<int32>(Row->GetNumberField(TEXT("functional_nodes"))), 0);
+	TestEqual(TEXT("dead result and its feeder are unreachable"), UnreachableCountForGraph(Result.Data, Function->GetName()), 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsThresholdKeysTest,
+	"Cortex.Blueprint.GraphMetrics.ThresholdKeyValidation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsThresholdKeysTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsThresholdKeys"));
+	if (!TestNotNull(TEXT("Blueprint created"), Scope.Blueprint)) { return false; }
+
+	TSharedPtr<FJsonObject> Typo = MakeShared<FJsonObject>();
+	Typo->SetNumberField(TEXT("max_nodes_per_entries"), 5);
+	const FCortexCommandResult Rejected = RunGraphMetrics(Scope.Blueprint, Typo);
+	TestFalse(TEXT("unknown thresholds key rejected"), Rejected.bSuccess);
+	TestEqual(TEXT("unknown key code"), Rejected.ErrorCode, CortexErrorCodes::InvalidField);
+	TestTrue(TEXT("unknown key is named"), Rejected.ErrorMessage.Contains(TEXT("max_nodes_per_entries")));
+
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), Scope.Blueprint->GetPathName());
+	Params->SetField(TEXT("thresholds"), MakeShared<FJsonValueNull>());
+	const FCortexCommandResult NullThresholds = Handler.Execute(TEXT("graph_metrics"), Params);
+	TestTrue(TEXT("thresholds:null is treated as absent"), NullThresholds.bSuccess);
+	if (NullThresholds.bSuccess && NullThresholds.Data.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* Echo = nullptr;
+		if (NullThresholds.Data->TryGetObjectField(TEXT("thresholds"), Echo))
+		{
+			TestEqual(TEXT("defaults apply"), static_cast<int32>((*Echo)->GetNumberField(TEXT("max_nodes_per_entry"))), 10);
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsForeignMacroNoFindingsTest,
+	"Cortex.Blueprint.GraphMetrics.ForeignMacroNoFindings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsForeignMacroNoFindingsTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsForeignMacro"));
+	FGraphMetricsBlueprintScope Other(TEXT("BP_MetricsMacroOwner"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprints created"), Blueprint) || !TestNotNull(TEXT("Owner created"), Other.Blueprint)) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay)) { return false; }
+
+	// A macro graph owned by another Blueprint, with one reached and one disconnected node.
+	UEdGraph* ForeignMacro = NewObject<UEdGraph>(Other.Blueprint, TEXT("ForeignMacroGraph"));
+	ForeignMacro->Schema = UEdGraphSchema_K2::StaticClass();
+	UK2Node_Tunnel* MacroEntry = AddBoundaryTunnel(ForeignMacro, true);
+	UK2Node_CallFunction* Reached = AddPrintString(ForeignMacro);
+	AddPrintString(ForeignMacro);
+	if (!TestTrue(TEXT("Macro wired"), LinkExec(MacroEntry, UEdGraphSchema_K2::PN_Then, Reached))) { return false; }
+
+	UK2Node_MacroInstance* Instance = NewObject<UK2Node_MacroInstance>(EventGraph);
+	Instance->SetMacroGraph(ForeignMacro);
+	Instance->CreateNewGuid();
+	EventGraph->AddNode(Instance, false, false);
+	Instance->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Execute);
+	if (!TestTrue(TEXT("Instance wired"), LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, Instance))) { return false; }
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	TestEqual(TEXT("the foreign macro's reached node is still counted"), TotalField(Result.Data, TEXT("functional_nodes")), 1);
+	TestEqual(TEXT("no findings rows for a macro owned by another asset"), RowCount(Result.Data, TEXT("unreachable"), ForeignMacro->GetName()), 0);
+	TestEqual(TEXT("no unreachable total from it"), TotalField(Result.Data, TEXT("unreachable_nodes")), 0);
 	return true;
 }

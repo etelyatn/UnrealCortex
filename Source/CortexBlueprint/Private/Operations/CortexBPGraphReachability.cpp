@@ -1,5 +1,7 @@
 #include "Operations/CortexBPGraphReachability.h"
 
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
@@ -32,7 +34,7 @@ namespace CortexBPGraphReachability
 
 	bool IsLiveEntry(const UEdGraphNode* Node)
 	{
-		if (!IsEntryNode(Node))
+		if (!IsEntryNode(Node) || !Node->IsNodeEnabled())
 		{
 			return false;
 		}
@@ -52,12 +54,23 @@ namespace CortexBPGraphReachability
 		return false;
 	}
 
-	void GatherExecForward(const TArray<UEdGraphNode*>& Seeds, TSet<UEdGraphNode*>& OutReachable)
+	bool IsAnimationOrStateMachineGraph(const UEdGraph* Graph)
+	{
+		const UEdGraphSchema* Schema = Graph ? Graph->GetSchema() : nullptr;
+		if (!Schema)
+		{
+			return false;
+		}
+		const EGraphType GraphType = Schema->GetGraphType(Graph);
+		return GraphType == GT_Animation || GraphType == GT_StateMachine;
+	}
+
+	void GatherExecForward(const TArray<UEdGraphNode*>& Seeds, TSet<UEdGraphNode*>& OutReachable, const bool bEnabledOnly)
 	{
 		TArray<UEdGraphNode*> Queue;
 		for (UEdGraphNode* Seed : Seeds)
 		{
-			if (Seed)
+			if (Seed && (!bEnabledOnly || Seed->IsNodeEnabled()))
 			{
 				OutReachable.Add(Seed);
 				Queue.Add(Seed);
@@ -78,7 +91,7 @@ namespace CortexBPGraphReachability
 				for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
 				{
 					UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
-					if (LinkedNode && !OutReachable.Contains(LinkedNode))
+					if (LinkedNode && (!bEnabledOnly || LinkedNode->IsNodeEnabled()) && !OutReachable.Contains(LinkedNode))
 					{
 						OutReachable.Add(LinkedNode);
 						Queue.Add(LinkedNode);
@@ -120,7 +133,7 @@ namespace CortexBPGraphReachability
 		}
 	}
 
-	void ExpandBackwardDataClosure(TSet<UEdGraphNode*>& InOutReachable)
+	void ExpandBackwardDataClosure(TSet<UEdGraphNode*>& InOutReachable, const bool bEnabledOnly)
 	{
 		TArray<UEdGraphNode*> Queue = InOutReachable.Array();
 		int32 QueueIndex = 0;
@@ -142,7 +155,7 @@ namespace CortexBPGraphReachability
 				for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
 				{
 					UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
-					if (LinkedNode && !InOutReachable.Contains(LinkedNode))
+					if (LinkedNode && (!bEnabledOnly || LinkedNode->IsNodeEnabled()) && !InOutReachable.Contains(LinkedNode))
 					{
 						InOutReachable.Add(LinkedNode);
 						Queue.Add(LinkedNode);
@@ -150,11 +163,5 @@ namespace CortexBPGraphReachability
 				}
 			}
 		}
-	}
-
-	void GatherReachableFromEntry(UEdGraphNode* Entry, TSet<UEdGraphNode*>& OutReachable)
-	{
-		GatherExecForward({Entry}, OutReachable);
-		ExpandBackwardDataClosure(OutReachable);
 	}
 }

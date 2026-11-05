@@ -42,3 +42,25 @@
 
 - Positive load of a non-`/Game` user-defined struct is untested (no such asset in the sandbox); refusal paths are tested.
 - `graph_metrics` measures K2-derived graphs only (animation and state-machine graphs skipped); macro graphs are counted at instance sites.
+
+## Post-merge hardening
+
+Source: final review of merge `b2b3ea2c` (PR #190) — design `docs/plans/2026-11-04-issue119-migration-analysis-design.md` ("Post-merge hardening" and the amended D2-D5). Engine facts used: `Kismet2.cpp:716-741` (`AddDefaultEventNode` links a ghost event's `then` to an auto-placed `CallParentFunction`, both `MakeAutomaticallyPlacedGhostNode` → `EnabledState` Disabled, `EdGraphNode.cpp:1132`), `EdGraphPin.cpp:1976` (linking through the schema converts connected ghosts to real nodes), `EdGraphNode.h:410` (`IsNodeEnabled`).
+
+| Finding | Change | Test (RED before the fix, GREEN after) |
+|---|---|---|
+| I1 disabled/ghost nodes counted live | `IsLiveEntry` requires `IsNodeEnabled()`; exec BFS and data closure take `bEnabledOnly` (metrics callers only; `delete_orphaned_nodes` unchanged); disabled nodes never functional; `disabled_nodes` + `disabled` rows | `GraphMetrics.GhostEventLinkedToDisabledParentCall`, `GraphMetrics.DisabledNodeInLiveChain`, `Analysis.GhostTickLinkedToDisabledParentCall` |
+| I2 macro/composite counted wholesale | inner graphs seeded from entry tunnels (pure graphs from exit tunnels), same enabled-only closure; orphans in `unreachable` rows with `subgraph` | `GraphMetrics.CompositeInnerReachability`, `GraphMetrics.MacroAndCompositeExpanded` (rewired through entry tunnels) |
+| I3 AnimGraph nodes "supported" | K2 nodes supported unless in a `GT_Animation`/`GT_StateMachine` graph (shared `IsAnimationOrStateMachineGraph`) | `Analysis.AnimGraphNodesStayUnsupported` |
+| 4 extra return node seeds closure | seed only pure functions / sole unwired result | `GraphMetrics.UnwiredSecondResultUnreachable` |
+| 5 unresolved macro counted 0 | counts as one functional node | `GraphMetrics.CompositeInnerReachability` |
+| 6 frontend `"WidgetBlueprint"` literal | `"type":"Widget"` matched; fixtures use real shapes (`CommonActivatableWidget` parent) | `Frontend.Conversion.Widget.FragmentSelection` |
+| 7 `list` empty/null `type` | treated as absent | `List.FilterType` |
+| 9 interface events parent/child | exact declaring interface only | `Analysis.InterfaceEventExactParent` (child interface derived from the parent interface class) |
+| 10 `thresholds` | unknown keys → `INVALID_FIELD`; null → absent | `GraphMetrics.ThresholdKeyValidation` |
+| 11 `node_class` prefix | `U` never stripped from `*` prefixes | `SearchNodes.SubclassMatch` (`U*`, `UK2Node*`) |
+| 12 test hygiene | registry notification (`AssetDeleted` while loaded; folder rescan after file removal), per-run folders removed when empty, residue asserted | `Analysis.WidgetEntitiesAfterReload`, `Analysis.WidgetDependencies` |
+| 14 docstring | standalone `graph_search_nodes` no longer promises paging | `pytest` (no docstring assertions) |
+| 8 locals `default_value` | documented only (no code change) | — |
+
+RED evidence: with production files reverted to `b2b3ea2c` and the new tests in place, `GraphMetrics` failed 5/16 (CompositeInnerReachability, DisabledNodeInLiveChain, GhostEventLinkedToDisabledParentCall, ThresholdKeyValidation, UnwiredSecondResultUnreachable), `Analysis` 2/29 (AnimGraphNodesStayUnsupported, GhostTickLinkedToDisabledParentCall), `List` 1/5 (FilterType), `Graph.SearchNodes` 1/5 (SubclassMatch), `Frontend.Conversion.Widget` 1/9 (FragmentSelection), and a stale build with the pre-fix `AnalysisOps` failed `Analysis.InterfaceEventExactParent`. GREEN after restoring the production files: `Cortex.Blueprint+` 307/307, `Cortex.Graph+` 328/328, `Cortex.Frontend.Conversion+` 52/52 (`Cortex.Data` untouched); Python non-e2e 1119 passed. Not re-run: live Ripper acceptance (review item 13) — the live checks of `referenced_by_widgets` on the merged head remain open.

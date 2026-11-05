@@ -798,26 +798,21 @@ FCortexCommandResult FCortexGraphNodeOps::GetNode(const TSharedPtr<FJsonObject>&
 
 namespace
 {
-	// Matches a node class filter against a node's class chain. A trailing '*' is a
-	// case-insensitive prefix match on the runtime class name; otherwise the filter
-	// names the node's class or any superclass. A leading 'U' on the filter is optional.
+	// Matches a node class filter against a node's class chain. A trailing '*' is a case-insensitive prefix match on
+	// the runtime class name, used verbatim (runtime names carry no C++ prefix, but a prefix may legitimately begin
+	// with 'U'); otherwise the filter names the node's class or any superclass, where a leading 'U' is optional.
 	bool NodeClassMatches(const UClass* NodeClassPtr, const FString& Filter)
 	{
-		const bool bPrefix = Filter.EndsWith(TEXT("*"));
-		const FString Pattern = bPrefix ? Filter.LeftChop(1) : Filter;
-		const FString PatternNoPrefix = Pattern.StartsWith(TEXT("U")) ? Pattern.Mid(1) : Pattern;
-
-		if (bPrefix)
+		if (Filter.EndsWith(TEXT("*")))
 		{
-			const FString RuntimeName = NodeClassPtr->GetName();
-			return RuntimeName.StartsWith(Pattern, ESearchCase::IgnoreCase)
-				|| RuntimeName.StartsWith(PatternNoPrefix, ESearchCase::IgnoreCase);
+			return NodeClassPtr->GetName().StartsWith(Filter.LeftChop(1), ESearchCase::IgnoreCase);
 		}
 
+		const FString PatternNoPrefix = Filter.StartsWith(TEXT("U")) ? Filter.Mid(1) : Filter;
 		for (const UClass* Class = NodeClassPtr; Class != nullptr; Class = Class->GetSuperClass())
 		{
 			const FString ClassName = Class->GetName();
-			if (ClassName.Equals(Pattern, ESearchCase::IgnoreCase)
+			if (ClassName.Equals(Filter, ESearchCase::IgnoreCase)
 				|| ClassName.Equals(PatternNoPrefix, ESearchCase::IgnoreCase))
 			{
 				return true;

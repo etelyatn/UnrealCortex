@@ -13,6 +13,8 @@
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
 #include "HAL/FileManager.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/Guid.h"
 #include "Editor.h"
@@ -33,17 +35,18 @@ bool FCortexBPAnalysisWidgetEntitiesAfterReloadTest::RunTest(const FString& Para
 	FCortexBPCommandHandler Handler;
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString BlueprintName = FString::Printf(TEXT("WBP_Reload_%s"), *Suffix);
-	const FString TestPath = TEXT("/Game/Temp/Cortex119");
+	const FString TestPath = FString::Printf(TEXT("/Game/Temp/Cortex119/Reload_%s"), *Suffix);
 	const FString PackageName = FString::Printf(TEXT("%s/%s"), *TestPath, *BlueprintName);
 	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *PackageName, *BlueprintName);
 
-	auto Cleanup = [&PackageName, &ObjectPath]()
+	auto Cleanup = [&PackageName, &ObjectPath, &TestPath]()
 	{
 		if (UPackage* Pkg = FindPackage(nullptr, *PackageName))
 		{
 			ResetLoaders(Pkg);
 			if (UObject* Asset = FindObject<UObject>(nullptr, *ObjectPath))
 			{
+				FAssetRegistryModule::AssetDeleted(Asset);
 				Asset->ClearFlags(RF_Public | RF_Standalone);
 				Asset->MarkAsGarbage();
 			}
@@ -58,6 +61,12 @@ bool FCortexBPAnalysisWidgetEntitiesAfterReloadTest::RunTest(const FString& Para
 		{
 			IFileManager::Get().Delete(*PackageFilename);
 		}
+
+		// The cold-load step re-registered the asset from its file; with the file gone, rescan the folder so the registry
+		// forgets it, then remove the folder if (and only if) it is empty.
+		const FString Folder = FPackageName::LongPackageNameToFilename(TestPath + TEXT("/"));
+		IAssetRegistry::GetChecked().ScanPathsSynchronous({TestPath}, true);
+		IFileManager::Get().DeleteDirectory(*Folder, false, false);
 	};
 
 	{
@@ -236,5 +245,9 @@ bool FCortexBPAnalysisWidgetEntitiesAfterReloadTest::RunTest(const FString& Para
 	}
 
 	Cleanup();
+	TestFalse(TEXT("cleanup leaves no Asset Registry entry behind"),
+		IAssetRegistry::GetChecked().GetAssetByObjectPath(FSoftObjectPath(ObjectPath)).IsValid());
+	TestFalse(TEXT("cleanup removes the empty test folder"),
+		IFileManager::Get().DirectoryExists(*FPackageName::LongPackageNameToFilename(TestPath + TEXT("/"))));
 	return true;
 }
