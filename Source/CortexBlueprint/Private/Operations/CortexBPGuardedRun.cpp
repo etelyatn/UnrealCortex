@@ -3,22 +3,31 @@
 #include "CortexAssetMutationGuard.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
+#include "CortexGraphFingerprint.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
 #include "Editor.h"
 #include "Editor/Transactor.h"
 #include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/Engine.h"
+#include "Engine/InheritableComponentHandler.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPCompileSupport.h"
 #include "Operations/CortexBPMigrationGuard.h"
 #include "Operations/CortexBPSnapshotOps.h"
 #include "ScopedTransaction.h"
 #include "UObject/Package.h"
+#include "UObject/StrongObjectPtr.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 namespace
 {
 	TFunction<void(UBlueprint*)> GPostRestoreHookForTest;
+	bool GSkipUndoForTest = false;
 }
 #endif
 
@@ -72,6 +81,246 @@ namespace
 	bool FingerprintsEqual(const TSharedPtr<FJsonObject>& A, const TSharedPtr<FJsonObject>& B)
 	{
 		return A.IsValid() && B.IsValid() && FJsonValue::CompareEqual(*MakeShared<FJsonValueObject>(A), *MakeShared<FJsonValueObject>(B));
+	}
+
+	FString GraphAuthoringHash(UBlueprint* Blueprint)
+	{
+		const TSharedPtr<FJsonObject> Fingerprint = FCortexGraphFingerprint::Compute(Blueprint);
+		return Fingerprint.IsValid() ? Fingerprint->GetStringField(TEXT("graph_authoring_hash")) : FString();
+	}
+
+	/**
+	 * Generic recovery journal: parent, NewVariables, interfaces, a DuplicateObject copy of every top-level graph (composite
+	 * and nested graphs are subobjects, so they are copied with it) and the SCS / inheritable-component template properties.
+	 */
+	struct FJournal
+	{
+		UClass* Parent = nullptr;
+		TArray<FBPVariableDescription> NewVariables;
+		TArray<FBPInterfaceDescription> Interfaces;
+		TStrongObjectPtr<UBlueprint> Holder;
+
+		struct FGraphCopy
+		{
+			int32 Category = 0;
+			TStrongObjectPtr<UEdGraph> Copy;
+		};
+		TArray<FGraphCopy> Graphs;
+
+		struct FScsState
+		{
+			FName Variable;
+			FName ParentVariable;
+			FName AttachTo;
+			FName OwnerClassName;
+			bool bParentNative = false;
+		};
+		TArray<FScsState> ScsStates;
+
+		struct FTemplateCopy
+		{
+			FName Name;
+			bool bInheritable = false;
+			TStrongObjectPtr<UActorComponent> Copy;
+		};
+		TArray<FTemplateCopy> Templates;
+
+		FString GraphHash;
+		FString GeneratedDigest;
+		FString ExtraDigest;
+	};
+
+	TArray<TObjectPtr<UEdGraph>>* GraphArray(UBlueprint* Blueprint, int32 Category)
+	{
+		switch (Category)
+		{
+		case 0: return &Blueprint->UbergraphPages;
+		case 1: return &Blueprint->FunctionGraphs;
+		case 2: return &Blueprint->MacroGraphs;
+		default: return &Blueprint->DelegateSignatureGraphs;
+		}
+	}
+
+	UInheritableComponentHandler* InheritableHandler(UBlueprint* Blueprint)
+	{
+		UBlueprintGeneratedClass* Class = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+		return Class ? Class->GetInheritableComponentHandler(false) : nullptr;
+	}
+
+	bool CaptureJournal(UBlueprint* Blueprint, const FCortexBPGuardedRun::FSpec& Spec, FJournal& Journal)
+	{
+		Journal.Parent = Blueprint->ParentClass;
+		Journal.NewVariables = Blueprint->NewVariables;
+		Journal.Interfaces = Blueprint->ImplementedInterfaces;
+		Journal.Holder = TStrongObjectPtr<UBlueprint>(NewObject<UBlueprint>(GetTransientPackage()));
+		if (!Journal.Holder.IsValid())
+		{
+			return false;
+		}
+
+		for (int32 Category = 0; Category < 4; ++Category)
+		{
+			for (UEdGraph* Graph : *GraphArray(Blueprint, Category))
+			{
+				if (Graph == nullptr)
+				{
+					continue;
+				}
+				UEdGraph* Copy = DuplicateObject<UEdGraph>(Graph, Journal.Holder.Get(), Graph->GetFName());
+				if (Copy == nullptr)
+				{
+					return false;
+				}
+				FJournal::FGraphCopy& Saved = Journal.Graphs.AddDefaulted_GetRef();
+				Saved.Category = Category;
+				Saved.Copy = TStrongObjectPtr<UEdGraph>(Copy);
+			}
+		}
+
+		if (Blueprint->SimpleConstructionScript != nullptr)
+		{
+			for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+			{
+				if (Node == nullptr)
+				{
+					continue;
+				}
+				FJournal::FScsState& State = Journal.ScsStates.AddDefaulted_GetRef();
+				State.Variable = Node->GetVariableName();
+				State.ParentVariable = Node->ParentComponentOrVariableName;
+				State.AttachTo = Node->AttachToName;
+				State.OwnerClassName = Node->ParentComponentOwnerClassName;
+				State.bParentNative = Node->bIsParentComponentNative;
+				if (Node->ComponentTemplate != nullptr)
+				{
+					UActorComponent* Copy = DuplicateObject<UActorComponent>(Node->ComponentTemplate, GetTransientPackage());
+					if (Copy == nullptr)
+					{
+						return false;
+					}
+					FJournal::FTemplateCopy& Saved = Journal.Templates.AddDefaulted_GetRef();
+					Saved.Name = Node->GetVariableName();
+					Saved.Copy = TStrongObjectPtr<UActorComponent>(Copy);
+				}
+			}
+		}
+		if (UInheritableComponentHandler* Handler = InheritableHandler(Blueprint))
+		{
+			TArray<UActorComponent*> Overrides;
+			Handler->GetAllTemplates(Overrides);
+			for (UActorComponent* Template : Overrides)
+			{
+				if (Template == nullptr)
+				{
+					continue;
+				}
+				UActorComponent* Copy = DuplicateObject<UActorComponent>(Template, GetTransientPackage());
+				if (Copy == nullptr)
+				{
+					return false;
+				}
+				FJournal::FTemplateCopy& Saved = Journal.Templates.AddDefaulted_GetRef();
+				Saved.Name = Template->GetFName();
+				Saved.bInheritable = true;
+				Saved.Copy = TStrongObjectPtr<UActorComponent>(Copy);
+			}
+		}
+
+		Journal.GraphHash = GraphAuthoringHash(Blueprint);
+		Journal.GeneratedDigest = FCortexGraphFingerprint::ComputeGeneratedStateDigest(Blueprint);
+		Journal.ExtraDigest = Spec.DigestExtra ? Spec.DigestExtra(Blueprint) : FString();
+		return true;
+	}
+
+	/** Reconciles the Blueprint with the journal; idempotent after an undo that already restored everything. */
+	bool RestoreFromJournal(UBlueprint* Blueprint, FJournal& Journal)
+	{
+		bool bOk = true;
+		Blueprint->ParentClass = Journal.Parent;
+		Blueprint->NewVariables = Journal.NewVariables;
+		Blueprint->ImplementedInterfaces = Journal.Interfaces;
+
+		if (GraphAuthoringHash(Blueprint) != Journal.GraphHash)
+		{
+			for (int32 Category = 0; Category < 4; ++Category)
+			{
+				TArray<TObjectPtr<UEdGraph>>& Array = *GraphArray(Blueprint, Category);
+				TArray<UEdGraph*> Replaced;
+				for (UEdGraph* Graph : Array)
+				{
+					if (Graph != nullptr)
+					{
+						Replaced.Add(Graph);
+						Graph->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+					}
+				}
+				Array.Reset();
+				for (const FJournal::FGraphCopy& Saved : Journal.Graphs)
+				{
+					if (Saved.Category != Category)
+					{
+						continue;
+					}
+					UEdGraph* Fresh = DuplicateObject<UEdGraph>(Saved.Copy.Get(), Blueprint, Saved.Copy->GetFName());
+					if (Fresh == nullptr)
+					{
+						bOk = false;
+						continue;
+					}
+					Array.Add(Fresh);
+				}
+				for (UEdGraph* Old : Replaced)
+				{
+					Old->MarkAsGarbage();
+				}
+			}
+		}
+
+		if (Blueprint->SimpleConstructionScript != nullptr)
+		{
+			for (const FJournal::FScsState& State : Journal.ScsStates)
+			{
+				USCS_Node* Node = Blueprint->SimpleConstructionScript->FindSCSNode(State.Variable);
+				if (Node == nullptr)
+				{
+					bOk = false; // a structural SCS change is only recoverable through the undo
+					continue;
+				}
+				Node->ParentComponentOrVariableName = State.ParentVariable;
+				Node->AttachToName = State.AttachTo;
+				Node->ParentComponentOwnerClassName = State.OwnerClassName;
+				Node->bIsParentComponentNative = State.bParentNative;
+			}
+		}
+		for (const FJournal::FTemplateCopy& Saved : Journal.Templates)
+		{
+			UActorComponent* Current = nullptr;
+			if (!Saved.bInheritable)
+			{
+				USCS_Node* Node = Blueprint->SimpleConstructionScript ? Blueprint->SimpleConstructionScript->FindSCSNode(Saved.Name) : nullptr;
+				Current = Node ? Node->ComponentTemplate : nullptr;
+			}
+			else if (UInheritableComponentHandler* Handler = InheritableHandler(Blueprint))
+			{
+				TArray<UActorComponent*> Overrides;
+				Handler->GetAllTemplates(Overrides);
+				for (UActorComponent* Candidate : Overrides)
+				{
+					if (Candidate != nullptr && Candidate->GetFName() == Saved.Name)
+					{
+						Current = Candidate;
+						break;
+					}
+				}
+			}
+			if (Current == nullptr)
+			{
+				bOk = false;
+				continue;
+			}
+			UEngine::CopyPropertiesForUnrelatedObjects(Saved.Copy.Get(), Current);
+		}
+		return bOk;
 	}
 }
 
@@ -139,6 +388,13 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 			FString::Printf(TEXT("%s: could not record the pre-call snapshot: %s"), *Spec.OpName, *SnapshotError));
 	}
 
+	FJournal Journal;
+	if (!CaptureJournal(Blueprint, Spec, Journal))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("%s: could not record the recovery journal"), *Spec.OpName));
+	}
+
 	const int32 QueueBefore = TransactionQueueLength();
 	TUniquePtr<FScopedTransaction> Transaction = MakeUnique<FScopedTransaction>(
 		FText::FromString(FString::Printf(TEXT("Cortex: %s"), *Spec.OpName)));
@@ -147,7 +403,13 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 	FString FailurePhase;
 	FString FailureMessage;
 	FString FailureCode;
-	if (!Spec.Apply(Blueprint, FailureMessage))
+	if (Spec.Capture && !Spec.Capture(Blueprint, FailureMessage))
+	{
+		FailurePhase = TEXT("capture");
+		FailureCode = CortexErrorCodes::InvalidOperation;
+		State.ApplyStatus = TEXT("failed");
+	}
+	else if (!Spec.Apply(Blueprint, FailureMessage))
 	{
 		FailurePhase = TEXT("apply");
 		FailureCode = CortexErrorCodes::InvalidOperation;
@@ -185,23 +447,33 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 
 	if (!FailurePhase.IsEmpty())
 	{
-		// End the guarded transaction (it is recorded, not cancelled: Cancel restores nothing), then restore.
+		const bool bParentChanged = Blueprint->ParentClass != Journal.Parent;
+
+		// End the guarded transaction (recorded, not cancelled: Cancel restores nothing), then restore.
 		Transaction.Reset();
+		bool bUndone = true;
+		bool bSkipUndo = false;
+#if WITH_DEV_AUTOMATION_TESTS
+		bSkipUndo = GSkipUndoForTest;
+#endif
+		if (!bSkipUndo && TransactionQueueLength() > QueueBefore)
+		{
+			bUndone = GEditor != nullptr && GEditor->UndoTransaction(/*bCanRedo=*/false);
+		}
+		const bool bJournalRestored = RestoreFromJournal(Blueprint, Journal);
 		FString RestoreError;
-		bool bRestored = true;
-		if (Spec.Restore)
-		{
-			bRestored = Spec.Restore(Blueprint, RestoreError);
-		}
-		else if (TransactionQueueLength() > QueueBefore)
-		{
-			bRestored = GEditor != nullptr && GEditor->UndoTransaction(/*bCanRedo=*/false);
-		}
+		const bool bOwnRestored = !Spec.Restore || Spec.Restore(Blueprint, RestoreError);
+		const bool bRestored = bJournalRestored && bOwnRestored && (bUndone || bSkipUndo);
 
 		FCortexBPCompileOutcome Recovery;
-		if (bRestored && Spec.bCompile)
+		if (Spec.bCompile)
 		{
-			FCortexBPCompileSupport::Compile(Blueprint, EBlueprintCompileOptions::None, Recovery);
+			// Exactly one recovery compile; it reuses the failed compile's options when the parent changed in the run so
+			// restored inherited CDO values are not overwritten by the new parent's constructor defaults.
+			const EBlueprintCompileOptions RecoveryOptions = bParentChanged
+				? State.Compile.EffectiveOptions
+				: EBlueprintCompileOptions::None;
+			FCortexBPCompileSupport::Compile(Blueprint, RecoveryOptions, Recovery);
 		}
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -223,7 +495,11 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 		}
 		const TSharedPtr<FJsonObject> FingerprintRestored = FCortexBPMigrationGuard::ComputeFingerprint(Blueprint);
 		const bool bFingerprintEqual = FingerprintsEqual(FingerprintRestored, State.FingerprintBefore);
-		const bool bVerified = bRestored && bSnapshotsEqual && bFingerprintEqual;
+		const bool bGraphEqual = GraphAuthoringHash(Blueprint) == Journal.GraphHash;
+		const bool bGeneratedEqual = !Spec.bCompile
+			|| FCortexGraphFingerprint::ComputeGeneratedStateDigest(Blueprint) == Journal.GeneratedDigest;
+		const bool bExtraEqual = !Spec.DigestExtra || Spec.DigestExtra(Blueprint) == Journal.ExtraDigest;
+		const bool bVerified = bRestored && bSnapshotsEqual && bFingerprintEqual && bGraphEqual && bGeneratedEqual && bExtraEqual;
 
 		if (bVerified)
 		{
@@ -252,6 +528,9 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 		Details->SetBoolField(TEXT("rollback_content_restored"), bRestored);
 		Details->SetBoolField(TEXT("rollback_snapshot_matches"), bSnapshotsEqual);
 		Details->SetBoolField(TEXT("rollback_fingerprint_matches"), bFingerprintEqual);
+		Details->SetBoolField(TEXT("rollback_graphs_match"), bGraphEqual);
+		Details->SetBoolField(TEXT("rollback_generated_state_matches"), bGeneratedEqual);
+		Details->SetBoolField(TEXT("rollback_extra_digest_matches"), bExtraEqual);
 		if (!RestoreError.IsEmpty())
 		{
 			Details->SetStringField(TEXT("rollback_error"), RestoreError);
@@ -274,10 +553,9 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 		State.bDirtyAfter = Package->IsDirty();
 		if (!SaveResult.bSuccess)
 		{
-			FCortexCommandResult SaveError = FCortexCommandRouter::Error(
+			return FCortexCommandRouter::Error(
 				SaveResult.ErrorCode.IsEmpty() ? CortexErrorCodes::SaveFailed : SaveResult.ErrorCode,
 				SaveResult.ErrorMessage, ToOutcomeJson(State));
-			return SaveError;
 		}
 	}
 
@@ -295,5 +573,10 @@ void FCortexBPGuardedRun::SetPostRestoreHookForTest(TFunction<void(UBlueprint*)>
 void FCortexBPGuardedRun::ClearPostRestoreHookForTest()
 {
 	GPostRestoreHookForTest = nullptr;
+}
+
+void FCortexBPGuardedRun::SetSkipUndoForTest(bool bSkip)
+{
+	GSkipUndoForTest = bSkip;
 }
 #endif

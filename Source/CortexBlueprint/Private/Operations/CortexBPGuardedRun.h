@@ -11,10 +11,13 @@ struct FCortexCommandResult;
  * Shared skeleton for guarded Blueprint migration commands.
  *
  * Sequence: refuse blocked assets, check expected_fingerprint, snapshot, then (unless dry_run) one transaction,
- * Apply, at most one compile, Verify (readback). Any failure restores the Blueprint from the recorded state
- * (Restore, or by default an explicit undo of the guarded transaction), runs exactly one recovery compile when a compile
- * was requested, and verifies the restoration (snapshot equal to the pre-call snapshot and equal migration
- * fingerprint). An unverifiable recovery blocks the asset through FCortexAssetMutationGuard.
+ * journal, Capture, Apply, at most one compile, Verify (readback). Any failure restores the Blueprint: an explicit undo of
+ * the guarded transaction, then a reconcile from the generic journal (parent, NewVariables, interfaces, a DuplicateObject
+ * copy of every graph and the SCS/ICH template properties), then the caller's Restore for operation-owned state, then
+ * exactly one recovery compile (same options as the failed compile when the parent changed in the run).
+ * "restored" is reported only when the #124 snapshot, the migration fingerprint (graph_authoring_hash included), the
+ * generated-state digest (when compiling) and the caller's DigestExtra all equal the pre-call values; otherwise the asset
+ * is blocked through FCortexAssetMutationGuard.
  *
  * FScopedTransaction::Cancel() only discards the undo record; it restores nothing, so it is never the recovery.
  *
@@ -39,14 +42,20 @@ public:
 		/** Snapshot sections compared to prove a restoration; empty selects every section. */
 		TSet<FString> SnapshotSections;
 
+		/** Optional: records operation-owned state (binding paths, local variables, bound-event names, instance values) before Apply. */
+		TFunction<bool(UBlueprint* Blueprint, FString& OutError)> Capture;
+
 		/** Mutates the Blueprint. Returns false with OutError to fail the run. Not called on dry_run. */
 		TFunction<bool(UBlueprint* Blueprint, FString& OutError)> Apply;
 
 		/** Reads the result back; bCompiled tells whether the compiled state may be inspected. Not called on dry_run. */
 		TFunction<bool(UBlueprint* Blueprint, bool bCompiled, FString& OutError)> Verify;
 
-		/** Optional recovery that puts the Blueprint back; default is an explicit undo of the guarded transaction. */
+		/** Optional: puts the state recorded by Capture back; runs after the generic restore, before the recovery compile. */
 		TFunction<bool(UBlueprint* Blueprint, FString& OutError)> Restore;
+
+		/** Optional: digest of operation-owned state, compared before the run and after a restoration. */
+		TFunction<FString(UBlueprint* Blueprint)> DigestExtra;
 	};
 
 	static FCortexCommandResult Execute(const FSpec& Spec);
@@ -55,5 +64,8 @@ public:
 	/** Test hook run after the restoration and before it is verified (fault injection). */
 	static void SetPostRestoreHookForTest(TFunction<void(UBlueprint*)> Hook);
 	static void ClearPostRestoreHookForTest();
+
+	/** Test hook: skip the editor undo so the generic journal alone has to restore. */
+	static void SetSkipUndoForTest(bool bSkip);
 #endif
 };

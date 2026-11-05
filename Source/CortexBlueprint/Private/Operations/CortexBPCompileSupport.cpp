@@ -151,6 +151,16 @@ void FCortexBPCompileSupport::Compile(UBlueprint* Blueprint, EBlueprintCompileOp
 		return;
 	}
 
+	// A pending reparent (the generated class still derives from the old parent): compile with the editor's delta
+	// flags so a native-parent default that differs from the old CDO wins and restored inherited values survive.
+	if (Blueprint->GeneratedClass != nullptr && Blueprint->ParentClass != nullptr
+		&& Blueprint->GeneratedClass->GetSuperClass() != Blueprint->ParentClass)
+	{
+		Options |= EBlueprintCompileOptions::UseDeltaSerializationDuringReinstancing
+			| EBlueprintCompileOptions::SkipNewVariableDefaultsDetection;
+	}
+	OutOutcome.EffectiveOptions = Options;
+
 #if WITH_DEV_AUTOMATION_TESTS
 	if (GCompileObserverForTest)
 	{

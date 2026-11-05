@@ -15,6 +15,8 @@ class ACortexBPAdoptParent : public AActor
 	GENERATED_BODY()
 
 public:
+	ACortexBPAdoptParent();
+
 	/** Same name/type as the Blueprint variable; SaveGame kept. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame)
 	bool bPowerOn = false;

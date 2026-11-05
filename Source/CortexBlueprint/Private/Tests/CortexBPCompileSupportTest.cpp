@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 
 #include "CortexAdoptTestHelpers.h"
+#include "CortexBPAdoptTestTypes.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -172,6 +173,32 @@ bool FCortexBPCompileSupportTest::RunTest(const FString& Parameters)
 		AddInfo(TEXT("Warning path skipped: no deprecated callable produced a compile warning in this runtime"));
 	}
 
+	// A pending reparent compiles with the delta flags for every caller, so the native parent's default wins (C4).
+	UBlueprint* Pending = MakeBlueprint(TEXT("BP_CompileSupportPending"), AActor::StaticClass());
+	if (TestNotNull(TEXT("Pending Blueprint"), Pending))
+	{
+		const float OldDefault = CastChecked<AActor>(Pending->GeneratedClass->GetDefaultObject())->InitialLifeSpan;
+		TestNotEqual(TEXT("Native parent default differs from the old CDO"), OldDefault, ACortexBPAdoptParent::StaticClass()->GetDefaultObject<AActor>()->InitialLifeSpan);
+		Pending->ParentClass = ACortexBPAdoptParent::StaticClass(); // pending: the generated class still derives from AActor
+
+		TArray<EBlueprintCompileOptions> Seen;
+		FCortexBPCompileSupport::SetCompileObserverForTest([&Seen](UBlueprint*, EBlueprintCompileOptions Options) { Seen.Add(Options); });
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), Pending->GetPathName());
+		const FCortexCommandResult Command = FCortexBPAssetOps::Compile(Params);
+		FCortexBPCompileSupport::ClearCompileObserverForTest();
+		TestTrue(TEXT("compile command succeeds"), Command.bSuccess);
+		if (TestEqual(TEXT("One compile"), Seen.Num(), 1))
+		{
+			TestTrue(TEXT("Delta serialization flag added"), EnumHasAllFlags(Seen[0], EBlueprintCompileOptions::UseDeltaSerializationDuringReinstancing));
+			TestTrue(TEXT("Defaults-detection skip flag added"), EnumHasAllFlags(Seen[0], EBlueprintCompileOptions::SkipNewVariableDefaultsDetection));
+		}
+		TestTrue(TEXT("Generated class now derives from the new parent"), Pending->GeneratedClass->GetSuperClass() == ACortexBPAdoptParent::StaticClass());
+		TestEqual(TEXT("Native parent default wins in the CDO"),
+			CastChecked<AActor>(Pending->GeneratedClass->GetDefaultObject())->InitialLifeSpan,
+			ACortexBPAdoptParent::StaticClass()->GetDefaultObject<AActor>()->InitialLifeSpan);
+	}
+
 	// Delta options are forwarded to the engine call untouched.
 	UBlueprint* Delta = MakeBlueprint(TEXT("BP_CompileSupportDelta"), AActor::StaticClass());
 	if (TestNotNull(TEXT("Delta Blueprint"), Delta))
@@ -191,7 +218,7 @@ bool FCortexBPCompileSupportTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Delta compile is clean"), Outcome.Status, FString(TEXT("success")));
 	}
 
-	for (UBlueprint* Blueprint : { Clean, Broken, Warn, Delta })
+	for (UBlueprint* Blueprint : { Clean, Broken, Warn, Delta, Pending })
 	{
 		Discard(Blueprint);
 	}

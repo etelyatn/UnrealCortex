@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 
 #include "CortexAdoptTestHelpers.h"
+#include "CortexBPAdoptTestTypes.h"
 #include "CortexAssetMutationGuard.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
@@ -301,6 +302,72 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Nodes restored"), Blueprint->UbergraphPages[0]->Nodes.Num(), NodesBefore);
 		TestEqual(TEXT("One apply compile plus one recovery compile"), Compiles.Count, 2);
 		TestTrue(TEXT("Snapshot restored"), SnapshotsEqual(Before, Snapshot(Blueprint)));
+	}
+
+	// 9. The generic journal alone restores graphs, variables and the parent when the undo is skipped (C3).
+	if (UBlueprint* Blueprint = Make(TEXT("BP_GuardedJournal")))
+	{
+		struct FSkipUndoScope
+		{
+			FSkipUndoScope() { FCortexBPGuardedRun::SetSkipUndoForTest(true); }
+			~FSkipUndoScope() { FCortexBPGuardedRun::SetSkipUndoForTest(false); }
+		};
+		const FSkipUndoScope SkipUndo;
+		UClass* OriginalParent = Blueprint->ParentClass;
+		const TSharedPtr<FJsonObject> Before = Snapshot(Blueprint);
+		const int32 NodesBefore = Blueprint->UbergraphPages[0]->Nodes.Num();
+		FCompileCounter Compiles;
+		FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("JournalVar"));
+		Spec.Apply = [](UBlueprint* Target, FString&)
+		{
+			FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("JournalVar"), BoolPin());
+			UEdGraph* EventGraph = Target->UbergraphPages[0];
+			UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(EventGraph);
+			Event->CreateNewGuid();
+			Event->CustomFunctionName = FName("JournalEvent");
+			EventGraph->AddNode(Event, false, false);
+			Event->AllocateDefaultPins();
+			Target->ParentClass = ACortexBPAdoptOtherActorParent::StaticClass();
+			return true;
+		};
+		Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced readback mismatch"); return false; };
+		const FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
+		TestFalse(TEXT("Run fails"), Result.bSuccess);
+		TestEqual(TEXT("Journal restored without the undo"), StringField(Result.ErrorDetails, TEXT("rollback_status")), FString(TEXT("restored")));
+		TestTrue(TEXT("Parent restored"), Blueprint->ParentClass == OriginalParent);
+		TestEqual(TEXT("Variables restored"), Blueprint->NewVariables.Num(), 1);
+		TestEqual(TEXT("Graph nodes restored"), Blueprint->UbergraphPages[0]->Nodes.Num(), NodesBefore);
+		TestTrue(TEXT("Snapshot restored"), SnapshotsEqual(Before, Snapshot(Blueprint)));
+		TestEqual(TEXT("One apply compile plus one recovery compile"), Compiles.Count, 2);
+	}
+
+	// 10. Operation-owned state: Capture/Restore/DigestExtra; a missing Restore is detected and blocks.
+	for (const bool bProvideRestore : {true, false})
+	{
+		if (UBlueprint* Blueprint = Make(bProvideRestore ? TEXT("BP_GuardedOwnedOk") : TEXT("BP_GuardedOwnedLost")))
+		{
+			int32 External = 1;
+			int32 Captured = 0;
+			FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("Owned"));
+			Spec.Capture = [&External, &Captured](UBlueprint*, FString&) { Captured = External; return true; };
+			Spec.Apply = [&External](UBlueprint* Target, FString&)
+			{
+				External = 2;
+				return FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("Owned"), BoolPin());
+			};
+			Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
+			Spec.DigestExtra = [&External](UBlueprint*) { return FString::FromInt(External); };
+			if (bProvideRestore)
+			{
+				Spec.Restore = [&External, &Captured](UBlueprint*, FString&) { External = Captured; return true; };
+			}
+			const FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
+			TestFalse(TEXT("Run fails"), Result.bSuccess);
+			TestEqual(TEXT("Operation-owned state verdict"),
+				StringField(Result.ErrorDetails, TEXT("rollback_status")),
+				FString(bProvideRestore ? TEXT("restored") : TEXT("unverified")));
+			TestEqual(TEXT("External state back only with a Restore"), External, bProvideRestore ? 1 : 2);
+		}
 	}
 
 	// 8. Stale expected_fingerprint refuses before any mutation.

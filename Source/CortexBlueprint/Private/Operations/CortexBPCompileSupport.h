@@ -13,6 +13,8 @@ struct FCortexBPCompileOutcome
 	/** success | warning | error */
 	FString Status = TEXT("success");
 	int32 ErrorCount = 0;
+	/** The options actually passed to the engine (the caller's plus the pending-reparent delta flags). */
+	EBlueprintCompileOptions EffectiveOptions = EBlueprintCompileOptions::None;
 	int32 WarningCount = 0;
 	TArray<TSharedPtr<FJsonValue>> Diagnostics;
 
