@@ -1366,3 +1366,67 @@ bool FCortexBPGraphMetricsGettersAcrossExpansionTest::RunTest(const FString& Par
 		static_cast<int32>(BoundaryEntry->GetNumberField(TEXT("max_getter_fanout"))), 2);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsGetterFanoutSharedGraphTest,
+	"Cortex.Blueprint.GraphMetrics.GetterFanoutSharedGraphInstances",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsGetterFanoutSharedGraphTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsGetterSharedGraph"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	FEdGraphPinType StringType;
+	StringType.PinCategory = UEdGraphSchema_K2::PC_String;
+	FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("Msg"), StringType);
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay)) { return false; }
+
+	// One inner graph shared by two composite instances; its single PrintString consumes the entry tunnel's Msg.
+	UK2Node_Composite* Instances[2] = {nullptr, nullptr};
+	UEdGraph* Shared = NewObject<UEdGraph>(EventGraph, TEXT("SharedInner"));
+	Shared->Schema = UEdGraphSchema_K2::StaticClass();
+	for (UK2Node_Composite*& Instance : Instances)
+	{
+		Instance = NewObject<UK2Node_Composite>(EventGraph);
+		Instance->CreateNewGuid();
+		EventGraph->AddNode(Instance, false, false);
+		Instance->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Execute);
+		Instance->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Then);
+		Instance->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_String, TEXT("Msg"));
+		Instance->BoundGraph = Shared;
+	}
+	UK2Node_Tunnel* Entry = AddBoundaryTunnel(Shared, true);
+	Entry->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_String, TEXT("Msg"));
+	UK2Node_Tunnel* Exit = AddBoundaryTunnel(Shared, false);
+	UK2Node_CallFunction* Print = AddPrintString(Shared);
+
+	UK2Node_VariableGet* Getter = NewObject<UK2Node_VariableGet>(EventGraph);
+	Getter->VariableReference.SetSelfMember(TEXT("Msg"));
+	Getter->CreateNewGuid();
+	EventGraph->AddNode(Getter, false, false);
+	Getter->AllocateDefaultPins();
+
+	if (!TestTrue(TEXT("Graph wired"),
+		LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, Instances[0])
+		&& LinkExec(Instances[0], UEdGraphSchema_K2::PN_Then, Instances[1])
+		&& LinkExec(Entry, UEdGraphSchema_K2::PN_Execute, Print)
+		&& LinkExit(Print, UEdGraphSchema_K2::PN_Then, Exit)
+		&& Link(Entry, TEXT("Msg"), Print, TEXT("InString"))
+		&& Link(Getter, TEXT("Msg"), Instances[0], TEXT("Msg"))
+		&& Link(Getter, TEXT("Msg"), Instances[1], TEXT("Msg")))) { return false; }
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+	const TSharedPtr<FJsonObject> Entry2 = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
+	if (!TestTrue(TEXT("BeginPlay entry"), Entry2.IsValid())) { return false; }
+	TestEqual(TEXT("two instances each reach the shared print"),
+		static_cast<int32>(Entry2->GetNumberField(TEXT("functional_nodes"))), 3);
+	TestEqual(TEXT("the getter feeds one print per instance"),
+		static_cast<int32>(Entry2->GetNumberField(TEXT("max_getter_fanout"))), 2);
+	return true;
+}

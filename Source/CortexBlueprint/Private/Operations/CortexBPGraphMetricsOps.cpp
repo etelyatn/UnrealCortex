@@ -203,7 +203,7 @@ namespace
 	 * macro/composite continues to the consumers of the matching entry tunnel pin inside it, and a wire into an exit tunnel
 	 * continues to the consumers of the matching output pin of the owning instance.
 	 */
-	void CollectConsumers(const FReachContext& Context, const UEdGraphPin* Output, TSet<const UEdGraphNode*>& OutConsumers)
+	void CollectConsumers(const FReachContext& Context, const UEdGraphPin* Output, TSet<TPair<const FReachContext*, const UEdGraphNode*>>& OutConsumers)
 	{
 		for (const UEdGraphPin* Linked : Output->LinkedTo)
 		{
@@ -237,7 +237,7 @@ namespace
 				continue;
 			}
 
-			OutConsumers.Add(Consumer);
+			OutConsumers.Add(TPair<const FReachContext*, const UEdGraphNode*>(&Context, Consumer));
 		}
 	}
 
@@ -251,7 +251,7 @@ namespace
 				continue;
 			}
 
-			TSet<const UEdGraphNode*> Consumers;
+			TSet<TPair<const FReachContext*, const UEdGraphNode*>> Consumers;
 			for (const UEdGraphPin* Pin : Node->Pins)
 			{
 				if (Pin && Pin->Direction == EGPD_Output)
