@@ -10,6 +10,7 @@
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPSearchOps.h"
 #include "Operations/CortexBPStructureOps.h"
+#include "Operations/CortexBPSnapshotOps.h"
 #include "Operations/CortexBPTextInventoryOps.h"
 #include "Operations/CortexBPTimelineOps.h"
 #include "Operations/CortexBPClassSettingsOps.h"
@@ -50,7 +51,8 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		|| Command == TEXT("get_class_defaults") || Command == TEXT("list_inherited_properties")
 		|| Command == TEXT("list_settable_defaults") || Command == TEXT("list_scs_components")
 		|| Command == TEXT("analyze_for_migration") || Command == TEXT("compare_blueprints")
-		|| Command == TEXT("search") || Command == TEXT("export_text_inventory");
+		|| Command == TEXT("search") || Command == TEXT("export_text_inventory")
+		|| Command == TEXT("export_snapshot") || Command == TEXT("compare_snapshots");
 	if (!bReadOnly)
 	{
 		FCortexCommandResult GuardError;
@@ -205,6 +207,16 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("export_text_inventory"))
 	{
 		return FCortexBPTextInventoryOps::ExportTextInventory(Params);
+	}
+
+	if (Command == TEXT("export_snapshot"))
+	{
+		return FCortexBPSnapshotOps::ExportSnapshot(Params);
+	}
+
+	if (Command == TEXT("compare_snapshots"))
+	{
+		return FCortexBPSnapshotOps::CompareSnapshots(Params);
 	}
 
 	if (Command == TEXT("reparent"))
@@ -398,6 +410,16 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add(FCortexCommandInfo{TEXT("export_text_inventory"), TEXT("Export every FText of a Blueprint (class defaults, widgets, text pin defaults) as a sorted inventory with source kind and string table identity (read-only)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full inventory JSON to this file (under Project Saved, Content or Config) and return only asset_path, out_path and counts; required when the inline response would exceed 40000 characters"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("export_snapshot"), TEXT("Write a deterministic migration snapshot of a Blueprint (variables, CDO with declaring class, components, widgets, bindings, animations, text, interfaces, graph entries) to a file; returns only a compact summary (read-only)")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("out_path"), TEXT("string"), TEXT("File to write the snapshot JSON to (under Project Saved, Content or Config)"))
+		.Optional(TEXT("sections"), TEXT("array"), TEXT("Sections to include (variables, cdo, components, widgets, bindings, animations, text, interfaces, graph_entries); default all"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("compare_snapshots"), TEXT("Diff two Blueprint snapshot files by section and record identity into added/removed/changed/moved; a CDO property whose declaring class changed with an equal value is moved (read-only)")}
+		.Required(TEXT("before"), TEXT("string"), TEXT("Snapshot file written before the change"))
+		.Required(TEXT("after"), TEXT("string"), TEXT("Snapshot file written after the change"))
+		.Optional(TEXT("report_path"), TEXT("string"), TEXT("Write the full report to this file (under Project Saved, Content or Config) and omit the inline difference list; required when the inline report would exceed 40000 characters"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
