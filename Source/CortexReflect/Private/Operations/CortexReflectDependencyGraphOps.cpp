@@ -773,6 +773,21 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 	const bool bNeedsLoad = Request.NeedsBlueprintLoad();
 	const bool bNeedsDependencies = Request.Wants(EdgeKind::StructUse) || Request.Wants(EdgeKind::EnumUse) || Request.Wants(EdgeKind::LevelPlacement);
 	const UE::AssetRegistry::FDependencyQuery HardQuery(UE::AssetRegistry::EDependencyQuery::Hard);
+	// (World package, "<external actors root>/") pairs, longest root first: the first match owns an actor package.
+	TArray<TPair<FString, FString>> WorldActorRoots;
+	for (const FAssetEntry& WorldEntry : Entries)
+	{
+		if (WorldEntry.Kind == NodeKind::World)
+		{
+			const FString WorldPackage = WorldEntry.Asset->PackageName.ToString();
+			const FString Root = ULevel::GetExternalActorsPath(WorldPackage);
+			if (!Root.IsEmpty())
+			{
+				WorldActorRoots.Emplace(WorldPackage, Root + TEXT("/"));
+			}
+		}
+	}
+	WorldActorRoots.Sort([](const TPair<FString, FString>& A, const TPair<FString, FString>& B) { return A.Value.Len() > B.Value.Len(); });
 	bool bLoadedAny = false;
 	TArray<FString> LoadFailures;
 	FUnresolved Unresolved;
@@ -870,17 +885,12 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 					// Nested maps (/Maps/Arena and /Maps/Arena/Sub) share a folder prefix: the longest owning World wins.
 					const FString ActorPackageName = ActorAsset.PackageName.ToString();
 					FString Owner;
-					for (const FAssetEntry& Other : Entries)
+					for (const TPair<FString, FString>& WorldRoot : WorldActorRoots)
 					{
-						if (Other.Kind != NodeKind::World)
+						if (ActorPackageName.StartsWith(WorldRoot.Value))
 						{
-							continue;
-						}
-						const FString OtherPackage = Other.Asset->PackageName.ToString();
-						const FString OtherActors = ULevel::GetExternalActorsPath(OtherPackage);
-						if (!OtherActors.IsEmpty() && ActorPackageName.StartsWith(OtherActors + TEXT("/")) && OtherPackage.Len() > Owner.Len())
-						{
-							Owner = OtherPackage;
+							Owner = WorldRoot.Key;
+							break;
 						}
 					}
 					if (Owner == Asset.PackageName.ToString())

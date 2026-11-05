@@ -49,7 +49,11 @@ bool IsInsideQuotes(const FString& Value, const int32 Start)
 	for (int32 Index = 0; Index < Start; ++Index)
 	{
 		const TCHAR Ch = Value[Index];
-		if (Open == 0 && (Ch == TEXT('"') || Ch == TEXT('\'')))
+		if (Open != 0 && Ch == TEXT('\\'))
+		{
+			++Index; // backslash escape inside a quoted string (FParse::QuotedString): the next character is literal
+		}
+		else if (Open == 0 && (Ch == TEXT('"') || Ch == TEXT('\'')))
 		{
 			Open = Ch;
 		}

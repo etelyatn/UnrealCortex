@@ -422,3 +422,30 @@ bool FCortexReflectConfigQuotedBracketsTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("quoted path in a struct ends at the quote"), Refs[4].Path, FString(TEXT("/Game/Maps/Arena")));
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectConfigEscapedQuotesTest,
+	"Cortex.Reflect.Config.EscapedQuotes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectConfigEscapedQuotesTest::RunTest(const FString& Parameters)
+{
+	// A backslash-escaped quote does not close or open a quoted string.
+	FTempConfigFixture Fixture(
+		TEXT("[/Script/Test.Settings]\n")
+		TEXT("Rule=(Label=\"He said \\\"Hi\",Map=/Game/Maps/Arena)\n")
+		TEXT("Val=\"say \\\" then /Game/Maps)Alt/Arena\"\n"));
+	if (!TestTrue(TEXT("fixture ini written"), Fixture.bWritten))
+	{
+		return false;
+	}
+	const TArray<CortexReflectConfigScan::FConfigReference> Refs = RefsFromFile(Fixture.IniName);
+	if (!TestEqual(TEXT("one reference per line"), Refs.Num(), 2))
+	{
+		return false;
+	}
+	TestEqual(TEXT("escaped quote in an earlier field leaves the unquoted path correct"), Refs[0].Path, FString(TEXT("/Game/Maps/Arena")));
+	TestEqual(TEXT("escaped quote before a path keeps the quoted context"), Refs[1].Path, FString(TEXT("/Game/Maps)Alt/Arena")));
+	return true;
+}
