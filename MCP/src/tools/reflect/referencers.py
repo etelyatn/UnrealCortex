@@ -23,7 +23,8 @@ def register_reflect_referencer_tools(mcp, connection: UEConnection):
 
         Package-level and fast (Asset Registry, no loading); use BEFORE destructive operations on any
         asset. `category` filters to 'all' or 'package'. `include_config` (default true natively)
-        controls whether INI/config references appear as type 'config' rows. For detailed graph-level
+        controls whether INI/config references appear as type 'config' rows; config rows are listed
+        first and count toward `limit`, so a small limit keeps them. For detailed graph-level
         usage (which nodes, read/write/call) use `query_usages`; for full risk-scored analysis before
         C++ changes use `impact_analysis`.
 

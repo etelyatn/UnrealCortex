@@ -38,12 +38,20 @@ _CACHED_READ_TTL = 300
 # socket window: wait_ready waits up to its own `timeout` (default 120 s); live_coding_compile blocks the
 # editor until the patch is built (native transport bound 1800 s). compile_all and export_class_instances
 # are synchronous natively and scale with the project (a 829-Blueprint compile_all measured 177 s), so
-# they get a long fixed window.
+# they get a long fixed window; the whole-project reads export_migration_analysis, export_dependency_graph,
+# find_duplicate_graphs and find_name_lookups load every Blueprint of their prefixes and share it.
 _WAIT_READY_DEFAULT_SECONDS = 120.0
 _DEFERRED_TIMEOUT_MARGIN = 30.0
 _LIVE_CODING_COMPILE_WINDOW = 1830.0
 _LONG_SYNCHRONOUS_WINDOW = 1800.0
-_LONG_SYNCHRONOUS_COMMANDS = frozenset({"blueprint.compile_all", "level.export_class_instances"})
+_LONG_SYNCHRONOUS_COMMANDS = frozenset({
+    "blueprint.compile_all",
+    "blueprint.export_migration_analysis",
+    "level.export_class_instances",
+    "reflect.export_dependency_graph",
+    "reflect.find_duplicate_graphs",
+    "reflect.find_name_lookups",
+})
 
 
 def _dispatch_timeout(qualified: str, params: dict) -> float | None:
@@ -302,12 +310,30 @@ def _handle_limit_request(qualified: str, params: dict, limit: int, connection) 
         return _cursor_expired()
 
 
+_EXECUTED_BATCH_NOTE = (
+    "This batch already executed once (its steps may have changed state); do not re-run it. "
+    "The page below holds the first step results; the remaining step results are available by "
+    "calling core.batch_query with cursor=_pagination.next_cursor, which is served from the stored "
+    "snapshot and never re-executes the batch."
+)
+
+
+def _is_too_large_refusal(text: str) -> bool:
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("_error") == "RESPONSE_TOO_LARGE"
+
+
 def _batch_query(connection, route_params: dict) -> str:
     """core.batch_query: one native execution, optionally served as cached pages.
 
     With ``limit`` the single native ``batch`` result is snapshotted and its step results are paged
     from the cache; a ``cursor`` is served from that snapshot and never re-executes the batch (the
-    steps may mutate). Without ``limit`` an oversized response is refused, never silently shortened.
+    steps may mutate). Without ``limit`` a response that fits is returned whole; an oversized one is
+    never discarded or shortened: the executed results are snapshotted and the first page that fits
+    is returned with a cursor and a note that the batch already ran.
     """
     qualified = "core.batch_query"
     cursor_token = route_params.get("cursor")
@@ -344,17 +370,30 @@ def _batch_query(connection, route_params: dict) -> str:
 
     response = connection.send_command("batch", batch_params)
     data = response.get("data", {})
-    if limit is None:
-        return format_response(data, "batch_query")
-
     array_key = CACHED_PAGE_ARRAYS[qualified]
+    note = None
+    if limit is None:
+        text = format_response(data, "batch_query")
+        results = data.get(array_key)
+        if not _is_too_large_refusal(text) or not isinstance(results, list) or not results:
+            return text
+        # The batch has already executed, so its results are never discarded and the caller is never
+        # asked to run it again: the executed results are snapshotted and served from the cache.
+        limit = min(len(results), _MAX_LIMIT)
+        note = _EXECUTED_BATCH_NOTE
+
     results = data.get(array_key)
     if not isinstance(results, list):
         return format_response(data, "batch_query")
     template = {k: v for k, v in data.items() if k != array_key}
+    if note is not None:
+        template["_note"] = note
     cache_key = _pagination_cache.store(qualified, batch_params, array_key, results, template)
-    page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
-    return _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
+    try:
+        page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
+        return _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
+    except KeyError:
+        return _cursor_expired()
 
 
 def _error_payload(code: str, message: str, details) -> dict:

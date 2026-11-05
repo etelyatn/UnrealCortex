@@ -95,16 +95,18 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
     "query_class_context": _REFLECT_CONTEXT_SELECTOR,
     "reflect.class_context": _REFLECT_CONTEXT_SELECTOR,
     "batch_query": (
-        "Pass 'limit' to page the step results from one execution (follow _pagination.next_cursor), "
-        "or split the batch into smaller batches."
+        "The batch has already executed and must not be re-run: its executed results are served "
+        "from a cached snapshot by 'cursor' (_pagination.next_cursor)."
     ),
     "reflect.find_duplicate_graphs": (
-        "Narrow 'path_prefixes' to fewer content folders, raise 'min_nodes', or raise 'similarity' "
-        "so fewer groups are reported."
+        "Pass 'out_path' to write the full result to a file and get a compact summary, or narrow "
+        "'path_prefixes' to fewer content folders, raise 'min_nodes', or raise 'similarity' so fewer "
+        "groups are reported."
     ),
     "reflect.find_name_lookups": (
-        "Narrow 'path_prefixes' to fewer content folders, or pass 'symbols' to report only the "
-        "names you are checking."
+        "Pass 'out_path' to write the full result to a file and get a compact summary, or narrow "
+        "'path_prefixes' to fewer content folders, or pass 'symbols' to report only the names you "
+        "are checking."
     ),
     "reflect.find_broken_config_paths": (
         "find_broken_config_paths has no row selector: fix the broken config paths reported so far "

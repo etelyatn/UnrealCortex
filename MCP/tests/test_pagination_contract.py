@@ -961,18 +961,51 @@ class TestBatchQueryPagination:
         assert payload["_error"] == "INVALID_LIMIT"
         assert connection.sends == []
 
-    def test_oversized_batch_without_limit_refuses_instead_of_dropping_steps(self):
+    def test_oversized_batch_without_limit_serves_executed_results_by_cursor(self):
         connection = _CountingConnection(30, blob=3_000)
         router = _core_router(connection)
 
-        payload = json.loads(router("batch_query", {"commands": _batch_steps(30)}))
+        first = json.loads(router("batch_query", {"commands": _batch_steps(30)}))
 
-        assert payload["_error"] == "RESPONSE_TOO_LARGE"
-        assert payload["reader_complete"] is False
-        assert "limit" in payload["_suggestion"]
-        assert "results" not in payload
-        assert "_truncated" not in payload
-        assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+        assert "_error" not in first
+        assert len(compact_json(first)) <= MAX_RESPONSE_CHARS
+        pagination = first["_pagination"]
+        assert pagination["total"] == 30
+        assert pagination["has_more"] is True
+        assert pagination["next_cursor"]
+        assert pagination["snapshot_id"] >= 1
+        assert 0 < pagination["returned"] < 30
+        assert [step["index"] for step in first["results"]] == list(range(pagination["returned"]))
+        # The caller is told the batch already ran and must not be re-run.
+        assert "already executed" in first["_note"]
+        assert "do not re-run" in first["_note"].lower()
+        assert "cursor" in first["_note"]
+
+        # Every executed result stays recoverable through the cursors, with no second execution.
+        seen, last = _drain_batch(router, first)
+        assert seen == list(range(30))
+        assert last["_pagination"]["has_more"] is False
+        assert len(connection.sends) == 1
+
+    def test_small_batch_without_limit_is_returned_whole(self):
+        connection = _CountingConnection(3)
+        router = _core_router(connection)
+
+        payload = json.loads(router("batch_query", {"commands": _batch_steps(3)}))
+
+        assert [step["index"] for step in payload["results"]] == [0, 1, 2]
+        assert "_pagination" not in payload
+        assert "_note" not in payload
+        assert len(connection.sends) == 1
+
+    def test_oversized_batch_refusal_never_advises_rerunning(self):
+        connection = _CountingConnection(30, blob=3_000)
+        router = _core_router(connection)
+
+        text = router("batch_query", {"commands": _batch_steps(30)})
+
+        assert "split the batch" not in text
+        assert "RESPONSE_TOO_LARGE" not in text
 
     def test_oversized_batch_pages_through_limit_without_loss(self):
         connection = _CountingConnection(30, blob=3_000)
@@ -1088,3 +1121,12 @@ class TestNewReflectReadsCompleteOrRefuse:
         assert selector in payload["_suggestion"]
         assert "rows" not in payload
         assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+
+    @pytest.mark.parametrize("command", ["find_duplicate_graphs", "find_name_lookups"])
+    def test_refusal_suggests_out_path_for_the_full_result(self, command):
+        router, _ = _router("reflect", {"rows": [{"blob": "x" * 500} for _ in range(200)]})
+
+        payload = json.loads(router(command, {"path_prefixes": ["/Game"]}))
+
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert "out_path" in payload["_suggestion"]

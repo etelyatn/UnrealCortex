@@ -788,7 +788,11 @@ def test_editor_router_widens_receive_window_for_deferred_turnaround_commands(co
     ("domain", "command", "params"),
     [
         ("blueprint", "compile_all", {"path_prefix": "/Game/Ripper", "out_path": "x.json"}),
+        ("blueprint", "export_migration_analysis", {"path_prefix": "/Game/Ripper", "out_path": "x.jsonl"}),
         ("level", "export_class_instances", {"class": "A", "maps": ["/Game/M"], "out_path": "x.json"}),
+        ("reflect", "export_dependency_graph", {"path_prefixes": ["/Game/Ripper"], "out_path": "x.json"}),
+        ("reflect", "find_duplicate_graphs", {"path_prefixes": ["/Game/Ripper"]}),
+        ("reflect", "find_name_lookups", {"path_prefixes": ["/Game/Ripper"]}),
     ],
 )
 def test_router_widens_receive_window_for_long_synchronous_commands(domain, command, params):
@@ -800,6 +804,21 @@ def test_router_widens_receive_window_for_long_synchronous_commands(domain, comm
 
     assert payload["ok"] is True
     connection.send_command.assert_called_once_with(f"{domain}.{command}", params, timeout=1800.0)
+
+
+@pytest.mark.parametrize(
+    "qualified",
+    [
+        "blueprint.export_migration_analysis",
+        "reflect.export_dependency_graph",
+        "reflect.find_duplicate_graphs",
+        "reflect.find_name_lookups",
+    ],
+)
+def test_dispatch_timeout_is_the_long_window_for_whole_project_scans(qualified):
+    from cortex_mcp.tools.routers import _dispatch_timeout
+
+    assert _dispatch_timeout(qualified, {}) == 1800.0
 
 
 def test_blueprint_router_uses_cached_send_for_discovery_reads():
