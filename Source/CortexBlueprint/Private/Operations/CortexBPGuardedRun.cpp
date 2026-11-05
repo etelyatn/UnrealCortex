@@ -27,7 +27,6 @@
 namespace
 {
 	TFunction<void(UBlueprint*)> GPostRestoreHookForTest;
-	TFunction<void(UBlueprint*)> GPreRecoveryCompileHookForTest;
 	bool GSkipUndoForTest = false;
 	bool GForceSaveFailureForTest = false;
 }
@@ -501,12 +500,6 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 		FCortexBPCompileOutcome Recovery;
 		if (Spec.bCompile)
 		{
-#if WITH_DEV_AUTOMATION_TESTS
-			if (GPreRecoveryCompileHookForTest)
-			{
-				GPreRecoveryCompileHookForTest(Blueprint);
-			}
-#endif
 			// Exactly one recovery compile; it reuses the failed compile's options when the parent changed in the run so
 			// restored inherited CDO values are not overwritten by the new parent's constructor defaults.
 			const EBlueprintCompileOptions RecoveryOptions = bParentChanged
@@ -630,16 +623,6 @@ void FCortexBPGuardedRun::SetPostRestoreHookForTest(TFunction<void(UBlueprint*)>
 void FCortexBPGuardedRun::ClearPostRestoreHookForTest()
 {
 	GPostRestoreHookForTest = nullptr;
-}
-
-void FCortexBPGuardedRun::SetPreRecoveryCompileHookForTest(TFunction<void(UBlueprint*)> Hook)
-{
-	GPreRecoveryCompileHookForTest = MoveTemp(Hook);
-}
-
-void FCortexBPGuardedRun::ClearPreRecoveryCompileHookForTest()
-{
-	GPreRecoveryCompileHookForTest = nullptr;
 }
 
 void FCortexBPGuardedRun::SetSkipUndoForTest(bool bSkip)
