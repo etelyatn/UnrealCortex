@@ -4,10 +4,12 @@
 #include "Operations/CortexUMGRenameDependents.h"
 #include "CortexBatchMutation.h"
 #include "CortexAssetFingerprint.h"
+#include "CortexAssetMutationGuard.h"
 #include "CortexUMGUtils.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintOperationUtils.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Widget.h"
@@ -54,10 +56,6 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/UnrealType.h"
-#if __has_include("UIComponentWidgetBlueprintExtension.h")
-#include "UIComponentWidgetBlueprintExtension.h"
-#include "Extensions/UIComponentContainer.h"
-#endif
 
 struct FCuratedWidgetEntry
 {
@@ -1056,9 +1054,14 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
     using namespace CortexUMGRenameDependents;
     FPlan Plan;
     TSharedPtr<FJsonObject> PlanJson;
+    /** Planned dependents the rename edits (they have references): gated by exact fingerprints. */
     TArray<FAssetPlan*> Modified;
+    /** Planned dependents the rename must not change: verified unchanged after the engine rename. */
+    TArray<FAssetPlan*> Unmodified;
+    TArray<FRenamedMember> Members;
     if (bChanged)
     {
+        CollectRenamedMembers(WBP, Widget, FName(*NewName), Members);
         if (!bDependents)
         {
             // Unreal's rename also visits loaded children and dependent graphs. The asset scope
@@ -1075,26 +1078,6 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
             }
             TArray<UBlueprint*> Dependents;
             FBlueprintEditorUtils::FindDependentBlueprints(WBP, Dependents);
-            TArray<FName, TInlineAllocator<4>> RenamedMembers;
-            RenamedMembers.Add(Widget->GetFName());
-#if __has_include("UIComponentWidgetBlueprintExtension.h")
-            if (!Dependents.IsEmpty())
-            {
-                if (const UUIComponentWidgetBlueprintExtension* Extension =
-                    UWidgetBlueprintExtension::GetExtension<UUIComponentWidgetBlueprintExtension>(WBP))
-                {
-                    // Native rename propagates these generated members as well as the widget.
-                    for (const UUIComponent* Component : Extension->GetComponentsFor(Widget))
-                    {
-                        if (Component)
-                        {
-                            RenamedMembers.Add(UUIComponentContainer::GetPropertyNameForComponent(
-                                Component, Widget->GetFName()));
-                        }
-                    }
-                }
-            }
-#endif
             for (UBlueprint* Dependent : Dependents)
             {
                 if (!Dependent || Dependent == WBP) continue;
@@ -1105,8 +1088,8 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
                     for (UEdGraphNode* Node : Graph->Nodes)
                     {
                         const UK2Node* K2Node = Cast<UK2Node>(Node);
-                        if (K2Node && RenamedMembers.ContainsByPredicate([K2Node](FName MemberName)
-                            { return K2Node->ReferencesVariable(MemberName, nullptr); }))
+                        if (K2Node && Members.ContainsByPredicate([K2Node](const FRenamedMember& Member)
+                            { return K2Node->ReferencesVariable(Member.OldName, nullptr); }))
                         {
                             return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
                                 FString::Printf(TEXT("Widget rename would modify an unguarded dependent Blueprint: %s"), *Dependent->GetPathName()));
@@ -1127,13 +1110,13 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
 
         if (bDependents)
         {
-            BuildPlan(WBP, FName(*OldName), FName(*NewName), Plan);
+            BuildPlan(WBP, Members, Plan);
             FAssetPlan OwnerAsset;
             OwnerAsset.AssetPath = WBP->GetPathName();
             OwnerAsset.Role = ERole::Owner;
             OwnerAsset.Blueprint = WBP;
             OwnerAsset.Fingerprint = Before;
-            ScanReferences(WBP, ERole::Owner, WBP, FName(*OldName), OwnerAsset.References);
+            ScanReferences(WBP, ERole::Owner, WBP, Members, OwnerAsset.References);
 
             PlanJson = MakeShared<FJsonObject>();
             TArray<TSharedPtr<FJsonValue>> AssetValues;
@@ -1141,10 +1124,7 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
             for (FAssetPlan& Asset : Plan.Dependents)
             {
                 AssetValues.Add(MakeShared<FJsonValueObject>(AssetToJson(Asset)));
-                if (Asset.References.Num() > 0)
-                {
-                    Modified.Add(&Asset);
-                }
+                (Asset.References.Num() > 0 ? Modified : Unmodified).Add(&Asset);
             }
             TArray<TSharedPtr<FJsonValue>> ConflictValues;
             for (const FConflict& Conflict : Plan.Conflicts)
@@ -1164,6 +1144,18 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
                 return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
                     FString::Printf(TEXT("Dependent rename plan has %d conflict(s): %s"),
                         Plan.Conflicts.Num(), *Plan.Conflicts[0].Reason), Details);
+            }
+
+            // A dependent whose earlier recovery could not be verified stays fail-closed, like every other multi-asset rename.
+            for (const FAssetPlan* Asset : Modified)
+            {
+                FString BlockedReason;
+                if (const UBlueprint* Dependent = Asset->Blueprint.Get();
+                    Dependent != nullptr && FCortexAssetMutationGuard::IsBlocked(Dependent, BlockedReason))
+                {
+                    return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+                        FString::Printf(TEXT("Dependent Blueprint %s is blocked from mutation: %s"), *Asset->AssetPath, *BlockedReason));
+                }
             }
 
             if (!bDryRun)
@@ -1221,7 +1213,11 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
             return FCortexCommandRouter::Success(Data);
         }
 
-        FScopedTransaction Transaction(FText::FromString(
+        // Only the outermost transaction can be undone from here: inside a batch the batch owns it.
+        const bool bOwnsTransaction = !GEditor->IsTransactionActive();
+        const int32 QueueBefore = GEditor->Trans != nullptr ? GEditor->Trans->GetQueueLength() : 0;
+        TOptional<FScopedTransaction> Transaction;
+        Transaction.Emplace(FText::FromString(
             FString::Printf(TEXT("Cortex: Rename Widget %s to %s"), *OldName, *NewName)));
 
         const FName OldFName(*OldName);
@@ -1269,7 +1265,11 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
 
         if (!FWidgetBlueprintOperationUtils::RenameWidget(WBP, Widget, NewName))
         {
-            Transaction.Cancel();
+            // Only Modify() calls ran so far; inside a batch the outer transaction must stay open.
+            if (bOwnsTransaction)
+            {
+                Transaction->Cancel();
+            }
             return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Unreal widget rename failed"));
         }
 
@@ -1308,15 +1308,16 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
             {
                 if (UBlueprint* Dependent = Asset->Blueprint.Get())
                 {
-                    RenameReferences(WBP, Dependent, Asset->Role, OldFName, NewFName);
+                    RenameReferences(WBP, Dependent, Asset->Role, Members);
                 }
             }
+            InjectUnmodifiedDependentFaults(Plan.Dependents);
 
             TArray<TSharedPtr<FJsonValue>> Remaining;
             auto Rescan = [&](const UBlueprint* Blueprint, ERole Role, const FString& Path)
             {
                 TArray<FReference> Survivors;
-                ScanReferences(Blueprint, Role, WBP, OldFName, Survivors);
+                ScanReferences(Blueprint, Role, WBP, Members, Survivors);
                 for (const FReference& Survivor : Survivors)
                 {
                     TSharedPtr<FJsonObject> Json = ReferenceToJson(Survivor);
@@ -1325,50 +1326,134 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
                 }
             };
             Rescan(WBP, ERole::Owner, WBP->GetPathName());
+            if (IsFaultInjected(TEXT("leftover_reference")))
+            {
+                TSharedPtr<FJsonObject> Injected = MakeShared<FJsonObject>();
+                Injected->SetStringField(TEXT("asset_path"), WBP->GetPathName());
+                Injected->SetStringField(TEXT("graph"), TEXT("InjectedFault"));
+                Remaining.Add(MakeShared<FJsonValueObject>(Injected));
+            }
             for (FAssetPlan* Asset : Modified)
             {
                 Rescan(Asset->Blueprint.Get(), Asset->Role, Asset->AssetPath);
             }
 
-            if (!Remaining.IsEmpty() || WBP->WidgetTree->FindWidget(OldFName) != nullptr)
+            // A planned dependent without references must come out as planned. The engine rename can mark
+            // such a Blueprint modified without changing it (a same-named variable of its own); that is
+            // returned to the planned dirty flag and status, anything that actually changed fails the request.
+            TArray<TSharedPtr<FJsonValue>> Unexpected;
+            for (FAssetPlan* Asset : Unmodified)
             {
-                Transaction.Cancel();
-
-                // Undo restores content; the packages' dirty flags return to their pre-request state.
-                TArray<TSharedPtr<FJsonValue>> Restored;
-                bool bAllRestored = true;
-                auto ReportRestored = [&](UPackage* Package, bool bWasDirty, const FString& Path,
-                    const TSharedPtr<FJsonObject>& Expected, const TSharedPtr<FJsonObject>& Current)
+                UBlueprint* Dependent = Asset->Blueprint.Get();
+                if (Dependent == nullptr
+                    || FCortexBatchMutation::FingerprintsMatch(MakeObjectAssetFingerprint(Dependent).ToJson(), Asset->Fingerprint))
                 {
-                    if (Package)
+                    continue;
+                }
+                if (ComputeVariableNodeSignature(Dependent) == Asset->VariableNodeSignature)
+                {
+                    RestorePlannedStatus(*Asset);
+                    Dependent->GetPackage()->SetDirtyFlag(Asset->bWasDirty);
+                }
+                if (!FCortexBatchMutation::FingerprintsMatch(MakeObjectAssetFingerprint(Dependent).ToJson(), Asset->Fingerprint))
+                {
+                    Unexpected.Add(MakeShared<FJsonValueString>(Asset->AssetPath));
+                }
+            }
+
+            if (!Remaining.IsEmpty() || !Unexpected.IsEmpty() || WBP->WidgetTree->FindWidget(OldFName) != nullptr)
+            {
+                // Close the request's own transaction scope, then apply that finished transaction backwards.
+                // Inside an outer transaction (a batch) nothing can be undone from here and the outer
+                // transaction must not be cancelled; the verification below then reports it truthfully.
+                if (bOwnsTransaction)
+                {
+                    Transaction.Reset();
+                    if (GEditor->Trans != nullptr && GEditor->Trans->GetQueueLength() > QueueBefore
+                        && GEditor->UndoTransaction(/*bCanRedo=*/false))
+                    {
+                        // The undo restored the widget tree but not the compiled skeleton the rename regenerated.
+                        FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
+                    }
+                }
+
+                // An asset is restored only when its content is verified back to the plan and its fingerprint
+                // (which includes the dirty flag) matches again; the original dirty flag is applied for that check.
+                TArray<TSharedPtr<FJsonValue>> Restored;
+                TArray<TSharedPtr<FJsonValue>> Blocked;
+                bool bAllRestored = true;
+                auto Settle = [&](UObject* Asset, const FString& Path, bool bContentRestored, bool bWasDirty,
+                    const TSharedPtr<FJsonObject>& ExpectedFingerprint, TFunctionRef<TSharedPtr<FJsonObject>()> CurrentFingerprint)
+                {
+                    UPackage* Package = Asset->GetPackage();
+                    const bool bDirtyNow = Package->IsDirty();
+                    bool bVerified = false;
+                    if (bContentRestored)
                     {
                         Package->SetDirtyFlag(bWasDirty);
+                        bVerified = FCortexBatchMutation::FingerprintsMatch(CurrentFingerprint(), ExpectedFingerprint);
+                        if (!bVerified)
+                        {
+                            Package->SetDirtyFlag(bDirtyNow);
+                        }
                     }
-                    const bool bMatches = FCortexBatchMutation::FingerprintsMatch(Current, Expected);
-                    bAllRestored &= bMatches;
+                    if (!bVerified)
+                    {
+                        bAllRestored = false;
+                        FCortexAssetMutationGuard::Block(Asset,
+                            TEXT("umg.rename_widget dependents rollback could not be verified; the asset may be partially renamed"));
+                        Blocked.Add(MakeShared<FJsonValueString>(Path));
+                    }
                     TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
                     Json->SetStringField(TEXT("asset_path"), Path);
-                    Json->SetBoolField(TEXT("fingerprint_restored"), bMatches);
+                    Json->SetBoolField(TEXT("fingerprint_restored"), bVerified);
                     Restored.Add(MakeShared<FJsonValueObject>(Json));
                 };
-                ReportRestored(WBP->GetPackage(), Before->GetBoolField(TEXT("is_dirty")), WBP->GetPathName(),
-                    Before, MakeWidgetBlueprintFingerprint(WBP).ToJson());
+                Settle(WBP, WBP->GetPathName(),
+                    WBP->WidgetTree->FindWidget(OldFName) != nullptr && WBP->WidgetTree->FindWidget(NewFName) == nullptr,
+                    Before->GetBoolField(TEXT("is_dirty")), Before,
+                    [&]() { return MakeWidgetBlueprintFingerprint(WBP).ToJson(); });
                 for (FAssetPlan* Asset : Modified)
                 {
-                    if (const UBlueprint* Dependent = Asset->Blueprint.Get())
+                    if (UBlueprint* Dependent = Asset->Blueprint.Get())
                     {
-                        ReportRestored(Dependent->GetPackage(), Asset->bWasDirty, Asset->AssetPath,
-                            Asset->Fingerprint, MakeObjectAssetFingerprint(Dependent).ToJson());
+                        TArray<FReference> Current;
+                        ScanReferences(Dependent, Asset->Role, WBP, Members, Current);
+                        const bool bContentRestored = Current.Num() == Asset->References.Num();
+                        if (bContentRestored)
+                        {
+                            RestorePlannedStatus(*Asset);
+                        }
+                        Settle(Dependent, Asset->AssetPath, bContentRestored, Asset->bWasDirty,
+                            Asset->Fingerprint, [&]() { return MakeObjectAssetFingerprint(Dependent).ToJson(); });
+                    }
+                }
+                for (FAssetPlan* Asset : Unmodified)
+                {
+                    if (UBlueprint* Dependent = Asset->Blueprint.Get())
+                    {
+                        const bool bContentRestored = ComputeVariableNodeSignature(Dependent) == Asset->VariableNodeSignature;
+                        if (bContentRestored)
+                        {
+                            RestorePlannedStatus(*Asset);
+                        }
+                        Settle(Dependent, Asset->AssetPath, bContentRestored, Asset->bWasDirty,
+                            Asset->Fingerprint, [&]() { return MakeObjectAssetFingerprint(Dependent).ToJson(); });
                     }
                 }
 
                 TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
                 Details->SetArrayField(TEXT("remaining_references"), Remaining);
+                Details->SetArrayField(TEXT("unexpected_changes"), Unexpected);
                 Details->SetArrayField(TEXT("restored"), Restored);
-                Details->SetBoolField(TEXT("all_restored"), bAllRestored);
+                Details->SetArrayField(TEXT("blocked"), Blocked);
+                Details->SetStringField(TEXT("rollback_status"), bAllRestored ? TEXT("restored") : TEXT("unverified"));
                 Details->SetObjectField(TEXT("plan"), PlanJson);
                 return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-                    TEXT("Dependent rename left references to the old member; the request was undone"), Details);
+                    bAllRestored
+                        ? TEXT("Dependent rename left references to the old member or changed an unplanned Blueprint; the request was undone and verified")
+                        : TEXT("Dependent rename left references to the old member or changed an unplanned Blueprint, and the request could not be undone and verified; the affected assets are blocked"),
+                    Details);
             }
         }
     }

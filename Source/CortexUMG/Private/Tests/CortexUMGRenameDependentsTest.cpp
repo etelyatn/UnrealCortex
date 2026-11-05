@@ -2,6 +2,13 @@
 // Blueprints through the Asset Registry, is planned with dry_run, guarded by exact per-dependent
 // fingerprints, undone by one transaction, and honours inherited BindWidget names.
 
+#include "Engine/TimelineTemplate.h"
+#include "CortexAssetFingerprint.h"
+#include "CortexAssetMutationGuard.h"
+#include "CortexBatchMutation.h"
+#include "CortexBatchScope.h"
+#include "Operations/CortexUMGRenameDependents.h"
+#include "ScopedTransaction.h"
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
@@ -646,4 +653,409 @@ bool FCortexUMGRenameWidgetOntoBindWidgetTest::RunTest(const FString& Parameters
 
 	Owner->GetPackage()->ClearDirtyFlag();
 	return true;
+}
+
+namespace
+{
+	/** Owner widget Blueprint plus a loaded child and a loaded referencer that both read the renamed member. */
+	struct FLoadedRenameFixture
+	{
+		FRenameFixtureScope Scope;
+		TStrongObjectPtr<UWidgetBlueprint> Owner;
+		TStrongObjectPtr<UWidgetBlueprint> Child;
+		TStrongObjectPtr<UBlueprint> Referencer;
+		FString OwnerPath;
+		FString ChildPath;
+		FString ReferencerPath;
+
+		bool Build(FAutomationTestBase& Test)
+		{
+			const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+			Owner.Reset(NewFixtureWidgetBlueprint(UUserWidget::StaticClass(), Scope.Add(Suffix, TEXT("Owner"))));
+			if (!Test.TestNotNull(TEXT("owner created"), Owner.Get())) return false;
+			AddButton(Owner.Get(), TEXT("SharedButton"));
+			FKismetEditorUtilities::CompileBlueprint(Owner.Get());
+			UClass* OwnerClass = Owner->GeneratedClass;
+			Child.Reset(NewFixtureWidgetBlueprint(OwnerClass, Scope.Add(Suffix, TEXT("Child"))));
+			if (!Test.TestNotNull(TEXT("child created"), Child.Get())) return false;
+			const bool bChildNodes = AddGetter(Child.Get(), SharedButtonName, nullptr) != nullptr
+				&& AddBoundOnClicked(Child.Get(), OwnerClass) != nullptr;
+			if (!Test.TestTrue(TEXT("child graph nodes created"), bChildNodes)) return false;
+			Referencer.Reset(NewSavedFixtureBlueprint(UObject::StaticClass(), UBlueprint::StaticClass(),
+				UBlueprintGeneratedClass::StaticClass(), Scope.Add(Suffix, TEXT("Referencer"))));
+			if (!Test.TestNotNull(TEXT("referencer created"), Referencer.Get())) return false;
+			AddGetter(Referencer.Get(), SharedButtonName, OwnerClass);
+			if (!Test.TestTrue(TEXT("fixtures saved"),
+				SaveFixture(Owner.Get()) && SaveFixture(Child.Get()) && SaveFixture(Referencer.Get()))) return false;
+			OwnerPath = Owner->GetPathName();
+			ChildPath = Child->GetPathName();
+			ReferencerPath = Referencer->GetPathName();
+			return true;
+		}
+	};
+
+	TSharedPtr<FJsonObject> DependentsParams(FRenameRouter& Harness, const FString& OwnerPath, const TCHAR* NewName)
+	{
+		TSharedPtr<FJsonObject> Params = Harness.RenameParams(OwnerPath, TEXT("SharedButton"), NewName);
+		Params->SetStringField(TEXT("scope"), TEXT("dependents"));
+		return Params;
+	}
+
+	/** Dry-runs the rename and turns the plan's modified dependents into the exact apply parameters. */
+	bool PlanApplyParams(FAutomationTestBase& Test, FRenameRouter& Harness, const FString& OwnerPath,
+		const TCHAR* NewName, const TArray<FString>& ModifiedPaths, TSharedPtr<FJsonObject>& OutParams)
+	{
+		OutParams = DependentsParams(Harness, OwnerPath, NewName);
+		const FCortexCommandResult Dry = Harness.Router.Execute(TEXT("umg.rename_widget"), OutParams);
+		if (!Test.TestTrue(TEXT("dry run succeeds"), Dry.bSuccess && Dry.Data.IsValid())) return false;
+		TSharedPtr<FJsonObject> Expected = MakeShared<FJsonObject>();
+		for (const FString& Path : ModifiedPaths)
+		{
+			const TSharedPtr<FJsonObject> PlanAsset = FindPlanAsset(Dry, Path);
+			if (!Test.TestTrue(*FString::Printf(TEXT("plan lists %s"), *Path), PlanAsset.IsValid())) return false;
+			Expected->SetObjectField(Path, PlanAsset->GetObjectField(TEXT("fingerprint")));
+		}
+		OutParams->SetBoolField(TEXT("dry_run"), false);
+		OutParams->SetObjectField(TEXT("expected_dependent_fingerprints"), Expected);
+		return true;
+	}
+
+	int32 BlockedCount(const FCortexCommandResult& Result)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Blocked = nullptr;
+		return Result.ErrorDetails.IsValid() && Result.ErrorDetails->TryGetArrayField(TEXT("blocked"), Blocked)
+			? Blocked->Num() : -1;
+	}
+
+	FString RollbackStatus(const FCortexCommandResult& Result)
+	{
+		FString Status;
+		if (Result.ErrorDetails.IsValid())
+		{
+			Result.ErrorDetails->TryGetStringField(TEXT("rollback_status"), Status);
+		}
+		return Status;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGRenameWidgetDependentsRollbackTest,
+	"Cortex.UMG.RenameWidgetDependentsRollback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetDependentsRollbackTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!TestTrue(TEXT("editor transaction buffer available"), GEditor != nullptr && GEditor->Trans != nullptr)) return false;
+	FLoadedRenameFixture Fx;
+	if (!Fx.Build(*this)) return false;
+	// An already-dirty dependent must come back dirty; clean ones must come back clean.
+	Fx.Referencer->MarkPackageDirty();
+	FRenameRouter Harness;
+	const TSharedPtr<FJsonObject> OwnerBefore = Harness.TreeFingerprint(Fx.OwnerPath);
+	const TSharedPtr<FJsonObject> ChildBefore = MakeObjectAssetFingerprint(Fx.Child.Get()).ToJson();
+	const TSharedPtr<FJsonObject> ReferencerBefore = MakeObjectAssetFingerprint(Fx.Referencer.Get()).ToJson();
+	if (!TestTrue(TEXT("owner fingerprint captured"), OwnerBefore.IsValid())) return false;
+
+	TSharedPtr<FJsonObject> Params2;
+	if (!PlanApplyParams(*this, Harness, Fx.OwnerPath, TEXT("RenamedButton"), { Fx.ChildPath, Fx.ReferencerPath }, Params2)) return false;
+
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex rename rollback test")));
+	const int32 QueueBefore = GEditor->Trans->GetQueueLength();
+	CortexUMGRenameDependents::SetFaultForTesting(TEXT("leftover_reference"));
+	const FCortexCommandResult Failed = Harness.Router.Execute(TEXT("umg.rename_widget"), Params2);
+	CortexUMGRenameDependents::SetFaultForTesting(NAME_None);
+
+	TestFalse(TEXT("a leftover reference fails the request"), Failed.bSuccess);
+	TestEqual(TEXT("failure code"), Failed.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestEqual(TEXT("rollback is reported as restored"), RollbackStatus(Failed), FString(TEXT("restored")));
+	TestEqual(TEXT("nothing is blocked"), BlockedCount(Failed), 0);
+	TestNotNull(TEXT("owner widget name is restored"), Fx.Owner->WidgetTree->FindWidget(TEXT("SharedButton")));
+	TestNull(TEXT("owner has no renamed widget"), Fx.Owner->WidgetTree->FindWidget(TEXT("RenamedButton")));
+	const FName NewMember(TEXT("RenamedButton"));
+	TestEqual(TEXT("child getter restored"), CountVariableNodes(Fx.Child.Get(), SharedButtonName), 1);
+	TestEqual(TEXT("child getter is not renamed"), CountVariableNodes(Fx.Child.Get(), NewMember), 0);
+	TestEqual(TEXT("child bound event restored"), CountBoundEvents(Fx.Child.Get(), SharedButtonName), 1);
+	TestEqual(TEXT("child bound event is not renamed"), CountBoundEvents(Fx.Child.Get(), NewMember), 0);
+	TestEqual(TEXT("referencer getter restored"), CountVariableNodes(Fx.Referencer.Get(), SharedButtonName), 1);
+	TestEqual(TEXT("referencer getter is not renamed"), CountVariableNodes(Fx.Referencer.Get(), NewMember), 0);
+	TestFalse(TEXT("owner dirty flag restored"), Fx.Owner->GetPackage()->IsDirty());
+	TestFalse(TEXT("child dirty flag restored"), Fx.Child->GetPackage()->IsDirty());
+	TestTrue(TEXT("referencer dirty flag restored"), Fx.Referencer->GetPackage()->IsDirty());
+	TestTrue(TEXT("owner fingerprint restored exactly"),
+		FCortexBatchMutation::FingerprintsMatch(Harness.TreeFingerprint(Fx.OwnerPath), OwnerBefore));
+	TestTrue(TEXT("child fingerprint restored exactly"),
+		FCortexBatchMutation::FingerprintsMatch(MakeObjectAssetFingerprint(Fx.Child.Get()).ToJson(), ChildBefore));
+	TestTrue(TEXT("referencer fingerprint restored exactly"),
+		FCortexBatchMutation::FingerprintsMatch(MakeObjectAssetFingerprint(Fx.Referencer.Get()).ToJson(), ReferencerBefore));
+	FString Reason;
+	TestFalse(TEXT("owner is not blocked"), FCortexAssetMutationGuard::IsBlocked(Fx.Owner.Get(), Reason));
+	TestFalse(TEXT("child is not blocked"), FCortexAssetMutationGuard::IsBlocked(Fx.Child.Get(), Reason));
+	TestFalse(TEXT("referencer is not blocked"), FCortexAssetMutationGuard::IsBlocked(Fx.Referencer.Get(), Reason));
+	TestEqual(TEXT("the undone request leaves no undo record behind"), GEditor->Trans->GetQueueLength(), QueueBefore);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGRenameWidgetDependentsBatchRollbackTest,
+	"Cortex.UMG.RenameWidgetDependentsBatchRollback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetDependentsBatchRollbackTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!TestTrue(TEXT("editor transaction buffer available"), GEditor != nullptr && GEditor->Trans != nullptr)) return false;
+	FLoadedRenameFixture Fx;
+	if (!Fx.Build(*this)) return false;
+	FRenameRouter Harness;
+	TSharedPtr<FJsonObject> ApplyParams;
+	if (!PlanApplyParams(*this, Harness, Fx.OwnerPath, TEXT("RenamedButton"), { Fx.ChildPath, Fx.ReferencerPath }, ApplyParams)) return false;
+
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex rename batch rollback test")));
+	const int32 QueueBefore = GEditor->Trans->GetQueueLength();
+	FCortexCommandResult Failed;
+	{
+		// A batch owns one outer transaction; the rename must neither cancel nor undo it.
+		FCortexBatchScope BatchScope;
+		TOptional<FScopedTransaction> Outer;
+		Outer.Emplace(FText::FromString(TEXT("Cortex batch")));
+		CortexUMGRenameDependents::SetFaultForTesting(TEXT("leftover_reference"));
+		Failed = Harness.Router.Execute(TEXT("umg.rename_widget"), ApplyParams);
+		CortexUMGRenameDependents::SetFaultForTesting(NAME_None);
+		TestTrue(TEXT("the outer batch transaction is still open"), GEditor->IsTransactionActive());
+		Outer.Reset();
+	}
+	TestFalse(TEXT("a leftover reference fails the request inside a batch"), Failed.bSuccess);
+	TestEqual(TEXT("the in-batch rollback cannot be verified"), RollbackStatus(Failed), FString(TEXT("unverified")));
+	TestTrue(TEXT("the unverifiable assets are blocked"), BlockedCount(Failed) >= 1);
+	FString Reason;
+	TestTrue(TEXT("the owner is blocked"), FCortexAssetMutationGuard::IsBlocked(Fx.Owner.Get(), Reason));
+	TestEqual(TEXT("the outer batch transaction was kept, not cancelled"), GEditor->Trans->GetQueueLength(), QueueBefore + 1);
+	GEditor->UndoTransaction();
+	TestNotNull(TEXT("undoing the outer transaction restores the owner widget"),
+		Fx.Owner->WidgetTree->FindWidget(TEXT("SharedButton")));
+	TestEqual(TEXT("undoing the outer transaction restores the child getter"),
+		CountVariableNodes(Fx.Child.Get(), SharedButtonName), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGRenameWidgetDependentsChildConflictsTest,
+	"Cortex.UMG.RenameWidgetDependentsChildConflicts",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetDependentsChildConflictsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	FRenameFixtureScope Scope;
+	TStrongObjectPtr<UWidgetBlueprint> Owner(NewFixtureWidgetBlueprint(UUserWidget::StaticClass(), Scope.Add(Suffix, TEXT("Owner"))));
+	if (!TestNotNull(TEXT("owner created"), Owner.Get())) return false;
+	AddButton(Owner.Get(), TEXT("SharedButton"));
+	FKismetEditorUtilities::CompileBlueprint(Owner.Get());
+	TStrongObjectPtr<UWidgetBlueprint> Child(NewFixtureWidgetBlueprint(Owner->GeneratedClass, Scope.Add(Suffix, TEXT("Child"))));
+	if (!TestNotNull(TEXT("child created"), Child.Get())) return false;
+	// The engine rename silently renames a child function graph or timeline that collides with new_name.
+	UEdGraph* FunctionGraph = FBlueprintEditorUtils::CreateNewGraph(Child.Get(), TEXT("ConflictFunction"),
+		UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Child.Get(), FunctionGraph, true, nullptr);
+	// The editor API refuses timelines in Widget Blueprints; a template that is present still collides.
+	// Templates live in the Blueprint's generated class, which the engine's lookup requires.
+	Child->Timelines.Add(NewObject<UTimelineTemplate>(Child->GeneratedClass,
+		*UTimelineTemplate::TimelineVariableNameToTemplateName(TEXT("ConflictTimeline")), RF_Transactional));
+	if (!TestTrue(TEXT("fixtures saved"), SaveFixture(Owner.Get()) && SaveFixture(Child.Get()))) return false;
+	const FString OwnerPath = Owner->GetPathName();
+	const FString ChildPath = Child->GetPathName();
+
+	FRenameRouter Harness;
+	for (const TCHAR* Conflicting : { TEXT("ConflictFunction"), TEXT("ConflictTimeline") })
+	{
+		for (const bool bApply : { false, true })
+		{
+			TSharedPtr<FJsonObject> Params = DependentsParams(Harness, OwnerPath, Conflicting);
+			if (bApply)
+			{
+				Params->SetBoolField(TEXT("dry_run"), false);
+				Params->SetObjectField(TEXT("expected_dependent_fingerprints"), MakeShared<FJsonObject>());
+			}
+			const FString Context = FString::Printf(TEXT("%s %s"), Conflicting, bApply ? TEXT("apply") : TEXT("dry run"));
+			const FCortexCommandResult Refused = Harness.Router.Execute(TEXT("umg.rename_widget"), Params);
+			TestFalse(*(Context + TEXT(" refuses")), Refused.bSuccess);
+			TestEqual(*(Context + TEXT(" code")), Refused.ErrorCode, CortexErrorCodes::InvalidOperation);
+			TestTrue(*(Context + TEXT(" names the colliding name")), Refused.ErrorMessage.Contains(Conflicting));
+			TestFalse(*(Context + TEXT(" leaves the owner clean")), Owner->GetPackage()->IsDirty());
+			TestFalse(*(Context + TEXT(" leaves the child clean")), Child->GetPackage()->IsDirty());
+			TestNotNull(*(Context + TEXT(" keeps the widget name")), Owner->WidgetTree->FindWidget(TEXT("SharedButton")));
+		}
+	}
+	TestTrue(TEXT("child function graph keeps its name"),
+		Child->FunctionGraphs.ContainsByPredicate([](const UEdGraph* Graph) { return Graph->GetFName() == FName(TEXT("ConflictFunction")); }));
+	TestNotNull(TEXT("child timeline keeps its name"), Child->FindTimelineTemplateByVariableName(TEXT("ConflictTimeline")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGRenameWidgetDependentsSameNamedMemberTest,
+	"Cortex.UMG.RenameWidgetDependentsSameNamedMember",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetDependentsSameNamedMemberTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	FRenameFixtureScope Scope;
+	TStrongObjectPtr<UWidgetBlueprint> Owner(NewFixtureWidgetBlueprint(UUserWidget::StaticClass(), Scope.Add(Suffix, TEXT("Owner"))));
+	if (!TestNotNull(TEXT("owner created"), Owner.Get())) return false;
+	AddButton(Owner.Get(), TEXT("SharedButton"));
+	FKismetEditorUtilities::CompileBlueprint(Owner.Get());
+	UClass* OwnerClass = Owner->GeneratedClass;
+
+	// Holds the owner type, owns a variable with the renamed widget's name and reads only that variable.
+	TStrongObjectPtr<UBlueprint> Referencer(NewSavedFixtureBlueprint(UObject::StaticClass(), UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass(), Scope.Add(Suffix, TEXT("Referencer"))));
+	if (!TestNotNull(TEXT("referencer created"), Referencer.Get())) return false;
+	FEdGraphPinType OwnerType;
+	OwnerType.PinCategory = UEdGraphSchema_K2::PC_Object;
+	OwnerType.PinSubCategoryObject = OwnerClass;
+	FBlueprintEditorUtils::AddMemberVariable(Referencer.Get(), TEXT("OwnerInstance"), OwnerType);
+	FEdGraphPinType IntType;
+	IntType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	FBlueprintEditorUtils::AddMemberVariable(Referencer.Get(), SharedButtonName, IntType);
+	AddGetter(Referencer.Get(), SharedButtonName, nullptr);
+	if (!TestTrue(TEXT("fixtures saved"), SaveFixture(Owner.Get()) && SaveFixture(Referencer.Get()))) return false;
+	const FString OwnerPath = Owner->GetPathName();
+	const FString ReferencerPath = Referencer->GetPathName();
+	const TSharedPtr<FJsonObject> ReferencerBefore = MakeObjectAssetFingerprint(Referencer.Get()).ToJson();
+
+	FRenameRouter Harness;
+	TSharedPtr<FJsonObject> ApplyParams;
+	if (!PlanApplyParams(*this, Harness, OwnerPath, TEXT("RenamedButton"), {}, ApplyParams)) return false;
+	const FCortexCommandResult Applied = Harness.Router.Execute(TEXT("umg.rename_widget"), ApplyParams);
+	if (!TestTrue(TEXT("apply succeeds"), Applied.bSuccess && Applied.Data.IsValid()))
+	{
+		AddInfo(Applied.ErrorMessage);
+		return false;
+	}
+	TestNotNull(TEXT("owner widget renamed"), Owner->WidgetTree->FindWidget(TEXT("RenamedButton")));
+	TestFalse(TEXT("the referencer's own same-named member does not dirty it"), Referencer->GetPackage()->IsDirty());
+	TestTrue(TEXT("the referencer fingerprint is unchanged"),
+		FCortexBatchMutation::FingerprintsMatch(MakeObjectAssetFingerprint(Referencer.Get()).ToJson(), ReferencerBefore));
+	TestEqual(TEXT("the referencer keeps its own getter"), CountVariableNodes(Referencer.Get(), SharedButtonName), 1);
+	TestEqual(TEXT("the referencer getter is not renamed"), CountVariableNodes(Referencer.Get(), FName(TEXT("RenamedButton"))), 0);
+	TestTrue(TEXT("the referencer keeps its own same-named variable"),
+		Referencer->NewVariables.ContainsByPredicate([](const FBPVariableDescription& Variable) { return Variable.VarName == SharedButtonName; }));
+	TestFalse(TEXT("the referencer variable is not renamed"),
+		Referencer->NewVariables.ContainsByPredicate([](const FBPVariableDescription& Variable) { return Variable.VarName == FName(TEXT("RenamedButton")); }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGRenameWidgetDependentsBlockedDependentTest,
+	"Cortex.UMG.RenameWidgetDependentsBlockedDependent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetDependentsBlockedDependentTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!TestTrue(TEXT("editor transaction buffer available"), GEditor != nullptr && GEditor->Trans != nullptr)) return false;
+	FLoadedRenameFixture Fx;
+	if (!Fx.Build(*this)) return false;
+	FCortexAssetMutationGuard::Block(Fx.Referencer.Get(), TEXT("test: unverified recovery"));
+	FRenameRouter Harness;
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex rename blocked dependent test")));
+	const int32 QueueBefore = GEditor->Trans->GetQueueLength();
+
+	TSharedPtr<FJsonObject> Params = DependentsParams(Harness, Fx.OwnerPath, TEXT("RenamedButton"));
+	Params->SetBoolField(TEXT("dry_run"), false);
+	Params->SetObjectField(TEXT("expected_dependent_fingerprints"), MakeShared<FJsonObject>());
+	const FCortexCommandResult Refused = Harness.Router.Execute(TEXT("umg.rename_widget"), Params);
+	TestFalse(TEXT("a blocked modified dependent refuses the rename"), Refused.bSuccess);
+	TestEqual(TEXT("blocked refusal code"), Refused.ErrorCode, CortexErrorCodes::InvalidOperation);
+	TestTrue(TEXT("blocked refusal names the asset"), Refused.ErrorMessage.Contains(Fx.ReferencerPath));
+	TestNotNull(TEXT("refusal keeps the owner widget"), Fx.Owner->WidgetTree->FindWidget(TEXT("SharedButton")));
+	TestFalse(TEXT("refusal leaves the owner clean"), Fx.Owner->GetPackage()->IsDirty());
+	TestFalse(TEXT("refusal leaves the child clean"), Fx.Child->GetPackage()->IsDirty());
+	TestEqual(TEXT("refusal opens no transaction"), GEditor->Trans->GetQueueLength(), QueueBefore);
+	return true;
+}
+
+namespace
+{
+	/** A planned dependent that has no references (its own same-named member only) is touched by an injected fault. */
+	bool RunUnmodifiedDependentFault(FAutomationTestBase& Test, const TCHAR* Fault, bool bExpectSuccess)
+	{
+		if (!Test.TestTrue(TEXT("editor transaction buffer available"), GEditor != nullptr && GEditor->Trans != nullptr)) return false;
+		const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+		FRenameFixtureScope Scope;
+		TStrongObjectPtr<UWidgetBlueprint> Owner(NewFixtureWidgetBlueprint(UUserWidget::StaticClass(), Scope.Add(Suffix, TEXT("Owner"))));
+		if (!Test.TestNotNull(TEXT("owner created"), Owner.Get())) return false;
+		AddButton(Owner.Get(), TEXT("SharedButton"));
+		FKismetEditorUtilities::CompileBlueprint(Owner.Get());
+		TStrongObjectPtr<UBlueprint> Referencer(NewSavedFixtureBlueprint(UObject::StaticClass(), UBlueprint::StaticClass(),
+			UBlueprintGeneratedClass::StaticClass(), Scope.Add(Suffix, TEXT("Referencer"))));
+		if (!Test.TestNotNull(TEXT("referencer created"), Referencer.Get())) return false;
+		FEdGraphPinType OwnerType;
+		OwnerType.PinCategory = UEdGraphSchema_K2::PC_Object;
+		OwnerType.PinSubCategoryObject = Owner->GeneratedClass;
+		FBlueprintEditorUtils::AddMemberVariable(Referencer.Get(), TEXT("OwnerInstance"), OwnerType);
+		FEdGraphPinType IntType;
+		IntType.PinCategory = UEdGraphSchema_K2::PC_Int;
+		FBlueprintEditorUtils::AddMemberVariable(Referencer.Get(), SharedButtonName, IntType);
+		AddGetter(Referencer.Get(), SharedButtonName, nullptr);
+		if (!Test.TestTrue(TEXT("fixtures saved"), SaveFixture(Owner.Get()) && SaveFixture(Referencer.Get()))) return false;
+		const FString OwnerPath = Owner->GetPathName();
+		const TSharedPtr<FJsonObject> ReferencerBefore = MakeObjectAssetFingerprint(Referencer.Get()).ToJson();
+		const EBlueprintStatus StatusBefore = Referencer->Status;
+
+		FRenameRouter Harness;
+		TSharedPtr<FJsonObject> ApplyParams;
+		if (!PlanApplyParams(Test, Harness, OwnerPath, TEXT("RenamedButton"), {}, ApplyParams)) return false;
+		GEditor->ResetTransaction(FText::FromString(TEXT("Cortex rename unmodified dependent test")));
+		const int32 QueueBefore = GEditor->Trans->GetQueueLength();
+		CortexUMGRenameDependents::SetFaultForTesting(Fault);
+		const FCortexCommandResult Result = Harness.Router.Execute(TEXT("umg.rename_widget"), ApplyParams);
+		CortexUMGRenameDependents::SetFaultForTesting(NAME_None);
+
+		Test.TestEqual(*FString::Printf(TEXT("%s: request outcome"), Fault), Result.bSuccess, bExpectSuccess);
+		Test.TestFalse(*FString::Printf(TEXT("%s: the referencer is back to its planned dirty flag"), Fault), Referencer->GetPackage()->IsDirty());
+		Test.TestTrue(*FString::Printf(TEXT("%s: the referencer fingerprint is exactly the planned one"), Fault),
+			FCortexBatchMutation::FingerprintsMatch(MakeObjectAssetFingerprint(Referencer.Get()).ToJson(), ReferencerBefore));
+		Test.TestEqual(*FString::Printf(TEXT("%s: the referencer status is the planned one"), Fault), Referencer->Status, StatusBefore);
+		Test.TestEqual(*FString::Printf(TEXT("%s: the referencer keeps its own getter"), Fault),
+			CountVariableNodes(Referencer.Get(), SharedButtonName), 1);
+		if (bExpectSuccess)
+		{
+			Test.TestNotNull(TEXT("owner widget renamed"), Owner->WidgetTree->FindWidget(TEXT("RenamedButton")));
+			return true;
+		}
+		Test.TestEqual(*FString::Printf(TEXT("%s: the unplanned edit is rolled back"), Fault), RollbackStatus(Result), FString(TEXT("restored")));
+		Test.TestEqual(*FString::Printf(TEXT("%s: nothing is blocked"), Fault), BlockedCount(Result), 0);
+		Test.TestNotNull(TEXT("owner widget name is restored"), Owner->WidgetTree->FindWidget(TEXT("SharedButton")));
+		Test.TestEqual(TEXT("the undone request leaves no undo record behind"), GEditor->Trans->GetQueueLength(), QueueBefore);
+		return true;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGRenameWidgetDependentsMarkedUnmodifiedTest,
+	"Cortex.UMG.RenameWidgetDependentsMarkedUnmodified",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetDependentsMarkedUnmodifiedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// The engine only marks the reference-free dependent modified: it returns to its planned dirty flag and status.
+	return RunUnmodifiedDependentFault(*this, TEXT("dirty_unmodified_dependent"), true);
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGRenameWidgetDependentsEditedUnmodifiedTest,
+	"Cortex.UMG.RenameWidgetDependentsEditedUnmodified",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetDependentsEditedUnmodifiedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	// An unplanned edit of a reference-free dependent fails the request, which is undone and verified.
+	return RunUnmodifiedDependentFault(*this, TEXT("edit_unmodified_dependent"), false);
 }
