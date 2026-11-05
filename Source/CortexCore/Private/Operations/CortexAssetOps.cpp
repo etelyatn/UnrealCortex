@@ -971,7 +971,8 @@ FCortexCommandResult FCortexAssetOps::ListRedirectors(const TSharedPtr<FJsonObje
 
 		// The destination is a registry tag: no redirector (and so no destination asset) is loaded for it.
 		FString TaggedDestination;
-		if (AssetData.GetTagValue(FName(TEXT("DestinationObject")), TaggedDestination) && !TaggedDestination.IsEmpty())
+		// The engine writes a null destination as the tag text "None".
+		if (AssetData.GetTagValue(FName(TEXT("DestinationObject")), TaggedDestination) && !TaggedDestination.IsEmpty() && TaggedDestination != TEXT("None"))
 		{
 			Row.Destination = FPackageName::ExportTextPathToObjectPath(TaggedDestination);
 		}

@@ -109,6 +109,14 @@ bool FCortexListRedirectorsTest::RunTest(const FString& Parameters)
 
 	ON_SCOPE_EXIT
 	{
+		for (TObjectIterator<UObject> It; It; ++It)
+		{
+			UObject* Object = *It;
+			if (Object->GetOutermost()->GetName().StartsWith(Dir))
+			{
+				Object->ClearFlags(RF_Standalone | RF_Public);
+			}
+		}
 		for (TObjectIterator<UPackage> It; It; ++It)
 		{
 			UPackage* Package = *It;
@@ -131,6 +139,7 @@ bool FCortexListRedirectorsTest::RunTest(const FString& Parameters)
 	const FString RenamedPackage = Dir + TEXT("/Renamed");
 	const FString SubOriginalPackage = SubDir + TEXT("/SubOriginal");
 	const FString SubRenamedPackage = SubDir + TEXT("/SubRenamed");
+	const FString DanglingPackage = Dir + TEXT("/Dangling");
 	UCurveFloat* Renamed = CreateSavedAsset<UCurveFloat>(RenamedPackage, TEXT("Renamed"));
 	UCurveFloat* SubRenamed = CreateSavedAsset<UCurveFloat>(SubRenamedPackage, TEXT("SubRenamed"));
 	if (!TestTrue(TEXT("destination fixtures saved"), Renamed && SubRenamed)
@@ -138,6 +147,19 @@ bool FCortexListRedirectorsTest::RunTest(const FString& Parameters)
 			CreateSavedRedirector(OriginalPackage, Renamed) && CreateSavedRedirector(SubOriginalPackage, SubRenamed)))
 	{
 		return false;
+	}
+
+	// A dangling redirector exists only in memory: the engine refuses to save one without a destination, and its
+	// registry tag reads "None".
+	{
+		UPackage* DanglingPackageObject = CreatePackage(*DanglingPackage);
+		UObjectRedirector* Dangling = NewObject<UObjectRedirector>(
+			DanglingPackageObject, UObjectRedirector::StaticClass(), TEXT("Dangling"), RF_Public | RF_Standalone);
+		if (!TestNotNull(TEXT("dangling redirector created"), Dangling))
+		{
+			return false;
+		}
+		FAssetRegistryModule::AssetCreated(Dangling);
 	}
 
 	// A referencer that still points at the old location, i.e. at the redirector.
@@ -208,7 +230,14 @@ bool FCortexListRedirectorsTest::RunTest(const FString& Parameters)
 	}
 	double Count = -1.0;
 	All.Data->TryGetNumberField(TEXT("count"), Count);
-	TestEqual(TEXT("count"), static_cast<int32>(Count), 2);
+	TestEqual(TEXT("count"), static_cast<int32>(Count), 3);
+
+	// A dangling redirector (no destination) lists destination null, not the engine's "None" tag text.
+	const TSharedPtr<FJsonObject> DanglingEntry = FindRedirector(All.Data, DanglingPackage + TEXT(".Dangling"));
+	if (TestTrue(TEXT("dangling redirector listed"), DanglingEntry.IsValid()))
+	{
+		TestTrue(TEXT("dangling destination is null"), DanglingEntry->HasTypedField<EJson::Null>(TEXT("destination")));
+	}
 
 	// recursive:false excludes the subfolder redirector.
 	const FCortexCommandResult Flat = RunListRedirectors(Dir, TOptional<bool>(false));
