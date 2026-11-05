@@ -4,6 +4,8 @@
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 #include "GameFramework/Actor.h"
+#include "K2Node_ActorBoundEvent.h"
+#include "K2Node_ComponentBoundEvent.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPRenameMemberOps.h"
 
@@ -378,6 +380,197 @@ bool FCortexBPRenameMemberLocalFaultInjectionTest::RunTest(const FString& Parame
 	TestTrue(TEXT("Blueprint up to date after the recovery compile"), Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
 	// A restored package may stay dirty (the failed attempt touched it); everything else must match.
 	Before.Check(*this, Blueprint, TEXT("fault injection"), /*bCheckDirty=*/false);
+
+	ClearNodes(Blueprint);
+	Discard(Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRenameMemberLocalChildCollisionTest,
+	"Cortex.Blueprint.RenameMember.LocalChildCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRenameMemberLocalChildCollisionTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexReparentTest;
+	using namespace CortexRenameTest;
+
+	UBlueprint* Owner = MakeBlueprint(TEXT("RenameLocalOwner"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Owner"), Owner))
+	{
+		return false;
+	}
+	UEdGraph* Calc = AddFunctionGraph(Owner, TEXT("Calc"));
+	TestTrue(TEXT("Local added"), FBlueprintEditorUtils::AddLocalVariable(Owner, Calc, TEXT("Temp"), BoolPin()));
+	FKismetEditorUtilities::CompileBlueprint(Owner);
+	UBlueprint* Child = MakeBlueprint(TEXT("RenameLocalChild"), Owner->GeneratedClass);
+	if (!TestNotNull(TEXT("Child"), Child))
+	{
+		Discard(Owner);
+		return false;
+	}
+	AddVariable(Child, TEXT("Clash"), BoolPin(), TEXT("true"));
+	FKismetEditorUtilities::CompileBlueprint(Child);
+
+	const FUnchanged OwnerBefore(Owner);
+	const FUnchanged ChildBefore(Child);
+	TSharedPtr<FJsonObject> Params = RenameParams(Owner, TEXT("local"), TEXT("Temp"), TEXT("Clash"));
+	Params->SetStringField(TEXT("function"), TEXT("Calc"));
+	TSharedPtr<FJsonObject> Dry = RenameParams(Owner, TEXT("local"), TEXT("Temp"), TEXT("Clash"));
+	Dry->SetStringField(TEXT("function"), TEXT("Calc"));
+	Dry->SetBoolField(TEXT("dry_run"), true);
+	const FCortexCommandResult DryResult = FCortexBPRenameMemberOps::Execute(Dry);
+	if (TestTrue(TEXT("dry_run succeeds"), DryResult.bSuccess))
+	{
+		TestFalse(TEXT("dry_run reports the child collision"), DryResult.Data->GetBoolField(TEXT("can_apply")));
+	}
+	ExpectRefusal(*this, FCortexBPRenameMemberOps::Execute(Params), CortexErrorCodes::NameCollision, TEXT("a loaded child declares the new local name"));
+	OwnerBefore.Check(*this, Owner, TEXT("owner"));
+	ChildBefore.Check(*this, Child, TEXT("child is not renamed or dirtied"));
+	TestTrue(TEXT("The child's variable keeps its name"), HasVariable(Child, TEXT("Clash")));
+
+	ClearNodes(Child);
+	ClearNodes(Owner);
+	Discard(Child);
+	Discard(Owner);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRenameMemberLocalExternalNodesTest,
+	"Cortex.Blueprint.RenameMember.LocalExternalNodes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRenameMemberLocalExternalNodesTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexReparentTest;
+	using namespace CortexRenameTest;
+
+	UBlueprint* Blueprint = MakeBlueprint(TEXT("RenameLocalExternal"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint))
+	{
+		return false;
+	}
+	UEdGraph* Calc = AddFunctionGraph(Blueprint, TEXT("Calc"));
+	TestTrue(TEXT("Local added"), FBlueprintEditorUtils::AddLocalVariable(Blueprint, Calc, TEXT("Counter"), BoolPin()));
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	UK2Node_VariableGet* LocalGet = AddGet(Calc, TEXT("Counter"), nullptr, TEXT("Calc"));
+	// A node of the same name that reads a member of an unrelated class: the engine's local rename leaves it alone.
+	UK2Node_VariableGet* External = AddGet(Calc, TEXT("bHidden"), AActor::StaticClass());
+	External->VariableReference.SetExternalMember(TEXT("Counter"), AActor::StaticClass());
+
+	TSharedPtr<FJsonObject> Params = RenameParams(Blueprint, TEXT("local"), TEXT("Counter"), TEXT("Count2"));
+	Params->SetStringField(TEXT("function"), TEXT("Calc"));
+	Params->SetBoolField(TEXT("compile"), false);
+	const FCortexCommandResult Result = FCortexBPRenameMemberOps::Execute(Params);
+	TestTrue(TEXT("a same-named node of an unrelated class does not block the rename"), Result.bSuccess);
+	TestEqual(TEXT("Local node follows"), LocalGet->GetVarName(), FName(TEXT("Count2")));
+	TestEqual(TEXT("External node untouched"), External->GetVarName(), FName(TEXT("Counter")));
+
+	ClearNodes(Blueprint);
+	Discard(Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRenameMemberDispatcherNodesTest,
+	"Cortex.Blueprint.RenameMember.DispatcherNodes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRenameMemberDispatcherNodesTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexReparentTest;
+	using namespace CortexRenameTest;
+
+	UBlueprint* Blueprint = MakeBlueprint(TEXT("RenameDispatcherNodes"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint))
+	{
+		return false;
+	}
+	AddDispatcher(Blueprint, TEXT("OnDone"));
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+
+	// A bind node that targets the Blueprint's own class from outside the self context, and the bound-event nodes a Level
+	// Blueprint or a component binding would hold: none are retargeted by RenameMemberVariable.
+	FGraphNodeCreator<UK2Node_AddDelegate> BindCreator(*EventGraph);
+	UK2Node_AddDelegate* Bind = BindCreator.CreateNode();
+	Bind->DelegateReference.SetExternalMember(TEXT("OnDone"), Blueprint->GeneratedClass);
+	BindCreator.Finalize();
+	UK2Node_ActorBoundEvent* ActorBound = NewObject<UK2Node_ActorBoundEvent>(EventGraph);
+	ActorBound->CreateNewGuid();
+	ActorBound->DelegateOwnerClass = Blueprint->GeneratedClass;
+	ActorBound->DelegatePropertyName = TEXT("OnDone");
+	EventGraph->AddNode(ActorBound, false, false);
+	ActorBound->AllocateDefaultPins();
+	UK2Node_ComponentBoundEvent* ComponentBound = NewObject<UK2Node_ComponentBoundEvent>(EventGraph);
+	ComponentBound->CreateNewGuid();
+	ComponentBound->DelegateOwnerClass = Blueprint->GeneratedClass;
+	ComponentBound->DelegatePropertyName = TEXT("OnDone");
+	EventGraph->AddNode(ComponentBound, false, false);
+	ComponentBound->AllocateDefaultPins();
+	UK2Node_ActorBoundEvent* Unrelated = NewObject<UK2Node_ActorBoundEvent>(EventGraph);
+	Unrelated->CreateNewGuid();
+	Unrelated->DelegateOwnerClass = AActor::StaticClass();
+	Unrelated->DelegatePropertyName = TEXT("OnDone");
+	EventGraph->AddNode(Unrelated, false, false);
+	Unrelated->AllocateDefaultPins();
+
+	TSharedPtr<FJsonObject> Params = RenameParams(Blueprint, TEXT("dispatcher"), TEXT("OnDone"), TEXT("OnFinished"));
+	Params->SetBoolField(TEXT("compile"), false);
+	const FCortexCommandResult Result = FCortexBPRenameMemberOps::Execute(Params);
+	if (!TestTrue(TEXT("rename succeeds"), Result.bSuccess))
+	{
+		AddError(FString::Printf(TEXT("%s %s"), *Result.ErrorCode, *Result.ErrorMessage));
+	}
+	TestEqual(TEXT("Non-self bind node follows"), Bind->DelegateReference.GetMemberName(), FName(TEXT("OnFinished")));
+	TestEqual(TEXT("Actor bound event follows"), ActorBound->DelegatePropertyName, FName(TEXT("OnFinished")));
+	TestEqual(TEXT("Component bound event follows"), ComponentBound->DelegatePropertyName, FName(TEXT("OnFinished")));
+	TestEqual(TEXT("A bound event of an unrelated class is not touched"), Unrelated->DelegatePropertyName, FName(TEXT("OnDone")));
+
+	ClearNodes(Blueprint);
+	Discard(Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRenameMemberStaleAcknowledgmentTest,
+	"Cortex.Blueprint.RenameMember.StaleAcknowledgment",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRenameMemberStaleAcknowledgmentTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexRenameMemberFunctionTestLocal;
+	using namespace CortexAdoptTest;
+	using namespace CortexReparentTest;
+	using namespace CortexRenameTest;
+
+	UBlueprint* Blueprint = MakeBlueprint(TEXT("RenameStaleAck"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint))
+	{
+		return false;
+	}
+	AddFunctionGraph(Blueprint, TEXT("Calc"));
+	AddDispatcher(Blueprint, TEXT("OnDone"));
+	UEdGraph* Calc = FunctionGraphNamed(Blueprint, TEXT("Calc"));
+	FBlueprintEditorUtils::AddLocalVariable(Blueprint, Calc, TEXT("Temp"), BoolPin());
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	const FUnchanged Before(Blueprint);
+	const TSharedPtr<FJsonObject> Function = RenameParams(Blueprint, TEXT("function"), TEXT("Calc"), TEXT("Calc2"));
+	const TSharedPtr<FJsonObject> Dispatcher = RenameParams(Blueprint, TEXT("dispatcher"), TEXT("OnDone"), TEXT("OnFinished"));
+	const TSharedPtr<FJsonObject> Local = RenameParams(Blueprint, TEXT("local"), TEXT("Temp"), TEXT("Temp2"));
+	Local->SetStringField(TEXT("function"), TEXT("Calc"));
+	for (const TSharedPtr<FJsonObject>& Params : {Local, Dispatcher, Function})
+	{
+		SetStrings(Params, TEXT("acknowledged_losses"), {TEXT("save_game:Ghost")});
+		ExpectRefusal(*this, FCortexBPRenameMemberOps::Execute(Params), CortexErrorCodes::PotentialDataLoss, Params->GetStringField(TEXT("kind")) + TEXT(" with a stale acknowledgment"));
+		Before.Check(*this, Blueprint, Params->GetStringField(TEXT("kind")));
+	}
 
 	ClearNodes(Blueprint);
 	Discard(Blueprint);

@@ -5,7 +5,9 @@
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
 #include "K2Node.h"
+#include "K2Node_ActorBoundEvent.h"
 #include "K2Node_BaseMCDelegate.h"
+#include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CreateDelegate.h"
 #include "K2Node_Variable.h"
@@ -73,6 +75,15 @@ namespace CortexGraphMemberReferencesPrivate
 						if (const UK2Node_BaseMCDelegate* DelegateNode = Cast<UK2Node_BaseMCDelegate>(Node))
 						{
 							bReferences = DelegateNode->DelegateReference.GetMemberName() == Member;
+						}
+						else if (const UK2Node_ActorBoundEvent* ActorEvent = Cast<UK2Node_ActorBoundEvent>(Node))
+						{
+							// Bound events store the delegate by name and override neither hook.
+							bReferences = ActorEvent->DelegatePropertyName == Member;
+						}
+						else if (const UK2Node_ComponentBoundEvent* ComponentEvent = Cast<UK2Node_ComponentBoundEvent>(Node))
+						{
+							bReferences = ComponentEvent->DelegatePropertyName == Member;
 						}
 					}
 				}

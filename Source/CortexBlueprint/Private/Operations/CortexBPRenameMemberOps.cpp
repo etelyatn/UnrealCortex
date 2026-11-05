@@ -12,8 +12,10 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
+#include "K2Node_ActorBoundEvent.h"
 #include "K2Node_BaseMCDelegate.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_Variable.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -218,6 +220,63 @@ namespace CortexBPRenameMemberPrivate
 		return nullptr;
 	}
 
+	bool TargetsOwner(const UClass* Class, const UBlueprint* Owner)
+	{
+		return Class != nullptr && UBlueprint::GetBlueprintFromClass(Class) == Owner;
+	}
+
+	/** The class that declares the delegate a bound-event node listens to; null for other nodes. */
+	const UClass* BoundEventDelegateOwner(const UEdGraphNode* Node)
+	{
+		if (const UK2Node_ActorBoundEvent* Actor = Cast<UK2Node_ActorBoundEvent>(Node))
+		{
+			return Actor->DelegateOwnerClass;
+		}
+		if (const UK2Node_ComponentBoundEvent* Component = Cast<UK2Node_ComponentBoundEvent>(Node))
+		{
+			return Component->DelegateOwnerClass;
+		}
+		return nullptr;
+	}
+
+	/** Dispatcher nodes the engine's variable rename does not reach: bind/call nodes that target the Blueprint from outside the self context and bound events. */
+	void RetargetDispatcherNodes(UBlueprint* Target, const FName Old, const FName New)
+	{
+		TArray<UEdGraph*> Graphs;
+		Target->GetAllGraphs(Graphs);
+		for (const UEdGraph* Graph : Graphs)
+		{
+			for (UEdGraphNode* GraphNode : Graph->Nodes)
+			{
+				if (UK2Node_BaseMCDelegate* Delegate = Cast<UK2Node_BaseMCDelegate>(GraphNode))
+				{
+					if (!Delegate->DelegateReference.IsSelfContext() && Delegate->DelegateReference.GetMemberName() == Old
+						&& TargetsOwner(Delegate->DelegateReference.GetMemberParentClass(), Target))
+					{
+						Delegate->Modify();
+						Delegate->DelegateReference.SetExternalMember(New, Delegate->DelegateReference.GetMemberParentClass());
+					}
+				}
+				else if (UK2Node_ActorBoundEvent* Actor = Cast<UK2Node_ActorBoundEvent>(GraphNode))
+				{
+					if (Actor->DelegatePropertyName == Old && TargetsOwner(Actor->DelegateOwnerClass, Target))
+					{
+						Actor->Modify();
+						Actor->DelegatePropertyName = New;
+					}
+				}
+				else if (UK2Node_ComponentBoundEvent* Component = Cast<UK2Node_ComponentBoundEvent>(GraphNode))
+				{
+					if (Component->DelegatePropertyName == Old && TargetsOwner(Component->DelegateOwnerClass, Target))
+					{
+						Component->Modify();
+						Component->DelegatePropertyName = New;
+					}
+				}
+			}
+		}
+	}
+
 	/** True when the engine retargets the node together with the member (nodes of unrelated classes sharing the name stay). */
 	bool FollowsRename(const UEdGraphNode* Node, const UBlueprint* Owner, const EKind Kind)
 	{
@@ -225,11 +284,17 @@ namespace CortexBPRenameMemberPrivate
 		{
 			if (const UK2Node_Variable* Variable = Cast<UK2Node_Variable>(Node))
 			{
-				return !Variable->VariableReference.IsLocalScope() && Variable->VariableReference.IsSelfContext();
+				return !Variable->VariableReference.IsLocalScope()
+					&& (Variable->VariableReference.IsSelfContext() || TargetsOwner(Variable->VariableReference.GetMemberParentClass(), Owner));
 			}
 			if (const UK2Node_BaseMCDelegate* Delegate = Cast<UK2Node_BaseMCDelegate>(Node))
 			{
-				return Delegate->DelegateReference.IsSelfContext();
+				return Delegate->DelegateReference.IsSelfContext() || TargetsOwner(Delegate->DelegateReference.GetMemberParentClass(), Owner);
+			}
+			if (Cast<UK2Node_ActorBoundEvent>(Node) != nullptr || Cast<UK2Node_ComponentBoundEvent>(Node) != nullptr)
+			{
+				// Binding nodes name the dispatcher only; the command retargets those that bind this Blueprint's own dispatcher.
+				return Kind == EKind::Dispatcher && TargetsOwner(BoundEventDelegateOwner(Node), Owner);
 			}
 			return true;
 		}
@@ -490,9 +555,15 @@ namespace CortexBPRenameMemberPrivate
 		}
 		else
 		{
+			// The engine's local rename retargets the member variable nodes of the function graph itself whose member class is this
+			// Blueprint's (self context included); nodes of unrelated classes and nodes in sub graphs are not touched.
+			UClass* Generated = Blueprint->GeneratedClass;
+			const UEdGraph* FunctionGraph = FindFunctionGraph(Blueprint, Request.Function);
 			for (const FCortexMemberReference& Shadowed : Plan.ShadowedMemberNodes)
 			{
-				if (Shadowed.GraphGuid.IsValid())
+				const UK2Node_Variable* Node = Cast<UK2Node_Variable>(FindNodeByGuid(Blueprint, Shadowed.NodeGuid));
+				const UClass* MemberClass = Node != nullptr ? Node->VariableReference.GetMemberParentClass(Generated) : nullptr;
+				if (Node != nullptr && Node->GetGraph() == FunctionGraph && Generated != nullptr && MemberClass != nullptr && MemberClass->IsChildOf(Generated))
 				{
 					AddBlocker(Plan, CortexErrorCodes::InvalidOperation,
 						FString::Printf(TEXT("Function '%s' contains member variable nodes named '%s'; the engine's local rename would retarget them too. Rename or remove those nodes first."),
@@ -534,16 +605,18 @@ namespace CortexBPRenameMemberPrivate
 			}
 		}
 
-		if (Request.Kind == EKind::Local)
-		{
-			return;
-		}
 
 		// Dependents: derived classes (a child that declares the new name, or overrides the old function) and every
 		// Blueprint that references the member (the engine would rewrite only the loaded ones).
 		FCortexBPDependentScan::Find(Blueprint, Request.Old,
 			Request.Kind == EKind::Function ? FCortexBPDependentScan::EMemberKind::Function : FCortexBPDependentScan::EMemberKind::Variable,
 			Plan.Dependents);
+		if (Request.Kind == EKind::Local)
+		{
+			// A local variable cannot be referenced from another asset; only children (whose members ValidateBlueprintChildVariables
+			// would rename) and uninspectable dependents matter.
+			Plan.Dependents.RemoveAll([](const FCortexBPDependentHit& Hit) { return Hit.Role != TEXT("child") && !Hit.bUnscanned; });
+		}
 
 		TArray<FString> ChildCollisions;
 		TArray<FString> ChildOverrides;
@@ -556,7 +629,7 @@ namespace CortexBPRenameMemberPrivate
 				Unscanned.Add(Hit.AssetPath);
 				continue;
 			}
-			if (Hit.References.Num() > 0)
+			if (Request.Kind != EKind::Local && Hit.References.Num() > 0)
 			{
 				Referencing.Add(FString::Printf(TEXT("%s (%d references)"), *Hit.AssetPath, Hit.References.Num()));
 			}
@@ -601,7 +674,7 @@ namespace CortexBPRenameMemberPrivate
 				TEXT("Some dependent Blueprints could not be inspected, so the rename cannot be proven safe."), Unscanned);
 		}
 
-		if (Request.Kind == EKind::Variable)
+		if (Request.Kind == EKind::Variable || Request.Kind == EKind::Dispatcher)
 		{
 			const int32 Index = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, Request.Old);
 			if (Index != INDEX_NONE)
@@ -1072,7 +1145,6 @@ FCortexCommandResult ExecuteImpl(const TSharedPtr<FJsonObject>& Params)
 			Details);
 	}
 
-	if (Request.Kind == EKind::Variable)
 	{
 		FCortexCommandResult AckError;
 		if (!FCortexBPSaveGameGuard::Check(Plan->SaveGameFindings, Acknowledged, AckError))
@@ -1148,6 +1220,10 @@ FCortexCommandResult ExecuteImpl(const TSharedPtr<FJsonObject>& Params)
 		{
 		case EKind::Variable:
 		case EKind::Dispatcher:
+			if (Request.Kind == EKind::Dispatcher)
+			{
+				RetargetDispatcherNodes(Target, Request.Old, Request.New);
+			}
 			FBlueprintEditorUtils::RenameMemberVariable(Target, Request.Old, Request.New);
 			break;
 		case EKind::Function:
