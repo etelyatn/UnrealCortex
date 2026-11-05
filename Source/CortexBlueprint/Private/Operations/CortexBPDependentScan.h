@@ -40,7 +40,18 @@ public:
 		Function
 	};
 
-	static void Find(UBlueprint* Owner, FName Member, EMemberKind Kind, TArray<FCortexBPDependentHit>& OutHits);
+	/**
+	 * All: derived classes (children) plus every Asset Registry referencer of the owner package.
+	 * ChildrenOnly: derived classes only, so a caller whose member cannot be referenced from other Blueprints
+	 * (a function-local variable) never loads a referencer map just to discard it.
+	 */
+	enum class EScanScope : uint8
+	{
+		All,
+		ChildrenOnly
+	};
+
+	static void Find(UBlueprint* Owner, FName Member, EMemberKind Kind, TArray<FCortexBPDependentHit>& OutHits, EScanScope Scope = EScanScope::All);
 
 #if WITH_DEV_AUTOMATION_TESTS
 	/** Test hook: a load of a package whose name contains this text is treated as failed. Empty clears it. */

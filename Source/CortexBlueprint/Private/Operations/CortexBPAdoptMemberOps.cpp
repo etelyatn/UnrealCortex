@@ -10,6 +10,8 @@
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "K2Node_ActorBoundEvent.h"
+#include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_Variable.h"
 #include "K2Node_VariableSet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -174,6 +176,11 @@ namespace
 	/** True when RenameVariableReferences retargets the node together with the variable. */
 	bool NodeFollows(const UBlueprint* Blueprint, const UEdGraphNode* Node)
 	{
+		// A bound event keeps its delegate binding; it is not a member reference the readback can resolve to a property.
+		if (Node->IsA<UK2Node_ComponentBoundEvent>() || Node->IsA<UK2Node_ActorBoundEvent>())
+		{
+			return false;
+		}
 		if (const UK2Node_Variable* Variable = Cast<UK2Node_Variable>(Node))
 		{
 			if (Variable->VariableReference.IsLocalScope())
@@ -1015,10 +1022,14 @@ namespace
 			}
 		}
 
-		if (!bCompile && (!bTransferDefault || Algo::AnyOf(Requests, [](const FOps::FMappingRequest& R) { return R.BpVariable != R.NativeProperty; })))
+		// Every default write lives in the compiled-state step, so compile=false would drop it while still reporting it as the source.
+		if (!bCompile && (!bTransferDefault || Algo::AnyOf(Requests, [](const FOps::FMappingRequest& R)
+		{
+			return R.BpVariable != R.NativeProperty || R.bHasDefault;
+		})))
 		{
 			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-				TEXT("compile=false cannot move defaults and instance values: transfer_default=false and renamed mappings need the compile that rebuilds the class"));
+				TEXT("compile=false cannot move defaults and instance values: transfer_default=false, a mapping default and renamed mappings need the compile that writes them"));
 		}
 
 		const TSharedRef<FOps::FAdoptPlan> Plan = MakeShared<FOps::FAdoptPlan>(FOps::BuildPlan(Blueprint, Requests, bTransferDefault, bRetargetNodes, Acknowledged));

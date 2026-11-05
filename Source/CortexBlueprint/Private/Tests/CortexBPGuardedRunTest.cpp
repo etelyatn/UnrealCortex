@@ -5,6 +5,7 @@
 #include "CortexAssetMutationGuard.h"
 #include "Components/StaticMeshComponent.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "K2Node_VariableGet.h"
@@ -532,5 +533,58 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 	{
 		Discard(Blueprint);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGuardedRunOuterTransactionTest,
+	"Cortex.Blueprint.GuardedRun.OuterTransaction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGuardedRunOuterTransactionTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+
+	if (GEditor == nullptr || GEditor->Trans == nullptr)
+	{
+		AddInfo(TEXT("No editor transaction buffer in this context"));
+		return true;
+	}
+	UBlueprint* Blueprint = MakeBlueprint(TEXT("BP_GuardedOuter"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint))
+	{
+		return false;
+	}
+
+	// An outer transaction stands in for a router batch: a failed run that opts out of the editor undo must not cancel it.
+	GEditor->BeginTransaction(NSLOCTEXT("CortexTest", "GuardedOuter", "Cortex test batch"));
+	const FGuid OuterId = GEditor->Trans->GetUndoContext(false).TransactionId;
+
+	FCortexBPGuardedRun::FSpec Spec;
+	Spec.OpName = TEXT("guarded_outer_test");
+	Spec.Blueprint = Blueprint;
+	Spec.bCompile = false;
+	Spec.bUndoOnFailure = false;
+	Spec.Apply = [](UBlueprint* Target, FString&)
+	{
+		FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("Injected"), []()
+		{
+			FEdGraphPinType PinType;
+			PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+			return PinType;
+		}());
+		return true;
+	};
+	Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
+
+	const FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
+	TestFalse(TEXT("The run fails"), Result.bSuccess);
+	TestTrue(TEXT("The outer transaction is still active"), GEditor->IsTransactionActive());
+	TestEqual(TEXT("The outer transaction is unchanged"), GEditor->Trans->GetUndoContext(false).TransactionId, OuterId);
+	if (GEditor->IsTransactionActive())
+	{
+		GEditor->EndTransaction();
+	}
+	Discard(Blueprint);
 	return true;
 }

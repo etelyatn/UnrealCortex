@@ -434,8 +434,11 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 	// Inside an outer transaction (router batch) our transaction is nested: it has no entry of its own and the editor refuses to
 	// undo while a transaction is active, so only the journal can restore.
 	const bool bOuterTransaction = GEditor != nullptr && GEditor->IsTransactionActive();
+	// A run that opts out of the editor undo does not begin a transaction at all: it neither records an entry (a state the undo
+	// cannot rebuild) nor needs one, so a user undo after a successful adoption cannot produce that state either.
 	TUniquePtr<FScopedTransaction> Transaction = MakeUnique<FScopedTransaction>(
-		FText::FromString(FString::Printf(TEXT("Cortex: %s"), *Spec.OpName)));
+		FText::FromString(FString::Printf(TEXT("Cortex: %s"), *Spec.OpName)),
+		/*bShouldActuallyTransact=*/Spec.bUndoOnFailure);
 	Blueprint->Modify();
 	// The guarded transaction is identified by id, not by undo-list growth: redo history or eviction keeps the length flat.
 	const FGuid TransactionId = (!bOuterTransaction && GEditor && GEditor->Trans) ? GEditor->Trans->GetUndoContext(false).TransactionId : FGuid();
@@ -489,9 +492,10 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 	{
 		const bool bParentChanged = Blueprint->ParentClass != Journal.Parent;
 
-		// End the guarded transaction (recorded, not cancelled: Cancel restores nothing), then restore. A run that opts out of the
-		// editor undo discards the record instead: the undo would re-apply a state the engine cannot rebuild (see FSpec::bUndoOnFailure).
-		if (!Spec.bUndoOnFailure && Transaction.IsValid())
+		// End the guarded transaction (recorded, not cancelled: Cancel restores nothing), then restore. A run that opted out of the
+		// undo holds no transaction; cancelling a nested one would cancel the whole outer transaction (a router batch), so a
+		// nested run never cancels.
+		if (!Spec.bUndoOnFailure && Transaction.IsValid() && !bOuterTransaction)
 		{
 			Transaction->Cancel();
 		}

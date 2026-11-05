@@ -105,7 +105,7 @@ TSharedRef<FJsonObject> FCortexBPDependentHit::ToJson() const
 	return Json;
 }
 
-void FCortexBPDependentScan::Find(UBlueprint* Owner, FName Member, EMemberKind Kind, TArray<FCortexBPDependentHit>& OutHits)
+void FCortexBPDependentScan::Find(UBlueprint* Owner, FName Member, EMemberKind Kind, TArray<FCortexBPDependentHit>& OutHits, EScanScope Scope)
 {
 	OutHits.Reset();
 	if (Owner == nullptr || Member.IsNone())
@@ -148,27 +148,30 @@ void FCortexBPDependentScan::Find(UBlueprint* Owner, FName Member, EMemberKind K
 		}
 	}
 
-	// Registry referencers of the owner package.
-	TArray<FName> Referencers;
-	Registry.GetReferencers(OwnerPackage, Referencers, UE::AssetRegistry::EDependencyCategory::Package);
-	for (const FName PackageName : Referencers)
+	// Registry referencers of the owner package; skipped entirely (nothing is loaded) when only children can name the member.
+	if (Scope == EScanScope::All)
 	{
-		if (PackageName == OwnerPackage || PackageName.ToString().StartsWith(TEXT("/Script/")))
+		TArray<FName> Referencers;
+		Registry.GetReferencers(OwnerPackage, Referencers, UE::AssetRegistry::EDependencyCategory::Package);
+		for (const FName PackageName : Referencers)
 		{
-			continue;
-		}
-		TArray<FAssetData> Assets;
-		Registry.GetAssetsByPackageName(PackageName, Assets);
-		for (const FAssetData& Asset : Assets)
-		{
-			if (Asset.IsInstanceOf(UBlueprint::StaticClass()))
+			if (PackageName == OwnerPackage || PackageName.ToString().StartsWith(TEXT("/Script/")))
 			{
-				AddCandidate(Candidates, PackageName, Asset.AssetName.ToString(), TEXT("referencer"));
+				continue;
 			}
-			else if (Asset.IsInstanceOf(UWorld::StaticClass()))
+			TArray<FAssetData> Assets;
+			Registry.GetAssetsByPackageName(PackageName, Assets);
+			for (const FAssetData& Asset : Assets)
 			{
-				// The Level Blueprint is a subobject of the map's persistent level, never a top-level asset.
-				AddCandidate(Candidates, PackageName, Asset.AssetName.ToString(), TEXT("level_script"));
+				if (Asset.IsInstanceOf(UBlueprint::StaticClass()))
+				{
+					AddCandidate(Candidates, PackageName, Asset.AssetName.ToString(), TEXT("referencer"));
+				}
+				else if (Asset.IsInstanceOf(UWorld::StaticClass()))
+				{
+					// The Level Blueprint is a subobject of the map's persistent level, never a top-level asset.
+					AddCandidate(Candidates, PackageName, Asset.AssetName.ToString(), TEXT("level_script"));
+				}
 			}
 		}
 	}

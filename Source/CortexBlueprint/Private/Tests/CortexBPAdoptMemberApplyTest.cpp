@@ -1,6 +1,8 @@
 #include "Misc/AutomationTest.h"
 
 #include "CortexAssetMutationGuard.h"
+#include "Editor.h"
+#include "Editor/Transactor.h"
 #include "CortexBPAdoptMemberTestSupport.h"
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
@@ -124,15 +126,15 @@ namespace
 		return Property != nullptr && Property->GetPropertyValue_InContainer(Object);
 	}
 
-	/** An object-based Blueprint with the single variable Name (default true), compiled against UObject and then handed the native parent directly. */
-	UBlueprint* MakeObjectStateA(const TCHAR* AssetName, const TCHAR* VariableName)
+	/** An object-based Blueprint with the single bool variable Name, compiled against UObject and then handed the native parent directly. */
+	UBlueprint* MakeObjectStateA(const TCHAR* AssetName, const TCHAR* VariableName, const TCHAR* DefaultValue = TEXT("true"))
 	{
 		UBlueprint* Blueprint = CortexAdoptTest::MakeBlueprint(AssetName, UObject::StaticClass());
 		if (Blueprint == nullptr)
 		{
 			return nullptr;
 		}
-		AddVariable(Blueprint, VariableName, BoolPin(), TEXT("true"));
+		AddVariable(Blueprint, VariableName, BoolPin(), DefaultValue);
 		FKismetEditorUtilities::CompileBlueprint(Blueprint);
 		Blueprint->ParentClass = UCortexBPAdoptObjectParent::StaticClass();
 		return Blueprint;
@@ -223,12 +225,27 @@ bool FCortexBPAdoptMemberTransferDefaultFalseTest::RunTest(const FString& Parame
 {
 	using namespace CortexAdoptTest;
 
-	FStateAFixture Fixture = MakeStateA(TEXT("AdoptTransferFalse"), false, false, false);
-	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint))
+	// The plan requires the instance behaviour here too: instance B equalled the old default (true) and must follow the new
+	// CDO (the parent default, false) without becoming a persisted override; instance A already differed and keeps false.
+	UBlueprint* Blueprint = MakeObjectStateA(TEXT("AdoptTransferFalse"), TEXT("bPowerOn"));
+	if (!TestNotNull(TEXT("Fixture"), Blueprint))
 	{
 		return false;
 	}
-	TSharedPtr<FJsonObject> Params = AdoptParams(Fixture.Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))});
+	UClass* OldClass = Blueprint->GeneratedClass;
+	UObject* Overriding = NewObject<UObject>(GetTransientPackage(), OldClass, TEXT("AdoptTransferFalseOverriding"));
+	UObject* Following = NewObject<UObject>(GetTransientPackage(), OldClass, TEXT("AdoptTransferFalseFollowing"));
+	Overriding->SetFlags(RF_Standalone);
+	Following->SetFlags(RF_Standalone);
+	const FString OverridingPath = Overriding->GetPathName();
+	const FString FollowingPath = Following->GetPathName();
+	if (const FBoolProperty* Own = BoolOn(Overriding, TEXT("bPowerOn")))
+	{
+		Own->SetPropertyValue_InContainer(Overriding, false);
+	}
+	TestTrue(TEXT("The following instance starts at the old default"), ReadBool(Following, TEXT("bPowerOn")));
+
+	TSharedPtr<FJsonObject> Params = AdoptParams(Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))});
 	Params->SetBoolField(TEXT("transfer_default"), false);
 	const FCortexCommandResult Result = FCortexBPAdoptMemberOps::Execute(Params);
 	if (!Result.bSuccess)
@@ -240,14 +257,21 @@ bool FCortexBPAdoptMemberTransferDefaultFalseTest::RunTest(const FString& Parame
 		TestFalse(TEXT("The response says the default was not transferred"), Result.Data->GetBoolField(TEXT("transfer_default")));
 		TestEqual(TEXT("readback matched"), Result.Data->GetStringField(TEXT("readback_status")), FString(TEXT("matched")));
 	}
-	if (const ACortexBPAdoptParent* Defaults = Cast<ACortexBPAdoptParent>(Fixture.Blueprint->GeneratedClass->GetDefaultObject()))
+	UObject* CdoObject = Blueprint->GeneratedClass->GetDefaultObject();
+	TestFalse(TEXT("The CDO takes the parent default (false)"), ReadBool(CdoObject, TEXT("bPowerOn")));
+	UObject* OverridingAfter = FindObject<UObject>(nullptr, *OverridingPath);
+	UObject* FollowingAfter = FindObject<UObject>(nullptr, *FollowingPath);
+	if (TestNotNull(TEXT("Overriding instance"), OverridingAfter) && TestNotNull(TEXT("Following instance"), FollowingAfter))
 	{
-		TestFalse(TEXT("The CDO takes the parent default (false)"), Defaults->bPowerOn);
+		TestFalse(TEXT("The differing instance keeps its value"), ReadBool(OverridingAfter, TEXT("bPowerOn")));
+		TestFalse(TEXT("The instance that equalled the old default follows the new CDO"), ReadBool(FollowingAfter, TEXT("bPowerOn")));
+		const FProperty* Property = FindFProperty<FProperty>(FollowingAfter->GetClass(), TEXT("bPowerOn"));
+		TestTrue(TEXT("It is not an override (identical to the CDO)"), Property != nullptr && Property->Identical_InContainer(FollowingAfter, CdoObject));
 	}
-	TestFalse(TEXT("The variable is gone"), HasVariable(Fixture.Blueprint, TEXT("bPowerOn")));
-	int32 Count = 0;
-	TestTrue(TEXT("Nodes resolve to the native property"), AllVariableNodesResolveToNative(Fixture.Blueprint, TEXT("bPowerOn"), Count));
-	Discard(Fixture.Blueprint);
+	TestFalse(TEXT("The variable is gone"), HasVariable(Blueprint, TEXT("bPowerOn")));
+	if (OverridingAfter != nullptr) { OverridingAfter->MarkAsGarbage(); }
+	if (FollowingAfter != nullptr) { FollowingAfter->MarkAsGarbage(); }
+	Discard(Blueprint);
 	return true;
 }
 
@@ -277,6 +301,16 @@ bool FCortexBPAdoptMemberEngineAlreadyAdoptedTest::RunTest(const FString& Parame
 
 	TSharedRef<FJsonObject> PowerMapping = Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"));
 	PowerMapping->SetBoolField(TEXT("default"), true);
+
+	// A supplied default is written by the compile-time step, so compile=false must refuse instead of dropping it.
+	{
+		TSharedPtr<FJsonObject> NoCompile = AdoptParams(Fixture.Blueprint, {PowerMapping});
+		NoCompile->SetBoolField(TEXT("compile"), false);
+		const FCortexCommandResult Refused = FCortexBPAdoptMemberOps::Execute(NoCompile);
+		TestFalse(TEXT("compile=false cannot silently drop a mapping default"), Refused.bSuccess);
+		TestEqual(TEXT("Refusal code"), Refused.ErrorCode, CortexErrorCodes::InvalidOperation);
+		TestTrue(TEXT("Nothing was adopted"), HasVariable(Fixture.Blueprint, TEXT("bPowerOn")) == false);
+	}
 	const FCortexCommandResult Result = FCortexBPAdoptMemberOps::Execute(AdoptParams(Fixture.Blueprint, {PowerMapping}));
 	if (!Result.bSuccess)
 	{
@@ -386,27 +420,39 @@ bool FCortexBPAdoptMemberInstancesSurviveTest::RunTest(const FString& Parameters
 		Discard(Blueprint);
 	}
 
-	// Renamed: bOpen (Blueprint default true) -> native bIsOpen (default false) with a redirect.
+	// Renamed: bOpen (Blueprint default false) -> native bIsOpen (default true). The overriding instance is true, which
+	// differs from both the old default and the native default, so only an explicit move can produce it after the rename.
+	const auto RunRenamedCase = [this](const TCHAR* AssetName, const bool bRedirect, const bool bAcknowledge)
 	{
-		UBlueprint* Blueprint = MakeObjectStateA(TEXT("AdoptInstancesRename"), TEXT("bOpen"));
+		UBlueprint* Blueprint = MakeObjectStateA(AssetName, TEXT("bOpen"), TEXT("false"));
 		if (!TestNotNull(TEXT("Rename fixture"), Blueprint))
 		{
-			return false;
+			return;
 		}
 		UClass* OldClass = Blueprint->GeneratedClass;
-		UObject* Overriding = NewObject<UObject>(GetTransientPackage(), OldClass, TEXT("AdoptRenameOverriding"));
-		UObject* Following = NewObject<UObject>(GetTransientPackage(), OldClass, TEXT("AdoptRenameFollowing"));
+		UObject* Overriding = NewObject<UObject>(GetTransientPackage(), OldClass, *FString::Printf(TEXT("%sOverriding"), AssetName));
+		UObject* Following = NewObject<UObject>(GetTransientPackage(), OldClass, *FString::Printf(TEXT("%sFollowing"), AssetName));
 		Overriding->SetFlags(RF_Standalone);
 		Following->SetFlags(RF_Standalone);
 		const FString OverridingPath = Overriding->GetPathName();
 		const FString FollowingPath = Following->GetPathName();
 		if (const FBoolProperty* Own = BoolOn(Overriding, TEXT("bOpen")))
 		{
-			Own->SetPropertyValue_InContainer(Overriding, false);
+			Own->SetPropertyValue_InContainer(Overriding, true);
 		}
+		TestFalse(TEXT("The following instance starts at the old default"), ReadBool(Following, TEXT("bOpen")));
 
-		FRedirectScope Redirect(UCortexBPAdoptObjectParent::StaticClass(), TEXT("bOpen"), TEXT("bIsOpen"));
-		const FCortexCommandResult Result = FCortexBPAdoptMemberOps::Execute(AdoptParams(Blueprint, {Mapping(TEXT("bOpen"), TEXT("bIsOpen"))}));
+		TOptional<FRedirectScope> Redirect;
+		if (bRedirect)
+		{
+			Redirect.Emplace(UCortexBPAdoptObjectParent::StaticClass(), TEXT("bOpen"), TEXT("bIsOpen"));
+		}
+		TSharedPtr<FJsonObject> Params = AdoptParams(Blueprint, {Mapping(TEXT("bOpen"), TEXT("bIsOpen"))});
+		if (bAcknowledge)
+		{
+			SetStrings(Params, TEXT("acknowledged_losses"), {TEXT("instance_values:bOpen")});
+		}
+		const FCortexCommandResult Result = FCortexBPAdoptMemberOps::Execute(Params);
 		if (!Result.bSuccess)
 		{
 			AddInfo(Explain(Result));
@@ -418,16 +464,22 @@ bool FCortexBPAdoptMemberInstancesSurviveTest::RunTest(const FString& Parameters
 			UObject* Cdo = Blueprint->GeneratedClass->GetDefaultObject();
 			if (TestNotNull(TEXT("Overriding instance found"), After) && TestNotNull(TEXT("Following instance found"), FollowAfter))
 			{
-				TestFalse(TEXT("The override value moved to the new property (false)"), ReadBool(After, TEXT("bIsOpen")));
-				TestTrue(TEXT("The following instance equals the CDO (true)"), ReadBool(FollowAfter, TEXT("bIsOpen")));
+				TestTrue(TEXT("The override value moved to the new property (true, not the native default)"), ReadBool(After, TEXT("bIsOpen")));
+				TestFalse(TEXT("The following instance equals the CDO (the old default, false)"), ReadBool(FollowAfter, TEXT("bIsOpen")));
+				const FProperty* Property = FindFProperty<FProperty>(FollowAfter->GetClass(), TEXT("bIsOpen"));
+				TestTrue(TEXT("It is not an override"), Property != nullptr && Property->Identical_InContainer(FollowAfter, Cdo));
 			}
-			TestTrue(TEXT("The CDO carries the old default on the new property"), ReadBool(Cdo, TEXT("bIsOpen")));
+			TestFalse(TEXT("The CDO carries the old default on the new property"), ReadBool(Cdo, TEXT("bIsOpen")));
 			TestTrue(TEXT("The old property is gone from the class"), Blueprint->GeneratedClass->FindPropertyByName(TEXT("bOpen")) == nullptr);
 		}
 		if (UObject* Found = FindObject<UObject>(nullptr, *OverridingPath)) { Found->MarkAsGarbage(); }
 		if (UObject* Found = FindObject<UObject>(nullptr, *FollowingPath)) { Found->MarkAsGarbage(); }
 		Discard(Blueprint);
-	}
+	};
+
+	// With a property redirect, and on the acknowledged path without one (where the explicit move is the only mechanism).
+	RunRenamedCase(TEXT("AdoptInstancesRename"), /*bRedirect=*/true, /*bAcknowledge=*/false);
+	RunRenamedCase(TEXT("AdoptInstancesRenameAck"), /*bRedirect=*/false, /*bAcknowledge=*/true);
 	return true;
 }
 
@@ -678,5 +730,40 @@ bool FCortexBPAdoptMemberRefusalsTest::RunTest(const FString& Parameters)
 		}
 	}
 	Discard(Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAdoptMemberUndoNotRecordedTest,
+	"Cortex.Blueprint.AdoptMember.UndoNotRecorded",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAdoptMemberUndoNotRecordedTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+
+	if (GEditor == nullptr || GEditor->Trans == nullptr)
+	{
+		AddInfo(TEXT("No editor transaction buffer in this context"));
+		return true;
+	}
+	FStateAFixture Fixture = MakeStateA(TEXT("AdoptUndoNotRecorded"), false, false, false);
+	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint))
+	{
+		return false;
+	}
+
+	// State A cannot be rebuilt by the editor undo (the compile conforms the variable away), so the adoption must not
+	// record an undo entry at all - not only stay out of the undo on failure.
+	const FGuid UndoBefore = GEditor->Trans->GetUndoContext(false).TransactionId;
+	const FCortexCommandResult Result = FCortexBPAdoptMemberOps::Execute(AdoptParams(Fixture.Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))}));
+	if (!Result.bSuccess)
+	{
+		AddInfo(Explain(Result));
+	}
+	TestTrue(TEXT("Adoption succeeds"), Result.bSuccess);
+	TestEqual(TEXT("No undo entry was recorded"), GEditor->Trans->GetUndoContext(false).TransactionId, UndoBefore);
+	TestFalse(TEXT("No transaction left open"), GEditor->IsTransactionActive());
+	Discard(Fixture.Blueprint);
 	return true;
 }
