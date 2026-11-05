@@ -501,6 +501,24 @@ bool FCortexGraphSearchNodesSubclassMatchTest::RunTest(const FString& Parameters
 		AddError(TEXT("K2Node_Call* search failed"));
 	}
 
+	// A '*' prefix is used verbatim on the runtime class name: "U*" is the prefix "U", not a stripped empty prefix
+	// (which would match every node), and "UK2Node*" is not rewritten to "K2Node*".
+	for (const TCHAR* Filter : { TEXT("U*"), TEXT("UK2Node*") })
+	{
+		if (const FResultRows Rows = GetResults(Search(Filter)); Rows.IsValid())
+		{
+			for (const TSharedPtr<FJsonValue>& Row : *Rows)
+			{
+				TestTrue(FString::Printf(TEXT("%s only matches classes whose runtime name starts with it"), Filter),
+					RowString(Row, TEXT("class")).StartsWith(FString(Filter).LeftChop(1), ESearchCase::IgnoreCase));
+			}
+		}
+		else
+		{
+			AddError(FString::Printf(TEXT("%s search failed"), Filter));
+		}
+	}
+
 	for (const TCHAR* Filter : { TEXT("K2Node_Event"), TEXT("uk2node_event") })
 	{
 		if (const FResultRows Rows = GetResults(Search(Filter)); Rows.IsValid())

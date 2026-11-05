@@ -1178,18 +1178,19 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 	{
 		Params->TryGetStringField(TEXT("path"), PathFilter);
 
-		if (Params->HasField(TEXT("type")))
+		// An empty or null 'type' means "no type filter" (routed callers send type:"" / type:null for absent).
+		const TSharedPtr<FJsonValue> TypeValue = Params->TryGetField(TEXT("type"));
+		FString TypeText;
+		const bool bTypeAbsent = !TypeValue.IsValid() || TypeValue->IsNull()
+			|| (TypeValue->TryGetString(TypeText) && TypeText.IsEmpty());
+		if (!bTypeAbsent && (!TypeValue->TryGetString(TypeText) || !TryCanonicalizeBlueprintType(TypeText, TypeFilter)))
 		{
-			FString RawType;
-			if (!Params->TryGetStringField(TEXT("type"), RawType) || !TryCanonicalizeBlueprintType(RawType, TypeFilter))
-			{
-				Result.bSuccess = false;
-				Result.ErrorCode = CortexErrorCodes::InvalidField;
-				Result.ErrorMessage = FString::Printf(
-					TEXT("Invalid 'type' filter: %s (supported, case-insensitive: %s)"),
-					*RawType, *BlueprintTypeVocabularyList());
-				return Result;
-			}
+			Result.bSuccess = false;
+			Result.ErrorCode = CortexErrorCodes::InvalidField;
+			Result.ErrorMessage = FString::Printf(
+				TEXT("Invalid 'type' filter: %s (supported, case-insensitive: %s)"),
+				*TypeText, *BlueprintTypeVocabularyList());
+			return Result;
 		}
 
 		if (Params->HasField(TEXT("exclude_types")))

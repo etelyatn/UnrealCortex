@@ -230,9 +230,11 @@ TArray<FString> FCortexConversionPromptAssembler::SelectFragments(const FString&
 		Result.Add(TEXT("animation.md"));
 	}
 
-	// UMG
+	// UMG. analyze_for_migration reports "type":"Widget" for any UserWidget-derived Blueprint (including CommonUI
+	// activatable widgets), so the type value is matched in either serialization spacing.
 	if (BlueprintJson.Contains(TEXT("UserWidget"))
-		|| BlueprintJson.Contains(TEXT("WidgetBlueprint"))
+		|| BlueprintJson.Contains(TEXT("\"type\":\"Widget\""))
+		|| BlueprintJson.Contains(TEXT("\"type\": \"Widget\""))
 		|| BlueprintJson.Contains(TEXT("UMG")))
 	{
 		Result.Add(TEXT("umg-patterns.md"));

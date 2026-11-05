@@ -65,7 +65,8 @@ def register_graph_tools(mcp, connection: UEConnection):
         """Search nodes across Blueprint graphs.
 
         Finds nodes server-side. All filters are optional: with none, the full node
-        inventory in scope is returned (large results page via the routed limit/cursor). By default, recursively
+        inventory in scope is returned and this standalone tool does not page (for a bounded, cursor-paged
+        inventory call graph_cmd with command='search_nodes' and limit/cursor). By default, recursively
         searches inside composite subgraphs too. Results include 'subgraph_path'
         for nodes found inside composites so you can navigate to them directly.
 
