@@ -4,6 +4,7 @@
 // (changed_only, default true) or all editable properties.
 
 #include "Misc/AutomationTest.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "CortexLevelCommandHandler.h"
 #include "CortexLevelInstanceExportTestActors.h"
 #include "CortexTypes.h"
@@ -18,6 +19,7 @@
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Modules/ModuleManager.h"
 #include "Misc/ScopeExit.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -355,6 +357,7 @@ bool FCortexLevelExportClassInstancesTest::RunTest(const FString& Parameters)
 			}
 			TestFalse(TEXT("transient property excluded"), FindProperty(AllUntouched, TEXT("Volatile")).IsValid());
 			TestFalse(TEXT("non-editable property excluded"), FindProperty(AllUntouched, TEXT("Hidden")).IsValid());
+			TestFalse(TEXT("EditConst component reference excluded"), FindProperty(AllUntouched, TEXT("Marker")).IsValid());
 			TestFalse(TEXT("editor-volatile ActorLabel excluded"), FindProperty(AllUntouched, TEXT("ActorLabel")).IsValid());
 		}
 	}
@@ -426,11 +429,33 @@ bool FCortexLevelExportClassInstancesExternalActorsTest::RunTest(const FString& 
 		return false;
 	}
 
+	// Until the Asset Registry knows the freshly written actor files the engine loads none of them: that must be a
+	// refusal, never a successful export that silently lacks the actor.
+	const FCortexCommandResult Unscanned = RunExport(TEXT("CortexLevelInstanceExportTestActor"), {MapName}, OutPath, TOptional<bool>());
+	if (Unscanned.bSuccess)
+	{
+		TestTrue(TEXT("an export that succeeds lists the external actor"),
+			FindInstance(FindMap(ReadJson(OutPath), MapName), TEXT("StationExternal")).IsValid());
+	}
+	else
+	{
+		TestEqual(TEXT("an incomplete external actor load is refused"), Unscanned.ErrorCode, CortexErrorCodes::UnsupportedOperation);
+	}
+	TestNull(TEXT("map package is not left resident after the first export"), FindPackage(nullptr, *MapName));
+
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+	Registry.ScanModifiedAssetFiles(Map.ExtraFiles);
+
+	// The engine loads a non-partitioned level's external actors with the level, so they are read like any other actor.
 	const FCortexCommandResult Result = RunExport(TEXT("CortexLevelInstanceExportTestActor"), {MapName}, OutPath, TOptional<bool>());
-	TestFalse(TEXT("map whose actors live in external packages is refused, not exported as empty"), Result.bSuccess);
-	TestEqual(TEXT("refusal code"), Result.ErrorCode, CortexErrorCodes::UnsupportedOperation);
-	TestTrue(TEXT("refusal names the external actor packages"), Result.ErrorMessage.Contains(TEXT("external")));
-	TestFalse(TEXT("no report written for a refused export"), IFileManager::Get().FileExists(*OutPath));
-	TestNull(TEXT("refused map package is not left resident"), FindPackage(nullptr, *MapName));
+	if (!TestTrue(TEXT("non-World-Partition map with external actors is exported"), Result.bSuccess))
+	{
+		AddInfo(FString::Printf(TEXT("export message: %s"), *Result.ErrorMessage));
+		return false;
+	}
+	const TSharedPtr<FJsonObject> External = FindInstance(FindMap(ReadJson(OutPath), MapName), TEXT("StationExternal"));
+	TestTrue(TEXT("the external actor's instance is in the report"), External.IsValid());
+	TestEqual(TEXT("the unchanged external actor reports no override"), CountArray(External, TEXT("properties")), 0);
+	TestNull(TEXT("map package is not left resident"), FindPackage(nullptr, *MapName));
 	return true;
 }

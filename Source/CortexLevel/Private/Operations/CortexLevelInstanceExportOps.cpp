@@ -25,12 +25,12 @@ namespace CortexLevelInstanceExportPrivate
 		return Volatile.Contains(Property->GetFName());
 	}
 
-	/** Editable on an instance, persisted, and not editor bookkeeping. */
+	/** Editable on an instance, persisted, not editor bookkeeping and not read-only (VisibleAnywhere component refs, GUIDs). */
 	bool IsReportableProperty(const FProperty* Property)
 	{
 		return Property->HasAnyPropertyFlags(CPF_Edit)
 			&& !Property->HasAnyPropertyFlags(
-				CPF_DisableEditOnInstance | CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient | CPF_Deprecated)
+				CPF_EditConst | CPF_DisableEditOnInstance | CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient | CPF_Deprecated)
 			&& !IsEditorVolatileProperty(Property);
 	}
 
@@ -50,6 +50,10 @@ namespace CortexLevelInstanceExportPrivate
 		TSharedPtr<FJsonValue> Value;
 		bool bComplete = true;
 
+		if (bChangedOnly && BaselinePtr && Property->Identical(ValuePtr, BaselinePtr, PPF_DeepCompareInstances))
+		{
+			return nullptr; // equal to the archetype, including instanced subobjects compared by content
+		}
 		if (bChangedOnly && BaselinePtr)
 		{
 			const FCortexPropertySerializationResult Difference =
@@ -274,6 +278,11 @@ FCortexCommandResult FCortexLevelInstanceExportOps::ExportClassInstances(const T
 			return FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
 				FString::Printf(TEXT("%s is a World Partition map: its actors live in external actor packages and cannot be read without opening the map"), *PackageName));
 		}
+		// A non-partitioned level's external actors are loaded into Level->Actors by the engine when the level loads,
+		// so they are read like any other actor; only World Partition maps (refused above) keep actors unloaded.
+		// The engine finds those packages through the Asset Registry, so a registry that has not seen the files yet
+		// would load none of them: the on-disk package count is compared with the loaded one instead of exporting
+		// a silently incomplete map.
 		if (Level->IsUsingExternalActors())
 		{
 			FString ExternalDirectory;
@@ -282,11 +291,19 @@ FCortexCommandResult FCortexLevelInstanceExportOps::ExportClassInstances(const T
 			{
 				IFileManager::Get().FindFilesRecursive(ExternalFiles, *ExternalDirectory, TEXT("*.uasset"), true, false);
 			}
-			if (ExternalFiles.Num() > 0)
+			TSet<const UPackage*> LoadedExternalPackages;
+			for (const AActor* Actor : Level->Actors)
+			{
+				if (Actor && Actor->IsPackageExternal())
+				{
+					LoadedExternalPackages.Add(Actor->GetExternalPackage());
+				}
+			}
+			if (ExternalFiles.Num() > LoadedExternalPackages.Num())
 			{
 				return FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
-					FString::Printf(TEXT("%s keeps %d actor(s) in external actor packages that are not loaded; they cannot be read without opening the map"),
-						*PackageName, ExternalFiles.Num()));
+					FString::Printf(TEXT("%s has %d external actor package(s) on disk but the engine loaded only %d with the level (the Asset Registry may not know the files yet); the export would be incomplete"),
+						*PackageName, ExternalFiles.Num(), LoadedExternalPackages.Num()));
 			}
 		}
 

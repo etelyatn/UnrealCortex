@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
 #include "CortexLevelInstanceExportTestActors.generated.h"
 
@@ -10,6 +11,16 @@ class ACortexLevelInstanceExportTestActor : public AActor
 {
 	GENERATED_BODY()
 public:
+	ACortexLevelInstanceExportTestActor()
+	{
+		Marker = CreateDefaultSubobject<USceneComponent>(TEXT("Marker"));
+		RootComponent = Marker;
+	}
+
+	/** VisibleAnywhere component (CPF_Edit | CPF_EditConst, instanced): must never be reported as a per-instance override. */
+	UPROPERTY(VisibleAnywhere)
+	TObjectPtr<USceneComponent> Marker;
+
 	/** Editable: reported by export_class_instances. */
 	UPROPERTY(EditAnywhere)
 	int32 Count = 1;
