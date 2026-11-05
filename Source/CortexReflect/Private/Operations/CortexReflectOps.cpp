@@ -1,4 +1,6 @@
 #include "Operations/CortexReflectOps.h"
+#include "Operations/CortexReflectConfigScan.h"
+#include "HAL/FileManager.h"
 #include "CortexReflectModule.h"
 #include "UObject/UObjectIterator.h"
 #include "Engine/Blueprint.h"
@@ -2034,6 +2036,9 @@ FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObj
 		Limit = 100;
 	}
 
+	bool bIncludeConfig = true;
+	Params->TryGetBoolField(TEXT("include_config"), bIncludeConfig);
+
 	UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All;
 	if (CategoryStr == TEXT("package"))
 	{
@@ -2093,11 +2098,100 @@ FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObj
 		ReferencerArray.Add(MakeShared<FJsonValueObject>(ReferencerObj));
 	}
 
+	int32 ConfigRowCount = 0;
+	if (bIncludeConfig)
+	{
+		for (const CortexReflectConfigScan::FConfigReference& Ref : CortexReflectConfigScan::Scan())
+		{
+			if (Ref.bDirectory || Ref.PackageName != AssetPath)
+			{
+				continue;
+			}
+
+			++ConfigRowCount;
+			if (ReferencerArray.Num() >= Limit)
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> ConfigObj = MakeShared<FJsonObject>();
+			ConfigObj->SetStringField(TEXT("package"), Ref.File);
+			ConfigObj->SetBoolField(TEXT("is_code"), false);
+			ConfigObj->SetStringField(TEXT("type"), TEXT("config"));
+			ConfigObj->SetStringField(TEXT("file"), Ref.File);
+			ConfigObj->SetNumberField(TEXT("line"), Ref.Line);
+			ConfigObj->SetStringField(TEXT("section"), Ref.Section);
+			ConfigObj->SetStringField(TEXT("key"), Ref.Key);
+			ReferencerArray.Add(MakeShared<FJsonValueObject>(ConfigObj));
+		}
+	}
+
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), AssetPath);
 	Result->SetArrayField(TEXT("referencers"), ReferencerArray);
 	Result->SetNumberField(TEXT("total"), ReferencerArray.Num());
-	Result->SetNumberField(TEXT("total_unfiltered"), Referencers.Num());
+	Result->SetNumberField(TEXT("total_unfiltered"), Referencers.Num() + ConfigRowCount);
+
+	return FCortexCommandRouter::Success(Result);
+}
+
+FCortexCommandResult FCortexReflectOps::FindBrokenConfigPaths(const TSharedPtr<FJsonObject>& Params)
+{
+	(void)Params;
+
+	int32 ScannedFiles = 0;
+	const TArray<CortexReflectConfigScan::FConfigReference> Refs = CortexReflectConfigScan::Scan(&ScannedFiles);
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	// Existence is a property of the package/directory, not of the config line; cache per name.
+	TMap<FString, bool> BrokenByName;
+	TArray<TSharedPtr<FJsonValue>> BrokenArray;
+	for (const CortexReflectConfigScan::FConfigReference& Ref : Refs)
+	{
+		const FString CacheKey = FString::Printf(TEXT("%d|%s"), Ref.bDirectory ? 1 : 0, *Ref.PackageName);
+		bool bBroken = false;
+		if (const bool* Cached = BrokenByName.Find(CacheKey))
+		{
+			bBroken = *Cached;
+		}
+		else
+		{
+			if (Ref.bDirectory)
+			{
+				FString DiskPath;
+				const bool bOnDisk = FPackageName::TryConvertLongPackageNameToFilename(Ref.PackageName, DiskPath)
+					&& IFileManager::Get().DirectoryExists(*DiskPath);
+				bBroken = !AssetRegistry.PathExists(FName(*Ref.PackageName)) && !bOnDisk;
+			}
+			else
+			{
+				bBroken = !FindPackage(nullptr, *Ref.PackageName) && !FPackageName::DoesPackageExist(Ref.PackageName);
+			}
+			BrokenByName.Add(CacheKey, bBroken);
+		}
+
+		if (!bBroken)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Row = MakeShared<FJsonObject>();
+		Row->SetStringField(TEXT("file"), Ref.File);
+		Row->SetNumberField(TEXT("line"), Ref.Line);
+		Row->SetStringField(TEXT("section"), Ref.Section);
+		Row->SetStringField(TEXT("key"), Ref.Key);
+		Row->SetStringField(TEXT("value"), Ref.Value);
+		Row->SetStringField(TEXT("path"), Ref.Path);
+		Row->SetStringField(TEXT("kind"), Ref.bDirectory ? TEXT("directory") : TEXT("package"));
+		BrokenArray.Add(MakeShared<FJsonValueObject>(Row));
+	}
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetNumberField(TEXT("scanned_files"), ScannedFiles);
+	Result->SetNumberField(TEXT("checked"), Refs.Num());
+	Result->SetArrayField(TEXT("broken"), BrokenArray);
 
 	return FCortexCommandRouter::Success(Result);
 }

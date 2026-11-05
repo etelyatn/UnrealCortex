@@ -49,6 +49,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 		return FCortexReflectOps::GetReferencers(Params);
 	}
 
+	if (Command == TEXT("find_broken_config_paths"))
+	{
+		return FCortexReflectOps::FindBrokenConfigPaths(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown reflect command: %s"), *Command)
@@ -94,6 +99,8 @@ TArray<FCortexCommandInfo> FCortexReflectCommandHandler::GetSupportedCommands() 
 		FCortexCommandInfo{ TEXT("get_referencers"), TEXT("Get asset referencers from Asset Registry") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path to inspect"))
 			.Optional(TEXT("category"), TEXT("string"), TEXT("Referencer category filter"))
-			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum referencers to return")),
+			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum referencers to return; counts config rows too"))
+			.Optional(TEXT("include_config"), TEXT("boolean"), TEXT("Include config/INI references as type 'config' rows (default true)")),
+		FCortexCommandInfo{ TEXT("find_broken_config_paths"), TEXT("Report content package and directory paths in project and project-plugin INI files that do not exist") },
 	};
 }
