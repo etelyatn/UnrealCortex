@@ -22,6 +22,9 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_FunctionEntry.h"
+#include "K2Node_DynamicCast.h"
+#include "K2Node_EnumLiteral.h"
+#include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -166,20 +169,24 @@ namespace CortexReflectDuplicateGraphTestSupport
 		}
 
 		/** Function graph: entry plus one print node per text. Noise (comment box, disabled node) never changes the form. */
-		static void AddFunction(UBlueprint* Blueprint, const FName Name, const TArray<FString>& Texts, const int32 PositionOffset, const bool bNoise)
+		static UEdGraphNode* FindEntry(UEdGraph* Function)
+		{
+			for (UEdGraphNode* Node : Function->Nodes)
+			{
+				if (Node->IsA<UK2Node_FunctionEntry>())
+				{
+					return Node;
+				}
+			}
+			return nullptr;
+		}
+
+		static UEdGraph* AddFunction(UBlueprint* Blueprint, const FName Name, const TArray<FString>& Texts, const int32 PositionOffset, const bool bNoise)
 		{
 			UEdGraph* Function = FBlueprintEditorUtils::CreateNewGraph(
 				Blueprint, Name, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
 			FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, Function, true, nullptr);
-			UK2Node_FunctionEntry* Entry = nullptr;
-			for (UEdGraphNode* Node : Function->Nodes)
-			{
-				Entry = Cast<UK2Node_FunctionEntry>(Node);
-				if (Entry)
-				{
-					break;
-				}
-			}
+			UEdGraphNode* Entry = FindEntry(Function);
 			Entry->NodePosX = PositionOffset;
 			AddPrintChain(Function, Entry, Texts, PositionOffset);
 			if (bNoise)
@@ -191,6 +198,7 @@ namespace CortexReflectDuplicateGraphTestSupport
 				UK2Node_CallFunction* Disabled = AddPrint(Function, TEXT("Never runs"), 7000, 7000);
 				Disabled->SetEnabledState(ENodeEnabledState::Disabled);
 			}
+			return Function;
 		}
 
 		/** Event chain: a custom event followed by one print node per text, in the ubergraph. */
@@ -374,7 +382,8 @@ bool FCortexReflectDuplicateGraphGroupsTest::RunTest(const FString& Parameters)
 				TestEqual(TEXT("similar name"), Similar[0]->GetStringField(TEXT("name")), FString(TEXT("Compute")));
 				TestEqual(TEXT("similar members (the exact copy under another name is not compared)"),
 					MemberLabels(Similar[0]), TArray<FString>{TEXT("BP_A:Compute"), TEXT("BP_C:Compute")});
-				TestEqual(TEXT("similarity is 5 shared of 6 descriptors"), Similar[0]->GetNumberField(TEXT("similarity")), 5.0 / 6.0, 0.001);
+				TestEqual(TEXT("min_similarity is 5 shared of 6 descriptors"), Similar[0]->GetNumberField(TEXT("min_similarity")), 5.0 / 6.0, 0.001);
+				TestEqual(TEXT("max_similarity"), Similar[0]->GetNumberField(TEXT("max_similarity")), 5.0 / 6.0, 0.001);
 			}
 			const TArray<TSharedPtr<FJsonObject>> Pairs = ObjectArray(Run.Data, TEXT("blueprint_pairs"));
 			if (TestEqual(TEXT("two pairs"), Pairs.Num(), 2))
@@ -497,8 +506,9 @@ bool FCortexReflectDuplicateGraphWidgetTest::RunTest(const FString& Parameters)
 			if (TestEqual(TEXT("one similar widget group"), Similar.Num(), 1))
 			{
 				TestEqual(TEXT("kind"), Similar[0]->GetStringField(TEXT("kind")), FString(TEXT("widget_tree")));
-				TestEqual(TEXT("three-member component"), ObjectArray(Similar[0], TEXT("members")).Num(), 3);
-				TestEqual(TEXT("weakest link is 5/6"), Similar[0]->GetNumberField(TEXT("similarity")), 5.0 / 6.0, 0.001);
+				TestEqual(TEXT("two members: the exact pair collapses to one representative"), ObjectArray(Similar[0], TEXT("members")).Num(), 2);
+				TestEqual(TEXT("min_similarity 5/6"), Similar[0]->GetNumberField(TEXT("min_similarity")), 5.0 / 6.0, 0.001);
+				TestEqual(TEXT("max_similarity 5/6"), Similar[0]->GetNumberField(TEXT("max_similarity")), 5.0 / 6.0, 0.001);
 			}
 			const TArray<TSharedPtr<FJsonObject>> Pairs = ObjectArray(Run.Data, TEXT("blueprint_pairs"));
 			TestEqual(TEXT("three widget pairs"), Pairs.Num(), 3);
@@ -508,6 +518,230 @@ bool FCortexReflectDuplicateGraphWidgetTest::RunTest(const FString& Parameters)
 				TestEqual(TEXT("One-Three similarity"), OneThree->GetNumberField(TEXT("widget_tree_similarity")), 5.0 / 6.0, 0.001);
 			}
 		}
+	}
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectDuplicateGraphSelfReferenceTest,
+	"Cortex.Reflect.DuplicateGraphs.SelfReference",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectDuplicateGraphSelfReferenceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectDuplicateGraphTestSupport;
+
+	// Each Blueprint's function casts to its own class and passes its own class as a class pin default.
+	FDuplicateFixture Fixture;
+	UBlueprint* A = Fixture.MakeBlueprint(TEXT("BP_SelfA"));
+	UBlueprint* B = Fixture.MakeBlueprint(TEXT("BP_SelfB"));
+	if (!TestNotNull(TEXT("A"), A) || !TestNotNull(TEXT("B"), B) || !TestNotNull(TEXT("A class"), A->GeneratedClass.Get())
+		|| !TestNotNull(TEXT("B class"), B->GeneratedClass.Get()))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	for (UBlueprint* Blueprint : {A, B})
+	{
+		UEdGraph* Function = FBlueprintEditorUtils::CreateNewGraph(
+			Blueprint, TEXT("Work"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+		FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, Function, true, nullptr);
+		UEdGraphNode* Entry = FDuplicateFixture::FindEntry(Function);
+		FGraphNodeCreator<UK2Node_DynamicCast> CastCreator(*Function);
+		UK2Node_DynamicCast* Cast = CastCreator.CreateNode();
+		Cast->TargetType = Blueprint->GeneratedClass;
+		CastCreator.Finalize();
+		FGraphNodeCreator<UK2Node_CallFunction> CallCreator(*Function);
+		UK2Node_CallFunction* Call = CallCreator.CreateNode();
+		Call->FunctionReference.SetExternalMember(
+			GET_FUNCTION_NAME_CHECKED(UGameplayStatics, GetAllActorsOfClass), UGameplayStatics::StaticClass());
+		CallCreator.Finalize();
+		if (UEdGraphPin* ClassPin = Call->FindPin(TEXT("ActorClass"), EGPD_Input))
+		{
+			ClassPin->DefaultObject = Blueprint->GeneratedClass;
+		}
+		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
+		Schema->TryCreateConnection(Entry->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output), Cast->FindPin(UEdGraphSchema_K2::PN_Execute, EGPD_Input));
+		Schema->TryCreateConnection(Cast->FindPin(UEdGraphSchema_K2::PN_CastSucceeded, EGPD_Output), Call->FindPin(UEdGraphSchema_K2::PN_Execute, EGPD_Input));
+		Schema->TryCreateConnection(Cast->GetCastResultPin(), Call->FindPin(TEXT("WorldContextObject"), EGPD_Input));
+	}
+	if (!TestTrue(TEXT("save A"), Fixture.SaveAsset(A)) || !TestTrue(TEXT("save B"), Fixture.SaveAsset(B)))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FCortexCommandResult Run = Fixture.Run(2, {});
+	if (TestTrue(TEXT("run succeeds"), Run.bSuccess) && TestTrue(TEXT("data"), Run.Data.IsValid()))
+	{
+		const TArray<TSharedPtr<FJsonObject>> Exact = ObjectArray(Run.Data, TEXT("exact_groups"));
+		if (TestEqual(TEXT("self-referencing copies are one exact group"), Exact.Num(), 1))
+		{
+			TestEqual(TEXT("members"), MemberLabels(Exact[0]), TArray<FString>{TEXT("BP_SelfA:Work"), TEXT("BP_SelfB:Work")});
+		}
+	}
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectDuplicateGraphPrecisionTest,
+	"Cortex.Reflect.DuplicateGraphs.Precision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectDuplicateGraphPrecisionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectDuplicateGraphTestSupport;
+
+	// An unused parameter of another type must separate otherwise identical functions.
+	{
+		FDuplicateFixture Fixture;
+		UBlueprint* A = Fixture.MakeBlueprint(TEXT("BP_PA"));
+		UBlueprint* B = Fixture.MakeBlueprint(TEXT("BP_PB"));
+		UBlueprint* C = Fixture.MakeBlueprint(TEXT("BP_PC"));
+		if (!TestNotNull(TEXT("A"), A) || !TestNotNull(TEXT("B"), B) || !TestNotNull(TEXT("C"), C))
+		{
+			Fixture.Cleanup();
+			return false;
+		}
+		FEdGraphPinType IntType;
+		IntType.PinCategory = UEdGraphSchema_K2::PC_Int;
+		FEdGraphPinType RealType;
+		RealType.PinCategory = UEdGraphSchema_K2::PC_Real;
+		RealType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+		const TPair<UBlueprint*, FEdGraphPinType> Cases[] = {{A, IntType}, {B, RealType}, {C, IntType}};
+		for (const TPair<UBlueprint*, FEdGraphPinType>& Case : Cases)
+		{
+			UEdGraph* Function = FDuplicateFixture::AddFunction(Case.Key, TEXT("Work"), FourTexts, 0, false);
+			CastChecked<UK2Node_FunctionEntry>(FDuplicateFixture::FindEntry(Function))->CreateUserDefinedPin(TEXT("Unused"), Case.Value, EGPD_Output);
+		}
+		if (!TestTrue(TEXT("save A"), Fixture.SaveAsset(A)) || !TestTrue(TEXT("save B"), Fixture.SaveAsset(B)) || !TestTrue(TEXT("save C"), Fixture.SaveAsset(C)))
+		{
+			Fixture.Cleanup();
+			return false;
+		}
+		Fixture.RegisterSavedFiles();
+		const FCortexCommandResult Run = Fixture.Run({}, {});
+		if (TestTrue(TEXT("param run succeeds"), Run.bSuccess) && TestTrue(TEXT("data"), Run.Data.IsValid()))
+		{
+			const TArray<TSharedPtr<FJsonObject>> Exact = ObjectArray(Run.Data, TEXT("exact_groups"));
+			if (TestEqual(TEXT("one exact group: the int-parameter copies"), Exact.Num(), 1))
+			{
+				TestEqual(TEXT("members"), MemberLabels(Exact[0]), TArray<FString>{TEXT("BP_PA:Work"), TEXT("BP_PC:Work")});
+			}
+		}
+		Fixture.Cleanup();
+	}
+
+	// Two graphs differing only in the enum of an enum literal are not duplicates.
+	{
+		FDuplicateFixture Fixture;
+		UBlueprint* A = Fixture.MakeBlueprint(TEXT("BP_EA"));
+		UBlueprint* B = Fixture.MakeBlueprint(TEXT("BP_EB"));
+		UBlueprint* C = Fixture.MakeBlueprint(TEXT("BP_EC"));
+		if (!TestNotNull(TEXT("A"), A) || !TestNotNull(TEXT("B"), B) || !TestNotNull(TEXT("C"), C))
+		{
+			Fixture.Cleanup();
+			return false;
+		}
+		const TPair<UBlueprint*, UEnum*> Cases[] = {{A, StaticEnum<ECollisionChannel>()}, {B, StaticEnum<EMovementMode>()}, {C, StaticEnum<ECollisionChannel>()}};
+		for (const TPair<UBlueprint*, UEnum*>& Case : Cases)
+		{
+			UEdGraph* Function = FDuplicateFixture::AddFunction(Case.Key, TEXT("Work"), FourTexts, 0, false);
+			FGraphNodeCreator<UK2Node_EnumLiteral> Creator(*Function);
+			UK2Node_EnumLiteral* Literal = Creator.CreateNode();
+			Literal->Enum = Case.Value;
+			Creator.Finalize();
+		}
+		if (!TestTrue(TEXT("save A"), Fixture.SaveAsset(A)) || !TestTrue(TEXT("save B"), Fixture.SaveAsset(B)) || !TestTrue(TEXT("save C"), Fixture.SaveAsset(C)))
+		{
+			Fixture.Cleanup();
+			return false;
+		}
+		Fixture.RegisterSavedFiles();
+		const FCortexCommandResult Run = Fixture.Run({}, {});
+		if (TestTrue(TEXT("enum run succeeds"), Run.bSuccess) && TestTrue(TEXT("data"), Run.Data.IsValid()))
+		{
+			const TArray<TSharedPtr<FJsonObject>> Exact = ObjectArray(Run.Data, TEXT("exact_groups"));
+			if (TestEqual(TEXT("one exact group: the same-enum copies"), Exact.Num(), 1))
+			{
+				TestEqual(TEXT("members"), MemberLabels(Exact[0]), TArray<FString>{TEXT("BP_EA:Work"), TEXT("BP_EC:Work")});
+			}
+		}
+		Fixture.Cleanup();
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectDuplicateGraphClusterTest,
+	"Cortex.Reflect.DuplicateGraphs.SimilarClusters",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectDuplicateGraphClusterTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectDuplicateGraphTestSupport;
+
+	// A~B and B~C reach 0.8 but A~C does not: star cluster around B reporting the true min/max, and an exact copy
+	// of A (A2) collapses into A's representative instead of appearing again.
+	FDuplicateFixture Fixture;
+	const TArray<FString> TextsA = {TEXT("T1"), TEXT("T2"), TEXT("T3"), TEXT("T4"), TEXT("T5"), TEXT("T6"), TEXT("T7"), TEXT("T8"), TEXT("T9"), TEXT("T10")};
+	const TArray<FString> TextsB = {TEXT("T2"), TEXT("T3"), TEXT("T4"), TEXT("T5"), TEXT("T6"), TEXT("T7"), TEXT("T8"), TEXT("T9"), TEXT("T10"), TEXT("T11")};
+	const TArray<FString> TextsC = {TEXT("T3"), TEXT("T4"), TEXT("T5"), TEXT("T6"), TEXT("T7"), TEXT("T8"), TEXT("T9"), TEXT("T10"), TEXT("T11"), TEXT("T12")};
+	UBlueprint* A = Fixture.MakeBlueprint(TEXT("BP_A"));
+	UBlueprint* A2 = Fixture.MakeBlueprint(TEXT("BP_A2"));
+	UBlueprint* B = Fixture.MakeBlueprint(TEXT("BP_B"));
+	UBlueprint* C = Fixture.MakeBlueprint(TEXT("BP_C"));
+	if (!TestNotNull(TEXT("A"), A) || !TestNotNull(TEXT("A2"), A2) || !TestNotNull(TEXT("B"), B) || !TestNotNull(TEXT("C"), C))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	FDuplicateFixture::AddFunction(A, TEXT("Chain"), TextsA, 0, false);
+	FDuplicateFixture::AddFunction(A2, TEXT("Chain"), TextsA, 500, false);
+	FDuplicateFixture::AddFunction(B, TEXT("Chain"), TextsB, 0, false);
+	FDuplicateFixture::AddFunction(C, TEXT("Chain"), TextsC, 0, false);
+	if (!TestTrue(TEXT("save A"), Fixture.SaveAsset(A)) || !TestTrue(TEXT("save A2"), Fixture.SaveAsset(A2))
+		|| !TestTrue(TEXT("save B"), Fixture.SaveAsset(B)) || !TestTrue(TEXT("save C"), Fixture.SaveAsset(C)))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FCortexCommandResult Run = Fixture.Run({}, 0.8);
+	if (TestTrue(TEXT("run succeeds"), Run.bSuccess) && TestTrue(TEXT("data"), Run.Data.IsValid()))
+	{
+		const TArray<TSharedPtr<FJsonObject>> Exact = ObjectArray(Run.Data, TEXT("exact_groups"));
+		if (TestEqual(TEXT("A and A2 are one exact group"), Exact.Num(), 1))
+		{
+			TestEqual(TEXT("exact members"), MemberLabels(Exact[0]), TArray<FString>{TEXT("BP_A2:Chain"), TEXT("BP_A:Chain")});
+		}
+		const TArray<TSharedPtr<FJsonObject>> Similar = ObjectArray(Run.Data, TEXT("similar_groups"));
+		if (TestEqual(TEXT("one similar cluster"), Similar.Num(), 1))
+		{
+			TestEqual(TEXT("three members: representatives only, no exact duplicate"), ObjectArray(Similar[0], TEXT("members")).Num(), 3);
+			TestTrue(TEXT("representative is B"), Similar[0]->GetStringField(TEXT("representative")).EndsWith(TEXT("/BP_B.BP_B")));
+			TestEqual(TEXT("min_similarity is the true A-C ratio (9/13)"), Similar[0]->GetNumberField(TEXT("min_similarity")), 9.0 / 13.0, 0.001);
+			TestEqual(TEXT("max_similarity is the A-B ratio (10/12)"), Similar[0]->GetNumberField(TEXT("max_similarity")), 10.0 / 12.0, 0.001);
+		}
+		const TArray<TSharedPtr<FJsonObject>> Pairs = ObjectArray(Run.Data, TEXT("blueprint_pairs"));
+		const TSharedPtr<FJsonObject> AA2 = FindPair(Pairs, TEXT("BP_A"), TEXT("BP_A2"));
+		if (TestNotNull(TEXT("A-A2 pair"), AA2.Get()))
+		{
+			TestEqual(TEXT("the unit pair counts once"), static_cast<int32>(AA2->GetNumberField(TEXT("shared_graphs"))), 1);
+		}
+		const TSharedPtr<FJsonObject> A2B = FindPair(Pairs, TEXT("BP_A2"), TEXT("BP_B"));
+		if (TestNotNull(TEXT("A2-B pair (exact copy shares the similarity edge)"), A2B.Get()))
+		{
+			TestEqual(TEXT("A2-B shared"), static_cast<int32>(A2B->GetNumberField(TEXT("shared_graphs"))), 1);
+		}
+		TestNull(TEXT("A-C is not a linked pair"), FindPair(Pairs, TEXT("BP_A"), TEXT("BP_C")).Get());
 	}
 	Fixture.Cleanup();
 	return true;

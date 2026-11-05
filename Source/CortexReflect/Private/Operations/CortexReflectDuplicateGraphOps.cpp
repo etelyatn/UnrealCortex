@@ -25,6 +25,8 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_DynamicCast.h"
+#include "K2Node_BaseMCDelegate.h"
+#include "K2Node_EditablePinBase.h"
 #include "K2Node_Event.h"
 #include "K2Node_Knot.h"
 #include "K2Node_MacroInstance.h"
@@ -136,8 +138,77 @@ namespace CortexReflectDuplicateGraphPrivate
 		return LexToString(FIoHash::HashBuffer(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length()));
 	}
 
+	/** Lower-case text without spaces and underscores: Blueprint class display names are prettified. */
+	FString StripSeparators(const FString& Text)
+	{
+		return Text.Replace(TEXT(" "), TEXT("")).Replace(TEXT("_"), TEXT("")).ToLower();
+	}
+
+	/**
+	 * The Blueprint that owns the graphs being normalised. Every textual reference to the Blueprint itself (its
+	 * generated class, skeleton class, `_C` class path, object path) becomes `self`, so two copies of a graph
+	 * that cast to, or pass, "their own class" compare equal. Cast output pins named after the Blueprint
+	 * (`As<Name>`) become `Asself`.
+	 */
+	struct FSelfContext
+	{
+		TArray<FString> SelfTexts;
+		FString CastPinName;
+
+		explicit FSelfContext(const UBlueprint* Blueprint)
+		{
+			const FString PackageName = Blueprint->GetOutermost()->GetName();
+			const FString Name = Blueprint->GetName();
+			SelfTexts.Add(Blueprint->GetPathName());
+			SelfTexts.Add(FString::Printf(TEXT("%s.%s_C"), *PackageName, *Name));
+			SelfTexts.Add(FString::Printf(TEXT("%s.SKEL_%s_C"), *PackageName, *Name));
+			SelfTexts.Add(GetPathNameSafe(Blueprint->GeneratedClass));
+			SelfTexts.Add(GetPathNameSafe(Blueprint->SkeletonGeneratedClass));
+			SelfTexts.RemoveAll([](const FString& Text) { return Text.IsEmpty(); });
+			// Longest first so `<path>_C` is replaced before its `<path>` prefix.
+			SelfTexts.Sort([](const FString& Left, const FString& Right) { return Left.Len() > Right.Len(); });
+			CastPinName = StripSeparators(Name);
+		}
+
+		FString Text(FString Value) const
+		{
+			for (const FString& SelfText : SelfTexts)
+			{
+				Value.ReplaceInline(*SelfText, TEXT("self"), ESearchCase::CaseSensitive);
+			}
+			return Value;
+		}
+
+		FString PinName(const FName Name) const
+		{
+			const FString Raw = Name.ToString();
+			return (Raw.StartsWith(TEXT("As")) && StripSeparators(Raw.Mid(2)) == CastPinName) ? FString(TEXT("Asself")) : Raw;
+		}
+	};
+
+	/** Category, subcategory, subcategory object, container kind and reference/const flags of a pin type. */
+	FString TypeText(const FEdGraphPinType& Type, const FSelfContext& Self)
+	{
+		FString Text = FString::Printf(TEXT("%s/%s/%s/c%d%s%s"), *Type.PinCategory.ToString(), *Type.PinSubCategory.ToString(),
+			*Self.Text(GetPathNameSafe(Type.PinSubCategoryObject.Get())), static_cast<int32>(Type.ContainerType),
+			Type.bIsReference ? TEXT("&") : TEXT(""), Type.bIsConst ? TEXT("k") : TEXT(""));
+		if (Type.ContainerType == EPinContainerType::Map)
+		{
+			Text += FString::Printf(TEXT("->%s/%s/%s"), *Type.PinValueType.TerminalCategory.ToString(),
+				*Type.PinValueType.TerminalSubCategory.ToString(), *Self.Text(GetPathNameSafe(Type.PinValueType.TerminalSubCategoryObject.Get())));
+		}
+		return Text;
+	}
+
+	/** Pin name plus its type: the identity of one end of a link. */
+	FString PinKey(const UEdGraphPin* Pin, const FSelfContext& Self)
+	{
+		return Self.PinName(Pin->PinName) + TEXT(":") + TypeText(Pin->PinType, Self);
+	}
+
+	/** Member reference as owner.name; references to the owning Blueprint's own class read as `self`. */
 	/** Member reference as owner.name; self-context members of different Blueprints therefore compare equal. */
-	FString MemberText(const FMemberReference& Reference)
+	FString MemberText(const FMemberReference& Reference, const FSelfContext& Self)
 	{
 		FString Owner;
 		if (Reference.IsSelfContext())
@@ -150,7 +221,7 @@ namespace CortexReflectDuplicateGraphPrivate
 		}
 		else if (const UClass* Parent = Reference.GetMemberParentClass())
 		{
-			Owner = Parent->GetPathName();
+			Owner = Self.Text(Parent->GetPathName());
 		}
 		return FString::Printf(TEXT("%s.%s"), *Owner, *Reference.GetMemberName().ToString());
 	}
@@ -195,10 +266,19 @@ namespace CortexReflectDuplicateGraphPrivate
 	}
 
 	/**
-	 * Node descriptor: class, member reference and the values of unlinked, visible input pins that differ from the
-	 * schema default (sorted, so pin order does not matter). GUIDs, names, positions and comments are never read.
+	 * Node descriptor, built only from content (never GUIDs, names, positions or comments):
+	 *  - class and member reference (function, variable, event, delegate, cast target, macro graph, struct);
+	 *  - for nodes with editable pins (function entry/result, custom events, tunnels) every pin with direction,
+	 *    name and type, so an unused parameter still separates two graphs;
+	 *  - the node's reflected scalar properties (numeric, bool, name, string, enum, object/class references),
+	 *    skipping transient/deprecated ones and everything declared on UEdGraphNode (cosmetics). This gives
+	 *    node classes without a dedicated rule identity: literal object, enum of enum literal/switch/select,
+	 *    delegate function name, timeline name. Struct, array and map properties are not read: they carry GUIDs
+	 *    (FMemberReference, timeline GUID) or editor-only layout. A collapsed-graph node is described by its bound
+	 *    graph's path only; the sub-graph's own nodes are not expanded into the parent;
+	 *  - non-default values of unlinked, visible input pins, sorted by pin name.
 	 */
-	FString DescribeNode(const UEdGraphNode* Node)
+	FString DescribeNode(const UEdGraphNode* Node, const FSelfContext& Self)
 	{
 		FString Descriptor = Node->GetClass()->GetName();
 		if (const UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(Node))
@@ -207,30 +287,71 @@ namespace CortexReflectDuplicateGraphPrivate
 		}
 		else if (const UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
 		{
-			Descriptor += TEXT("|event:") + MemberText(Event->EventReference);
+			Descriptor += TEXT("|event:") + MemberText(Event->EventReference, Self);
 		}
 		else if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
 		{
-			Descriptor += TEXT("|fn:") + MemberText(Call->FunctionReference);
+			Descriptor += TEXT("|fn:") + MemberText(Call->FunctionReference, Self);
 		}
 		else if (const UK2Node_Variable* Variable = Cast<UK2Node_Variable>(Node))
 		{
-			Descriptor += TEXT("|var:") + MemberText(Variable->VariableReference);
+			Descriptor += TEXT("|var:") + MemberText(Variable->VariableReference, Self);
+		}
+		else if (const UK2Node_BaseMCDelegate* Delegate = Cast<UK2Node_BaseMCDelegate>(Node))
+		{
+			Descriptor += TEXT("|delegate:") + MemberText(Delegate->DelegateReference, Self);
 		}
 		else if (const UK2Node_DynamicCast* Cast_ = Cast<UK2Node_DynamicCast>(Node))
 		{
-			Descriptor += TEXT("|cast:") + (Cast_->TargetType ? Cast_->TargetType->GetPathName() : FString());
+			Descriptor += TEXT("|cast:") + Self.Text(Cast_->TargetType ? Cast_->TargetType->GetPathName() : FString());
 		}
 		else if (const UK2Node_MacroInstance* Macro = Cast<UK2Node_MacroInstance>(Node))
 		{
 			const UEdGraph* MacroGraph = Macro->GetMacroGraph();
-			Descriptor += TEXT("|macro:") + (MacroGraph ? MacroGraph->GetOutermost()->GetName() + TEXT(":") + MacroGraph->GetName() : FString());
+			Descriptor += TEXT("|macro:") + Self.Text(MacroGraph ? MacroGraph->GetOutermost()->GetName() + TEXT(":") + MacroGraph->GetName() : FString());
 		}
 		else if (const UK2Node_StructOperation* StructOp = Cast<UK2Node_StructOperation>(Node))
 		{
-			Descriptor += TEXT("|struct:") + (StructOp->StructType ? StructOp->StructType->GetPathName() : FString());
+			Descriptor += TEXT("|struct:") + Self.Text(StructOp->StructType ? StructOp->StructType->GetPathName() : FString());
+		}
+		if (Cast<UK2Node_EditablePinBase>(Node))
+		{
+			TArray<FString> Signature;
+			for (const UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin && !Pin->bOrphanedPin)
+				{
+					Signature.Add(FString::Printf(TEXT("%c%s"), Pin->Direction == EGPD_Input ? TEXT('i') : TEXT('o'), *PinKey(Pin, Self)));
+				}
+			}
+			Signature.Sort();
+			for (const FString& Entry : Signature)
+			{
+				Descriptor += TEXT("|sig:") + Entry;
+			}
 		}
 
+		TArray<FString> Properties;
+		for (TFieldIterator<FProperty> It(Node->GetClass()); It; ++It)
+		{
+			const FProperty* Property = *It;
+			const UClass* Owner = Property->GetOwnerClass();
+			if ((Owner && UEdGraphNode::StaticClass()->IsChildOf(Owner))
+				|| Property->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_Deprecated)
+				|| !(CastField<FNumericProperty>(Property) || CastField<FBoolProperty>(Property) || CastField<FNameProperty>(Property)
+					|| CastField<FStrProperty>(Property) || CastField<FEnumProperty>(Property) || CastField<FObjectPropertyBase>(Property)))
+			{
+				continue;
+			}
+			FString Value;
+			Property->ExportText_InContainer(0, Value, Node, nullptr, nullptr, PPF_None);
+			Properties.Add(FString::Printf(TEXT("%s=%s"), *Property->GetName(), *Self.Text(Value)));
+		}
+		Properties.Sort();
+		for (const FString& Property : Properties)
+		{
+			Descriptor += TEXT("|prop:") + Property;
+		}
 		const UEdGraphSchema* Schema = Node->GetSchema();
 		TArray<FString> PinValues;
 		for (const UEdGraphPin* Pin : Node->Pins)
@@ -246,7 +367,7 @@ namespace CortexReflectDuplicateGraphPrivate
 			const FString Value = Pin->GetDefaultAsString();
 			if (!Value.IsEmpty())
 			{
-				PinValues.Add(FString::Printf(TEXT("%s=%s"), *Pin->PinName.ToString(), *Value));
+				PinValues.Add(FString::Printf(TEXT("%s=%s"), *Self.PinName(Pin->PinName), *Self.Text(Value)));
 			}
 		}
 		PinValues.Sort();
@@ -267,13 +388,14 @@ namespace CortexReflectDuplicateGraphPrivate
 
 	/**
 	 * Normalised form of a node set. Descriptors are refined iteratively (each round hashes a node's label with the
-	 * labels of its linked neighbours and the pin names on both ends) until the partition of nodes into label
-	 * classes stops growing. Rank of a node = position of the first node of its final label class in the sorted
-	 * label order, so nodes that stay indistinguishable (identical subtrees, or the symmetric pairs a refinement
-	 * cannot split) all receive the same rank and the emitted text never depends on how ties are ordered, node GUIDs,
-	 * positions or the order of Graph->Nodes.
+	 * labels of its linked neighbours and the typed pin keys on both ends) until the partition of nodes into label
+	 * classes stops growing (1-dimensional Weisfeiler-Leman). Rank of a node = position of the first node of its
+	 * final label class in the sorted label order, so nodes that stay indistinguishable all receive the same rank
+	 * and the emitted text never depends on tie order, node GUIDs, positions or the order of Graph->Nodes.
+	 * Limitation: refinement is not a full isomorphism test; two non-isomorphic graphs it cannot distinguish
+	 * (rare regular structures) hash equal. Typical Blueprint graphs are separated.
 	 */
-	void Normalise(const TArray<const UEdGraphNode*>& Nodes, FUnit& OutUnit)
+	void Normalise(const TArray<const UEdGraphNode*>& Nodes, const FSelfContext& Self, FUnit& OutUnit)
 	{
 		const int32 Count = Nodes.Num();
 		TMap<const UEdGraphNode*, int32> Index;
@@ -283,7 +405,7 @@ namespace CortexReflectDuplicateGraphPrivate
 		for (int32 NodeIndex = 0; NodeIndex < Count; ++NodeIndex)
 		{
 			Index.Add(Nodes[NodeIndex], NodeIndex);
-			Descriptors.Add(DescribeNode(Nodes[NodeIndex]));
+			Descriptors.Add(DescribeNode(Nodes[NodeIndex], Self));
 		}
 
 		struct FEdge
@@ -314,8 +436,8 @@ namespace CortexReflectDuplicateGraphPrivate
 					{
 						continue;
 					}
-					const FString FromPin = Pin->PinName.ToString();
-					const FString ToPin = Target->PinName.ToString();
+					const FString FromPin = PinKey(Pin, Self);
+					const FString ToPin = PinKey(Target, Self);
 					Edges.Add({NodeIndex, FromPin, *TargetIndex, ToPin});
 					Adjacency[NodeIndex].Add({true, FromPin, ToPin, *TargetIndex});
 					Adjacency[*TargetIndex].Add({false, ToPin, FromPin, NodeIndex});
@@ -445,7 +567,7 @@ namespace CortexReflectDuplicateGraphPrivate
 		}
 	}
 
-	void AddGraphUnit(const UEdGraph* Graph, const TCHAR* Kind, const int32 BlueprintIndex, const FRequest& Request, TArray<FUnit>& OutUnits, int32& OutGraphs)
+	void AddGraphUnit(const UEdGraph* Graph, const TCHAR* Kind, const int32 BlueprintIndex, const FRequest& Request, const FSelfContext& Self, TArray<FUnit>& OutUnits, int32& OutGraphs)
 	{
 		if (!Graph)
 		{
@@ -468,26 +590,27 @@ namespace CortexReflectDuplicateGraphPrivate
 		Unit.BlueprintIndex = BlueprintIndex;
 		Unit.Kind = Kind;
 		Unit.Name = Graph->GetName();
-		Normalise(Nodes, Unit);
+		Normalise(Nodes, Self, Unit);
 		OutUnits.Add(MoveTemp(Unit));
 	}
 
 	void CollectBlueprintUnits(UBlueprint* Blueprint, const int32 BlueprintIndex, const FRequest& Request, TArray<FUnit>& OutUnits, int32& OutGraphs)
 	{
+		const FSelfContext Self(Blueprint);
 		for (const UEdGraph* Graph : Blueprint->FunctionGraphs)
 		{
-			AddGraphUnit(Graph, UnitKind::Function, BlueprintIndex, Request, OutUnits, OutGraphs);
+			AddGraphUnit(Graph, UnitKind::Function, BlueprintIndex, Request, Self, OutUnits, OutGraphs);
 		}
 		for (const FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
 		{
 			for (const UEdGraph* Graph : Interface.Graphs)
 			{
-				AddGraphUnit(Graph, UnitKind::Function, BlueprintIndex, Request, OutUnits, OutGraphs);
+				AddGraphUnit(Graph, UnitKind::Function, BlueprintIndex, Request, Self, OutUnits, OutGraphs);
 			}
 		}
 		for (const UEdGraph* Graph : Blueprint->MacroGraphs)
 		{
-			AddGraphUnit(Graph, UnitKind::Macro, BlueprintIndex, Request, OutUnits, OutGraphs);
+			AddGraphUnit(Graph, UnitKind::Macro, BlueprintIndex, Request, Self, OutUnits, OutGraphs);
 		}
 		for (const UEdGraph* Graph : Blueprint->UbergraphPages)
 		{
@@ -513,7 +636,7 @@ namespace CortexReflectDuplicateGraphPrivate
 				Unit.BlueprintIndex = BlueprintIndex;
 				Unit.Kind = UnitKind::Event;
 				Unit.Name = Event->GetFunctionName().ToString();
-				Normalise(Nodes, Unit);
+				Normalise(Nodes, Self, Unit);
 				OutUnits.Add(MoveTemp(Unit));
 			}
 		}
@@ -577,19 +700,24 @@ namespace CortexReflectDuplicateGraphPrivate
 		FString Name;
 		FString Hash;
 		int32 NodeCount = 0;
-		/** Weakest linking pair of a similar group; 1.0 for exact groups. */
-		double Similarity = 1.0;
+		/** Similar groups: true minimum and maximum Jaccard over all member pairs. Exact groups: 1.0. */
+		double MinSimilarity = 1.0;
+		double MaxSimilarity = 1.0;
+		/** Similar groups: the unit every other member was linked to. */
+		int32 Representative = INDEX_NONE;
 		TArray<int32> Members;
 	};
 
-	int32 FindRoot(TArray<int32>& Parents, int32 Item)
+	/** Stable unit order: Blueprint path, graph name, kind. */
+	bool UnitLess(const TArray<FUnit>& Units, const TArray<FString>& BlueprintPaths, const int32 Left, const int32 Right)
 	{
-		while (Parents[Item] != Item)
+		const FUnit& L = Units[Left];
+		const FUnit& R = Units[Right];
+		if (L.BlueprintIndex != R.BlueprintIndex)
 		{
-			Parents[Item] = Parents[Parents[Item]];
-			Item = Parents[Item];
+			return BlueprintPaths[L.BlueprintIndex] < BlueprintPaths[R.BlueprintIndex];
 		}
-		return Item;
+		return L.Name != R.Name ? L.Name < R.Name : L.Kind < R.Kind;
 	}
 
 	TSharedRef<FJsonObject> MemberJson(const FUnit& Unit, const TArray<FString>& BlueprintPaths)
@@ -606,18 +734,9 @@ namespace CortexReflectDuplicateGraphPrivate
 	{
 		for (FGroup& Group : Groups)
 		{
-			Algo::Sort(Group.Members, [&](const int32 Left, const int32 Right)
-			{
-				const FUnit& L = Units[Left];
-				const FUnit& R = Units[Right];
-				if (L.BlueprintIndex != R.BlueprintIndex)
-				{
-					return BlueprintPaths[L.BlueprintIndex] < BlueprintPaths[R.BlueprintIndex];
-				}
-				return L.Name < R.Name;
-			});
+			Algo::Sort(Group.Members, [&](const int32 Left, const int32 Right) { return UnitLess(Units, BlueprintPaths, Left, Right); });
 		}
-		Algo::Sort(Groups, [](const FGroup& Left, const FGroup& Right)
+		Algo::Sort(Groups, [&](const FGroup& Left, const FGroup& Right)
 		{
 			if (Left.Members.Num() != Right.Members.Num())
 			{
@@ -631,7 +750,15 @@ namespace CortexReflectDuplicateGraphPrivate
 			{
 				return Left.Kind < Right.Kind;
 			}
-			return Left.Hash != Right.Hash ? Left.Hash < Right.Hash : Left.Name < Right.Name;
+			if (Left.Hash != Right.Hash)
+			{
+				return Left.Hash < Right.Hash;
+			}
+			if (Left.Name != Right.Name)
+			{
+				return Left.Name < Right.Name;
+			}
+			return UnitLess(Units, BlueprintPaths, Left.Members[0], Right.Members[0]);
 		});
 
 		TArray<TSharedPtr<FJsonValue>> Values;
@@ -647,7 +774,9 @@ namespace CortexReflectDuplicateGraphPrivate
 			else
 			{
 				Json->SetStringField(TEXT("name"), Group.Name);
-				Json->SetNumberField(TEXT("similarity"), Group.Similarity);
+				Json->SetStringField(TEXT("representative"), BlueprintPaths[Units[Group.Representative].BlueprintIndex]);
+				Json->SetNumberField(TEXT("min_similarity"), Group.MinSimilarity);
+				Json->SetNumberField(TEXT("max_similarity"), Group.MaxSimilarity);
 			}
 			TArray<TSharedPtr<FJsonValue>> Members;
 			for (const int32 Member : Group.Members)
@@ -713,7 +842,16 @@ FCortexCommandResult FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(const 
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 	}
 
-	// Exact groups: identical hash (per kind) across at least two Blueprints.
+	// Exact groups: identical hash (per kind) across at least two Blueprints. Every cross-Blueprint unit pair of a
+	// group is recorded once in SharedUnitPairs, the single source of the Blueprint pair statistics.
+	TSet<TPair<int32, int32>> SharedUnitPairs;
+	const auto AddUnitPair = [&Units, &SharedUnitPairs](const int32 Left, const int32 Right)
+	{
+		if (Units[Left].BlueprintIndex != Units[Right].BlueprintIndex)
+		{
+			SharedUnitPairs.Add({FMath::Min(Left, Right), FMath::Max(Left, Right)});
+		}
+	};
 	TMap<FString, TArray<int32>> ByHash;
 	for (int32 UnitIndex = 0; UnitIndex < Units.Num(); ++UnitIndex)
 	{
@@ -737,12 +875,25 @@ FCortexCommandResult FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(const 
 		Group.Hash = First.Hash;
 		Group.NodeCount = First.NodeCount;
 		Group.Members = Entry.Value;
+		for (int32 Left = 0; Left < Entry.Value.Num(); ++Left)
+		{
+			for (int32 Right = Left + 1; Right < Entry.Value.Num(); ++Right)
+			{
+				AddUnitPair(Entry.Value[Left], Entry.Value[Right]);
+			}
+		}
 		ExactGroups.Add(MoveTemp(Group));
 	}
 
-	// Similar groups: same kind and name (any widget tree against any other) in different Blueprints, differing
-	// hash, Jaccard ratio of the descriptor multisets at or above the threshold. A group is a connected component
-	// of such pairs and reports its weakest linking pair.
+	// Similar groups. Candidates are same kind and name (any widget tree against any other). Units with identical
+	// hashes collapse to one class represented by its first unit (path, name), so an exact copy never appears again
+	// among the similar members. Classes are linked when their descriptor multisets have a Jaccard ratio at or
+	// above the threshold, then grouped as star clusters: the class with the highest total similarity to still
+	// unassigned classes (ties: first representative) becomes the representative and takes every unassigned class
+	// linked to it. A cluster reports the true minimum and maximum Jaccard over all its member pairs, which can be
+	// below the threshold for members that are only linked through the representative.
+	// Pairwise work: Jaccard <= min(|A|,|B|) / max(|A|,|B|), so classes sorted by descriptor count stop comparing
+	// as soon as the size ratio drops under the threshold; worst case O(n^2) per same-name bucket, typically far less.
 	TMap<FString, TArray<int32>> ByName;
 	for (int32 UnitIndex = 0; UnitIndex < Units.Num(); ++UnitIndex)
 	{
@@ -750,122 +901,159 @@ FCortexCommandResult FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(const 
 		ByName.FindOrAdd(Unit.Kind + TEXT("|") + (Unit.Kind == UnitKind::WidgetTree ? FString() : Unit.Name)).Add(UnitIndex);
 	}
 	TArray<FGroup> SimilarGroups;
-	TSet<TPair<int32, int32>> WidgetPairs;
 	for (const TPair<FString, TArray<int32>>& Bucket : ByName)
 	{
-		const TArray<int32>& Members = Bucket.Value;
-		if (Members.Num() < 2)
+		TMap<FString, TArray<int32>> ClassByHash;
+		for (const int32 UnitIndex : Bucket.Value)
+		{
+			ClassByHash.FindOrAdd(Units[UnitIndex].Hash).Add(UnitIndex);
+		}
+		if (ClassByHash.Num() < 2)
 		{
 			continue;
 		}
-		struct FLink
+		TArray<TArray<int32>> Classes;
+		for (TPair<FString, TArray<int32>>& Class : ClassByHash)
 		{
-			int32 Left;
-			int32 Right;
-			double Similarity;
-		};
-		TArray<FLink> Links;
-		TArray<int32> Parents;
-		Parents.SetNumUninitialized(Members.Num());
-		for (int32 Slot = 0; Slot < Members.Num(); ++Slot)
-		{
-			Parents[Slot] = Slot;
+			Algo::Sort(Class.Value, [&](const int32 Left, const int32 Right) { return UnitLess(Units, BlueprintPaths, Left, Right); });
+			Classes.Add(MoveTemp(Class.Value));
 		}
-		for (int32 Left = 0; Left < Members.Num(); ++Left)
+		Algo::Sort(Classes, [&](const TArray<int32>& Left, const TArray<int32>& Right) { return UnitLess(Units, BlueprintPaths, Left[0], Right[0]); });
+		const int32 ClassCount = Classes.Num();
+		const auto Descriptors = [&](const int32 ClassIndex) -> const TArray<FString>& { return Units[Classes[ClassIndex][0]].Descriptors; };
+		const auto HasCrossBlueprint = [&](const int32 Left, const int32 Right)
 		{
-			for (int32 Right = Left + 1; Right < Members.Num(); ++Right)
+			for (const int32 L : Classes[Left])
 			{
-				const FUnit& L = Units[Members[Left]];
-				const FUnit& R = Units[Members[Right]];
-				if (L.BlueprintIndex == R.BlueprintIndex)
+				for (const int32 R : Classes[Right])
 				{
-					continue;
-				}
-				const bool bWidget = L.Kind == UnitKind::WidgetTree;
-				if (L.Hash == R.Hash)
-				{
-					if (bWidget)
+					if (Units[L].BlueprintIndex != Units[R].BlueprintIndex)
 					{
-						WidgetPairs.Add({FMath::Min(L.BlueprintIndex, R.BlueprintIndex), FMath::Max(L.BlueprintIndex, R.BlueprintIndex)});
+						return true;
 					}
-					continue;
 				}
-				const double Similarity = Jaccard(L.Descriptors, R.Descriptors);
-				if (Similarity < Request.Similarity)
+			}
+			return false;
+		};
+
+		TArray<int32> BySize;
+		for (int32 ClassIndex = 0; ClassIndex < ClassCount; ++ClassIndex)
+		{
+			BySize.Add(ClassIndex);
+		}
+		Algo::Sort(BySize, [&](const int32 Left, const int32 Right)
+		{
+			const int32 LeftSize = Descriptors(Left).Num();
+			const int32 RightSize = Descriptors(Right).Num();
+			return LeftSize != RightSize ? LeftSize < RightSize : Left < Right;
+		});
+		TArray<TArray<TPair<int32, double>>> Links;
+		Links.SetNum(ClassCount);
+		for (int32 Small = 0; Small < ClassCount; ++Small)
+		{
+			const int32 SmallClass = BySize[Small];
+			const double SmallSize = Descriptors(SmallClass).Num();
+			for (int32 Large = Small + 1; Large < ClassCount; ++Large)
+			{
+				const int32 LargeClass = BySize[Large];
+				if (SmallSize / Descriptors(LargeClass).Num() < Request.Similarity)
+				{
+					break;
+				}
+				if (!HasCrossBlueprint(SmallClass, LargeClass))
 				{
 					continue;
 				}
-				Links.Add({Left, Right, Similarity});
-				Parents[FindRoot(Parents, Left)] = FindRoot(Parents, Right);
-				if (bWidget)
+				const double Similarity = Jaccard(Descriptors(SmallClass), Descriptors(LargeClass));
+				if (Similarity >= Request.Similarity)
 				{
-					WidgetPairs.Add({FMath::Min(L.BlueprintIndex, R.BlueprintIndex), FMath::Max(L.BlueprintIndex, R.BlueprintIndex)});
+					Links[SmallClass].Add({LargeClass, Similarity});
+					Links[LargeClass].Add({SmallClass, Similarity});
 				}
 			}
 		}
-		TMap<int32, FGroup> Components;
-		for (const FLink& Link : Links)
+
+		TArray<bool> Assigned;
+		Assigned.Init(false, ClassCount);
+		while (true)
 		{
-			const int32 Root = FindRoot(Parents, Link.Left);
-			FGroup& Group = Components.FindOrAdd(Root);
-			if (Group.Members.Num() == 0)
+			int32 Representative = INDEX_NONE;
+			double BestTotal = 0.0;
+			for (int32 ClassIndex = 0; ClassIndex < ClassCount; ++ClassIndex)
 			{
-				const FUnit& First = Units[Members[Link.Left]];
-				Group.Kind = First.Kind;
-				Group.Name = First.Kind == UnitKind::WidgetTree ? FString() : First.Name;
-				Group.Similarity = 1.0;
+				if (Assigned[ClassIndex])
+				{
+					continue;
+				}
+				double Total = 0.0;
+				for (const TPair<int32, double>& Link : Links[ClassIndex])
+				{
+					Total += Assigned[Link.Key] ? 0.0 : Link.Value;
+				}
+				if (Total > BestTotal + 1e-12)
+				{
+					BestTotal = Total;
+					Representative = ClassIndex;
+				}
 			}
-			Group.Similarity = FMath::Min(Group.Similarity, Link.Similarity);
-		}
-		for (int32 Slot = 0; Slot < Members.Num(); ++Slot)
-		{
-			if (FGroup* Group = Components.Find(FindRoot(Parents, Slot)))
+			if (Representative == INDEX_NONE)
 			{
-				Group->Members.Add(Members[Slot]);
-				Group->NodeCount = FMath::Max(Group->NodeCount, Units[Members[Slot]].NodeCount);
+				break;
 			}
-		}
-		for (TPair<int32, FGroup>& Component : Components)
-		{
-			SimilarGroups.Add(MoveTemp(Component.Value));
+			TArray<int32> Cluster;
+			Cluster.Add(Representative);
+			Assigned[Representative] = true;
+			for (const TPair<int32, double>& Link : Links[Representative])
+			{
+				if (!Assigned[Link.Key])
+				{
+					Assigned[Link.Key] = true;
+					Cluster.Add(Link.Key);
+					for (const int32 RepUnit : Classes[Representative])
+					{
+						for (const int32 MemberUnit : Classes[Link.Key])
+						{
+							AddUnitPair(RepUnit, MemberUnit);
+						}
+					}
+				}
+			}
+			Algo::Sort(Cluster, [&](const int32 Left, const int32 Right) { return Left < Right; });
+
+			FGroup Group;
+			const FUnit& RepresentativeUnit = Units[Classes[Representative][0]];
+			Group.Kind = RepresentativeUnit.Kind;
+			Group.Name = RepresentativeUnit.Kind == UnitKind::WidgetTree ? FString() : RepresentativeUnit.Name;
+			Group.Representative = Classes[Representative][0];
+			Group.MinSimilarity = 1.0;
+			Group.MaxSimilarity = 0.0;
+			for (int32 Left = 0; Left < Cluster.Num(); ++Left)
+			{
+				Group.Members.Add(Classes[Cluster[Left]][0]);
+				Group.NodeCount = FMath::Max(Group.NodeCount, Units[Classes[Cluster[Left]][0]].NodeCount);
+				for (int32 Right = Left + 1; Right < Cluster.Num(); ++Right)
+				{
+					const double Similarity = Jaccard(Descriptors(Cluster[Left]), Descriptors(Cluster[Right]));
+					Group.MinSimilarity = FMath::Min(Group.MinSimilarity, Similarity);
+					Group.MaxSimilarity = FMath::Max(Group.MaxSimilarity, Similarity);
+				}
+			}
+			SimilarGroups.Add(MoveTemp(Group));
 		}
 	}
 
-	// Blueprint pairs: how many exact/similar graph groups (widget trees aside) two Blueprints share, plus the
-	// similarity of their widget trees. Pairs qualify through a shared graph group or a widget-tree match.
-	struct FPairStats
+	// Blueprint pairs from the deduplicated unit pairs: each pair of units counts once toward its Blueprint pair.
+	// Widget-tree unit pairs only qualify the pair; the shared_graphs count is graphs, macros and event chains.
+	TMap<TPair<int32, int32>, int32> Pairs;
+	for (const TPair<int32, int32>& UnitPair : SharedUnitPairs)
 	{
-		int32 SharedGraphs = 0;
-	};
-	TMap<TPair<int32, int32>, FPairStats> Pairs;
-	const auto CountGroups = [&](const TArray<FGroup>& Groups)
-	{
-		for (const FGroup& Group : Groups)
+		const int32 LeftBlueprint = Units[UnitPair.Key].BlueprintIndex;
+		const int32 RightBlueprint = Units[UnitPair.Value].BlueprintIndex;
+		int32& Shared = Pairs.FindOrAdd({FMath::Min(LeftBlueprint, RightBlueprint), FMath::Max(LeftBlueprint, RightBlueprint)});
+		if (Units[UnitPair.Key].Kind != UnitKind::WidgetTree)
 		{
-			if (Group.Kind == UnitKind::WidgetTree)
-			{
-				continue;
-			}
-			TArray<int32> Blueprints;
-			for (const int32 Member : Group.Members)
-			{
-				Blueprints.AddUnique(Units[Member].BlueprintIndex);
-			}
-			Blueprints.Sort();
-			for (int32 Left = 0; Left < Blueprints.Num(); ++Left)
-			{
-				for (int32 Right = Left + 1; Right < Blueprints.Num(); ++Right)
-				{
-					++Pairs.FindOrAdd({Blueprints[Left], Blueprints[Right]}).SharedGraphs;
-				}
-			}
+			++Shared;
 		}
-	};
-	CountGroups(ExactGroups);
-	CountGroups(SimilarGroups);
-	for (const TPair<int32, int32>& WidgetPair : WidgetPairs)
-	{
-		Pairs.FindOrAdd(WidgetPair);
 	}
 	TMap<int32, int32> WidgetUnitOfBlueprint;
 	for (int32 UnitIndex = 0; UnitIndex < Units.Num(); ++UnitIndex)
@@ -883,7 +1071,7 @@ FCortexCommandResult FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(const 
 		double WidgetSimilarity;
 	};
 	TArray<FPairRow> PairRows;
-	for (const TPair<TPair<int32, int32>, FPairStats>& Pair : Pairs)
+	for (const TPair<TPair<int32, int32>, int32>& Pair : Pairs)
 	{
 		double WidgetSimilarity = 0.0;
 		const int32* LeftWidget = WidgetUnitOfBlueprint.Find(Pair.Key.Key);
@@ -892,7 +1080,7 @@ FCortexCommandResult FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(const 
 		{
 			WidgetSimilarity = Jaccard(Units[*LeftWidget].Descriptors, Units[*RightWidget].Descriptors);
 		}
-		PairRows.Add({BlueprintPaths[Pair.Key.Key], BlueprintPaths[Pair.Key.Value], Pair.Value.SharedGraphs, WidgetSimilarity});
+		PairRows.Add({BlueprintPaths[Pair.Key.Key], BlueprintPaths[Pair.Key.Value], Pair.Value, WidgetSimilarity});
 	}
 	Algo::Sort(PairRows, [](const FPairRow& Left, const FPairRow& Right)
 	{
@@ -906,7 +1094,6 @@ FCortexCommandResult FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(const 
 		}
 		return Left.A != Right.A ? Left.A < Right.A : Left.B < Right.B;
 	});
-
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetNumberField(TEXT("blueprints_scanned"), BlueprintPaths.Num());
 	Result->SetNumberField(TEXT("graphs_scanned"), GraphsScanned);
