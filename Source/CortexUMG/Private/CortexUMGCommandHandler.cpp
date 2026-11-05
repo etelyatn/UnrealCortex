@@ -364,7 +364,7 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .Required(TEXT("track"), TEXT("object"), TEXT("Track object with optional section completion_mode 'RestoreState' (default) or 'KeepState', or explicit null to clear the one property track"))
             .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Content guard fingerprint from prior read"))
             .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("If true, previews changes without mutating (default: true)")),
-        FCortexCommandInfo{ TEXT("check_native_bindings"), TEXT("Check BindWidget/BindWidgetAnim members of a native UserWidget base against a Widget Blueprint (read-only)") }
+        FCortexCommandInfo{ TEXT("check_native_bindings"), TEXT("Check BindWidget/BindWidgetAnim members of a native UserWidget base against a Widget Blueprint, including graph reads of members that are not Blueprint visible (read-only)") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Optional(TEXT("native_class"), TEXT("string"), TEXT("UserWidget class path or name to check against; defaults to the Blueprint's parent class"))
             .StrictParams(),

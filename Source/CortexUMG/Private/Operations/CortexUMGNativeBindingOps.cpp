@@ -9,6 +9,8 @@
 #include "Components/Widget.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
+#include "K2Node_Variable.h"
 #include "Misc/PackageName.h"
 #include "UObject/UnrealType.h"
 
@@ -32,6 +34,8 @@ struct FNativeBindingRecord
     FString ExpectedClass;
     FString ActualClass;
     FString NameSuggestion;
+    int32 ReferencedByGraphs = 0;
+    bool bBlueprintVisible = false;
 };
 
 int32 LevenshteinDistance(const FString& A, const FString& B)
@@ -130,6 +134,47 @@ TArray<UWidget*> CollectBoundWidgets(const UWidgetBlueprint* Blueprint)
     return Widgets;
 }
 
+/** Widgets of the parent Widget Blueprint of the one that owns the scanned widgets (the compiler's ParentWidgetToBindWidgetMap). */
+TArray<UWidget*> CollectParentWidgets(const UWidgetBlueprint* Blueprint)
+{
+    for (const UWidgetBlueprint* Scan = Blueprint; Scan; )
+    {
+        TArray<UWidget*> OwnWidgets;
+        if (Scan->WidgetTree)
+        {
+            Scan->WidgetTree->GetAllWidgets(OwnWidgets);
+        }
+        const bool bOwnsWidgets = OwnWidgets.Num() > 0;
+        const UWidgetBlueprint* ParentWidgetBP = Scan->ParentClass ? Cast<UWidgetBlueprint>(Scan->ParentClass->ClassGeneratedBy) : nullptr;
+        if (bOwnsWidgets)
+        {
+            return ParentWidgetBP ? const_cast<UWidgetBlueprint*>(ParentWidgetBP)->GetAllSourceWidgets() : TArray<UWidget*>();
+        }
+        Scan = ParentWidgetBP;
+    }
+    return TArray<UWidget*>();
+}
+
+/** Self-context variable nodes per member name across every graph of the Blueprint. */
+TMap<FName, int32> CountGraphMemberReferences(const UWidgetBlueprint* Blueprint)
+{
+    TMap<FName, int32> References;
+    TArray<UEdGraph*> Graphs;
+    Blueprint->GetAllGraphs(Graphs);
+    for (const UEdGraph* Graph : Graphs)
+    {
+        for (const UEdGraphNode* Node : Graph->Nodes)
+        {
+            const UK2Node_Variable* Variable = Cast<UK2Node_Variable>(Node);
+            if (Variable && Variable->VariableReference.IsSelfContext() && !Variable->VariableReference.IsLocalScope())
+            {
+                ++References.FindOrAdd(Variable->GetVarName());
+            }
+        }
+    }
+    return References;
+}
+
 /** Animation names across the Blueprint and its Widget Blueprint ancestors, as the compiler scans them. */
 TArray<FString> CollectBoundAnimationNames(const UWidgetBlueprint* Blueprint)
 {
@@ -186,7 +231,9 @@ FCortexCommandResult FCortexUMGNativeBindingOps::CheckNativeBindings(const TShar
     }
 
     const TArray<UWidget*> Widgets = CollectBoundWidgets(WBP);
+    const TArray<UWidget*> ParentWidgets = CollectParentWidgets(WBP);
     const TArray<FString> AnimationNames = CollectBoundAnimationNames(WBP);
+    const TMap<FName, int32> GraphReferences = CountGraphMemberReferences(WBP);
 
     TArray<FNativeBindingRecord> Records;
     for (TFieldIterator<FObjectPropertyBase> It(BindingClass); It; ++It)
@@ -212,6 +259,19 @@ FCortexCommandResult FCortexUMGNativeBindingOps::CheckNativeBindings(const TShar
                     break;
                 }
             }
+            if (!Same)
+            {
+                // The compiler also binds a member to the parent Widget Blueprint's own widget of the same name and type.
+                for (const UWidget* Widget : ParentWidgets)
+                {
+                    if (Widget && Widget->GetName().Equals(Record.Name, ESearchCase::CaseSensitive)
+                        && Widget->IsA(Property->PropertyClass))
+                    {
+                        Same = Widget;
+                        break;
+                    }
+                }
+            }
             if (Same)
             {
                 const bool bCompatible = Same->IsA(Property->PropertyClass);
@@ -234,6 +294,8 @@ FCortexCommandResult FCortexUMGNativeBindingOps::CheckNativeBindings(const TShar
                 }
                 Record.NameSuggestion = SuggestName(Record.Name, MoveTemp(Candidates));
             }
+            Record.ReferencedByGraphs = GraphReferences.FindRef(FName(*Record.Name));
+            Record.bBlueprintVisible = Property->HasAnyPropertyFlags(CPF_BlueprintVisible);
             Records.Add(MoveTemp(Record));
         }
         else if (Property->PropertyClass && Property->PropertyClass->IsChildOf(UWidgetAnimation::StaticClass())
@@ -259,6 +321,8 @@ FCortexCommandResult FCortexUMGNativeBindingOps::CheckNativeBindings(const TShar
                 Record.Status = bOptional ? NativeBindingStatus::OptionalMissing : NativeBindingStatus::Missing;
                 Record.NameSuggestion = SuggestName(Record.Name, AnimationNames);
             }
+            Record.ReferencedByGraphs = GraphReferences.FindRef(FName(*Record.Name));
+            Record.bBlueprintVisible = Property->HasAnyPropertyFlags(CPF_BlueprintVisible);
             Records.Add(MoveTemp(Record));
         }
     }
@@ -279,13 +343,18 @@ FCortexCommandResult FCortexUMGNativeBindingOps::CheckNativeBindings(const TShar
     }
 
     bool bHasErrors = false;
+    int32 NotBlueprintVisibleCount = 0;
     TArray<TSharedPtr<FJsonValue>> BindingsJson;
     for (const FNativeBindingRecord& Record : Records)
     {
         ++StatusCounts.FindChecked(Record.Status);
+        // A graph that reads the member fails the compile ("X is not blueprint visible") when the native property lacks exposure.
+        const bool bNotBlueprintVisible = Record.ReferencedByGraphs > 0 && !Record.bBlueprintVisible;
+        NotBlueprintVisibleCount += bNotBlueprintVisible ? 1 : 0;
         bHasErrors |= Record.Status == NativeBindingStatus::Missing
             || Record.Status == NativeBindingStatus::TypeMismatch
-            || Record.Status == NativeBindingStatus::NotTransient;
+            || Record.Status == NativeBindingStatus::NotTransient
+            || bNotBlueprintVisible;
 
         TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
         Json->SetStringField(TEXT("kind"), Record.Kind);
@@ -293,6 +362,8 @@ FCortexCommandResult FCortexUMGNativeBindingOps::CheckNativeBindings(const TShar
         Json->SetBoolField(TEXT("optional"), Record.bOptional);
         Json->SetStringField(TEXT("status"), Record.Status);
         Json->SetStringField(TEXT("expected_class"), Record.ExpectedClass);
+        Json->SetNumberField(TEXT("referenced_by_graphs"), Record.ReferencedByGraphs);
+        Json->SetBoolField(TEXT("blueprint_visible"), Record.bBlueprintVisible);
         if (!Record.ActualClass.IsEmpty())
         {
             Json->SetStringField(TEXT("actual_class"), Record.ActualClass);
@@ -309,6 +380,7 @@ FCortexCommandResult FCortexUMGNativeBindingOps::CheckNativeBindings(const TShar
     {
         Counts->SetNumberField(Status, StatusCounts.FindChecked(Status));
     }
+    Counts->SetNumberField(TEXT("not_blueprint_visible"), NotBlueprintVisibleCount);
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetStringField(TEXT("asset_path"), AssetPath);

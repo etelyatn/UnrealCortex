@@ -38,3 +38,23 @@ public:
 	UPROPERTY(meta = (BindWidgetAnim))
 	TObjectPtr<UWidgetAnimation> NotTransientAnim;
 };
+
+/**
+ * Test-only native base for the "X is not blueprint visible" check: one BindWidget member a graph can
+ * read, one it cannot (no Blueprint exposure), and one that is never read.
+ */
+UCLASS(Abstract)
+class UCortexUMGBindWidgetVisibilityBase : public UUserWidget
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UImage> HiddenImage;
+
+	UPROPERTY(BlueprintReadOnly, Category = "CortexTest", meta = (BindWidget))
+	TObjectPtr<UImage> VisibleImage;
+
+	UPROPERTY(meta = (BindWidget))
+	TObjectPtr<UImage> UnreadImage;
+};
