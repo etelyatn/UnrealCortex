@@ -29,7 +29,7 @@ bool FCortexBPRenameMemberVariableTest::RunTest(const FString& Parameters)
 	UEdGraph* Function = AddFunctionGraph(Blueprint, TEXT("Toggle"));
 	if (!TestNotNull(TEXT("Function graph"), Function))
 	{
-		Discard(Blueprint);
+		RetireBlueprint(Blueprint);
 		return false;
 	}
 	UK2Node_VariableGet* EventGet = AddGet(EventGraph, TEXT("bOpen"));
@@ -110,7 +110,7 @@ bool FCortexBPRenameMemberVariableTest::RunTest(const FString& Parameters)
 	}
 
 	ClearNodes(Blueprint);
-	Discard(Blueprint);
+	RetireBlueprint(Blueprint);
 	return true;
 }
 
@@ -136,7 +136,7 @@ bool FCortexBPRenameMemberDispatcherTest::RunTest(const FString& Parameters)
 	UEdGraph* const Signature = FBlueprintEditorUtils::GetDelegateSignatureGraphByName(Blueprint, TEXT("OnDone"));
 	if (!TestNotNull(TEXT("Signature graph"), Signature))
 	{
-		Discard(Blueprint);
+		RetireBlueprint(Blueprint);
 		return false;
 	}
 
@@ -189,7 +189,7 @@ bool FCortexBPRenameMemberDispatcherTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Old variable gone"), HasVariable(Blueprint, TEXT("OnDone")));
 
 	ClearNodes(Blueprint);
-	Discard(Blueprint);
+	RetireBlueprint(Blueprint);
 	return true;
 }
 
@@ -248,7 +248,7 @@ bool FCortexBPRenameMemberSaveGameTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("acknowledged rename succeeds"), Applied.bSuccess);
 	TestTrue(TEXT("renamed"), HasVariable(Blueprint, TEXT("Points")) && !HasVariable(Blueprint, TEXT("Score")));
 	ClearNodes(Blueprint);
-	Discard(Blueprint);
+	RetireBlueprint(Blueprint);
 
 	// FieldNotify variables refuse (M3).
 	UBlueprint* Notify = MakeBlueprint(TEXT("RenameFieldNotify"), AActor::StaticClass());
@@ -266,7 +266,7 @@ bool FCortexBPRenameMemberSaveGameTest::RunTest(const FString& Parameters)
 		Before.Check(*this, Notify, TEXT("FieldNotify"));
 	}
 	ClearNodes(Notify);
-	Discard(Notify);
+	RetireBlueprint(Notify);
 
 	// An unloaded child that already declares the new name refuses through the derived classes of the scan (M4).
 	FFixtures Fixtures;
@@ -280,7 +280,7 @@ bool FCortexBPRenameMemberSaveGameTest::RunTest(const FString& Parameters)
 	UBlueprint* Child = MakeBlueprint(TEXT("BP_RenameChild"), Owner->GeneratedClass, TEXT("RenameChild"));
 	if (!TestNotNull(TEXT("Child"), Child))
 	{
-		Discard(Owner);
+		RetireBlueprint(Owner);
 		return false;
 	}
 	AddVariable(Child, TEXT("Door"), BoolPin());
@@ -330,7 +330,7 @@ bool FCortexBPRenameMemberRefusalsTest::RunTest(const FString& Parameters)
 	UBlueprint* LoadedChild = MakeBlueprint(TEXT("BP_RefuseLoadedChild"), Owner->GeneratedClass, TEXT("RefuseLoadedChild"));
 	if (!TestNotNull(TEXT("Loaded child"), LoadedChild))
 	{
-		Discard(Owner);
+		RetireBlueprint(Owner);
 		return false;
 	}
 	AddVariable(LoadedChild, TEXT("bClash"), BoolPin());
@@ -385,8 +385,8 @@ bool FCortexBPRenameMemberRefusalsTest::RunTest(const FString& Parameters)
 	UBlueprint* Hot = MakeBlueprint(TEXT("BP_RefuseHot"), AActor::StaticClass(), TEXT("RefuseHot"));
 	if (!TestNotNull(TEXT("Saved referencer"), Saved) || !TestNotNull(TEXT("Hot referencer"), Hot))
 	{
-		Discard(LoadedChild);
-		Discard(Owner);
+		RetireBlueprint(LoadedChild);
+		RetireBlueprint(Owner);
 		return false;
 	}
 	for (UBlueprint* Referencer : {Saved, Hot})

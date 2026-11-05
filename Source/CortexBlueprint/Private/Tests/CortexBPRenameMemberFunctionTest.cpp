@@ -74,7 +74,7 @@ bool FCortexBPRenameMemberFunctionTest::RunTest(const FString& Parameters)
 	UEdGraph* Other = AddFunctionGraph(Blueprint, TEXT("Caller"));
 	if (!TestNotNull(TEXT("Function graphs"), Target) || !TestNotNull(TEXT("Second function graph"), Other))
 	{
-		Discard(Blueprint);
+		RetireBlueprint(Blueprint);
 		return false;
 	}
 	FKismetEditorUtilities::CompileBlueprint(Blueprint);
@@ -162,7 +162,7 @@ bool FCortexBPRenameMemberFunctionTest::RunTest(const FString& Parameters)
 		}
 		Before.Check(*this, Blueprint, TEXT("dependent caller"));
 		ClearNodes(Caller);
-		Discard(Caller);
+		RetireBlueprint(Caller);
 	}
 
 	// An interface-implementing graph refuses (state injected on a throwaway Blueprint; it is never compiled).
@@ -180,11 +180,11 @@ bool FCortexBPRenameMemberFunctionTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Interface graph keeps its name"), InterfaceGraph->GetFName(), FName(TEXT("Ping")));
 		Implementer->ImplementedInterfaces.Reset();
 		ClearNodes(Implementer);
-		Discard(Implementer);
+		RetireBlueprint(Implementer);
 	}
 
 	ClearNodes(Blueprint);
-	Discard(Blueprint);
+	RetireBlueprint(Blueprint);
 	return true;
 }
 
@@ -209,7 +209,7 @@ bool FCortexBPRenameMemberLocalTest::RunTest(const FString& Parameters)
 	UEdGraph* Mixed = AddFunctionGraph(Blueprint, TEXT("Mixed"));
 	if (!TestNotNull(TEXT("Function graphs"), Calc) || !TestNotNull(TEXT("Mixed graph"), Mixed))
 	{
-		Discard(Blueprint);
+		RetireBlueprint(Blueprint);
 		return false;
 	}
 	TestTrue(TEXT("Local added to Calc"), FBlueprintEditorUtils::AddLocalVariable(Blueprint, Calc, TEXT("Counter"), BoolPin(), TEXT("true")));
@@ -309,7 +309,7 @@ bool FCortexBPRenameMemberLocalTest::RunTest(const FString& Parameters)
 	}
 
 	ClearNodes(Blueprint);
-	Discard(Blueprint);
+	RetireBlueprint(Blueprint);
 	return true;
 }
 
@@ -332,7 +332,7 @@ bool FCortexBPRenameMemberLocalFaultInjectionTest::RunTest(const FString& Parame
 	UEdGraph* Quiet = AddFunctionGraph(Blueprint, TEXT("Quiet"));
 	if (!TestNotNull(TEXT("Function graph"), Quiet))
 	{
-		Discard(Blueprint);
+		RetireBlueprint(Blueprint);
 		return false;
 	}
 	// A local no node references: its declaration lives only on the entry node, outside the graph authoring hash.
@@ -382,7 +382,7 @@ bool FCortexBPRenameMemberLocalFaultInjectionTest::RunTest(const FString& Parame
 	Before.Check(*this, Blueprint, TEXT("fault injection"), /*bCheckDirty=*/false);
 
 	ClearNodes(Blueprint);
-	Discard(Blueprint);
+	RetireBlueprint(Blueprint);
 	return true;
 }
 
@@ -408,7 +408,7 @@ bool FCortexBPRenameMemberLocalChildCollisionTest::RunTest(const FString& Parame
 	UBlueprint* Child = MakeBlueprint(TEXT("RenameLocalChild"), Owner->GeneratedClass);
 	if (!TestNotNull(TEXT("Child"), Child))
 	{
-		Discard(Owner);
+		RetireBlueprint(Owner);
 		return false;
 	}
 	AddVariable(Child, TEXT("Clash"), BoolPin(), TEXT("true"));
@@ -433,8 +433,8 @@ bool FCortexBPRenameMemberLocalChildCollisionTest::RunTest(const FString& Parame
 
 	ClearNodes(Child);
 	ClearNodes(Owner);
-	Discard(Child);
-	Discard(Owner);
+	RetireBlueprint(Child);
+	RetireBlueprint(Owner);
 	return true;
 }
 
@@ -471,7 +471,7 @@ bool FCortexBPRenameMemberLocalExternalNodesTest::RunTest(const FString& Paramet
 	TestEqual(TEXT("External node untouched"), External->GetVarName(), FName(TEXT("Counter")));
 
 	ClearNodes(Blueprint);
-	Discard(Blueprint);
+	RetireBlueprint(Blueprint);
 	return true;
 }
 
@@ -533,7 +533,7 @@ bool FCortexBPRenameMemberDispatcherNodesTest::RunTest(const FString& Parameters
 	TestEqual(TEXT("A bound event of an unrelated class is not touched"), Unrelated->DelegatePropertyName, FName(TEXT("OnDone")));
 
 	ClearNodes(Blueprint);
-	Discard(Blueprint);
+	RetireBlueprint(Blueprint);
 	return true;
 }
 
@@ -573,6 +573,68 @@ bool FCortexBPRenameMemberStaleAcknowledgmentTest::RunTest(const FString& Parame
 	}
 
 	ClearNodes(Blueprint);
-	Discard(Blueprint);
+	RetireBlueprint(Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRenameMemberLocalScanScopeTest,
+	"Cortex.Blueprint.RenameMember.LocalScanScope",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPRenameMemberLocalScanScopeTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexReparentTest;
+	using namespace CortexRenameTest;
+
+	FFixtures Fixtures;
+	UBlueprint* Owner = MakeBlueprint(TEXT("BP_ScopeOwner"), AActor::StaticClass(), TEXT("ScopeOwner"));
+	if (!TestNotNull(TEXT("Owner"), Owner))
+	{
+		return false;
+	}
+	AddVariable(Owner, TEXT("Tracked"), BoolPin());
+	UEdGraph* Calc = AddFunctionGraph(Owner, TEXT("Calc"));
+	TestTrue(TEXT("Local added"), FBlueprintEditorUtils::AddLocalVariable(Owner, Calc, TEXT("Temp"), BoolPin()));
+	FKismetEditorUtilities::CompileBlueprint(Owner);
+
+	// A referencer that is neither a parent nor a child: a local rename has no reason to open it.
+	UBlueprint* Referencer = MakeBlueprint(TEXT("BP_ScopeReferencer"), AActor::StaticClass(), TEXT("ScopeReferencer"));
+	if (!TestNotNull(TEXT("Referencer"), Referencer))
+	{
+		RetireBlueprint(Owner);
+		return false;
+	}
+	AddGet(FBlueprintEditorUtils::FindEventGraph(Referencer), TEXT("Tracked"), Owner->GeneratedClass);
+	const FName ReferencerPackage = Referencer->GetOutermost()->GetFName();
+	const bool bSaved = Fixtures.SaveAndTrack(Owner) && Fixtures.SaveAndTrack(Referencer);
+	if (!TestTrue(TEXT("Fixtures saved"), bSaved))
+	{
+		Fixtures.Cleanup(*this);
+		return false;
+	}
+	Fixtures.ScanSaved();
+	Fixtures.Unload({Referencer}, *this);
+	if (!TestNull(TEXT("Referencer unloaded before the call"), FindPackage(nullptr, *ReferencerPackage.ToString())))
+	{
+		Fixtures.Cleanup(*this);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Params = RenameParams(Owner, TEXT("local"), TEXT("Temp"), TEXT("Temp2"));
+	Params->SetStringField(TEXT("function"), TEXT("Calc"));
+	Params->SetBoolField(TEXT("compile"), false);
+	const FCortexCommandResult Result = FCortexBPRenameMemberOps::Execute(Params);
+	if (!TestTrue(TEXT("local rename succeeds"), Result.bSuccess))
+	{
+		AddError(FString::Printf(TEXT("%s %s"), *Result.ErrorCode, *Result.ErrorMessage));
+	}
+	TestNotNull(TEXT("Local renamed"), FBlueprintEditorUtils::FindLocalVariable(Owner, Calc, TEXT("Temp2")));
+	TestNull(TEXT("The non-child referencer was not loaded by the scan"), FindPackage(nullptr, *ReferencerPackage.ToString()));
+
+	ClearNodes(Owner);
+	RetireBlueprint(Owner);
+	Fixtures.Cleanup(*this);
 	return true;
 }

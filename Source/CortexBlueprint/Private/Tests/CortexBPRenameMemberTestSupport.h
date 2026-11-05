@@ -20,6 +20,7 @@
 #include "Operations/CortexBPMigrationGuard.h"
 #include "PackageTools.h"
 #include "UObject/SavePackage.h"
+#include "UObject/UObjectHash.h"
 
 /** Fixture helpers shared by the Cortex.Blueprint.RenameMember test files. */
 namespace CortexRenameTest
@@ -92,6 +93,28 @@ namespace CortexRenameTest
 		}
 		Creator.Finalize();
 		return Node;
+	}
+
+	/**
+	 * Retires a fixture the way MarkFixtureGarbage (CortexBPRemoveGraphPersistenceTest) does: every object of the package is
+	 * released together, so a later compile-triggered GC never scans a graph whose Blueprint was retired alone.
+	 */
+	inline void RetireBlueprint(UBlueprint* Blueprint)
+	{
+		if (Blueprint == nullptr)
+		{
+			return;
+		}
+		UPackage* Package = Blueprint->GetOutermost();
+		ForEachObjectWithOuter(Package, [](UObject* Object)
+		{
+			Object->ClearFlags(RF_Public | RF_Standalone);
+			if (!Object->IsA<UField>() || Object->IsA<UClass>())
+			{
+				Object->MarkAsGarbage();
+			}
+		});
+		Package->MarkAsGarbage();
 	}
 
 	/**

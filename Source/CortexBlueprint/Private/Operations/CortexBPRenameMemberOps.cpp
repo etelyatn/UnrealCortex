@@ -610,7 +610,10 @@ namespace CortexBPRenameMemberPrivate
 		// Blueprint that references the member (the engine would rewrite only the loaded ones).
 		FCortexBPDependentScan::Find(Blueprint, Request.Old,
 			Request.Kind == EKind::Function ? FCortexBPDependentScan::EMemberKind::Function : FCortexBPDependentScan::EMemberKind::Variable,
-			Plan.Dependents);
+			Plan.Dependents,
+			// A local variable cannot be referenced from another asset, so nothing outside the child hierarchy can name it: skip the
+			// registry referencers (and their maps) entirely instead of loading them to find nothing.
+			Request.Kind == EKind::Local ? FCortexBPDependentScan::EScanScope::ChildrenOnly : FCortexBPDependentScan::EScanScope::All);
 		if (Request.Kind == EKind::Local)
 		{
 			// A local variable cannot be referenced from another asset; only children (whose members ValidateBlueprintChildVariables
