@@ -1655,7 +1655,8 @@
       "params": [
         "asset_path",
         "category",
-        "limit"
+        "limit",
+        "include_config"
       ]
     },
     "impact_analysis": {

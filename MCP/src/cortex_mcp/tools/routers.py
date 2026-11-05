@@ -64,7 +64,7 @@ def _dispatch_timeout(qualified: str, params: dict) -> float | None:
     return None
 
 
-_pagination_cache = PaginationCache(max_entries=5, ttl_seconds=60.0)
+_pagination_cache = PaginationCache(max_entries=16, ttl_seconds=600.0)
 _CACHED_READ_COMMANDS = {
     ("blueprint", "list_scs_components"),
     ("blueprint", "list_inherited_properties"),
@@ -121,6 +121,8 @@ CACHED_PAGE_ARRAYS = {
     "material.list_instances": "instances",
     "material.list_collections": "collections",
     "material.list_nodes": "nodes",
+    # core.batch_query executes once; its step results are the paged array.
+    "core.batch_query": "results",
 }
 
 _MAX_LIMIT = 200
@@ -179,9 +181,16 @@ def _format_cached_page(
     (only reachable from a malformed cursor) refuses instead of claiming the read is complete, and
     if not even one row of a non-empty page fits it refuses likewise.
     """
+    snapshot_id = _pagination_cache.snapshot_id(cache_key)
     if not page:
         if offset >= total:
-            meta = {"returned": 0, "total": total, "has_more": False, "next_cursor": None}
+            meta = {
+                "returned": 0,
+                "total": total,
+                "has_more": False,
+                "snapshot_id": snapshot_id,
+                "next_cursor": None,
+            }
             text = compact_json(_pagination_cache.rebuild_response(cache_key, [], meta))
             return text if len(text) <= MAX_RESPONSE_CHARS else _cached_refusal(array_key)
         return _cached_refusal(array_key)
@@ -193,8 +202,12 @@ def _format_cached_page(
             "returned": count,
             "total": total,
             "has_more": has_more,
+            "snapshot_id": snapshot_id,
             "next_cursor": (
-                encode_cursor(cache_key, next_offset, limit, command=qualified, array=array_key)
+                encode_cursor(
+                    cache_key, next_offset, limit,
+                    command=qualified, array=array_key, snapshot_id=snapshot_id,
+                )
                 if has_more
                 else None
             ),
@@ -227,11 +240,21 @@ def _handle_cursor_request(cursor_token: str, qualified: str) -> str:
     array_key = CACHED_PAGE_ARRAYS[qualified]
     key = decoded["key"]
 
+    if decoded.get("snapshot_id") is None:
+        return _invalid_cursor(
+            "Cursor is malformed. Pass a cursor value returned from a previous response."
+        )
+
     provenance = _pagination_cache.entry_provenance(key)
     if provenance is None:
         return _cursor_expired()
-    stored_command, stored_array = provenance
-    if decoded.get("array") != array_key or stored_command != qualified or stored_array != array_key:
+    stored_command, stored_array, stored_snapshot_id = provenance
+    if (
+        decoded.get("array") != array_key
+        or stored_command != qualified
+        or stored_array != array_key
+        or decoded["snapshot_id"] != stored_snapshot_id
+    ):
         return _invalid_cursor(
             "Cursor does not belong to this read command. Start a new pagination sequence with 'limit'."
         )
@@ -277,6 +300,61 @@ def _handle_limit_request(qualified: str, params: dict, limit: int, connection) 
         return _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
     except KeyError:
         return _cursor_expired()
+
+
+def _batch_query(connection, route_params: dict) -> str:
+    """core.batch_query: one native execution, optionally served as cached pages.
+
+    With ``limit`` the single native ``batch`` result is snapshotted and its step results are paged
+    from the cache; a ``cursor`` is served from that snapshot and never re-executes the batch (the
+    steps may mutate). Without ``limit`` an oversized response is refused, never silently shortened.
+    """
+    qualified = "core.batch_query"
+    cursor_token = route_params.get("cursor")
+    if cursor_token is not None:
+        return _handle_cursor_request(cursor_token, qualified)
+
+    limit = None
+    if route_params.get("limit") is not None:
+        limit, error = _validate_limit(route_params["limit"])
+        if error:
+            return error
+
+    commands = route_params.get("commands")
+    if commands is None:
+        commands = route_params.get("steps")
+    if isinstance(commands, str):
+        commands = json.loads(commands)
+    batch_params = {"commands": commands}
+    for key in ("stop_on_error", "rollback_on_error", "verify_rollback"):
+        if key in route_params:
+            batch_params[key] = route_params[key]
+    if isinstance(commands, list) and any(
+        isinstance(step, dict) and step.get("command") == "graph.apply_patch"
+        for step in commands
+    ):
+        return json.dumps({
+            "_error": "INVALID_OPERATION",
+            "_message": (
+                "graph.apply_patch is a standalone mutation and cannot run inside "
+                "core_cmd(batch_query); call graph_cmd or blueprint_compose so the "
+                "MCP prune response boundary can run before mutation."
+            ),
+        })
+
+    response = connection.send_command("batch", batch_params)
+    data = response.get("data", {})
+    if limit is None:
+        return format_response(data, "batch_query")
+
+    array_key = CACHED_PAGE_ARRAYS[qualified]
+    results = data.get(array_key)
+    if not isinstance(results, list):
+        return format_response(data, "batch_query")
+    template = {k: v for k, v in data.items() if k != array_key}
+    cache_key = _pagination_cache.store(qualified, batch_params, array_key, results, template)
+    page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
+    return _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
 
 
 def _error_payload(code: str, message: str, details) -> dict:
@@ -352,6 +430,8 @@ def _invalid_invocation_shape(message: str) -> str:
 def _batch_has_zero_commands(params) -> bool:
     if not isinstance(params, dict):
         return True
+    if params.get("cursor") is not None:
+        return False  # a cursor page is served from its snapshot and carries no commands
     commands = params.get("commands")
     if commands is None:
         commands = params.get("steps")
@@ -422,30 +502,7 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                 if command == "get_capabilities":
                     return _get_capabilities(connection, route_params)
                 if command == "batch_query":
-                    import json as _json
-                    commands = route_params.get("commands")
-                    if commands is None:
-                        commands = route_params.get("steps")
-                    if isinstance(commands, str):
-                        commands = _json.loads(commands)
-                    batch_params = {"commands": commands}
-                    for key in ("stop_on_error", "rollback_on_error", "verify_rollback"):
-                        if key in route_params:
-                            batch_params[key] = route_params[key]
-                    if isinstance(commands, list) and any(
-                        isinstance(step, dict) and step.get("command") == "graph.apply_patch"
-                        for step in commands
-                    ):
-                        return json.dumps({
-                            "_error": "INVALID_OPERATION",
-                            "_message": (
-                                "graph.apply_patch is a standalone mutation and cannot run inside "
-                                "core_cmd(batch_query); call graph_cmd or blueprint_compose so the "
-                                "MCP prune response boundary can run before mutation."
-                            ),
-                        })
-                    response = connection.send_command("batch", batch_params)
-                    return format_response(response.get("data", {}), "batch_query")
+                    return _batch_query(connection, route_params)
 
             if domain == "graph" and command == "apply_patch":
                 return dispatch_graph_apply_patch(

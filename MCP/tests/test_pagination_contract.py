@@ -860,3 +860,231 @@ class TestRefusalDiagnostics:
         assert "issues" not in payload
         assert "issues" in payload["_omitted_context"]
         assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+
+
+# --------------------------------------------------------------------------------------
+# #120 D4/D5: batch_query pagination over one execution, snapshot-owned cursors
+# --------------------------------------------------------------------------------------
+
+
+class _CountingConnection:
+    """Fake editor connection that counts native sends and answers `batch` with N step results."""
+
+    def __init__(self, step_count: int, *, blob: int = 0):
+        self.sends: list[tuple[str, dict]] = []
+        self._results = [
+            {"index": i, "success": True, "data": {"name": f"Step_{i}", **({"blob": "x" * blob} if blob else {})}}
+            for i in range(step_count)
+        ]
+
+    def send_command(self, command, params=None, **_kwargs):
+        self.sends.append((command, params))
+        return {
+            "success": True,
+            "data": {"results": list(self._results), "count": len(self._results), "total_timing_ms": 3},
+        }
+
+
+def _batch_steps(count: int):
+    return [{"command": "data.list_datatables", "params": {"i": i}} for i in range(count)]
+
+
+def _core_router(connection):
+    return routers_mod.strict_router_tool(make_router("core", connection, "core docs"), "core")
+
+
+def _drain_batch(router, first: dict):
+    payload = first
+    seen = []
+    while True:
+        seen.extend(step["index"] for step in payload["results"])
+        cursor = payload["_pagination"]["next_cursor"]
+        if cursor is None:
+            return seen, payload
+        payload = json.loads(router("batch_query", {"cursor": cursor}))
+
+
+class TestBatchQueryPagination:
+    def test_limit_then_cursor_pages_return_every_step_once_with_one_send(self):
+        connection = _CountingConnection(25)
+        router = _core_router(connection)
+
+        first = json.loads(router("batch_query", {"commands": _batch_steps(25), "limit": 10}))
+
+        assert first["_pagination"]["total"] == 25
+        assert first["_pagination"]["returned"] == 10
+        assert first["_pagination"]["has_more"] is True
+        assert first["count"] == 25
+        seen, last = _drain_batch(router, first)
+        assert seen == list(range(25))
+        assert last["_pagination"]["has_more"] is False
+        assert len(connection.sends) == 1
+        command, params = connection.sends[0]
+        assert command == "batch"
+        assert "limit" not in params and "cursor" not in params
+
+    def test_cursor_page_needs_no_commands_and_never_reexecutes(self):
+        connection = _CountingConnection(6)
+        router = _core_router(connection)
+        first = json.loads(router("batch_query", {"commands": _batch_steps(6), "limit": 4}))
+
+        second = json.loads(router("batch_query", {"cursor": first["_pagination"]["next_cursor"]}))
+
+        assert [step["index"] for step in second["results"]] == [4, 5]
+        assert len(connection.sends) == 1
+
+    def test_limit_preserves_zero_command_refusal(self):
+        connection = _CountingConnection(1)
+        router = _core_router(connection)
+
+        payload = json.loads(router("batch_query", {"commands": [], "limit": 5}))
+
+        assert payload["_error"] == "INVALID_INVOCATION_SHAPE"
+        assert connection.sends == []
+
+    def test_limit_preserves_apply_patch_refusal(self):
+        connection = _CountingConnection(1)
+        router = _core_router(connection)
+        steps = _batch_steps(1) + [{"command": "graph.apply_patch", "params": {}}]
+
+        payload = json.loads(router("batch_query", {"commands": steps, "limit": 5}))
+
+        assert payload["_error"] == "INVALID_OPERATION"
+        assert connection.sends == []
+
+    def test_invalid_limit_refuses_before_dispatch(self):
+        connection = _CountingConnection(3)
+        router = _core_router(connection)
+
+        payload = json.loads(router("batch_query", {"commands": _batch_steps(3), "limit": 0}))
+
+        assert payload["_error"] == "INVALID_LIMIT"
+        assert connection.sends == []
+
+    def test_oversized_batch_without_limit_refuses_instead_of_dropping_steps(self):
+        connection = _CountingConnection(30, blob=3_000)
+        router = _core_router(connection)
+
+        payload = json.loads(router("batch_query", {"commands": _batch_steps(30)}))
+
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert payload["reader_complete"] is False
+        assert "limit" in payload["_suggestion"]
+        assert "results" not in payload
+        assert "_truncated" not in payload
+        assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+
+    def test_oversized_batch_pages_through_limit_without_loss(self):
+        connection = _CountingConnection(30, blob=3_000)
+        router = _core_router(connection)
+
+        first = json.loads(router("batch_query", {"commands": _batch_steps(30), "limit": 20}))
+        seen, _ = _drain_batch(router, first)
+
+        assert seen == list(range(30))
+        assert len(connection.sends) == 1
+
+    def test_batch_cursor_cannot_be_used_on_another_read(self):
+        connection = _CountingConnection(6)
+        router = _core_router(connection)
+        first = json.loads(router("batch_query", {"commands": _batch_steps(6), "limit": 2}))
+
+        other = make_router("level", MagicMock(), "level docs")
+        payload = json.loads(other("find_actors", {"cursor": first["_pagination"]["next_cursor"]}))
+
+        assert payload["_error"] == "INVALID_CURSOR"
+
+
+class TestSnapshotOwnedCursors:
+    def test_pagination_meta_and_cursor_carry_snapshot_id(self):
+        router, _ = _router("level", {"matches": _actors(7), "count": 7, "pattern": "Actor"})
+
+        first = json.loads(router("find_actors", {"limit": 2}))
+
+        snapshot_id = first["_pagination"]["snapshot_id"]
+        assert isinstance(snapshot_id, int) and snapshot_id >= 1
+        cursor = first["_pagination"]["next_cursor"]
+        assert json.loads(base64.b64decode(cursor))["snapshot_id"] == snapshot_id
+        second = json.loads(router("find_actors", {"cursor": cursor}))
+        assert second["_pagination"]["snapshot_id"] == snapshot_id
+
+    def test_snapshot_ids_increase_monotonically(self):
+        router, _ = _router("level", {"matches": _actors(7), "count": 7, "pattern": "Actor"})
+
+        ids = [json.loads(router("find_actors", {"limit": 2}))["_pagination"]["snapshot_id"] for _ in range(3)]
+
+        assert ids == sorted(ids) and len(set(ids)) == 3
+
+    def test_identical_limited_requests_keep_independent_cursors(self):
+        connection = MagicMock()
+        responses = [
+            {"success": True, "data": {"matches": [{"name": f"A_{i}"} for i in range(6)], "count": 6}},
+            {"success": True, "data": {"matches": [{"name": f"B_{i}"} for i in range(6)], "count": 6}},
+        ]
+        connection.send_command.side_effect = responses
+        router = make_router("level", connection, "level docs")
+
+        first = json.loads(router("find_actors", {"pattern": "X", "limit": 2}))
+        second = json.loads(router("find_actors", {"pattern": "X", "limit": 2}))
+        a_next = json.loads(router("find_actors", {"cursor": first["_pagination"]["next_cursor"]}))
+        b_next = json.loads(router("find_actors", {"cursor": second["_pagination"]["next_cursor"]}))
+
+        assert [m["name"] for m in a_next["matches"]] == ["A_2", "A_3"]
+        assert [m["name"] for m in b_next["matches"]] == ["B_2", "B_3"]
+
+    def test_tampered_snapshot_id_is_invalid_cursor(self):
+        router, connection = _router("level", {"matches": _actors(7), "count": 7, "pattern": "Actor"})
+        cursor = json.loads(router("find_actors", {"limit": 2}))["_pagination"]["next_cursor"]
+        connection.send_command.reset_mock()
+
+        forged = _retag_cursor(cursor, snapshot_id=999)
+        payload = json.loads(router("find_actors", {"cursor": forged}))
+
+        assert payload["_error"] == "INVALID_CURSOR"
+        connection.send_command.assert_not_called()
+
+    def test_cursor_without_snapshot_id_is_invalid(self):
+        router, _ = _router("level", {"matches": _actors(7), "count": 7, "pattern": "Actor"})
+        cursor = json.loads(router("find_actors", {"limit": 2}))["_pagination"]["next_cursor"]
+        raw = json.loads(base64.b64decode(cursor))
+        del raw["snapshot_id"]
+        stripped = base64.b64encode(json.dumps(raw).encode()).decode()
+
+        payload = json.loads(router("find_actors", {"cursor": stripped}))
+
+        assert payload["_error"] == "INVALID_CURSOR"
+
+    def test_evicted_snapshot_cursor_expires(self):
+        router, connection = _router("level", {"matches": _actors(7), "count": 7, "pattern": "Actor"})
+        cursor = json.loads(router("find_actors", {"pattern": "first", "limit": 2}))["_pagination"]["next_cursor"]
+        for i in range(routers_mod._pagination_cache._max_entries):
+            router("find_actors", {"pattern": f"other_{i}", "limit": 2})
+
+        payload = json.loads(router("find_actors", {"cursor": cursor}))
+
+        assert payload["_error"] == "CURSOR_EXPIRED"
+
+    def test_router_cache_holds_sixteen_snapshots_for_ten_minutes(self):
+        assert routers_mod._pagination_cache._max_entries == 16
+        assert routers_mod._pagination_cache._ttl_seconds == 600
+
+
+class TestNewReflectReadsCompleteOrRefuse:
+    @pytest.mark.parametrize(
+        ("command", "selector"),
+        [
+            ("find_duplicate_graphs", "path_prefixes"),
+            ("find_name_lookups", "path_prefixes"),
+            ("find_broken_config_paths", "row selector"),
+        ],
+    )
+    def test_oversized_read_refuses_with_suggestion(self, command, selector):
+        router, _ = _router("reflect", {"rows": [{"blob": "x" * 500} for _ in range(200)]})
+
+        payload = json.loads(router(command, {"path_prefixes": ["/Game"]}))
+
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert payload["reader_complete"] is False
+        assert selector in payload["_suggestion"]
+        assert "rows" not in payload
+        assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS

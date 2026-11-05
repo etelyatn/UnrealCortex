@@ -491,3 +491,33 @@ class TestContextNativeSummaryAndChildBounds:
 
         assert payload["children_count"] == 3
         assert payload["children_complete"] is False
+
+
+class TestReferencersIncludeConfig:
+    """The standalone get_referencers wrapper forwards include_config only when provided."""
+
+    @staticmethod
+    def _tool():
+        from reflect.referencers import register_reflect_referencer_tools
+
+        mcp = MockMCP()
+        connection = StubReflectConnection(lambda command, params: {"referencers": [], "total": 0})
+        register_reflect_referencer_tools(mcp, connection)
+        return mcp.tools["get_referencers"], connection
+
+    def test_omitted_include_config_is_not_forwarded(self):
+        tool, connection = self._tool()
+
+        tool(asset_path="/Game/BP_Arm")
+
+        (_, params), = connection.requests
+        assert "include_config" not in params
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_provided_include_config_is_forwarded(self, value):
+        tool, connection = self._tool()
+
+        tool(asset_path="/Game/BP_Arm", include_config=value)
+
+        (_, params), = connection.requests
+        assert params["include_config"] is value

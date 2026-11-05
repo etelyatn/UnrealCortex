@@ -94,6 +94,23 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
     "reflect.class_detail": _REFLECT_DETAIL_SELECTOR,
     "query_class_context": _REFLECT_CONTEXT_SELECTOR,
     "reflect.class_context": _REFLECT_CONTEXT_SELECTOR,
+    "batch_query": (
+        "Pass 'limit' to page the step results from one execution (follow _pagination.next_cursor), "
+        "or split the batch into smaller batches."
+    ),
+    "reflect.find_duplicate_graphs": (
+        "Narrow 'path_prefixes' to fewer content folders, raise 'min_nodes', or raise 'similarity' "
+        "so fewer groups are reported."
+    ),
+    "reflect.find_name_lookups": (
+        "Narrow 'path_prefixes' to fewer content folders, or pass 'symbols' to report only the "
+        "names you are checking."
+    ),
+    "reflect.find_broken_config_paths": (
+        "find_broken_config_paths has no row selector: fix the broken config paths reported so far "
+        "and re-run, or use reflect.find_usages / reflect.get_referencers (include_config) on the "
+        "specific assets in question."
+    ),
 }
 
 
