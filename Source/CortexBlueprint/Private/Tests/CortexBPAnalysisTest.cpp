@@ -298,6 +298,102 @@ bool FCortexBPAnalyzeForMigrationInvalidPathTest::RunTest(const FString& Paramet
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalyzeForMigrationSectionsSelectorTest,
+	"Cortex.Blueprint.AnalyzeForMigration.SectionsSelector",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPAnalyzeForMigrationSectionsSelectorTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		FName(TEXT("BP_AnalysisSections_Transient")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestBP)
+	{
+		AddError(TEXT("Failed to create test Blueprint"));
+		return false;
+	}
+
+	FKismetEditorUtilities::CompileBlueprint(TestBP);
+
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+
+	// Omitted selector = full output
+	const FCortexCommandResult Full = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestTrue(TEXT("Unfiltered analysis should succeed"), Full.bSuccess);
+
+	TArray<TSharedPtr<FJsonValue>> Sections;
+	Sections.Add(MakeShared<FJsonValueString>(TEXT("variables")));
+	Sections.Add(MakeShared<FJsonValueString>(TEXT("complexity_metrics")));
+	Params->SetArrayField(TEXT("sections"), Sections);
+
+	const FCortexCommandResult Selected = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestTrue(TEXT("Selected analysis should succeed"), Selected.bSuccess);
+	if (Selected.bSuccess && Selected.Data.IsValid())
+	{
+		TSet<FString> Keys;
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Selected.Data->Values)
+		{
+			Keys.Add(FString(*Pair.Key));
+		}
+		const TSet<FString> Expected = {
+			TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("native_parent_class"),
+			TEXT("parent_class_path"),
+			TEXT("variables"), TEXT("complexity_metrics")};
+		TestTrue(TEXT("Output must be exactly identity fields plus the selected sections"),
+			Keys.Num() == Expected.Num() && Keys.Includes(Expected));
+		if (Full.bSuccess && Full.Data.IsValid())
+		{
+			TestTrue(TEXT("Unfiltered output must carry the other sections"),
+				Full.Data->HasField(TEXT("functions")) && Full.Data->HasField(TEXT("entity_summary")));
+		}
+	}
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalyzeForMigrationUnknownSectionRefusedTest,
+	"Cortex.Blueprint.AnalyzeForMigration.UnknownSectionRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPAnalyzeForMigrationUnknownSectionRefusedTest::RunTest(const FString& Parameters)
+{
+	FCortexBPCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/NonExistent/BP_DoesNotExist"));
+
+	TArray<TSharedPtr<FJsonValue>> Sections;
+	Sections.Add(MakeShared<FJsonValueString>(TEXT("variables")));
+	Sections.Add(MakeShared<FJsonValueString>(TEXT("bogus_section")));
+	Sections.Add(MakeShared<FJsonValueNumber>(7));
+	Params->SetArrayField(TEXT("sections"), Sections);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestFalse(TEXT("Unknown section must be refused"), Result.bSuccess);
+	TestEqual(TEXT("Error code"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	TestTrue(TEXT("Message names the unknown section"), Result.ErrorMessage.Contains(TEXT("bogus_section")));
+	TestTrue(TEXT("Message names the non-string entry"), Result.ErrorMessage.Contains(TEXT("non-string")));
+	TestTrue(TEXT("Message lists valid names"), Result.ErrorMessage.Contains(TEXT("complexity_metrics")));
+	TestFalse(TEXT("Refusal precedes asset loading (not a BLUEPRINT_NOT_FOUND)"),
+		Result.ErrorCode == CortexErrorCodes::BlueprintNotFound);
+
+	// Empty array = all sections (accepted)
+	Params->SetArrayField(TEXT("sections"), TArray<TSharedPtr<FJsonValue>>());
+	const FCortexCommandResult Empty = Handler.Execute(TEXT("analyze_for_migration"), Params);
+	TestEqual(TEXT("Empty selector proceeds to asset load"), Empty.ErrorCode, CortexErrorCodes::BlueprintNotFound);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPAnalysisV3VariableFieldsTest,
 	"Cortex.Blueprint.Analysis.V3VariableFields",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -716,7 +812,7 @@ bool FCortexBPAnalysisWidgetTypeDetectionTest::RunTest(const FString& Parameters
 	{
 		FString Type;
 		Result.Data->TryGetStringField(TEXT("type"), Type);
-		TestEqual(TEXT("Type should be WidgetBlueprint"), Type, TEXT("WidgetBlueprint"));
+		TestEqual(TEXT("Type should be Widget"), Type, TEXT("Widget"));
 		TestTrue(TEXT("widgets should exist"), Result.Data->HasField(TEXT("widgets")));
 		TestTrue(TEXT("widget_animations should exist"), Result.Data->HasField(TEXT("widget_animations")));
 		TestTrue(TEXT("named_slots should exist"), Result.Data->HasField(TEXT("named_slots")));
@@ -747,7 +843,7 @@ bool FCortexBPAnalysisV4WidgetEntitiesTest::RunTest(const FString& Parameters)
 
 	FString Type;
 	Result.Data->TryGetStringField(TEXT("type"), Type);
-	TestEqual(TEXT("type is WidgetBlueprint"), Type, TEXT("WidgetBlueprint"));
+	TestEqual(TEXT("type is Widget"), Type, TEXT("Widget"));
 
 	const TArray<TSharedPtr<FJsonValue>>* Widgets = nullptr;
 	const TArray<TSharedPtr<FJsonValue>>* NamedSlots = nullptr;

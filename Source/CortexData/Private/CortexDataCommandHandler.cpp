@@ -231,7 +231,7 @@ const TArray<FCortexCommandInfo>& DataCommandInfos()
             .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
             .Required(TEXT("row_name"), TEXT("string"), TEXT("Row identifier")),
         FCortexCommandInfo{ TEXT("get_struct_schema"), TEXT("Get schema for any UStruct") }
-            .Required(TEXT("struct_name"), TEXT("string"), TEXT("Struct type name"))
+            .Required(TEXT("struct_name"), TEXT("string"), TEXT("Struct type name (short name, with or without the F prefix) or full object path such as /Script/Engine.HitResult or /Game/Data/S_Foo.S_Foo"))
             .Optional(TEXT("include_subtypes"), TEXT("boolean"), TEXT("Include known instanced-struct subtypes")),
         FCortexCommandInfo{ TEXT("add_datatable_row"), TEXT("Add new row") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))

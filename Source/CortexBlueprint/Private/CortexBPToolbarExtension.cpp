@@ -10,6 +10,8 @@
 #include "K2Node_Event.h"
 #include "K2Node_Variable.h"
 #include "Operations/CortexBPAnalysisOps.h"
+#include "Operations/CortexBPWidgetUtils.h"
+#include "Components/Widget.h"
 #include "Operations/CortexProjectClassDetector.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
@@ -143,37 +145,13 @@ FCortexConversionPayload FCortexBPToolbarExtension::CapturePayload(TSharedPtr<FB
 	// Extract designer widget variables (marked "Is Variable" in widget tree) for BindWidget selection UI
 	if (Payload.bIsWidgetBlueprint)
 	{
-		// Build set of designer widget names from the widget tree via reflection
+		// Build set of designer widget names from the widget tree
 		TSet<FString> DesignerWidgetNames;
-		const FObjectProperty* WidgetTreeProp = CastField<FObjectProperty>(
-			Blueprint->GetClass()->FindPropertyByName(TEXT("WidgetTree")));
-		UObject* WidgetTreeObj = WidgetTreeProp
-			? WidgetTreeProp->GetObjectPropertyValue_InContainer(Blueprint)
-			: nullptr;
-		if (WidgetTreeObj)
+		for (const UWidget* Widget : CortexBPWidgetUtils::CollectWidgets(Blueprint))
 		{
-			const FArrayProperty* AllWidgetsProp = CastField<FArrayProperty>(
-				WidgetTreeObj->GetClass()->FindPropertyByName(TEXT("AllWidgets")));
-			const FObjectProperty* WidgetObjProp = AllWidgetsProp
-				? CastField<FObjectProperty>(AllWidgetsProp->Inner)
-				: nullptr;
-			if (AllWidgetsProp && WidgetObjProp)
+			if (Widget && Widget->bIsVariable)
 			{
-				FScriptArrayHelper WidgetsArray(AllWidgetsProp,
-					AllWidgetsProp->ContainerPtrToValuePtr<void>(WidgetTreeObj));
-				for (int32 Index = 0; Index < WidgetsArray.Num(); ++Index)
-				{
-					UObject* WidgetObject = WidgetObjProp->GetObjectPropertyValue(
-						WidgetsArray.GetRawPtr(Index));
-					if (!WidgetObject) { continue; }
-
-					const FBoolProperty* IsVarProp = CastField<FBoolProperty>(
-						WidgetObject->GetClass()->FindPropertyByName(TEXT("bIsVariable")));
-					if (IsVarProp && IsVarProp->GetPropertyValue_InContainer(WidgetObject))
-					{
-						DesignerWidgetNames.Add(WidgetObject->GetName());
-					}
-				}
+				DesignerWidgetNames.Add(Widget->GetName());
 			}
 		}
 

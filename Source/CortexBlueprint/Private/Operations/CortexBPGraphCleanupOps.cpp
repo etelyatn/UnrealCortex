@@ -1,5 +1,6 @@
 #include "Operations/CortexBPGraphCleanupOps.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPGraphReachability.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
@@ -24,96 +25,17 @@ namespace
 			return;
 		}
 
-		TArray<UEdGraphNode*> Queue;
+		TArray<UEdGraphNode*> EventNodes;
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (Node && Node->IsA<UK2Node_Event>())
 			{
-				bOutHasEventNode = true;
-				OutReachable.Add(Node);
-				Queue.Add(Node);
+				EventNodes.Add(Node);
 			}
 		}
 
-		int32 QueueIndex = 0;
-		while (QueueIndex < Queue.Num())
-		{
-			UEdGraphNode* CurrentNode = Queue[QueueIndex++];
-			if (!CurrentNode)
-			{
-				continue;
-			}
-
-			for (UEdGraphPin* Pin : CurrentNode->Pins)
-			{
-				if (!Pin || Pin->Direction != EGPD_Output)
-				{
-					continue;
-				}
-
-				if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
-				{
-					continue;
-				}
-
-				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-				{
-					if (!LinkedPin)
-					{
-						continue;
-					}
-
-					UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
-					if (LinkedNode && !OutReachable.Contains(LinkedNode))
-					{
-						OutReachable.Add(LinkedNode);
-						Queue.Add(LinkedNode);
-					}
-				}
-			}
-		}
-	}
-
-	void ExpandToLinkedDataDependencies(UEdGraph* Graph, TSet<UEdGraphNode*>& InOutReachable)
-	{
-		if (!Graph || InOutReachable.Num() == 0)
-		{
-			return;
-		}
-
-		TArray<UEdGraphNode*> Queue = InOutReachable.Array();
-		int32 QueueIndex = 0;
-		while (QueueIndex < Queue.Num())
-		{
-			UEdGraphNode* CurrentNode = Queue[QueueIndex++];
-			if (!CurrentNode)
-			{
-				continue;
-			}
-
-			for (UEdGraphPin* Pin : CurrentNode->Pins)
-			{
-				if (!Pin)
-				{
-					continue;
-				}
-
-				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-				{
-					if (!LinkedPin)
-					{
-						continue;
-					}
-
-					UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
-					if (LinkedNode && !InOutReachable.Contains(LinkedNode))
-					{
-						InOutReachable.Add(LinkedNode);
-						Queue.Add(LinkedNode);
-					}
-				}
-			}
-		}
+		bOutHasEventNode = EventNodes.Num() > 0;
+		CortexBPGraphReachability::GatherExecForward(EventNodes, OutReachable);
 	}
 }
 
@@ -165,7 +87,7 @@ FCortexCommandResult FCortexBPGraphCleanupOps::DeleteOrphanedNodes(const TShared
 	TSet<UEdGraphNode*> ReachableNodes;
 	bool bHasEventNode = false;
 	GatherReachableExecNodesFromEvents(TargetGraph, ReachableNodes, bHasEventNode);
-	ExpandToLinkedDataDependencies(TargetGraph, ReachableNodes);
+	CortexBPGraphReachability::ExpandToLinkedDataDependencies(ReachableNodes);
 
 	TArray<UEdGraphNode*> NodesToDelete;
 	for (UEdGraphNode* Node : TargetGraph->Nodes)

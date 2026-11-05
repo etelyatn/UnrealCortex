@@ -27,6 +27,7 @@ public class CortexBlueprint : ModuleRules
 			"ToolMenus",    // for toolbar extension
 			"Slate",
 			"SlateCore",
+			"UMG",
 		});
 	}
 }

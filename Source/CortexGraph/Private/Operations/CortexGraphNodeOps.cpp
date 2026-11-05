@@ -796,6 +796,37 @@ FCortexCommandResult FCortexGraphNodeOps::GetNode(const TSharedPtr<FJsonObject>&
 	return FCortexCommandRouter::Success(SerializeNode(Node, true, bCompact));
 }
 
+namespace
+{
+	// Matches a node class filter against a node's class chain. A trailing '*' is a
+	// case-insensitive prefix match on the runtime class name; otherwise the filter
+	// names the node's class or any superclass. A leading 'U' on the filter is optional.
+	bool NodeClassMatches(const UClass* NodeClassPtr, const FString& Filter)
+	{
+		const bool bPrefix = Filter.EndsWith(TEXT("*"));
+		const FString Pattern = bPrefix ? Filter.LeftChop(1) : Filter;
+		const FString PatternNoPrefix = Pattern.StartsWith(TEXT("U")) ? Pattern.Mid(1) : Pattern;
+
+		if (bPrefix)
+		{
+			const FString RuntimeName = NodeClassPtr->GetName();
+			return RuntimeName.StartsWith(Pattern, ESearchCase::IgnoreCase)
+				|| RuntimeName.StartsWith(PatternNoPrefix, ESearchCase::IgnoreCase);
+		}
+
+		for (const UClass* Class = NodeClassPtr; Class != nullptr; Class = Class->GetSuperClass())
+		{
+			const FString ClassName = Class->GetName();
+			if (ClassName.Equals(Pattern, ESearchCase::IgnoreCase)
+				|| ClassName.Equals(PatternNoPrefix, ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
 FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -819,14 +850,6 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 
 	FString SubgraphPath;
 	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
-
-	if (NodeClass.IsEmpty() && FunctionName.IsEmpty() && DisplayName.IsEmpty())
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("At least one filter required: node_class, function_name, or display_name")
-		);
-	}
 
 	FCortexCommandResult LoadError;
 	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
@@ -868,14 +891,9 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 			}
 
 			// Apply filters
-			if (!NodeClass.IsEmpty())
+			if (!NodeClass.IsEmpty() && !NodeClassMatches(Node->GetClass(), NodeClass))
 			{
-				const FString RuntimeClassName = Node->GetClass()->GetName();
-				const FString FilterNoPrefix = NodeClass.StartsWith(TEXT("U")) ? NodeClass.Mid(1) : NodeClass;
-				if (RuntimeClassName != NodeClass && RuntimeClassName != FilterNoPrefix)
-				{
-					continue;
-				}
+				continue;
 			}
 
 			if (!DisplayName.IsEmpty())
@@ -929,20 +947,28 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 		}
 	};
 
-	if (!SubgraphPath.IsEmpty())
+	if (!GraphName.IsEmpty() || !SubgraphPath.IsEmpty())
 	{
-		// Search within a specific subgraph only
+		// Restrict the search to one graph (and optionally one composite subgraph)
 		UEdGraph* RootGraph = FindGraph(Blueprint, GraphName, LoadError);
 		if (RootGraph == nullptr)
 		{
 			return LoadError;
 		}
-		UEdGraph* TargetGraph = ResolveSubgraph(RootGraph, SubgraphPath, LoadError);
-		if (TargetGraph == nullptr)
+
+		if (SubgraphPath.IsEmpty())
 		{
-			return LoadError;
+			SearchGraphRecursive(RootGraph, TEXT(""), 0);
 		}
-		SearchGraphRecursive(TargetGraph, SubgraphPath, 0);
+		else
+		{
+			UEdGraph* TargetGraph = ResolveSubgraph(RootGraph, SubgraphPath, LoadError);
+			if (TargetGraph == nullptr)
+			{
+				return LoadError;
+			}
+			SearchGraphRecursive(TargetGraph, SubgraphPath, 0);
+		}
 	}
 	else
 	{

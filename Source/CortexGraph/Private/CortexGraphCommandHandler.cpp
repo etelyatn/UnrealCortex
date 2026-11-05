@@ -488,13 +488,13 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 		FCortexCommandInfo{ TEXT("list_graphs"), TEXT("List user-visible Blueprint graphs with kind metadata and owning_interface for interface_impl graphs") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("include_subgraphs"), TEXT("boolean"), TEXT("Include composite subgraphs with parent_graph and subgraph_path fields")).RollbackSafe(),
-		FCortexCommandInfo{ TEXT("search_nodes"), TEXT("Search nodes across graphs by class, function name, or display name") }
+		FCortexCommandInfo{ TEXT("search_nodes"), TEXT("Search nodes across graphs by class, function name, or display name; all filters are optional, and with none the full node inventory in scope is returned") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
-			.Optional(TEXT("node_class"), TEXT("string"), TEXT("Runtime node class filter"))
-			.Optional(TEXT("function_name"), TEXT("string"), TEXT("Function-name filter for call nodes"))
-			.Optional(TEXT("display_name"), TEXT("string"), TEXT("Node display-name filter"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Restrict search to a specific graph"))
-			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path to restrict search"))
+			.Optional(TEXT("node_class"), TEXT("string"), TEXT("Optional node class filter, case-insensitive; matches the node's class or any superclass (leading U optional, e.g. K2Node_Event also returns custom events); a trailing * is a prefix match on the class name (e.g. K2Node_Call*)"))
+			.Optional(TEXT("function_name"), TEXT("string"), TEXT("Optional function-name filter for call nodes"))
+			.Optional(TEXT("display_name"), TEXT("string"), TEXT("Optional node display-name filter"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Optional: restrict search to this graph (unknown names fail with GRAPH_NOT_FOUND); default searches all graphs"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path to restrict search (relative to graph_name)"))
 			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit node_class from results (default: true)")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("trace_exec"), TEXT("Trace execution flow from a starting node") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))

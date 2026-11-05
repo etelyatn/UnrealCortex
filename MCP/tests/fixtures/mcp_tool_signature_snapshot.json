@@ -43,7 +43,8 @@
     "analyze_blueprint_for_migration": {
       "file": "tools/blueprint/analysis.py",
       "params": [
-        "asset_path"
+        "asset_path",
+        "sections"
       ]
     },
     "blueprint_search": {

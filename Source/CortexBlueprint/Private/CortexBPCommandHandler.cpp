@@ -8,6 +8,7 @@
 #include "Operations/CortexBPCompareOps.h"
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPGraphCleanupOps.h"
+#include "Operations/CortexBPGraphMetricsOps.h"
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPSearchOps.h"
 #include "Operations/CortexBPStructureOps.h"
@@ -52,7 +53,7 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		|| Command == TEXT("get_class_defaults") || Command == TEXT("list_inherited_properties")
 		|| Command == TEXT("list_settable_defaults") || Command == TEXT("list_scs_components")
 		|| Command == TEXT("analyze_for_migration") || Command == TEXT("compare_blueprints")
-		|| Command == TEXT("search") || Command == TEXT("export_text_inventory")
+		|| Command == TEXT("search") || Command == TEXT("graph_metrics") || Command == TEXT("export_text_inventory")
 		|| Command == TEXT("export_snapshot") || Command == TEXT("compare_snapshots");
 	if (!bReadOnly)
 	{
@@ -165,6 +166,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPAnalysisOps::AnalyzeForMigration(Params);
 	}
 
+	if (Command == TEXT("graph_metrics"))
+	{
+		return FCortexBPGraphMetricsOps::GraphMetrics(Params);
+	}
+
 	if (Command == TEXT("cleanup_migration"))
 	{
 		return FCortexBPCleanupOps::CleanupMigration(Params);
@@ -268,7 +274,10 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("parent_class"), TEXT("string"), TEXT("Parent class name"));
 	Commands.Add(FCortexCommandInfo{TEXT("list"), TEXT("List Blueprint assets")}
 		.Optional(TEXT("path"), TEXT("string"), TEXT("Optional content path filter"))
-		.Optional(TEXT("type"), TEXT("string"), TEXT("Optional Blueprint type filter")));
+		.Optional(TEXT("type"), TEXT("string"),
+			TEXT("Optional Blueprint type filter (case-insensitive): Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown"))
+		.Optional(TEXT("exclude_types"), TEXT("array"),
+			TEXT("Optional array of Blueprint types to omit (same vocabulary as type); combines with type")));
 	Commands.Add(FCortexCommandInfo{TEXT("get_info"), TEXT("Get Blueprint info")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited C++ functions (default: true)"))
@@ -374,7 +383,18 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("parent_component"), TEXT("string"), TEXT("Parent SCS component variable name"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding")));
 	Commands.Add(FCortexCommandInfo{TEXT("analyze_for_migration"), TEXT("Analyze a Blueprint for C++ migration")}
-		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path")));
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("sections"), TEXT("array"),
+			TEXT("Optional section names to return (omitted or empty = all). Identity fields name, asset_path, type, "
+				"parent_class, native_parent_class, parent_class_path are always included. Valid: is_compiled, variables, functions, "
+				"scs_components, scs_collisions, dynamic_components, graphs, per_graph_elements, latent_nodes, "
+				"timelines, event_dispatchers, interfaces_implemented, input_bindings, construction_script, widgets, "
+				"named_slots, widget_animations, widget_bindings, referenced_user_types, cdo_overrides, "
+				"instanced_subobjects, widget_dependencies, entity_summary, complexity_metrics")));
+	Commands.Add(FCortexCommandInfo{TEXT("graph_metrics"),
+		TEXT("Reachability-aware logic metrics per entry node (events, custom/bound/input events, functions): functional node count, conditionals, variable getter fan-out, unreachable nodes, ghost (unconnected) entries, has_tick for live Tick events, and threshold violations")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("thresholds"), TEXT("object"), TEXT("{max_nodes_per_entry: int=10, max_nodes_per_blueprint: int=30}; positive integers")));
 	Commands.Add(FCortexCommandInfo{TEXT("cleanup_migration"), TEXT("Clean up a Blueprint after C++ migration")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("new_parent_class"), TEXT("string"), TEXT("New C++ parent class"))
@@ -431,7 +451,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("out_path"), TEXT("string"), TEXT("File to write the full compile report JSON to (under Project Saved, Content or Config)"))
 		.Optional(TEXT("path_prefix"), TEXT("string"), TEXT("Content folder compiled recursively (exactly one of path_prefix or paths)"))
 		.Optional(TEXT("paths"), TEXT("array"), TEXT("Explicit Blueprint asset paths (exactly one of path_prefix or paths)"))
-		.Optional(TEXT("types"), TEXT("array"), TEXT("Only compile these Blueprint types: Actor, Component, Widget, Interface, FunctionLibrary, Unknown (from registry tags, no load)"))
+		.Optional(TEXT("types"), TEXT("array"), TEXT("Only compile these Blueprint types (case-insensitive, same vocabulary as list): Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown (from registry tags, no load)"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))

@@ -24,9 +24,7 @@ namespace CortexBPCompileAllPrivate
 
 	const TArray<FString>& KnownTypes()
 	{
-		static const TArray<FString> Types = {
-			TEXT("Actor"), TEXT("Component"), TEXT("Widget"), TEXT("Interface"), TEXT("FunctionLibrary"), TEXT("Unknown")};
-		return Types;
+		return FCortexBPAssetOps::GetBlueprintTypeNames();
 	}
 
 	/** Order matches the totals counters. */

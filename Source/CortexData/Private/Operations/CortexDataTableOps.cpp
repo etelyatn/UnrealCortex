@@ -1,6 +1,7 @@
 
 #include "Operations/CortexDataTableOps.h"
 #include "Operations/CortexDataMutationHelpers.h"
+#include "Operations/CortexDataStructResolver.h"
 #include "CortexDataModule.h"
 #include "CortexSerializer.h"
 #include "Engine/DataTable.h"
@@ -772,43 +773,11 @@ FCortexCommandResult FCortexDataTableOps::GetStructSchema(const TSharedPtr<FJson
 		);
 	}
 
-	// Build list of names to search for (original + F-prefix toggled)
-	TArray<FString> NamesToSearch;
-	NamesToSearch.Add(StructName);
-	if (StructName.StartsWith(TEXT("F")))
-	{
-		NamesToSearch.Add(StructName.RightChop(1));
-	}
-	else
-	{
-		NamesToSearch.Add(TEXT("F") + StructName);
-	}
-
-	// Search all loaded UScriptStructs by name
 	UScriptStruct* FoundStruct = nullptr;
-	for (TObjectIterator<UScriptStruct> It; It; ++It)
+	FString ResolveError;
+	if (!CortexDataStructResolver::ResolveStructByName(StructName, FoundStruct, ResolveError))
 	{
-		const FString& ItName = It->GetName();
-		for (const FString& SearchName : NamesToSearch)
-		{
-			if (ItName == SearchName)
-			{
-				FoundStruct = *It;
-				break;
-			}
-		}
-		if (FoundStruct != nullptr)
-		{
-			break;
-		}
-	}
-
-	if (FoundStruct == nullptr)
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidStructType,
-			FString::Printf(TEXT("Struct not found: %s"), *StructName)
-		);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidStructType, ResolveError);
 	}
 
 	bool bIncludeSubtypes = false;

@@ -77,6 +77,14 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
     "blueprint.get_class_defaults": _PROPERTIES_DISCOVERY_SELECTOR,
     "blueprint.list_settable_defaults": _PROPERTIES_DISCOVERY_SELECTOR,
     "blueprint.list_inherited_properties": _PROPERTIES_DISCOVERY_SELECTOR,
+    "blueprint.analyze_for_migration": (
+        "Request only the needed 'sections' (e.g. variables, functions, graphs, complexity_metrics) "
+        "instead of the whole migration analysis."
+    ),
+    "blueprint.graph_metrics": (
+        "graph_metrics has no row selector: use analyze_for_migration with "
+        "sections=['complexity_metrics'] for a bounded summary, or split the oversized Blueprint."
+    ),
     "get_capabilities": (
         "Request detail=names for the per-operation schema index, or inspect one operation schema."
     ),

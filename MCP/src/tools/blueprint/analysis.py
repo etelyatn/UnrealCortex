@@ -31,7 +31,7 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
     """Register Blueprint analysis MCP tools."""
 
     @mcp.tool()
-    def analyze_blueprint_for_migration(asset_path: str) -> str:
+    def analyze_blueprint_for_migration(asset_path: str, sections: list[str] | None = None) -> str:
         """Analyze a Blueprint for C++ migration in a single call.
 
         Returns migration-ready analysis including Blueprint metadata, variables with usage
@@ -42,17 +42,30 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
         `inherited_type`, `severity`, `recommended_action`, `recommended_tool`,
         and `recommended_params`.
 
+        Large Blueprints can exceed the response budget; the read is then refused (never
+        truncated) and you should request only the needed `sections`.
+
         Args:
             asset_path: Full Blueprint asset path (e.g. "/Game/Blueprints/BP_Player")
+            sections: Optional output sections to return (e.g. ["variables", "complexity_metrics"]).
+                Omitted or empty returns everything. The identity fields name, asset_path, type,
+                parent_class, native_parent_class and parent_class_path are always included. Unknown names are refused
+                with INVALID_FIELD listing the valid sections.
 
         Returns:
             JSON object from `bp.analyze_for_migration`.
         """
         try:
-            response = connection.send_command("blueprint.analyze_for_migration", {
-                "asset_path": asset_path,
-            })
-            return format_response(response.get("data", {}), "analyze_blueprint_for_migration")
+            params: dict = {"asset_path": asset_path}
+            if sections is not None:
+                params["sections"] = sections
+            response = connection.send_command("blueprint.analyze_for_migration", params)
+            return format_response(
+                response.get("data", {}),
+                "analyze_blueprint_for_migration",
+                qualified_command="blueprint.analyze_for_migration",
+                request_params=params,
+            )
         except ConnectionError as e:
             return json.dumps({"error": f"Connection error: {e}"})
         except (RuntimeError, TimeoutError, OSError) as e:

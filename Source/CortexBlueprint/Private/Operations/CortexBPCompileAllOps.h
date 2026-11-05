@@ -16,7 +16,7 @@ class FCortexBPCompileAllOps
 public:
 	/**
 	 * Params: path_prefix (string, folder compiled recursively) or paths (array of asset paths) - exactly one;
-	 * types (array of Actor|Component|Widget|Interface|FunctionLibrary|Unknown, optional); out_path (string).
+	 * types (array of the shared Blueprint type vocabulary, see FCortexBPAssetOps::GetBlueprintTypeNames, optional); out_path (string).
 	 */
 	static FCortexCommandResult CompileAll(const TSharedPtr<FJsonObject>& Params);
 };
