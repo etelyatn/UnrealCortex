@@ -1,4 +1,5 @@
 #include "Operations/CortexDataSchemaExportOps.h"
+#include "Operations/CortexDataStructResolver.h"
 
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -144,44 +145,6 @@ namespace
 		}
 
 		OutTable = LoadedTable;
-		return true;
-	}
-
-	bool ResolveStructByName(const FString& StructName, UScriptStruct*& OutStruct, FString& OutError)
-	{
-		const FString LookupName = StructName.StartsWith(TEXT("F")) ? StructName.RightChop(1) : StructName;
-		OutStruct = FindObject<UScriptStruct>(nullptr, *StructName);
-		if (OutStruct == nullptr)
-		{
-			OutStruct = FindObject<UScriptStruct>(nullptr, *LookupName);
-		}
-		if (OutStruct == nullptr)
-		{
-			OutStruct = FindFirstObjectSafe<UScriptStruct>(*StructName, EFindFirstObjectOptions::NativeFirst);
-		}
-		if (OutStruct == nullptr)
-		{
-			OutStruct = FindFirstObjectSafe<UScriptStruct>(*LookupName, EFindFirstObjectOptions::NativeFirst);
-		}
-
-		if (OutStruct == nullptr)
-		{
-			for (TObjectIterator<UScriptStruct> It; It; ++It)
-			{
-				if ((*It)->GetName() == StructName || (*It)->GetName() == LookupName || (*It)->GetPathName() == StructName)
-				{
-					OutStruct = *It;
-					break;
-				}
-			}
-		}
-
-		if (OutStruct == nullptr)
-		{
-			OutError = FString::Printf(TEXT("Struct not found: %s"), *StructName);
-			return false;
-		}
-
 		return true;
 	}
 
@@ -395,7 +358,7 @@ namespace
 
 		UScriptStruct* BaseStruct = nullptr;
 		FString ResolveError;
-		if (!ResolveStructByName(BaseStructName, BaseStruct, ResolveError))
+		if (!CortexDataStructResolver::ResolveStructByName(BaseStructName, BaseStruct, ResolveError))
 		{
 			FieldObject->SetField(TEXT("instanced_struct_base"), MakeShared<FJsonValueNull>());
 			FieldObject->SetArrayField(TEXT("known_subtypes"), TArray<TSharedPtr<FJsonValue>>());
@@ -757,7 +720,7 @@ FCortexCommandResult FCortexDataSchemaExportOps::ExportSchemaJson(const TSharedP
 	{
 		UScriptStruct* Struct = nullptr;
 		FString ResolveError;
-		if (!ResolveStructByName(StructName, Struct, ResolveError))
+		if (!CortexDataStructResolver::ResolveStructByName(StructName, Struct, ResolveError))
 		{
 			return SchemaInvalidFieldError(ResolveError);
 		}
