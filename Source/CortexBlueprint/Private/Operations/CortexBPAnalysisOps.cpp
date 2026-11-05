@@ -1,4 +1,6 @@
 #include "Operations/CortexBPAnalysisOps.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPGraphReachability.h"
 #include "Operations/CortexBPSCSDiagnostics.h"
@@ -927,11 +929,23 @@ TSharedPtr<FJsonObject> BuildWidgetDependencies(const TSharedPtr<FJsonObject>& D
 			for (const TSharedPtr<FJsonValue>& WidgetVal : *WidgetsArray)
 			{
 				const TSharedPtr<FJsonObject> WidgetObj = WidgetVal->AsObject();
-				if (!WidgetObj.IsValid() || !WidgetObj->HasField(TEXT("entry_widget_class")))
+				if (!WidgetObj.IsValid())
 				{
 					continue;
 				}
 
+				// A widget whose class is not a native /Script class is a Blueprint user widget placed in the tree.
+				FString WidgetClassPath;
+				if (WidgetObj->TryGetStringField(TEXT("class_path"), WidgetClassPath)
+					&& !WidgetClassPath.IsEmpty() && !WidgetClassPath.StartsWith(TEXT("/Script/")))
+				{
+					ReferencesWidgetPaths.Add(WidgetClassPath);
+				}
+
+				if (!WidgetObj->HasField(TEXT("entry_widget_class")))
+				{
+					continue;
+				}
 				const FString EntryWidgetClassPath = WidgetObj->GetStringField(TEXT("entry_widget_class"));
 				if (!EntryWidgetClassPath.IsEmpty())
 				{
@@ -964,10 +978,46 @@ TSharedPtr<FJsonObject> BuildWidgetDependencies(const TSharedPtr<FJsonObject>& D
 		}
 	}
 
+	TArray<FString> SortedReferences = ReferencesWidgetPaths.Array();
+	SortedReferences.Sort();
 	TArray<TSharedPtr<FJsonValue>> ReferencesWidgets;
-	for (const FString& Path : ReferencesWidgetPaths)
+	for (const FString& Path : SortedReferences)
 	{
 		ReferencesWidgets.Add(MakeShared<FJsonValueString>(Path));
+	}
+
+	// Widget Blueprint assets that reference this package (hard or soft), read from the Asset Registry without loading.
+	if (BP)
+	{
+		const IAssetRegistry& Registry = IAssetRegistry::GetChecked();
+		static UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
+		TArray<FName> Referencers;
+		Registry.GetReferencers(BP->GetOutermost()->GetFName(), Referencers,
+			UE::AssetRegistry::EDependencyCategory::Package);
+		TSet<FString> ReferencedByPaths;
+		for (const FName& Referencer : Referencers)
+		{
+			if (Referencer == BP->GetOutermost()->GetFName())
+			{
+				continue;
+			}
+			TArray<FAssetData> ReferencerAssets;
+			Registry.GetAssetsByPackageName(Referencer, ReferencerAssets);
+			for (const FAssetData& ReferencerAsset : ReferencerAssets)
+			{
+				const UClass* AssetClass = ReferencerAsset.GetClass();
+				if (WidgetBlueprintClass && AssetClass && AssetClass->IsChildOf(WidgetBlueprintClass))
+				{
+					ReferencedByPaths.Add(ReferencerAsset.GetObjectPathString());
+				}
+			}
+		}
+		TArray<FString> SortedReferencedBy = ReferencedByPaths.Array();
+		SortedReferencedBy.Sort();
+		for (const FString& Path : SortedReferencedBy)
+		{
+			ReferencedByWidgets.Add(MakeShared<FJsonValueString>(Path));
+		}
 	}
 
 	Result->SetArrayField(TEXT("references_widgets"), ReferencesWidgets);
