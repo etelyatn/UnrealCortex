@@ -7,6 +7,7 @@
 #include "CortexAssetMutationGuard.h"
 #include "CortexUMGUtils.h"
 #include "WidgetBlueprint.h"
+#include "WidgetBlueprintEditorUtils.h"
 #include "WidgetBlueprintOperationUtils.h"
 #include "Editor.h"
 #include "Editor/Transactor.h"
@@ -1051,6 +1052,30 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
     const FString OldName = Widget->GetName();
     const bool bChanged = !OldName.Equals(NewName, ESearchCase::CaseSensitive);
 
+    // Renaming away from a name that a native BindWidget property of the parent chain binds breaks the compile
+    // for a required binding, and silently unbinds an optional one. VerifyWidgetRename only guards the target name.
+    bool bUnbindsOptionalBindWidget = false;
+    if (bChanged && WBP->ParentClass != nullptr)
+    {
+        for (TFieldIterator<FObjectPropertyBase> It(WBP->ParentClass); It; ++It)
+        {
+            const FObjectPropertyBase* Property = *It;
+            bool bOptionalBinding = false;
+            if (Property->GetFName() == Widget->GetFName() && Property->PropertyClass != nullptr
+                && Widget->IsA(Property->PropertyClass)
+                && FWidgetBlueprintEditorUtils::IsBindWidgetProperty(Property, bOptionalBinding))
+            {
+                if (!bOptionalBinding)
+                {
+                    return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+                        FString::Printf(TEXT("Widget %s satisfies the required BindWidget property %s.%s; renaming it would break the native binding"),
+                            *OldName, *Property->GetOwnerClass()->GetName(), *Property->GetName()));
+                }
+                bUnbindsOptionalBindWidget = true;
+            }
+        }
+    }
+
     using namespace CortexUMGRenameDependents;
     FPlan Plan;
     TSharedPtr<FJsonObject> PlanJson;
@@ -1215,10 +1240,19 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
 
         // Only the outermost transaction can be undone from here: inside a batch the batch owns it.
         const bool bOwnsTransaction = !GEditor->IsTransactionActive();
-        const int32 QueueBefore = GEditor->Trans != nullptr ? GEditor->Trans->GetQueueLength() : 0;
         TOptional<FScopedTransaction> Transaction;
         Transaction.Emplace(FText::FromString(
             FString::Printf(TEXT("Cortex: Rename Widget %s to %s"), *OldName, *NewName)));
+        int32 OurTransactionIndex = INDEX_NONE;
+        FGuid OurTransactionId;
+        if (bOwnsTransaction && GEditor->Trans != nullptr && GEditor->Trans->GetQueueLength() > 0)
+        {
+            OurTransactionIndex = GEditor->Trans->GetQueueLength() - 1;
+            if (const FTransaction* Ours = GEditor->Trans->GetTransaction(OurTransactionIndex))
+            {
+                OurTransactionId = Ours->GetContext().TransactionId;
+            }
+        }
 
         const FName OldFName(*OldName);
         const FName NewFName(*NewName);
@@ -1369,7 +1403,11 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
                 if (bOwnsTransaction)
                 {
                     Transaction.Reset();
-                    if (GEditor->Trans != nullptr && GEditor->Trans->GetQueueLength() > QueueBefore
+                    // Opening the transaction dropped any redo history and may have evicted old entries, so the
+                    // queue length before it proves nothing: undo only the exact transaction recorded at open.
+                    if (OurTransactionIndex != INDEX_NONE && GEditor->Trans != nullptr
+                        && GEditor->Trans->GetQueueLength() == OurTransactionIndex + 1
+                        && GEditor->Trans->GetUndoContext(/*bCheckWhetherUndoPossible=*/false).TransactionId == OurTransactionId
                         && GEditor->UndoTransaction(/*bCanRedo=*/false))
                     {
                         // The undo restored the widget tree but not the compiled skeleton the rename regenerated.
@@ -1464,6 +1502,7 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
     Data->SetBoolField(TEXT("changed"), bChanged);
     Data->SetBoolField(TEXT("saved"), false);
     Data->SetBoolField(TEXT("skeleton_regenerated"), bChanged);
+    Data->SetBoolField(TEXT("unbinds_optional_bindwidget"), bUnbindsOptionalBindWidget);
     Data->SetObjectField(TEXT("fingerprint"), MakeWidgetBlueprintFingerprint(WBP).ToJson());
     if (bDependents)
     {

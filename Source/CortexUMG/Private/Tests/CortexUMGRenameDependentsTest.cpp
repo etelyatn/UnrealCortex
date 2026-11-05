@@ -2,6 +2,7 @@
 // Blueprints through the Asset Registry, is planned with dry_run, guarded by exact per-dependent
 // fingerprints, undone by one transaction, and honours inherited BindWidget names.
 
+#include "Curves/CurveFloat.h"
 #include "Engine/TimelineTemplate.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexAssetMutationGuard.h"
@@ -1058,4 +1059,112 @@ bool FCortexUMGRenameWidgetDependentsEditedUnmodifiedTest::RunTest(const FString
 	(void)Parameters;
 	// An unplanned edit of a reference-free dependent fails the request, which is undone and verified.
 	return RunUnmodifiedDependentFault(*this, TEXT("edit_unmodified_dependent"), false);
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGRenameWidgetDependentsRollbackWithRedoHistoryTest,
+	"Cortex.UMG.RenameWidgetDependentsRollbackWithRedoHistory",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetDependentsRollbackWithRedoHistoryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!TestTrue(TEXT("editor transaction buffer available"), GEditor != nullptr && GEditor->Trans != nullptr)) return false;
+	FLoadedRenameFixture Fx;
+	if (!Fx.Build(*this)) return false;
+	// An unrelated transaction that was performed and undone leaves redo history behind.
+	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex rename redo history test")));
+	Fx.Referencer->SetFlags(RF_Transactional);
+	{
+		FScopedTransaction Unrelated(FText::FromString(TEXT("Unrelated edit")));
+		Fx.Referencer->Modify();
+		Fx.Referencer->BlueprintCategory = TEXT("UnrelatedEdit");
+	}
+	TestTrue(TEXT("the unrelated transaction was recorded"), GEditor->Trans->GetQueueLength() == 1);
+	TestTrue(TEXT("the unrelated transaction undoes"), GEditor->UndoTransaction());
+	if (!TestTrue(TEXT("redo history exists"), GEditor->Trans->GetUndoCount() > 0)) return false;
+
+	FRenameRouter Harness;
+	const TSharedPtr<FJsonObject> OwnerBefore = Harness.TreeFingerprint(Fx.OwnerPath);
+	const TSharedPtr<FJsonObject> ChildBefore = MakeObjectAssetFingerprint(Fx.Child.Get()).ToJson();
+	const TSharedPtr<FJsonObject> ReferencerBefore = MakeObjectAssetFingerprint(Fx.Referencer.Get()).ToJson();
+	TSharedPtr<FJsonObject> ApplyParams;
+	if (!PlanApplyParams(*this, Harness, Fx.OwnerPath, TEXT("RenamedButton"), { Fx.ChildPath, Fx.ReferencerPath }, ApplyParams)) return false;
+
+	CortexUMGRenameDependents::SetFaultForTesting(TEXT("leftover_reference"));
+	const FCortexCommandResult Failed = Harness.Router.Execute(TEXT("umg.rename_widget"), ApplyParams);
+	CortexUMGRenameDependents::SetFaultForTesting(NAME_None);
+
+	TestFalse(TEXT("a leftover reference fails the request"), Failed.bSuccess);
+	TestEqual(TEXT("rollback is reported as restored"), RollbackStatus(Failed), FString(TEXT("restored")));
+	TestEqual(TEXT("nothing is blocked"), BlockedCount(Failed), 0);
+	TestNotNull(TEXT("owner widget name is restored"), Fx.Owner->WidgetTree->FindWidget(TEXT("SharedButton")));
+	TestEqual(TEXT("child getter restored"), CountVariableNodes(Fx.Child.Get(), SharedButtonName), 1);
+	TestEqual(TEXT("referencer getter restored"), CountVariableNodes(Fx.Referencer.Get(), SharedButtonName), 1);
+	TestTrue(TEXT("owner fingerprint restored exactly"),
+		FCortexBatchMutation::FingerprintsMatch(Harness.TreeFingerprint(Fx.OwnerPath), OwnerBefore));
+	TestTrue(TEXT("child fingerprint restored exactly"),
+		FCortexBatchMutation::FingerprintsMatch(MakeObjectAssetFingerprint(Fx.Child.Get()).ToJson(), ChildBefore));
+	TestTrue(TEXT("referencer fingerprint restored exactly"),
+		FCortexBatchMutation::FingerprintsMatch(MakeObjectAssetFingerprint(Fx.Referencer.Get()).ToJson(), ReferencerBefore));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGRenameWidgetAwayFromBindWidgetTest,
+	"Cortex.UMG.RenameWidgetAwayFromBindWidget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetAwayFromBindWidgetTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	AddExpectedMessagePlain(TEXT("A required widget binding"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 0);
+	FRenameFixtureScope Scope;
+	TStrongObjectPtr<UWidgetBlueprint> Required(NewFixtureWidgetBlueprint(UCortexUMGRenameBindWidgetBase::StaticClass(),
+		Scope.Add(Suffix, TEXT("Required"))));
+	if (!TestNotNull(TEXT("required-binding Blueprint created"), Required.Get())) return false;
+	AddButton(Required.Get(), TEXT("NativeButton"));
+	UImage* Image = Required->WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("NativeImage"));
+	Image->bIsVariable = true;
+	Cast<UCanvasPanel>(Required->WidgetTree->RootWidget)->AddChild(Image);
+	FKismetEditorUtilities::CompileBlueprint(Required.Get());
+	Required->GetPackage()->ClearDirtyFlag();
+	const FString RequiredPath = Required->GetPathName();
+
+	FRenameRouter Harness;
+	for (const bool bDependents : { false, true })
+	{
+		TSharedPtr<FJsonObject> Params = Harness.RenameParams(RequiredPath, TEXT("NativeButton"), TEXT("Label"));
+		if (bDependents)
+		{
+			Params->SetStringField(TEXT("scope"), TEXT("dependents"));
+		}
+		const FString Context = bDependents ? TEXT("dependents scope") : TEXT("asset scope");
+		const FCortexCommandResult Refused = Harness.Router.Execute(TEXT("umg.rename_widget"), Params);
+		TestFalse(*(Context + TEXT(" refuses renaming away from a required BindWidget name")), Refused.bSuccess);
+		TestEqual(*(Context + TEXT(" code")), Refused.ErrorCode, CortexErrorCodes::InvalidOperation);
+		TestTrue(*(Context + TEXT(" names the native property")), Refused.ErrorMessage.Contains(TEXT("NativeButton")));
+		TestNotNull(*(Context + TEXT(" keeps the widget name")), Required->WidgetTree->FindWidget(TEXT("NativeButton")));
+		TestFalse(*(Context + TEXT(" leaves the owner clean")), Required->GetPackage()->IsDirty());
+	}
+
+	// An optional binding may be unbound, and the result says so.
+	TStrongObjectPtr<UWidgetBlueprint> Optional(NewFixtureWidgetBlueprint(UCortexUMGRenameOptionalBindWidgetBase::StaticClass(),
+		Scope.Add(Suffix, TEXT("Optional"))));
+	if (!TestNotNull(TEXT("optional-binding Blueprint created"), Optional.Get())) return false;
+	AddButton(Optional.Get(), TEXT("OptionalButton"));
+	FKismetEditorUtilities::CompileBlueprint(Optional.Get());
+	const FCortexCommandResult Renamed = Harness.Router.Execute(TEXT("umg.rename_widget"),
+		Harness.RenameParams(Optional->GetPathName(), TEXT("OptionalButton"), TEXT("Label")));
+	if (!TestTrue(TEXT("renaming away from an optional BindWidget name succeeds"), Renamed.bSuccess && Renamed.Data.IsValid()))
+	{
+		AddInfo(Renamed.ErrorMessage);
+		return false;
+	}
+	TestTrue(TEXT("the result reports the unbound optional BindWidget"),
+		Renamed.Data->HasField(TEXT("unbinds_optional_bindwidget")) && Renamed.Data->GetBoolField(TEXT("unbinds_optional_bindwidget")));
+	Optional->GetPackage()->ClearDirtyFlag();
+	Required->GetPackage()->ClearDirtyFlag();
+	return true;
 }

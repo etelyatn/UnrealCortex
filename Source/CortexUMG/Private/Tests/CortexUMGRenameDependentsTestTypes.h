@@ -20,3 +20,14 @@ public:
 	UPROPERTY(meta = (BindWidget))
 	TObjectPtr<UImage> NativeImage;
 };
+
+/** Test-only native base with one optional BindWidget member. */
+UCLASS(Abstract)
+class UCortexUMGRenameOptionalBindWidgetBase : public UUserWidget
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(meta = (BindWidgetOptional))
+	TObjectPtr<UButton> OptionalButton;
+};
