@@ -28,12 +28,12 @@
 | Analysis output defects (None events, dup outputs, BPI events, bool defaults, debug keys) | PASS | `Cortex.Blueprint.Analysis.{EventsExcludeNone,FunctionOutputsDeduplicated,InterfaceEventImplementations,BoolDefaultFromCDO,NonBoolDefaultsFromCDO,InputDebugKeyBinding}`; Ripper live above |
 | `GameplayTagsK2Node_SwitchGameplayTag` not unsupported | PASS | `Cortex.Blueprint.Analysis.K2NodeSubclassSupported`; Ripper popup/body/PC `unsupported_node_types: []` |
 | Compact paged node inventory; search_nodes graph_name/optional filter/subclass | PASS | `Cortex.Graph.SearchNodes.{GraphNameScope,NoFilterInventory,SubclassMatch}`; live 13-node inventory paged by cursor |
-- Controller: `Cortex.Blueprint+` 290/290 @`6ff5688d` and 291/291 @`0638aaa1` (`AutomationTest_2026-11-05_085330.log`; one environment warning: engine `LogHttp` 3 s timeout probing `www.google.com/generate_204`, not plugin code); `Cortex.Core+` 205/205; Python non-e2e 1111 passed; `sync_fallback --check` OK.
+| `get_struct_schema` full object paths | PASS | `Cortex.Data.GetStructSchema.{FullPath,NonStructAssetRefused,MountedRoot}`; live `/Script/Engine.HitResult` |
 | Optional `sections` with complete-or-refuse | PASS | `Cortex.Blueprint.AnalyzeForMigration.{SectionsSelector,UnknownSectionRefused}`; pytest router tests; live sectioned reads |
 
 ## Runs
 
-- Controller: `Cortex.Blueprint+` 290/290 @`6ff5688d` and final run @`0638aaa1` (see PR); `Cortex.Core+` 205/205; Python non-e2e 1111 passed; `sync_fallback --check` OK.
+- Controller: `Cortex.Blueprint+` 290/290 @`6ff5688d` and 291/291 @`0638aaa1` (`AutomationTest_2026-11-05_085330.log`; one environment warning: engine `LogHttp` 3 s timeout probing `www.google.com/generate_204`, not plugin code); `Cortex.Core+` 205/205; Python non-e2e 1111 passed; `sync_fallback --check` OK.
 - Implementers: `Cortex.Graph+` 324/324, `Cortex.Data+` 134/134 @`e2c4bf85` (no later Graph/Data changes); `Cortex.Blueprint+` 291/291 @`0638aaa1`.
 - Environment: intermittent full-suite editor crash (60 s Blueprint-compile stall, then `Background Worker crashed`) while another editor was running; confirmed by the maintainer as a known environment flake; affected runs were rerun clean.
 
