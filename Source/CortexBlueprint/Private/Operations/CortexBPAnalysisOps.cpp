@@ -1431,9 +1431,12 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			}
 
 			const FString NodeClassName = Node->GetClass()->GetName();
-			// K2 nodes are supported, except nodes of animation and state machine graphs (anim graph nodes derive from
-			// UK2Node too), which keep counting as unsupported so they still lower the migration confidence.
-			const bool bSupportedNode = (Node->IsA<UK2Node>() && !CortexBPGraphReachability::IsAnimationOrStateMachineGraph(Node->GetGraph()))
+			// K2 nodes are supported except anim graph nodes (UAnimGraphNode_Base derives from UK2Node too), which keep
+			// counting as unsupported so they still lower the migration confidence. K2 nodes placed in anim-schema graphs
+			// (transition rules, state graphs) are ordinary K2 nodes and stay supported.
+			const UClass* AnimGraphNodeBase = FindObject<UClass>(nullptr, TEXT("/Script/AnimGraph.AnimGraphNode_Base"));
+			const bool bAnimGraphNode = AnimGraphNodeBase ? Node->IsA(AnimGraphNodeBase) : NodeClassName.StartsWith(TEXT("AnimGraphNode_"));
+			const bool bSupportedNode = (Node->IsA<UK2Node>() && !bAnimGraphNode)
 				|| Node->IsA<UEdGraphNode_Comment>()
 				|| NodeClassName.StartsWith(TEXT("MaterialGraphNode_"));
 			if (!bSupportedNode)

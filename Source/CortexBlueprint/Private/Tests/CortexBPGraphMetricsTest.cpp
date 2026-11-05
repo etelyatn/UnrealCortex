@@ -1060,3 +1060,43 @@ bool FCortexBPGraphMetricsThresholdKeysTest::RunTest(const FString& Parameters)
 	}
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsForeignMacroNoFindingsTest,
+	"Cortex.Blueprint.GraphMetrics.ForeignMacroNoFindings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsForeignMacroNoFindingsTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsForeignMacro"));
+	FGraphMetricsBlueprintScope Other(TEXT("BP_MetricsMacroOwner"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprints created"), Blueprint) || !TestNotNull(TEXT("Owner created"), Other.Blueprint)) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay)) { return false; }
+
+	// A macro graph owned by another Blueprint, with one reached and one disconnected node.
+	UEdGraph* ForeignMacro = NewObject<UEdGraph>(Other.Blueprint, TEXT("ForeignMacroGraph"));
+	ForeignMacro->Schema = UEdGraphSchema_K2::StaticClass();
+	UK2Node_Tunnel* MacroEntry = AddBoundaryTunnel(ForeignMacro, true);
+	UK2Node_CallFunction* Reached = AddPrintString(ForeignMacro);
+	AddPrintString(ForeignMacro);
+	if (!TestTrue(TEXT("Macro wired"), LinkExec(MacroEntry, UEdGraphSchema_K2::PN_Then, Reached))) { return false; }
+
+	UK2Node_MacroInstance* Instance = NewObject<UK2Node_MacroInstance>(EventGraph);
+	Instance->SetMacroGraph(ForeignMacro);
+	Instance->CreateNewGuid();
+	EventGraph->AddNode(Instance, false, false);
+	Instance->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Execute);
+	if (!TestTrue(TEXT("Instance wired"), LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, Instance))) { return false; }
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	TestEqual(TEXT("the foreign macro's reached node is still counted"), TotalField(Result.Data, TEXT("functional_nodes")), 1);
+	TestEqual(TEXT("no findings rows for a macro owned by another asset"), RowCount(Result.Data, TEXT("unreachable"), ForeignMacro->GetName()), 0);
+	TestEqual(TEXT("no unreachable total from it"), TotalField(Result.Data, TEXT("unreachable_nodes")), 0);
+	return true;
+}

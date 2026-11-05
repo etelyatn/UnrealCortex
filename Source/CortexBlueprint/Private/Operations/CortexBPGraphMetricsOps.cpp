@@ -360,8 +360,8 @@ namespace
 		InOutTotal += Nodes.Num();
 	}
 
-	/** Reports the unreachable and disabled nodes of every inner graph reached through the node, once per inner graph. */
-	void ReportInnerGraphFindings(const UEdGraphNode* Node, TSet<const UEdGraph*>& VisitedInnerGraphs,
+	/** Reports the unreachable and disabled nodes of every inner graph (outered by Owner) reached through the node, once per inner graph. */
+	void ReportInnerGraphFindings(const UEdGraphNode* Node, const UBlueprint* Owner, TSet<const UEdGraph*>& VisitedInnerGraphs,
 		TArray<TSharedPtr<FJsonValue>>& UnreachableRows, int32& InOutUnreachable,
 		TArray<TSharedPtr<FJsonValue>>& DisabledRows, int32& InOutDisabled)
 	{
@@ -392,12 +392,16 @@ namespace
 				UnreachableNodes.Add(InnerNode);
 			}
 		}
-		AddNodeRow(UnreachableRows, InOutUnreachable, Node->GetGraph(), Inner, UnreachableNodes);
-		AddNodeRow(DisabledRows, InOutDisabled, Node->GetGraph(), Inner, DisabledNodes);
+		// Macros of other assets are counted by reachability but are not this Blueprint's findings.
+		if (Inner->GetTypedOuter<UBlueprint>() == Owner)
+		{
+			AddNodeRow(UnreachableRows, InOutUnreachable, Node->GetGraph(), Inner, UnreachableNodes);
+			AddNodeRow(DisabledRows, InOutDisabled, Node->GetGraph(), Inner, DisabledNodes);
+		}
 
 		for (const UEdGraphNode* Reached : Reachable)
 		{
-			ReportInnerGraphFindings(Reached, VisitedInnerGraphs, UnreachableRows, InOutUnreachable, DisabledRows, InOutDisabled);
+			ReportInnerGraphFindings(Reached, Owner, VisitedInnerGraphs, UnreachableRows, InOutUnreachable, DisabledRows, InOutDisabled);
 		}
 	}
 }
@@ -570,7 +574,7 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 		TSet<const UEdGraph*> VisitedInnerGraphs;
 		for (const UEdGraphNode* Node : LiveUnion)
 		{
-			ReportInnerGraphFindings(Node, VisitedInnerGraphs, UnreachableArray, TotalUnreachable, DisabledArray, TotalDisabled);
+			ReportInnerGraphFindings(Node, Blueprint, VisitedInnerGraphs, UnreachableArray, TotalUnreachable, DisabledArray, TotalDisabled);
 		}
 	}
 

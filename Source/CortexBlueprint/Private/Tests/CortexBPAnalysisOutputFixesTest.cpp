@@ -609,15 +609,29 @@ bool FCortexBPAnalysisAnimGraphNodesUnsupportedTest::RunTest(const FString& Para
 	AnimGraph->AddNode(Print, false, false);
 	Print->AllocateDefaultPins();
 
+	// A real anim graph node (UAnimGraphNode_Base derives from UK2Node) in the same graph must be flagged.
+	UClass* AnimNodeBase = FindObject<UClass>(nullptr, TEXT("/Script/AnimGraph.AnimGraphNode_Base"));
+	UClass* AnimNodeClass = FindObject<UClass>(nullptr, TEXT("/Script/AnimGraph.AnimGraphNode_Root"));
+	if (!TestNotNull(TEXT("AnimGraphNode classes"), AnimNodeBase) || !TestNotNull(TEXT("AnimGraphNode_Root class"), AnimNodeClass)) { return false; }
+	UK2Node* AnimNode = NewObject<UK2Node>(AnimGraph, AnimNodeClass);
+	AnimNode->CreateNewGuid();
+	AnimGraph->AddNode(AnimNode, false, false);
+	AnimNode->AllocateDefaultPins();
+
 	const TSharedPtr<FJsonObject> Data = RunAnalysis(*this, Blueprint);
 	Blueprint->MarkAsGarbage();
 	if (!Data.IsValid()) { return false; }
 
 	const TSharedPtr<FJsonObject>* Metrics = nullptr;
 	if (!TestTrue(TEXT("complexity_metrics present"), Data->TryGetObjectField(TEXT("complexity_metrics"), Metrics))) { return false; }
-	TestTrue(TEXT("K2 node in an animation graph is unsupported"),
-		static_cast<int32>((*Metrics)->GetNumberField(TEXT("unsupported_node_count"))) >= 1);
-	TestTrue(TEXT("its class is listed"), StringArray(*Metrics, TEXT("unsupported_node_types")).Contains(UK2Node_CallFunction::StaticClass()->GetName()));
+	const TArray<FString> Types = StringArray(*Metrics, TEXT("unsupported_node_types"));
+	TestTrue(TEXT("the anim graph node is unsupported"), Types.Contains(AnimNodeClass->GetName()));
+	TestFalse(TEXT("a K2Node_CallFunction in an animation-schema graph stays supported"), Types.Contains(UK2Node_CallFunction::StaticClass()->GetName()));
+	// The AnimBlueprint's own default AnimGraph already holds anim graph nodes, so assert on the class list rather than a count.
+	for (const FString& Type : Types)
+	{
+		TestTrue(FString::Printf(TEXT("only anim graph nodes are unsupported (%s)"), *Type), Type.StartsWith(TEXT("AnimGraphNode_")));
+	}
 	return true;
 }
 
