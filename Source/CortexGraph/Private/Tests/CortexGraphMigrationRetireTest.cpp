@@ -3827,6 +3827,9 @@ bool FCortexGraphMigrationRetireComponentBoundApplyFaultTest::RunTest(const FStr
 	const FName BoundComponent = Fixture.Bound->ComponentPropertyName;
 	const FName BoundDelegate = Fixture.Bound->DelegatePropertyName;
 	UClass* BoundDelegateOwner = Fixture.Bound->DelegateOwnerClass;
+	const UFunction* const SignatureBefore =
+		Fixture.Bound->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass);
+	TestNotNull(TEXT("the delegate signature resolves before the request"), SignatureBefore);
 	const FString GraphBefore = CaptureNativeGraph(Fixture.Graph);
 	const FString BindingsBefore = CaptureComponentBindings(Fixture.Blueprint);
 
@@ -3855,6 +3858,8 @@ bool FCortexGraphMigrationRetireComponentBoundApplyFaultTest::RunTest(const FStr
 		TestEqual(TEXT("the restored node keeps its delegate property"), Restored->DelegatePropertyName, BoundDelegate);
 		TestEqual(TEXT("the restored node keeps its delegate owner"), Restored->DelegateOwnerClass.Get(), BoundDelegateOwner);
 		TestEqual(TEXT("the restored node keeps its generated binding function"), Restored->CustomFunctionName, BindingFunction);
+		TestTrue(TEXT("the restored event resolves the same delegate signature"),
+			Restored->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass) == SignatureBefore);
 	}
 	TestEqual(TEXT("the restored graph matches the pre-request snapshot"), CaptureNativeGraph(Fixture.Graph), GraphBefore);
 	TestEqual(TEXT("the generated component binding is untouched by the rolled-back apply"),
@@ -3881,6 +3886,9 @@ bool FCortexGraphMigrationRetireComponentBoundReadbackFaultTest::RunTest(const F
 
 	const FGuid BoundGuid = Fixture.Bound->NodeGuid;
 	const FName BindingFunction = Fixture.Bound->CustomFunctionName;
+	const UFunction* const SignatureBefore =
+		Fixture.Bound->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass);
+	TestNotNull(TEXT("the delegate signature resolves before the request"), SignatureBefore);
 	const FString BindingsBefore = CaptureComponentBindings(Fixture.Blueprint);
 
 	TArray<FString> Approved;
@@ -3907,6 +3915,8 @@ bool FCortexGraphMigrationRetireComponentBoundReadbackFaultTest::RunTest(const F
 	if (Restored)
 	{
 		TestEqual(TEXT("the restored node keeps its generated binding function"), Restored->CustomFunctionName, BindingFunction);
+		TestTrue(TEXT("the restored event resolves the same delegate signature"),
+			Restored->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass) == SignatureBefore);
 	}
 	TestTrue(TEXT("the recovery compile registered the component binding again"),
 		CaptureComponentBindings(Fixture.Blueprint).Contains(BindingFunction.ToString()));
@@ -4008,13 +4018,17 @@ bool FCortexGraphMigrationRetireBlockedCustomEventPreviewTest::RunTest(const FSt
 		Plan(Fixture, { CustomGuid }, PlanValue, bReused, Error));
 	TestFalse(TEXT("the refusal does not name the selected entry as its own reference"),
 		Error.ErrorMessage.Contains(TEXT("same_name_event")));
-	TestTrue(TEXT("the selected custom event is published as blocked"),
-		PlanValue.Blocked.ContainsByPredicate([&CustomGuid](const FCortexGraphPruneNode& Node) { return Node.NodeGuid == CustomGuid; }));
+	const FCortexGraphPruneNode* const BlockedEntry = PlanValue.Blocked.FindByPredicate(
+		[&CustomGuid](const FCortexGraphPruneNode& Node) { return Node.NodeGuid == CustomGuid; });
+	TestNotNull(TEXT("the selected custom event is published as blocked"), BlockedEntry);
+	TestTrue(TEXT("the blocked entry carries its ownership reason"), BlockedEntry && !BlockedEntry->Reason.IsEmpty());
 	TestFalse(TEXT("the blocked custom event is not removable"), PlanValue.RemovableGuids.Contains(CustomGuid));
 
 	Error = FCortexCommandResult();
-	TestFalse(TEXT("an approval of the published removable set is still refused because of the blocked entry"),
-		Plan(Fixture, { CustomGuid }, PlanValue, bReused, Error, true, PlanValue.RemovableGuids));
+	TestFalse(TEXT("approving the blocked entry itself is refused"),
+		Plan(Fixture, { CustomGuid }, PlanValue, bReused, Error, true, { CustomGuid }));
+	TestTrue(FString::Printf(TEXT("the refusal comes from the blocked-entry gate: %s"), *Error.ErrorMessage),
+		Error.ErrorMessage.Contains(TEXT("blocked or retained")));
 
 	Fixture.Cleanup();
 	return true;
