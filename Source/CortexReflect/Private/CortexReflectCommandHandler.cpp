@@ -3,6 +3,7 @@
 #include "Operations/CortexReflectOps.h"
 #include "Operations/CortexReflectDependencyGraphOps.h"
 #include "Operations/CortexReflectNameLookupOps.h"
+#include "Operations/CortexReflectDuplicateGraphOps.h"
 
 FCortexCommandResult FCortexReflectCommandHandler::Execute(
 	const FString& Command,
@@ -66,6 +67,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 		return FCortexReflectNameLookupOps::FindNameLookups(Params);
 	}
 
+	if (Command == TEXT("find_duplicate_graphs"))
+	{
+		return FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown reflect command: %s"), *Command)
@@ -122,5 +128,9 @@ TArray<FCortexCommandInfo> FCortexReflectCommandHandler::GetSupportedCommands() 
 		FCortexCommandInfo{ TEXT("find_name_lookups"), TEXT("Find by-name access to Blueprint members. C++ (project and project-plugin .h/.inl/.cpp sources, fixed roots; the UnrealCortex plugin is excluded): string-literal names passed to FindFunction, FindFunctionByName, FindFunctionChecked, FindPropertyByName, FindFProperty, FindUField, FindField, FindFieldChecked, CreateUFunction, BindUFunction, AddUFunction, RemoveUFunction, K2_SetTimer, K2_ClearTimer, K2_PauseTimer, K2_UnPauseTimer, K2_IsTimerActive, K2_IsTimerPaused, K2_TimerExists, K2_GetTimerElapsedTime, K2_GetTimerRemainingTime, and the first token of a literal CallFunctionByNameWithArguments command. Blueprint: K2_SetTimer, K2_SetTimerForNextTick and the K2_Clear/Pause/UnPause/IsActive/IsPaused/Exists/Elapsed/Remaining timer nodes with an unlinked literal FunctionName pin. Only literal names are detected: names held in variables or constants are not. Each hit lists the Blueprint functions, events, custom events, variables and component variables of that name under the prefixes; matched_names/unmatched_names split the looked-up names by whether any Blueprint member matched") }
 			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose Blueprints are matched against (e.g. /Game/MyFeature)"))
 			.Optional(TEXT("symbols"), TEXT("array"), TEXT("Only report looked-up names in this list (case-insensitive)")),
+		FCortexCommandInfo{ TEXT("find_duplicate_graphs"), TEXT("Find duplicated logic across Blueprints. Graph units are function graphs, macro graphs and ubergraph event chains (an event node plus everything reachable from it). Units are normalised ignoring GUIDs, node names, positions, comments, reroute knots and disabled nodes; exact_groups share an identical normalised hash across two or more Blueprints, similar_groups are same-named units of different Blueprints whose node-descriptor multiset Jaccard ratio reaches similarity. Widget trees are compared as class+name multisets (kind widget_tree). blueprint_pairs lists Blueprint pairs sharing exact or similar graphs, sorted by shared_graphs descending, with widget_tree_similarity") }
+			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose Blueprints are compared (e.g. /Game/MyFeature)"))
+			.Optional(TEXT("min_nodes"), TEXT("number"), TEXT("Smallest graph (or widget tree) size considered, integer greater than 0 (default 5)"))
+			.Optional(TEXT("similarity"), TEXT("number"), TEXT("Jaccard threshold for similar groups, greater than 0 and at most 1 (default 0.9)")),
 	};
 }
