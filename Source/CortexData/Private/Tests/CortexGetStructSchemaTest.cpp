@@ -1,6 +1,8 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
 #include "CortexDataCommandHandler.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonSerializer.h"
@@ -66,6 +68,49 @@ bool FCortexGetStructSchemaFullPathTest::RunTest(const FString& Parameters)
 		const FCortexCommandResult R = GetStructSchema(Router, TEXT("/Script/Engine.NoSuchStructAnywhere"));
 		TestFalse(TEXT("Unknown /Script path is refused"), R.bSuccess);
 		TestEqual(TEXT("Unknown /Script path error code"), R.ErrorCode, CortexErrorCodes::InvalidStructType);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGetStructSchemaNonStructAssetTest,
+	"Cortex.Data.GetStructSchema.NonStructAssetRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGetStructSchemaNonStructAssetTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.1"), MakeShared<FCortexDataCommandHandler>());
+
+	// An existing non-struct asset must be refused from registry metadata, without loading it
+	// and without a "Failed to find object" load warning.
+	const TCHAR* PackageName = TEXT("/Game/Data/CT_TestCurve");
+	const FString ObjectPath = FString::Printf(TEXT("%s.CT_TestCurve"), PackageName);
+	if (!FPackageName::DoesPackageExist(PackageName))
+	{
+		AddInfo(TEXT("Sandbox curve table fixture missing; non-struct refusal not exercised."));
+		return true;
+	}
+
+	const bool bLoadedBefore = FindPackage(nullptr, PackageName) != nullptr;
+
+	{
+		const FCortexCommandResult R = GetStructSchema(Router, ObjectPath);
+		TestFalse(TEXT("Non-struct asset path is refused"), R.bSuccess);
+		TestEqual(TEXT("Non-struct asset error code"), R.ErrorCode, CortexErrorCodes::InvalidStructType);
+	}
+
+	{
+		const FCortexCommandResult R = GetStructSchema(Router, TEXT("/Game/Data/CT_TestCurve.NoSuchObject"));
+		TestFalse(TEXT("Wrong object name in a real package is refused"), R.bSuccess);
+		TestEqual(TEXT("Wrong object name error code"), R.ErrorCode, CortexErrorCodes::InvalidStructType);
+	}
+
+	if (!bLoadedBefore)
+	{
+		TestTrue(TEXT("Refusing a non-struct asset does not load its package"), FindPackage(nullptr, PackageName) == nullptr);
 	}
 
 	return true;

@@ -1,6 +1,9 @@
 #include "Operations/CortexDataStructResolver.h"
 
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Misc/PackageName.h"
+#include "UObject/SoftObjectPath.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectHash.h"
@@ -29,7 +32,19 @@ namespace
 			return nullptr;
 		}
 
-		return LoadObject<UScriptStruct>(nullptr, *ObjectPath);
+		// Refuse non-struct assets from registry metadata so they are never loaded.
+		const FAssetData AssetData = IAssetRegistry::GetChecked().GetAssetByObjectPath(FSoftObjectPath(ObjectPath));
+		if (!AssetData.IsValid())
+		{
+			return nullptr;
+		}
+		const UClass* AssetClass = AssetData.GetClass();
+		if (AssetClass == nullptr || !AssetClass->IsChildOf(UScriptStruct::StaticClass()))
+		{
+			return nullptr;
+		}
+
+		return LoadObject<UScriptStruct>(nullptr, *ObjectPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
 	}
 }
 
