@@ -4,6 +4,7 @@
 #include "Engine/Blueprint.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
+#include "CortexBPList119TestUtils.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPListTest,
@@ -294,5 +295,149 @@ bool FCortexBPInfoInheritedFunctionsTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("At least one inherited function should appear with include_inherited=true"), bFoundInherited);
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPListFilterTypeTest,
+	"Cortex.Blueprint.List.FilterType",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPListFilterTypeTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexBPList119Test;
+
+	FCortexBPCommandHandler Handler;
+	const FString Dir = MakeUniqueDir(TEXT("FilterType"));
+	TestTrue(TEXT("create actor BP"), CreateBlueprint(Handler, Dir, TEXT("BP_FT_Actor"), TEXT("Actor"), FString()));
+	TestTrue(TEXT("create widget BP"), CreateBlueprint(Handler, Dir, TEXT("WBP_FT_Widget"), TEXT("Widget"), FString()));
+	TestTrue(TEXT("create interface BP"), CreateBlueprint(Handler, Dir, TEXT("BPI_FT_Interface"), TEXT("Interface"), FString()));
+
+	const FCortexCommandResult All = RunList(Handler, Dir, FString(), nullptr);
+	TestEqual(TEXT("unfiltered list returns all three"), RowNames(All).Num(), 3);
+
+	const FCortexCommandResult Widgets = RunList(Handler, Dir, TEXT("widget"), nullptr);
+	TestTrue(TEXT("type=widget succeeds (case-insensitive)"), Widgets.bSuccess);
+	TestEqual(TEXT("type=widget returns only the widget"), RowNames(Widgets), TArray<FString>{TEXT("WBP_FT_Widget")});
+	double Count = -1.0;
+	if (Widgets.Data.IsValid())
+	{
+		Widgets.Data->TryGetNumberField(TEXT("count"), Count);
+	}
+	TestEqual(TEXT("count equals returned rows"), static_cast<int32>(Count), 1);
+
+	const FCortexCommandResult Actors = RunList(Handler, Dir, TEXT("Actor"), nullptr);
+	TestEqual(TEXT("type=Actor returns only the actor"), RowNames(Actors), TArray<FString>{TEXT("BP_FT_Actor")});
+
+	const FCortexCommandResult Interfaces = RunList(Handler, Dir, TEXT("INTERFACE"), nullptr);
+	TestEqual(TEXT("type=INTERFACE returns only the interface"), RowNames(Interfaces), TArray<FString>{TEXT("BPI_FT_Interface")});
+
+	const FCortexCommandResult Bogus = RunList(Handler, Dir, TEXT("Bogus"), nullptr);
+	TestFalse(TEXT("unknown type fails"), Bogus.bSuccess);
+	TestEqual(TEXT("unknown type error code"), Bogus.ErrorCode, CortexErrorCodes::InvalidField);
+	TestTrue(TEXT("error lists the vocabulary"),
+		Bogus.ErrorMessage.Contains(TEXT("Interface")) && Bogus.ErrorMessage.Contains(TEXT("EditorUtility"))
+		&& Bogus.ErrorMessage.Contains(TEXT("MacroLibrary")) && Bogus.ErrorMessage.Contains(TEXT("Unknown")));
+
+	DeleteBlueprint(Handler, Dir, TEXT("BPI_FT_Interface"));
+	DeleteBlueprint(Handler, Dir, TEXT("WBP_FT_Widget"));
+	DeleteBlueprint(Handler, Dir, TEXT("BP_FT_Actor"));
+	RemoveTestDirectory(Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPListExcludeTypesTest,
+	"Cortex.Blueprint.List.ExcludeTypes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPListExcludeTypesTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexBPList119Test;
+
+	FCortexBPCommandHandler Handler;
+	const FString Dir = MakeUniqueDir(TEXT("ExcludeTypes"));
+	TestTrue(TEXT("create actor BP"), CreateBlueprint(Handler, Dir, TEXT("BP_ET_Actor"), TEXT("Actor"), FString()));
+	TestTrue(TEXT("create widget BP"), CreateBlueprint(Handler, Dir, TEXT("WBP_ET_Widget"), TEXT("Widget"), FString()));
+	TestTrue(TEXT("create interface BP"), CreateBlueprint(Handler, Dir, TEXT("BPI_ET_Interface"), TEXT("Interface"), FString()));
+
+	const TArray<TSharedPtr<FJsonValue>> WidgetAndInterface = MakeStringArray({TEXT("widget"), TEXT("INTERFACE")});
+	const FCortexCommandResult Excluded = RunList(Handler, Dir, FString(), &WidgetAndInterface);
+	TestTrue(TEXT("exclude_types succeeds"), Excluded.bSuccess);
+	TestEqual(TEXT("exclude widget+interface leaves actor"), RowNames(Excluded), TArray<FString>{TEXT("BP_ET_Actor")});
+
+	const TArray<TSharedPtr<FJsonValue>> WidgetOnly = MakeStringArray({TEXT("Widget")});
+	const FCortexCommandResult Combined = RunList(Handler, Dir, TEXT("Actor"), &WidgetOnly);
+	TestEqual(TEXT("type=Actor with exclude Widget keeps only the actor (no inversion)"),
+		RowNames(Combined), TArray<FString>{TEXT("BP_ET_Actor")});
+
+	const TArray<TSharedPtr<FJsonValue>> ActorOnly = MakeStringArray({TEXT("Actor")});
+	const FCortexCommandResult Contradiction = RunList(Handler, Dir, TEXT("Actor"), &ActorOnly);
+	TestTrue(TEXT("type=Actor with exclude Actor succeeds"), Contradiction.bSuccess);
+	TestEqual(TEXT("type=Actor with exclude Actor is empty"), RowNames(Contradiction).Num(), 0);
+
+	const TArray<TSharedPtr<FJsonValue>> BogusExclude = MakeStringArray({TEXT("Bogus")});
+	const FCortexCommandResult BadExclude = RunList(Handler, Dir, FString(), &BogusExclude);
+	TestFalse(TEXT("unknown exclude type fails"), BadExclude.bSuccess);
+	TestEqual(TEXT("unknown exclude type error code"), BadExclude.ErrorCode, CortexErrorCodes::InvalidField);
+
+	TArray<TSharedPtr<FJsonValue>> NonString;
+	NonString.Add(MakeShared<FJsonValueNumber>(1.0));
+	const FCortexCommandResult BadElement = RunList(Handler, Dir, FString(), &NonString);
+	TestFalse(TEXT("non-string exclude entry fails"), BadElement.bSuccess);
+	TestEqual(TEXT("non-string exclude entry error code"), BadElement.ErrorCode, CortexErrorCodes::InvalidField);
+
+	DeleteBlueprint(Handler, Dir, TEXT("BPI_ET_Interface"));
+	DeleteBlueprint(Handler, Dir, TEXT("WBP_ET_Widget"));
+	DeleteBlueprint(Handler, Dir, TEXT("BP_ET_Actor"));
+	RemoveTestDirectory(Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPListParentClassBlueprintTest,
+	"Cortex.Blueprint.List.ParentClassBlueprint",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPListParentClassBlueprintTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexBPList119Test;
+
+	FCortexBPCommandHandler Handler;
+	const FString Dir = MakeUniqueDir(TEXT("ParentChain"));
+	const FString ParentName = TEXT("BP_PC_Parent");
+	const FString ChildName = TEXT("BP_PC_Child");
+	const FString ParentGeneratedClass = FString::Printf(TEXT("%s/%s.%s_C"), *Dir, *ParentName, *ParentName);
+	TestTrue(TEXT("create parent BP"), CreateBlueprint(Handler, Dir, ParentName, TEXT("Actor"), FString()));
+	TestTrue(TEXT("create child BP"), CreateBlueprint(Handler, Dir, ChildName, FString(), ParentGeneratedClass));
+
+	const FCortexCommandResult Result = RunList(Handler, Dir, FString(), nullptr);
+	TestTrue(TEXT("list succeeds"), Result.bSuccess);
+
+	const TSharedPtr<FJsonObject> Child = FindRow(Result, ChildName);
+	if (TestTrue(TEXT("child row exists"), Child.IsValid()))
+	{
+		TestEqual(TEXT("parent_class is the parent Blueprint asset name"), RowString(Child, TEXT("parent_class")), ParentName);
+		TestEqual(TEXT("native_parent_class is Actor"), RowString(Child, TEXT("native_parent_class")), TEXT("Actor"));
+		TestTrue(TEXT("parent_class_path is the parent generated class path"),
+			RowString(Child, TEXT("parent_class_path")).EndsWith(FString::Printf(TEXT("%s.%s_C"), *ParentName, *ParentName)));
+		TestEqual(TEXT("asset_class is Blueprint"), RowString(Child, TEXT("asset_class")), TEXT("Blueprint"));
+		TestEqual(TEXT("child classified by native parent"), RowString(Child, TEXT("type")), TEXT("Actor"));
+	}
+
+	const TSharedPtr<FJsonObject> Parent = FindRow(Result, ParentName);
+	if (TestTrue(TEXT("parent row exists"), Parent.IsValid()))
+	{
+		TestEqual(TEXT("native parent row parent_class"), RowString(Parent, TEXT("parent_class")), TEXT("Actor"));
+		TestEqual(TEXT("native parent row native_parent_class"), RowString(Parent, TEXT("native_parent_class")), TEXT("Actor"));
+		TestEqual(TEXT("native parent row parent_class_path"), RowString(Parent, TEXT("parent_class_path")), TEXT("/Script/Engine.Actor"));
+	}
+
+	DeleteBlueprint(Handler, Dir, ChildName);
+	DeleteBlueprint(Handler, Dir, ParentName);
+	RemoveTestDirectory(Dir);
 	return true;
 }

@@ -72,6 +72,6 @@ public:
 	/** Validate that a Blueprint asset path targets project-owned writable content for mutation commands. */
 	static bool ValidateWritableBlueprintAssetPath(const FString& AssetPath, FString& OutError);
 
-	/** Determine Blueprint type string (Actor, Component, Widget, Interface, FunctionLibrary) from a loaded UBlueprint */
+	/** Classify a loaded UBlueprint with the same rules used for Asset Registry rows (Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown) */
 	static FString DetermineBlueprintType(const UBlueprint* BP);
 };

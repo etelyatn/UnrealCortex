@@ -244,7 +244,10 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("parent_class"), TEXT("string"), TEXT("Parent class name"));
 	Commands.Add(FCortexCommandInfo{TEXT("list"), TEXT("List Blueprint assets")}
 		.Optional(TEXT("path"), TEXT("string"), TEXT("Optional content path filter"))
-		.Optional(TEXT("type"), TEXT("string"), TEXT("Optional Blueprint type filter")));
+		.Optional(TEXT("type"), TEXT("string"),
+			TEXT("Optional Blueprint type filter (case-insensitive): Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown"))
+		.Optional(TEXT("exclude_types"), TEXT("array"),
+			TEXT("Optional array of Blueprint types to omit (same vocabulary as type); combines with type")));
 	Commands.Add(FCortexCommandInfo{TEXT("get_info"), TEXT("Get Blueprint info")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited C++ functions (default: true)"))

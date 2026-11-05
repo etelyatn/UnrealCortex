@@ -380,41 +380,165 @@ bool FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(const FString& AssetP
 	return CortexBPAssetOpsPrivate::ValidateWritableBlueprintPath(PackagePath, OutError);
 }
 
+namespace
+{
+	/** Canonical Blueprint type vocabulary, in classification precedence order. */
+	const TCHAR* const BlueprintTypeVocabulary[] =
+	{
+		TEXT("Interface"),
+		TEXT("FunctionLibrary"),
+		TEXT("MacroLibrary"),
+		TEXT("AnimBlueprint"),
+		TEXT("EditorUtility"),
+		TEXT("Widget"),
+		TEXT("Component"),
+		TEXT("Actor"),
+		TEXT("Object"),
+		TEXT("Unknown"),
+	};
+
+	/** Facts shared by the loaded-Blueprint and Asset Registry classifiers. */
+	struct FBlueprintClassifierInput
+	{
+		bool bInterface = false;
+		bool bFunctionLibrary = false;
+		bool bMacroLibrary = false;
+		/** Class of the Blueprint asset itself (UBlueprint, UAnimBlueprint, ...); may be null when unresolved. */
+		const UClass* AssetClass = nullptr;
+		/** Immediate parent class; may be a Blueprint generated class or null when unresolved. */
+		const UClass* ImmediateParent = nullptr;
+		/** Nearest native ancestor; null when unresolved. */
+		const UClass* NativeParent = nullptr;
+	};
+
+	/** Dynamic lookup by script path. Not cached: the owning module may load after the first call. */
+	bool IsChildOfScriptClass(const UClass* Candidate, const TCHAR* ClassPath)
+	{
+		if (!Candidate)
+		{
+			return false;
+		}
+		const UClass* BaseClass = FindObject<UClass>(nullptr, ClassPath);
+		return BaseClass && Candidate->IsChildOf(BaseClass);
+	}
+
+	FString ClassifyBlueprint(const FBlueprintClassifierInput& Input)
+	{
+		if (Input.bInterface)
+		{
+			return TEXT("Interface");
+		}
+		if (Input.bFunctionLibrary)
+		{
+			return TEXT("FunctionLibrary");
+		}
+		if (Input.bMacroLibrary)
+		{
+			return TEXT("MacroLibrary");
+		}
+
+		if (IsChildOfScriptClass(Input.AssetClass, TEXT("/Script/Engine.AnimBlueprint")))
+		{
+			return TEXT("AnimBlueprint");
+		}
+
+		// Native ancestry decides the remaining kinds; a Blueprint-only chain is covered by its native parent.
+		const UClass* ParentForRules = Input.NativeParent ? Input.NativeParent : Input.ImmediateParent;
+
+		if (IsChildOfScriptClass(Input.AssetClass, TEXT("/Script/Blutility.EditorUtilityBlueprint"))
+			|| IsChildOfScriptClass(Input.AssetClass, TEXT("/Script/Blutility.EditorUtilityWidgetBlueprint"))
+			|| IsChildOfScriptClass(ParentForRules, TEXT("/Script/Blutility.EditorUtilityObject"))
+			|| IsChildOfScriptClass(ParentForRules, TEXT("/Script/Blutility.EditorUtilityActor"))
+			|| IsChildOfScriptClass(ParentForRules, TEXT("/Script/Blutility.EditorUtilityWidget")))
+		{
+			return TEXT("EditorUtility");
+		}
+
+		if (!ParentForRules)
+		{
+			return TEXT("Unknown");
+		}
+
+		if (IsChildOfScriptClass(ParentForRules, TEXT("/Script/UMG.UserWidget")))
+		{
+			return TEXT("Widget");
+		}
+		if (ParentForRules->IsChildOf(UActorComponent::StaticClass()))
+		{
+			return TEXT("Component");
+		}
+		if (ParentForRules->IsChildOf(AActor::StaticClass()))
+		{
+			return TEXT("Actor");
+		}
+		return TEXT("Object");
+	}
+
+	/** Nearest native class at or above Class. */
+	const UClass* FindNativeAncestor(const UClass* Class)
+	{
+		while (Class && !Class->IsNative())
+		{
+			Class = Class->GetSuperClass();
+		}
+		return Class;
+	}
+
+	/** Case-insensitive vocabulary lookup; returns false for values outside the vocabulary. */
+	bool TryCanonicalizeBlueprintType(const FString& Value, FString& OutCanonical)
+	{
+		for (const TCHAR* Candidate : BlueprintTypeVocabulary)
+		{
+			if (Value.Equals(Candidate, ESearchCase::IgnoreCase))
+			{
+				OutCanonical = Candidate;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	FString BlueprintTypeVocabularyList()
+	{
+		FString List;
+		for (const TCHAR* Candidate : BlueprintTypeVocabulary)
+		{
+			if (!List.IsEmpty())
+			{
+				List += TEXT(", ");
+			}
+			List += Candidate;
+		}
+		return List;
+	}
+
+	/** Short display name of a class object path; Blueprint generated classes report the asset name without "_C". */
+	FString ParentClassDisplayName(const FString& ClassObjectPath)
+	{
+		FString Name = FPackageName::ObjectPathToObjectName(ClassObjectPath);
+		if (Name.EndsWith(TEXT("_C")))
+		{
+			Name.LeftChopInline(2);
+		}
+		return Name;
+	}
+}
+
 FString FCortexBPAssetOps::DetermineBlueprintType(const UBlueprint* BP)
 {
-	if (!BP || !BP->ParentClass)
+	if (!BP)
 	{
 		return TEXT("Unknown");
 	}
 
-	if (BP->BlueprintType == BPTYPE_Interface)
-	{
-		return TEXT("Interface");
-	}
-
-	if (BP->BlueprintType == BPTYPE_FunctionLibrary)
-	{
-		return TEXT("FunctionLibrary");
-	}
-
-	// Check for Widget using dynamic resolution to avoid compile-time dependency on UMG
-	static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-	if (UserWidgetClass && BP->ParentClass->IsChildOf(UserWidgetClass))
-	{
-		return TEXT("Widget");
-	}
-
-	if (BP->ParentClass->IsChildOf(UActorComponent::StaticClass()))
-	{
-		return TEXT("Component");
-	}
-
-	if (BP->ParentClass->IsChildOf(AActor::StaticClass()))
-	{
-		return TEXT("Actor");
-	}
-
-	return TEXT("Unknown");
+	FBlueprintClassifierInput Input;
+	Input.bInterface = BP->BlueprintType == BPTYPE_Interface;
+	Input.bFunctionLibrary = BP->BlueprintType == BPTYPE_FunctionLibrary;
+	Input.bMacroLibrary = BP->BlueprintType == BPTYPE_MacroLibrary;
+	Input.AssetClass = BP->GetClass();
+	Input.ImmediateParent = BP->ParentClass;
+	Input.NativeParent = FindNativeAncestor(BP->ParentClass);
+	return ClassifyBlueprint(Input);
 }
 
 namespace
@@ -474,81 +598,54 @@ namespace
 		return false;
 	}
 
-	/** Helper: Determine Blueprint type string from AssetRegistry tags (without loading the asset). */
-	FString DetermineTypeFromAssetData(const FAssetData& AssetData)
+	/** Per-row facts for blueprint.list, resolved from Asset Registry tags without loading the asset. */
+	struct FBlueprintListRowInfo
 	{
+		FString Type;
+		FString AssetClass;
+		FString NativeParentClass;
+		FString ParentClass;
+		FString ParentClassPath;
+	};
+
+	FBlueprintListRowInfo DescribeBlueprintAssetData(const FAssetData& AssetData)
+	{
+		FBlueprintListRowInfo Row;
+		Row.AssetClass = AssetData.AssetClassPath.GetAssetName().ToString();
+
+		FString NativeParentTag;
+		AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, NativeParentTag);
+		FString ParentTag;
+		AssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentTag);
+
+		const FString NativeParentPath = NativeParentTag.IsEmpty()
+			? FString()
+			: FPackageName::ExportTextPathToObjectPath(NativeParentTag);
+		// Older tag sets may only carry the native parent; treat it as the immediate parent then.
+		Row.ParentClassPath = ParentTag.IsEmpty()
+			? NativeParentPath
+			: FPackageName::ExportTextPathToObjectPath(ParentTag);
+
+		if (!NativeParentPath.IsEmpty())
+		{
+			Row.NativeParentClass = FPackageName::ObjectPathToObjectName(NativeParentPath);
+		}
+		if (!Row.ParentClassPath.IsEmpty())
+		{
+			Row.ParentClass = ParentClassDisplayName(Row.ParentClassPath);
+		}
+
 		const FString BlueprintTypeTag = AssetData.GetTagValueRef<FString>(FBlueprintTags::BlueprintType);
-		if (BlueprintTypeTag == TEXT("BPType_Interface"))
-		{
-			return TEXT("Interface");
-		}
-		if (BlueprintTypeTag == TEXT("BPType_FunctionLibrary"))
-		{
-			return TEXT("FunctionLibrary");
-		}
-
-		FString ParentClassName;
-		if (!AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName))
-		{
-			AssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentClassName);
-		}
-
-		if (!ParentClassName.IsEmpty())
-		{
-			const FString ParentClassPath = FPackageName::ExportTextPathToObjectPath(ParentClassName);
-
-			// Resolve to UClass* — native classes are always loaded in editor, no disk I/O
-			UClass* ParentClass = FindObject<UClass>(nullptr, *ParentClassPath);
-			if (ParentClass)
-			{
-				static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-				if (UserWidgetClass && ParentClass->IsChildOf(UserWidgetClass))
-				{
-					return TEXT("Widget");
-				}
-				if (ParentClass->IsChildOf(UActorComponent::StaticClass()))
-				{
-					return TEXT("Component");
-				}
-				if (ParentClass->IsChildOf(AActor::StaticClass()))
-				{
-					return TEXT("Actor");
-				}
-				if (ParentClass->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
-				{
-					return TEXT("FunctionLibrary");
-				}
-				if (ParentClass->IsChildOf(UInterface::StaticClass()))
-				{
-					return TEXT("Interface");
-				}
-				return TEXT("Unknown");
-			}
-
-			// Fallback: string matching for unloaded Blueprint-only parents
-			if (ParentClassPath.Contains(TEXT("UserWidget")))
-			{
-				return TEXT("Widget");
-			}
-			if (ParentClassPath.Contains(TEXT("BlueprintFunctionLibrary")))
-			{
-				return TEXT("FunctionLibrary");
-			}
-			if (ParentClassPath.Contains(TEXT("ActorComponent")))
-			{
-				return TEXT("Component");
-			}
-			if (ParentClassPath.Contains(TEXT("Interface")))
-			{
-				return TEXT("Interface");
-			}
-			if (ParentClassPath.Contains(TEXT("Actor")))
-			{
-				return TEXT("Actor");
-			}
-		}
-
-		return TEXT("Unknown");
+		FBlueprintClassifierInput Input;
+		Input.bInterface = BlueprintTypeTag == TEXT("BPType_Interface");
+		Input.bFunctionLibrary = BlueprintTypeTag == TEXT("BPType_FunctionLibrary");
+		Input.bMacroLibrary = BlueprintTypeTag == TEXT("BPType_MacroLibrary");
+		Input.AssetClass = FindObject<UClass>(nullptr, *AssetData.AssetClassPath.ToString());
+		// Native classes are always loaded in the editor, so these lookups do no disk I/O.
+		Input.NativeParent = NativeParentPath.IsEmpty() ? nullptr : FindObject<UClass>(nullptr, *NativeParentPath);
+		Input.ImmediateParent = Row.ParentClassPath.IsEmpty() ? nullptr : FindObject<UClass>(nullptr, *Row.ParentClassPath);
+		Row.Type = ClassifyBlueprint(Input);
+		return Row;
 	}
 
 	FString ToSeverity(const UEdGraphNode* Node)
@@ -1037,11 +1134,56 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 {
 	FCortexCommandResult Result;
 
-	// Get optional path filter
+	// Optional filters: path, type, exclude_types
 	FString PathFilter;
+	FString TypeFilter;
+	TSet<FString> ExcludedTypes;
 	if (Params.IsValid())
 	{
 		Params->TryGetStringField(TEXT("path"), PathFilter);
+
+		if (Params->HasField(TEXT("type")))
+		{
+			FString RawType;
+			if (!Params->TryGetStringField(TEXT("type"), RawType) || !TryCanonicalizeBlueprintType(RawType, TypeFilter))
+			{
+				Result.bSuccess = false;
+				Result.ErrorCode = CortexErrorCodes::InvalidField;
+				Result.ErrorMessage = FString::Printf(
+					TEXT("Invalid 'type' filter: %s (supported, case-insensitive: %s)"),
+					*RawType, *BlueprintTypeVocabularyList());
+				return Result;
+			}
+		}
+
+		if (Params->HasField(TEXT("exclude_types")))
+		{
+			const TArray<TSharedPtr<FJsonValue>>* ExcludeArray = nullptr;
+			if (!Params->TryGetArrayField(TEXT("exclude_types"), ExcludeArray))
+			{
+				Result.bSuccess = false;
+				Result.ErrorCode = CortexErrorCodes::InvalidField;
+				Result.ErrorMessage = FString::Printf(
+					TEXT("'exclude_types' must be an array of strings (supported, case-insensitive: %s)"),
+					*BlueprintTypeVocabularyList());
+				return Result;
+			}
+			for (const TSharedPtr<FJsonValue>& Entry : *ExcludeArray)
+			{
+				FString RawType;
+				FString Canonical;
+				if (!Entry.IsValid() || !Entry->TryGetString(RawType) || !TryCanonicalizeBlueprintType(RawType, Canonical))
+				{
+					Result.bSuccess = false;
+					Result.ErrorCode = CortexErrorCodes::InvalidField;
+					Result.ErrorMessage = FString::Printf(
+						TEXT("Invalid 'exclude_types' entry: %s (supported, case-insensitive: %s)"),
+						*RawType, *BlueprintTypeVocabularyList());
+					return Result;
+				}
+				ExcludedTypes.Add(Canonical);
+			}
+		}
 	}
 
 	// Query AssetRegistry for all Blueprint assets
@@ -1080,34 +1222,20 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 	TArray<TSharedPtr<FJsonValue>> BlueprintsArray;
 	for (const FAssetData& AssetData : BlueprintAssets)
 	{
+		const FBlueprintListRowInfo RowInfo = DescribeBlueprintAssetData(AssetData);
+		if ((!TypeFilter.IsEmpty() && RowInfo.Type != TypeFilter) || ExcludedTypes.Contains(RowInfo.Type))
+		{
+			continue;
+		}
+
 		TSharedPtr<FJsonObject> BPObj = MakeShared<FJsonObject>();
-
-		// Asset path
 		BPObj->SetStringField(TEXT("asset_path"), AssetData.GetObjectPathString());
-
-		// Asset name
 		BPObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
-
-		// Resolve type from AssetRegistry tags to avoid loading every Blueprint asset.
-		BPObj->SetStringField(TEXT("type"), DetermineTypeFromAssetData(AssetData));
-
-		// Parent class (extracted from AssetRegistry tags — no load required)
-		FString ParentClassName;
-		if (!AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName))
-		{
-			AssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentClassName);
-		}
-		if (!ParentClassName.IsEmpty())
-		{
-			const FString ClassPath = FPackageName::ExportTextPathToObjectPath(ParentClassName);
-			UClass* ParentClass = FindObject<UClass>(nullptr, *ClassPath);
-			BPObj->SetStringField(TEXT("parent_class"),
-				ParentClass ? ParentClass->GetName() : FPackageName::GetShortName(ClassPath));
-		}
-		else
-		{
-			BPObj->SetStringField(TEXT("parent_class"), TEXT(""));
-		}
+		BPObj->SetStringField(TEXT("type"), RowInfo.Type);
+		BPObj->SetStringField(TEXT("asset_class"), RowInfo.AssetClass);
+		BPObj->SetStringField(TEXT("parent_class"), RowInfo.ParentClass);
+		BPObj->SetStringField(TEXT("parent_class_path"), RowInfo.ParentClassPath);
+		BPObj->SetStringField(TEXT("native_parent_class"), RowInfo.NativeParentClass);
 
 		BlueprintsArray.Add(MakeShared<FJsonValueObject>(BPObj));
 	}
