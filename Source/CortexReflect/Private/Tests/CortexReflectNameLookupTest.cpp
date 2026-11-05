@@ -22,6 +22,10 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/CanvasPanel.h"
+#include "Components/TextBlock.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
@@ -488,6 +492,86 @@ bool FCortexReflectNameLookupBlueprintTest::RunTest(const FString& Parameters)
 		}
 		TestEqual(TEXT("scanned_files counts the readable source"), static_cast<int32>(Result->GetNumberField(TEXT("scanned_files"))), 1);
 		TestEqual(TEXT("no unreadable files"), StringArray(Result, TEXT("unreadable_files")).Num(), 0);
+	}
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectNameLookupWidgetMembersTest,
+	"Cortex.Reflect.NameLookup.WidgetMembers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectNameLookupWidgetMembersTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectNameLookupTestSupport;
+
+	// A Widget Blueprint's variable widgets are generated properties (UBlueprint::GeneratedVariables), not NewVariables.
+	UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
+	UClass* WidgetGeneratedClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.WidgetBlueprintGeneratedClass"));
+	if (!TestNotNull(TEXT("widget blueprint classes"), WidgetBlueprintClass) || !TestNotNull(TEXT("widget generated class"), WidgetGeneratedClass))
+	{
+		return false;
+	}
+
+	FNameLookupFixture Fixture;
+	UPackage* Package = CreatePackage(*FString::Printf(TEXT("%s/WBP_Hud"), *Fixture.Dir));
+	UBlueprint* Widget = FKismetEditorUtilities::CreateBlueprint(
+		UUserWidget::StaticClass(), Package, TEXT("WBP_Hud"), BPTYPE_Normal, WidgetBlueprintClass, WidgetGeneratedClass, NAME_None);
+	const FObjectProperty* TreeProperty = Widget ? CastField<FObjectProperty>(Widget->GetClass()->FindPropertyByName(TEXT("WidgetTree"))) : nullptr;
+	if (!TestNotNull(TEXT("widget blueprint"), Widget) || !TestNotNull(TEXT("WidgetTree property"), TreeProperty))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	UWidgetTree* Tree = Cast<UWidgetTree>(TreeProperty->GetObjectPropertyValue_InContainer(Widget));
+	if (!Tree)
+	{
+		Tree = NewObject<UWidgetTree>(Widget, UWidgetTree::StaticClass(), TEXT("WidgetTree"), RF_Transactional);
+		TreeProperty->SetObjectPropertyValue_InContainer(Widget, Tree);
+	}
+	UCanvasPanel* Root = Tree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("Root"));
+	Tree->RootWidget = Root;
+	UTextBlock* HealthText = Tree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("HealthText"));
+	HealthText->bIsVariable = true;
+	Root->AddChild(HealthText);
+	UTextBlock* Decoration = Tree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("DecorationText"));
+	Root->AddChild(Decoration);
+	FKismetEditorUtilities::CompileBlueprint(Widget);
+
+	const bool bGenerated = Widget->GeneratedVariables.ContainsByPredicate(
+		[](const FBPVariableDescription& Variable) { return Variable.VarName == TEXT("HealthText"); });
+	if (!TestTrue(TEXT("the engine compiler generated the HealthText variable"), bGenerated)
+		|| !TestTrue(TEXT("save"), Fixture.SaveAsset(Widget)))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	FTempSource Source(TEXT("Sample.cpp"),
+		TEXT("void A(UObject* O)\n{\n")
+		TEXT("\tO->GetClass()->FindPropertyByName(TEXT(\"HealthText\"));\n")
+		TEXT("\tO->GetClass()->FindPropertyByName(TEXT(\"DecorationText\"));\n}\n"));
+
+	const TSharedPtr<FJsonObject> Result = FCortexReflectNameLookupOps::FindNameLookupsInRoots({Source.SourceRoot}, {Fixture.Dir}, {});
+	if (TestNotNull(TEXT("result"), Result.Get()))
+	{
+		const TArray<TSharedPtr<FJsonObject>> Cpp = ObjectArray(Result, TEXT("cpp"));
+		const TSharedPtr<FJsonObject> Health = FindHit(Cpp, TEXT("FindPropertyByName"), TEXT("HealthText"));
+		const TSharedPtr<FJsonObject> Plain = FindHit(Cpp, TEXT("FindPropertyByName"), TEXT("DecorationText"));
+		if (TestNotNull(TEXT("HealthText hit"), Health.Get()))
+		{
+			TestTrue(TEXT("HealthText matches the widget variable"),
+				HasMatch(Health, TEXT("/WBP_Hud.WBP_Hud"), TEXT("HealthText"), TEXT("widget_variable")));
+		}
+		if (TestNotNull(TEXT("DecorationText hit"), Plain.Get()))
+		{
+			TestEqual(TEXT("a widget that is not a variable has no property to match"), ObjectArray(Plain, TEXT("matches")).Num(), 0);
+		}
+		TestTrue(TEXT("HealthText is matched, not unmatched"), StringArray(Result, TEXT("matched_names")).Contains(TEXT("HealthText")));
+		TestTrue(TEXT("DecorationText stays unmatched"), StringArray(Result, TEXT("unmatched_names")).Contains(TEXT("DecorationText")));
 	}
 	Fixture.Cleanup();
 	return true;

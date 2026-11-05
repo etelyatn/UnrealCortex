@@ -1,6 +1,7 @@
 #include "Operations/CortexReflectNameLookupOps.h"
 
 #include "Algo/Sort.h"
+#include "Animation/WidgetAnimation.h"
 #include "Algo/Find.h"
 #include "Algo/Unique.h"
 #include "Operations/CortexReflectAssetEnumeration.h"
@@ -477,6 +478,14 @@ namespace CortexReflectNameLookupPrivate
 		for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
 		{
 			AddMember(Variable.VarName, TEXT("variable"));
+		}
+		// Widget Blueprints generate a property per variable widget and per widget animation; the compiler keeps them in
+		// GeneratedVariables, not in NewVariables, so FindPropertyByName on such a name would otherwise match nothing.
+		for (const FBPVariableDescription& Generated : Blueprint->GeneratedVariables)
+		{
+			const UClass* VariableClass = Cast<UClass>(Generated.VarType.PinSubCategoryObject.Get());
+			AddMember(Generated.VarName,
+				VariableClass && VariableClass->IsChildOf(UWidgetAnimation::StaticClass()) ? TEXT("widget_animation") : TEXT("widget_variable"));
 		}
 		if (Blueprint->SimpleConstructionScript)
 		{
