@@ -21,12 +21,15 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
-#include "K2Node_ConstructObjectFromClass.h"
+#include "Kismet/KismetSystemLibrary.h"
+#include "Operations/CortexReflectDependencyGraphOps.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_Message.h"
 #include "K2Node_SpawnActorFromClass.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/EnumEditorUtils.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_ConstructObjectFromClass.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/StructureEditorUtils.h"
 #include "Misc/FileHelper.h"
@@ -880,11 +883,128 @@ bool FCortexReflectDependencyGraphRefusalsTest::RunTest(const FString& Parameter
 	if (TestTrue(*FString::Printf(TEXT("empty folder exports (%s)"), *EmptyResult.ErrorMessage), EmptyResult.bSuccess && EmptyResult.Data.IsValid()))
 	{
 		TestEqual(TEXT("no nodes"), static_cast<int32>(EmptyResult.Data->GetNumberField(TEXT("nodes"))), 0);
+		const TSharedPtr<FJsonObject>* Matched = nullptr;
+		if (TestTrue(TEXT("matched_assets present"), EmptyResult.Data->TryGetObjectField(TEXT("matched_assets"), Matched)))
+		{
+			TestEqual(TEXT("the prefix matched no assets"), static_cast<int32>((*Matched)->GetNumberField(Fixture.Dir)), 0);
+		}
+		const TArray<TSharedPtr<FJsonValue>>* Warnings = nullptr;
+		if (TestTrue(TEXT("warnings present"), EmptyResult.Data->TryGetArrayField(TEXT("warnings"), Warnings)))
+		{
+			TestEqual(TEXT("one warning for the empty prefix"), Warnings->Num(), 1);
+		}
 		TestEqual(TEXT("no cycles"), static_cast<int32>(EmptyResult.Data->GetNumberField(TEXT("cycles"))), 0);
 		const TSharedPtr<FJsonObject> Report = ReadJsonDocument(OutPath);
 		TestTrue(TEXT("empty report written"), Report.IsValid() && Report->HasField(TEXT("waves")));
 	}
 
 	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectDependencyGraphSelfAndInterfaceCallTest,
+	"Cortex.Reflect.DependencyGraph.SelfLoopsAndInterfaceCalls",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectDependencyGraphSelfAndInterfaceCallTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectDependencyGraphTestSupport;
+	FGraphFixture Fixture;
+
+	UBlueprint* Interface = Fixture.MakeBlueprint(TEXT("BPI_Ping"), UInterface::StaticClass(), false, BPTYPE_Interface);
+	UBlueprint* SelfCaster = Fixture.MakeBlueprint(TEXT("BP_SelfCaster"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("interface"), Interface) || !TestNotNull(TEXT("self caster"), SelfCaster))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	UEdGraph* PingGraph = FBlueprintEditorUtils::CreateNewGraph(
+		Interface, TEXT("Ping"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Interface, PingGraph, true, nullptr);
+	FKismetEditorUtilities::CompileBlueprint(Interface);
+	UClass* InterfaceClass = Interface->GeneratedClass;
+	if (!TestNotNull(TEXT("interface class"), InterfaceClass) || !TestNotNull(TEXT("self class"), SelfCaster->GeneratedClass.Get()))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+
+	UBlueprint* Caller = Fixture.MakeBlueprint(TEXT("BP_TypedCaller"), AActor::StaticClass(), false);
+	if (!TestNotNull(TEXT("caller"), Caller))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+
+	// A cast to its own class is a self-loop and must not become an edge.
+	FGraphFixture::AddCast(SelfCaster, SelfCaster->GeneratedClass);
+
+	// A typed call (not a message node) of a function that lives on an interface class reaches its implementers.
+	{
+		FGraphNodeCreator<UK2Node_CallFunction> Creator(*FGraphFixture::EventGraph(Caller));
+		UK2Node_CallFunction* Call = Creator.CreateNode();
+		Call->FunctionReference.SetExternalMember(TEXT("Ping"), InterfaceClass);
+		Creator.Finalize();
+	}
+	// A call of a native, non-interface function is not a calls_message edge.
+	{
+		FGraphNodeCreator<UK2Node_CallFunction> Creator(*FGraphFixture::EventGraph(Caller));
+		UK2Node_CallFunction* Call = Creator.CreateNode();
+		Call->FunctionReference.SetExternalMember(GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, PrintString), UKismetSystemLibrary::StaticClass());
+		Creator.Finalize();
+	}
+
+	for (UBlueprint* Blueprint : {Interface, SelfCaster, Caller})
+	{
+		if (!TestTrue(*FString::Printf(TEXT("save %s"), *Blueprint->GetName()), Fixture.SaveAsset(Blueprint, *FPackageName::GetAssetPackageExtension())))
+		{
+			Fixture.Cleanup();
+			return false;
+		}
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FString OutPath = Fixture.ReportPath(TEXT("selfcall"));
+	TSharedPtr<FJsonObject> Params = Fixture.ExportParams(OutPath);
+	Params->SetArrayField(TEXT("edge_kinds"), JsonStrings({TEXT("casts"), TEXT("calls_message")}));
+	const FCortexCommandResult Result = Run(Params);
+	if (TestTrue(*FString::Printf(TEXT("export succeeds (%s: %s)"), *Result.ErrorCode, *Result.ErrorMessage), Result.bSuccess && Result.Data.IsValid()))
+	{
+		const TSharedPtr<FJsonObject> Report = ReadJsonDocument(OutPath);
+		if (TestTrue(TEXT("report parses"), Report.IsValid()))
+		{
+			const FString SelfPath = SelfCaster->GetPathName();
+			TestFalse(TEXT("self cast edge is dropped"), HasEdge(Report, SelfPath, SelfPath, TEXT("casts")));
+			TestEqual(TEXT("no cast edges at all"), EdgesOfKind(Result.Data, TEXT("casts")), 0);
+			TestTrue(TEXT("typed interface call: caller -> interface"),
+				HasEdge(Report, Caller->GetPathName(), Interface->GetPathName(), TEXT("calls_message")));
+			TestEqual(TEXT("only the interface call is a calls_message edge"), EdgesOfKind(Result.Data, TEXT("calls_message")), 1);
+		}
+	}
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectDependencyGraphExternalActorWorldTest,
+	"Cortex.Reflect.DependencyGraph.ExternalActorWorld",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectDependencyGraphExternalActorWorldTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const TSet<FString> Worlds = {TEXT("/Game/Maps/Arena"), TEXT("/Game/Maps/Arena/Sub"), TEXT("/Game/Other/Map")};
+	const auto Resolve = [&Worlds](const TCHAR* Package) { return FCortexReflectDependencyGraphOps::ResolveExternalActorWorld(Package, Worlds); };
+
+	// The convention is ULevel::GetExternalActorsPath: /<Root>/__ExternalActors__/<map package path>/<hashed actor path>.
+	TestEqual(TEXT("actor package maps to its map"), Resolve(TEXT("/Game/__ExternalActors__/Maps/Arena/A/BC/XYZ123")), FString(TEXT("/Game/Maps/Arena")));
+	TestEqual(TEXT("the longest matching map wins"), Resolve(TEXT("/Game/__ExternalActors__/Maps/Arena/Sub/A/BC/XYZ123")), FString(TEXT("/Game/Maps/Arena/Sub")));
+	TestEqual(TEXT("a sibling folder prefix does not match"), Resolve(TEXT("/Game/__ExternalActors__/Maps/Arenax/A/BC/XYZ123")), FString());
+	TestEqual(TEXT("the map package itself is not an actor package"), Resolve(TEXT("/Game/Maps/Arena")), FString());
+	TestEqual(TEXT("an ordinary asset is not an actor package"), Resolve(TEXT("/Game/Props/BP_Thing")), FString());
+	TestEqual(TEXT("another mount point does not match"), Resolve(TEXT("/Plugin/__ExternalActors__/Maps/Arena/A/BC/XYZ123")), FString());
+	TestEqual(TEXT("a map of another folder"), Resolve(TEXT("/Game/__ExternalActors__/Other/Map/F/GH/ABC")), FString(TEXT("/Game/Other/Map")));
 	return true;
 }

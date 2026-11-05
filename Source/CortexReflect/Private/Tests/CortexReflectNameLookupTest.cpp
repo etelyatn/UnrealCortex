@@ -30,6 +30,8 @@
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectIterator.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 namespace CortexReflectNameLookupTestSupport
 {
@@ -471,6 +473,21 @@ bool FCortexReflectNameLookupBlueprintTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("filtered matched"), StringArray(Filtered, TEXT("matched_names")), TArray<FString>{TEXT("Health")});
 			TestEqual(TEXT("filtered unmatched"), StringArray(Filtered, TEXT("unmatched_names")).Num(), 0);
 		}
+
+		// matched_assets counts the Blueprints per prefix and a prefix that matched nothing earns a warning.
+		const FString EmptyPrefix = TEXT("/Game/Temp/Cortex120/NameLookup/NoSuchFolder");
+		const TSharedPtr<FJsonObject> WithMissing = FCortexReflectNameLookupOps::FindNameLookupsInRoots(
+			{Source.SourceRoot}, {Fixture.Dir, EmptyPrefix}, {});
+		const TSharedPtr<FJsonObject>* MatchedAssets = nullptr;
+		if (TestNotNull(TEXT("result with an empty prefix"), WithMissing.Get())
+			&& TestTrue(TEXT("matched_assets present"), WithMissing->TryGetObjectField(TEXT("matched_assets"), MatchedAssets)))
+		{
+			TestEqual(TEXT("fixture folder matched its Blueprint"), static_cast<int32>((*MatchedAssets)->GetNumberField(Fixture.Dir)), 1);
+			TestEqual(TEXT("missing folder matched nothing"), static_cast<int32>((*MatchedAssets)->GetNumberField(EmptyPrefix)), 0);
+			TestEqual(TEXT("one warning names the empty prefix"), StringArray(WithMissing, TEXT("warnings")).Num(), 1);
+		}
+		TestEqual(TEXT("scanned_files counts the readable source"), static_cast<int32>(Result->GetNumberField(TEXT("scanned_files"))), 1);
+		TestEqual(TEXT("no unreadable files"), StringArray(Result, TEXT("unreadable_files")).Num(), 0);
 	}
 	Fixture.Cleanup();
 	return true;
@@ -529,5 +546,87 @@ bool FCortexReflectNameLookupCommandTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("blueprint present"), Ok.Data->HasTypedField<EJson::Array>(TEXT("blueprint")));
 		}
 	}
+	{
+		// StrictParams: a misspelled parameter is refused instead of returning an unfiltered result.
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetArrayField(TEXT("path_prefixes"), JsonStrings({TEXT("/Game/Temp/Cortex120/NameLookup/None")}));
+		Params->SetArrayField(TEXT("symbol"), JsonStrings({TEXT("Health")}));
+		FCortexCommandResult Typo = Handler.Execute(TEXT("find_name_lookups"), Params);
+		TestFalse(TEXT("misspelled symbols param is refused"), Typo.bSuccess);
+		TestEqual(TEXT("misspelled param code"), Typo.ErrorCode, FString(CortexErrorCodes::InvalidField));
+	}
+	{
+		// An unusable out_path is refused before any work and writes nothing.
+		const FString Forbidden = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Source"), TEXT("Cortex120LookupRefused.json")));
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetArrayField(TEXT("path_prefixes"), JsonStrings({TEXT("/Game/Temp/Cortex120/NameLookup/None")}));
+		Params->SetStringField(TEXT("out_path"), Forbidden);
+		FCortexCommandResult Refused = Handler.Execute(TEXT("find_name_lookups"), Params);
+		TestFalse(TEXT("out_path outside the write policy is refused"), Refused.bSuccess);
+		TestFalse(TEXT("refused out_path was not written"), IFileManager::Get().FileExists(*Forbidden));
+	}
+	{
+		// With out_path the full result is written and the response is a compact summary.
+		const FString OutPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(
+			FPaths::ProjectSavedDir(), TEXT("Cortex120"), FString::Printf(TEXT("Lookup_%s.json"), *FGuid::NewGuid().ToString(EGuidFormats::Digits))));
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetArrayField(TEXT("path_prefixes"), JsonStrings({TEXT("/Game/Temp/Cortex120/NameLookup/None")}));
+		Params->SetStringField(TEXT("out_path"), OutPath);
+		FCortexCommandResult Summary = Handler.Execute(TEXT("find_name_lookups"), Params);
+		if (TestTrue(*FString::Printf(TEXT("out_path run succeeds (%s)"), *Summary.ErrorMessage), Summary.bSuccess) && TestTrue(TEXT("summary data"), Summary.Data.IsValid()))
+		{
+			TestEqual(TEXT("summary names the file"), Summary.Data->GetStringField(TEXT("out_path")), OutPath);
+			TestTrue(TEXT("summary counts cpp hits"), Summary.Data->HasField(TEXT("cpp_total")));
+			TestTrue(TEXT("summary counts blueprint hits"), Summary.Data->HasField(TEXT("blueprint_total")));
+			TestTrue(TEXT("summary keeps at most the first 10 cpp hits"), ObjectArray(Summary.Data, TEXT("cpp")).Num() <= 10);
+			FString Text;
+			TSharedPtr<FJsonObject> File;
+			if (TestTrue(TEXT("report file is written"), FFileHelper::LoadFileToString(Text, *OutPath))
+				&& TestTrue(TEXT("report parses"), FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), File) && File.IsValid()))
+			{
+				TestEqual(TEXT("file holds every cpp hit"), ObjectArray(File, TEXT("cpp")).Num(), static_cast<int32>(Summary.Data->GetNumberField(TEXT("cpp_total"))));
+			}
+		}
+		IFileManager::Get().Delete(*OutPath);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectNameLookupUnreadableTest,
+	"Cortex.Reflect.NameLookup.UnreadableFiles",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectNameLookupUnreadableTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectNameLookupTestSupport;
+
+	FTempSource Source(TEXT("Locked.cpp"), TEXT("void A(UObject* O) { O->FindFunction(TEXT(\"Hidden\")); }\n"));
+	const FString ReadableFile = FPaths::Combine(FPaths::GetPath(Source.File), TEXT("Readable.cpp"));
+	FFileHelper::SaveStringToFile(TEXT("void B(UObject* O) { O->FindFunction(TEXT(\"Visible\")); }\n"), *ReadableFile);
+
+	AddExpectedMessage(TEXT("find_name_lookups: could not read"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	// An open exclusive writer makes the file unreadable for the scan.
+	TUniquePtr<FArchive> Lock(IFileManager::Get().CreateFileWriter(*Source.File, FILEWRITE_Append));
+	if (!TestNotNull(TEXT("lock acquired"), Lock.Get()))
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> Result = FCortexReflectNameLookupOps::FindNameLookupsInRoots(
+		{Source.SourceRoot}, {TEXT("/Game/Temp/Cortex120/NameLookup/None")}, {});
+	if (TestNotNull(TEXT("result"), Result.Get()))
+	{
+		TestEqual(TEXT("only the readable file counts as scanned"), static_cast<int32>(Result->GetNumberField(TEXT("scanned_files"))), 1);
+		const TArray<FString> Unreadable = StringArray(Result, TEXT("unreadable_files"));
+		if (TestEqual(TEXT("one unreadable file"), Unreadable.Num(), 1))
+		{
+			TestTrue(TEXT("the locked file is named"), Unreadable[0].EndsWith(TEXT("Locked.cpp")));
+		}
+		const TArray<TSharedPtr<FJsonObject>> Cpp = ObjectArray(Result, TEXT("cpp"));
+		TestEqual(TEXT("only the readable file produced a hit"), Cpp.Num(), 1);
+	}
+	Lock.Reset();
 	return true;
 }

@@ -164,6 +164,10 @@ bool FCortexReflectConfigReferencersTest::RunTest(const FString& Parameters)
 		&& Limited.Data->TryGetArrayField(TEXT("referencers"), LimitedRows))
 	{
 		TestTrue(TEXT("limit applies to all rows"), LimitedRows->Num() <= 1);
+		if (LimitedRows->Num() == 1)
+		{
+			TestEqual(TEXT("config rows are listed first so limit keeps them"), (*LimitedRows)[0]->AsObject()->GetStringField(TEXT("type")), FString(TEXT("config")));
+		}
 	}
 
 	Params->SetNumberField(TEXT("limit"), 5000);
@@ -233,5 +237,115 @@ bool FCortexReflectConfigBrokenPathsTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("missing directory kind"), BrokenKindByKey.FindRef(TEXT("MissingDir")), FString(TEXT("directory")));
 	TestFalse(TEXT("existing package not reported"), BrokenKindByKey.Contains(TEXT("Good")));
 	TestFalse(TEXT("existing empty disk directory not reported"), BrokenKindByKey.Contains(TEXT("EmptyDir")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectConfigTokenAndSkipTest,
+	"Cortex.Reflect.Config.PlusWildcardAndRedirects",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectConfigTokenAndSkipTest::RunTest(const FString& Parameters)
+{
+	// The first line is the real DefaultEditor.ini shape that was truncated at '+'.
+	const FString CubeMapPath = TEXT("/Engine/EditorMaterials/AssetViewer/EpicQuadPanorama_CC+EV1.EpicQuadPanorama_CC+EV1");
+	FTempConfigFixture Fixture(
+		TEXT("[/Script/Test.Settings]\n")
+		TEXT("EnvironmentCubeMapPath=\"") + CubeMapPath + TEXT("\"\n")
+		TEXT("Wild=/Game/Maps/Test_*\n")
+		TEXT("WildPair=(Path=\"/Game/Missing120Wild/*.*\")\n")
+		TEXT("WildQuestion=/Game/Missing120Wild/BP_?\n")
+		TEXT("+PackageRedirects=(OldName=\"/Game/Old120/Gone\",NewName=\"/Game/Blueprints/BP_SimpleActor\")\n")
+		TEXT("[CoreRedirects]\n")
+		TEXT("+ClassRedirects=(OldName=\"/Game/Old120/Gone.Gone_C\",NewName=\"/Game/Blueprints/BP_SimpleActor.BP_SimpleActor_C\")\n"));
+	if (!TestTrue(TEXT("fixture ini written"), Fixture.bWritten))
+	{
+		return false;
+	}
+
+	const TArray<CortexReflectConfigScan::FConfigReference> Refs = RefsFromFile(Fixture.IniName);
+	if (!TestEqual(TEXT("cube map + two redirect targets; wildcards and redirect Old* skipped"), Refs.Num(), 3))
+	{
+		return false;
+	}
+	TestEqual(TEXT("'+' stays inside the token"), Refs[0].Path, CubeMapPath);
+	TestEqual(TEXT("package name keeps '+'"), Refs[0].PackageName, FString(TEXT("/Engine/EditorMaterials/AssetViewer/EpicQuadPanorama_CC+EV1")));
+	TestEqual(TEXT("package redirect target"), Refs[1].Path, FString(TEXT("/Game/Blueprints/BP_SimpleActor")));
+	TestEqual(TEXT("core redirect target"), Refs[2].Path, FString(TEXT("/Game/Blueprints/BP_SimpleActor.BP_SimpleActor_C")));
+
+	// The cube map exists in the engine, so find_broken_config_paths must not report this line.
+	FCortexReflectCommandHandler Handler;
+	const FCortexCommandResult Result = Handler.Execute(TEXT("find_broken_config_paths"), MakeShared<FJsonObject>());
+	if (TestTrue(TEXT("find_broken_config_paths succeeds"), Result.bSuccess) && Result.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Broken = nullptr;
+		if (TestTrue(TEXT("broken array present"), Result.Data->TryGetArrayField(TEXT("broken"), Broken)))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Broken)
+			{
+				const TSharedPtr<FJsonObject> Obj = Value->AsObject();
+				TestFalse(TEXT("nothing from the fixture ini is broken"), Obj.IsValid() && Obj->GetStringField(TEXT("file")).EndsWith(Fixture.IniName));
+			}
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectConfigUnreadableTest,
+	"Cortex.Reflect.Config.UnreadableFiles",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectConfigUnreadableTest::RunTest(const FString& Parameters)
+{
+	FTempConfigFixture Fixture(TEXT("[/Script/Test.Settings]\nGood=/Game/Blueprints/BP_SimpleActor.BP_SimpleActor_C\n"));
+	if (!TestTrue(TEXT("fixture ini written"), Fixture.bWritten))
+	{
+		return false;
+	}
+
+	FCortexReflectCommandHandler Handler;
+	const FCortexCommandResult Baseline = Handler.Execute(TEXT("find_broken_config_paths"), MakeShared<FJsonObject>());
+	if (!TestTrue(TEXT("baseline succeeds"), Baseline.bSuccess) || !Baseline.Data.IsValid())
+	{
+		return false;
+	}
+	const int32 BaselineScanned = static_cast<int32>(Baseline.Data->GetNumberField(TEXT("scanned_files")));
+
+	// An open exclusive writer makes the ini unreadable for the scan.
+	TUniquePtr<FArchive> Lock(IFileManager::Get().CreateFileWriter(*Fixture.IniPath, FILEWRITE_Append));
+	if (!TestNotNull(TEXT("lock acquired"), Lock.Get()))
+	{
+		return false;
+	}
+	AddExpectedMessage(TEXT("Config scan: could not read"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+	const FCortexCommandResult Locked = Handler.Execute(TEXT("find_broken_config_paths"), MakeShared<FJsonObject>());
+	if (TestTrue(TEXT("locked run succeeds"), Locked.bSuccess) && Locked.Data.IsValid())
+	{
+		TestEqual(TEXT("scanned_files counts files actually read"), static_cast<int32>(Locked.Data->GetNumberField(TEXT("scanned_files"))), BaselineScanned - 1);
+		const TArray<TSharedPtr<FJsonValue>>* Unreadable = nullptr;
+		if (TestTrue(TEXT("unreadable_files present"), Locked.Data->TryGetArrayField(TEXT("unreadable_files"), Unreadable)))
+		{
+			bool bNamed = false;
+			for (const TSharedPtr<FJsonValue>& Value : *Unreadable)
+			{
+				bNamed |= Value->AsString().EndsWith(Fixture.IniName);
+			}
+			TestTrue(TEXT("the locked ini is listed"), bNamed);
+		}
+	}
+	Lock.Reset();
+
+	const FCortexCommandResult Free = Handler.Execute(TEXT("find_broken_config_paths"), MakeShared<FJsonObject>());
+	if (TestTrue(TEXT("unlocked run succeeds"), Free.bSuccess) && Free.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Unreadable = nullptr;
+		if (TestTrue(TEXT("unreadable_files present when empty"), Free.Data->TryGetArrayField(TEXT("unreadable_files"), Unreadable)))
+		{
+			TestEqual(TEXT("nothing unreadable"), Unreadable->Num(), 0);
+		}
+	}
 	return true;
 }

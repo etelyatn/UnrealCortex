@@ -1,23 +1,24 @@
 #include "Operations/CortexReflectDependencyGraphOps.h"
 
 #include "Algo/Sort.h"
-#include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Blueprint/BlueprintSupport.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Widget.h"
-#include "CortexEditorUtils.h"
 #include "CortexReflectModule.h"
 #include "CortexSafeFileContract.h"
+#include "Operations/CortexReflectAssetEnumeration.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
+#include "Engine/Level.h"
 #include "Engine/LevelScriptBlueprint.h"
 #include "Engine/UserDefinedEnum.h"
 #include "Engine/World.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_Message.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
@@ -66,10 +67,13 @@ namespace CortexReflectDependencyGraphPrivate
 		return Names;
 	}
 
-	bool IsPlainFolderPath(const FString& Path)
+	/** Registry entry of one enumerated asset. */
+	struct FAssetEntry
 	{
-		return Path.StartsWith(TEXT("/")) && !Path.Contains(TEXT("..")) && !Path.Contains(TEXT("//")) && !Path.Contains(TEXT("."));
-	}
+		const FAssetData* Asset;
+		FString Id;
+		FString Kind;
+	};
 
 	struct FRequest
 	{
@@ -98,34 +102,9 @@ namespace CortexReflectDependencyGraphPrivate
 			return false;
 		}
 
-		const TArray<TSharedPtr<FJsonValue>>* PrefixValues = nullptr;
-		if (!Params->TryGetArrayField(TEXT("path_prefixes"), PrefixValues) || PrefixValues->Num() == 0)
+		if (!CortexReflectAssetEnumeration::ParsePathPrefixes(Params, OutRequest.Prefixes, OutError))
 		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				TEXT("path_prefixes must be a non-empty array of mounted folder paths"));
 			return false;
-		}
-		for (const TSharedPtr<FJsonValue>& Value : *PrefixValues)
-		{
-			FString Prefix;
-			if (!Value.IsValid() || !Value->TryGetString(Prefix) || Prefix.IsEmpty())
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-					TEXT("path_prefixes must contain only non-empty folder path strings"));
-				return false;
-			}
-			Prefix = FCortexEditorUtils::NormalizeMountedContentPath(Prefix);
-			while (Prefix.Len() > 1 && Prefix.EndsWith(TEXT("/")))
-			{
-				Prefix.LeftChopInline(1);
-			}
-			if (!IsPlainFolderPath(Prefix))
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-					FString::Printf(TEXT("path_prefixes entry is not a valid mounted folder path: %s"), *Prefix));
-				return false;
-			}
-			OutRequest.Prefixes.AddUnique(MoveTemp(Prefix));
 		}
 
 		const TArray<FString>& Known = GetEdgeKindNames();
@@ -296,7 +275,7 @@ namespace CortexReflectDependencyGraphPrivate
 		{
 			for (const FString& Prefix : Prefixes)
 			{
-				if (PackageName == Prefix || (PackageName.StartsWith(Prefix) && PackageName[Prefix.Len()] == TEXT('/')))
+				if (CortexReflectAssetEnumeration::IsInPrefix(PackageName, Prefix))
 				{
 					return true;
 				}
@@ -338,7 +317,7 @@ namespace CortexReflectDependencyGraphPrivate
 
 		void AddEdge(const FString& From, const FString& To, const TCHAR* Kind, const FString& Graph = FString(), const FString& Widget = FString())
 		{
-			if (From.IsEmpty() || To.IsEmpty())
+			if (From.IsEmpty() || To.IsEmpty() || From == To)
 			{
 				return;
 			}
@@ -488,6 +467,15 @@ namespace CortexReflectDependencyGraphPrivate
 						AddNodeEdge(
 							Function ? Function->GetOwnerClass() : Message->FunctionReference.GetMemberParentClass(Blueprint->GeneratedClass),
 							EdgeKind::CallsMessage, GraphName);
+					}
+					else if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
+					{
+						// A typed call whose member lives on an interface class reaches every implementer of that interface.
+						const UClass* MemberClass = Call->FunctionReference.GetMemberParentClass(Blueprint->GeneratedClass);
+						if (MemberClass && MemberClass->HasAnyClassFlags(CLASS_Interface))
+						{
+							AddNodeEdge(MemberClass, EdgeKind::CallsMessage, GraphName);
+						}
 					}
 				}
 				if (Request.Wants(EdgeKind::Casts))
@@ -732,16 +720,7 @@ namespace CortexReflectDependencyGraphPrivate
 		return Json;
 	}
 
-	TArray<TSharedPtr<FJsonValue>> StringValues(const TArray<FString>& Strings)
-	{
-		TArray<TSharedPtr<FJsonValue>> Values;
-		Values.Reserve(Strings.Num());
-		for (const FString& String : Strings)
-		{
-			Values.Add(MakeShared<FJsonValueString>(String));
-		}
-		return Values;
-	}
+	using CortexReflectAssetEnumeration::StringValues;
 
 	TArray<TSharedPtr<FJsonValue>> GroupValues(const TArray<TArray<FString>>& Groups)
 	{
@@ -752,6 +731,20 @@ namespace CortexReflectDependencyGraphPrivate
 		}
 		return Values;
 	}
+}
+
+FString FCortexReflectDependencyGraphOps::ResolveExternalActorWorld(const FString& ActorPackage, const TSet<FString>& WorldPackages)
+{
+	FString Best;
+	for (const FString& WorldPackage : WorldPackages)
+	{
+		const FString ExternalActorsPath = ULevel::GetExternalActorsPath(WorldPackage);
+		if (!ExternalActorsPath.IsEmpty() && ActorPackage.StartsWith(ExternalActorsPath + TEXT("/")) && WorldPackage.Len() > Best.Len())
+		{
+			Best = WorldPackage;
+		}
+	}
+	return Best;
 }
 
 FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(const TSharedPtr<FJsonObject>& Params)
@@ -766,42 +759,22 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 	}
 
 	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-	for (const FString& Prefix : Request.Prefixes)
-	{
-		Registry.ScanPathsSynchronous({Prefix}, true);
-	}
 
 	// One registry query enumerates every graph-relevant asset under the prefixes; nothing is loaded here.
-	FARFilter Filter;
-	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
-	Filter.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());
-	Filter.ClassPaths.Add(UUserDefinedStruct::StaticClass()->GetClassPathName());
-	Filter.ClassPaths.Add(UUserDefinedEnum::StaticClass()->GetClassPathName());
-	Filter.bRecursiveClasses = true;
-	for (const FString& Prefix : Request.Prefixes)
-	{
-		Filter.PackagePaths.Add(FName(*Prefix));
-	}
-	Filter.bRecursivePaths = true;
-
-	TArray<FAssetData> Assets;
-	Registry.GetAssets(Filter, Assets);
-	const FTopLevelAssetPath LevelScriptClassPath = ULevelScriptBlueprint::StaticClass()->GetClassPathName();
-	Assets.RemoveAll([&LevelScriptClassPath](const FAssetData& Asset) { return Asset.AssetClassPath == LevelScriptClassPath; });
-	Algo::SortBy(Assets, [](const FAssetData& Asset) { return Asset.GetObjectPathString(); },
-		[](const FString& A, const FString& B) { return CompareIds(A, B) < 0; });
+	const CortexReflectAssetEnumeration::FEnumeration Enumeration = CortexReflectAssetEnumeration::Enumerate(
+		Request.Prefixes,
+		{
+			UBlueprint::StaticClass()->GetClassPathName(),
+			UWorld::StaticClass()->GetClassPathName(),
+			UUserDefinedStruct::StaticClass()->GetClassPathName(),
+			UUserDefinedEnum::StaticClass()->GetClassPathName()
+		});
 
 	FGraph Graph(Request.Prefixes);
 	FPackageLookup Packages(Registry);
-	struct FAssetEntry
-	{
-		const FAssetData* Asset;
-		FString Id;
-		FString Kind;
-	};
 	TArray<FAssetEntry> Entries;
-	Entries.Reserve(Assets.Num());
-	for (const FAssetData& Asset : Assets)
+	Entries.Reserve(Enumeration.Assets.Num());
+	for (const FAssetData& Asset : Enumeration.Assets)
 	{
 		FAssetEntry& Entry = Entries.AddDefaulted_GetRef();
 		Entry.Asset = &Asset;
@@ -814,6 +787,14 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 	const bool bNeedsLoad = Request.NeedsBlueprintLoad();
 	const bool bNeedsDependencies = Request.Wants(EdgeKind::StructUse) || Request.Wants(EdgeKind::EnumUse) || Request.Wants(EdgeKind::LevelPlacement);
 	const UE::AssetRegistry::FDependencyQuery HardQuery(UE::AssetRegistry::EDependencyQuery::Hard);
+	TSet<FString> WorldPackages;
+	for (const FAssetEntry& Entry : Entries)
+	{
+		if (Entry.Kind == NodeKind::World)
+		{
+			WorldPackages.Add(Entry.Asset->PackageName.ToString());
+		}
+	}
 	bool bLoadedAny = false;
 	TArray<FString> LoadFailures;
 	FUnresolved Unresolved;
@@ -890,6 +871,28 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 				{
 					Graph.EnsureNode(Target.ObjectPath, *Target.Kind);
 					Graph.AddEdge(Entry.Id, Target.ObjectPath, EdgeKindName);
+				}
+			}
+
+			// level_placement with World Partition / One-File-Per-Actor: placed actors live in external actor packages
+			// that the map package does not depend on. A package referencing the Blueprint that sits under the map's
+			// __ExternalActors__ folder is a placement in that map.
+			if (Entry.Kind == NodeKind::Blueprint && Request.Wants(EdgeKind::LevelPlacement) && WorldPackages.Num() > 0)
+			{
+				TArray<FName> Referencers;
+				Registry.GetReferencers(Asset.PackageName, Referencers, UE::AssetRegistry::EDependencyCategory::Package, HardQuery);
+				for (const FName Referencer : Referencers)
+				{
+					const FString WorldPackage = ResolveExternalActorWorld(Referencer.ToString(), WorldPackages);
+					if (WorldPackage.IsEmpty())
+					{
+						continue;
+					}
+					const FPackageLookup::FInfo& World = Packages.Find(FName(*WorldPackage));
+					if (World.Kind == NodeKind::World)
+					{
+						Graph.AddEdge(World.ObjectPath, Entry.Id, EdgeKind::LevelPlacement);
+					}
 				}
 			}
 		}
@@ -981,10 +984,8 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 	Report->SetArrayField(TEXT("edges"), EdgeValues);
 	Report->SetArrayField(TEXT("waves"), GroupValues(Schedule.Waves));
 	Report->SetArrayField(TEXT("cycles"), GroupValues(Schedule.Cycles));
-	if (LoadFailures.Num() > 0)
-	{
-		Report->SetArrayField(TEXT("load_failures"), StringValues(LoadFailures));
-	}
+	CortexReflectAssetEnumeration::WriteMatchedFields(Enumeration, *Report);
+	CortexReflectAssetEnumeration::WriteLoadFailures(LoadFailures, *Report);
 
 	const FCortexJsonFileWriteResult Written = FCortexSafeFileContract::WriteJsonReportAtomic(Request.OutPath, Report);
 	if (!Written.bWritten)
@@ -1005,10 +1006,8 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 	Result->SetNumberField(TEXT("cycles"), Schedule.Cycles.Num());
 	Result->SetArrayField(TEXT("ordering_kinds"), StringValues(UsedOrderingKinds));
 	Result->SetObjectField(TEXT("unresolved"), UnresolvedJson);
-	if (LoadFailures.Num() > 0)
-	{
-		Result->SetArrayField(TEXT("load_failures"), StringValues(LoadFailures));
-	}
+	CortexReflectAssetEnumeration::WriteMatchedFields(Enumeration, *Result);
+	CortexReflectAssetEnumeration::WriteLoadFailures(LoadFailures, *Result);
 	UE_LOG(LogCortexReflect, Log, TEXT("export_dependency_graph: %d nodes, %d edges, %d waves, %d cycles -> %s"),
 		SortedNodes.Num(), SortedEdges.Num(), Schedule.Waves.Num(), Schedule.Cycles.Num(), *Request.OutPath.AbsolutePath);
 	return FCortexCommandRouter::Success(Result);

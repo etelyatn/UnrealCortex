@@ -28,7 +28,10 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UObject/GarbageCollection.h"
@@ -794,5 +797,109 @@ bool FCortexReflectDuplicateGraphParamsTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("blueprint_pairs present"), Ok.Data->HasTypedField<EJson::Array>(TEXT("blueprint_pairs")));
 		}
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectDuplicateGraphOutPathTest,
+	"Cortex.Reflect.DuplicateGraphs.OutPath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectDuplicateGraphOutPathTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectDuplicateGraphTestSupport;
+
+	FCortexReflectCommandHandler Handler;
+
+	// Unknown parameters are refused (StrictParams) rather than silently ignored.
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetArrayField(TEXT("path_prefixes"), JsonStrings({TEXT("/Game/Temp/Cortex120/Duplicate/NoSuchFolder")}));
+		Params->SetNumberField(TEXT("min_node"), 3);
+		const FCortexCommandResult Typo = Handler.Execute(TEXT("find_duplicate_graphs"), Params);
+		TestFalse(TEXT("misspelled min_node is refused"), Typo.bSuccess);
+		TestEqual(TEXT("misspelled param code"), Typo.ErrorCode, FString(CortexErrorCodes::InvalidField));
+	}
+
+	// An unusable out_path is refused before any Blueprint is touched; nothing is written.
+	{
+		const FString Forbidden = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Source"), TEXT("Cortex120DuplicateRefused.json")));
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetArrayField(TEXT("path_prefixes"), JsonStrings({TEXT("/Game/Temp/Cortex120/Duplicate/NoSuchFolder")}));
+		Params->SetStringField(TEXT("out_path"), Forbidden);
+		const FCortexCommandResult Refused = Handler.Execute(TEXT("find_duplicate_graphs"), Params);
+		TestFalse(TEXT("out_path outside the write policy is refused"), Refused.bSuccess);
+		TestFalse(TEXT("refused out_path was not written"), IFileManager::Get().FileExists(*Forbidden));
+	}
+
+	// A prefix that matches nothing is reported, not silently accepted.
+	{
+		const FString Missing = TEXT("/Game/Temp/Cortex120/Duplicate/NoSuchFolder");
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetArrayField(TEXT("path_prefixes"), JsonStrings({Missing}));
+		const FCortexCommandResult Empty = Handler.Execute(TEXT("find_duplicate_graphs"), Params);
+		if (TestTrue(TEXT("empty prefix succeeds"), Empty.bSuccess) && TestTrue(TEXT("data"), Empty.Data.IsValid()))
+		{
+			const TSharedPtr<FJsonObject>* Matched = nullptr;
+			if (TestTrue(TEXT("matched_assets present"), Empty.Data->TryGetObjectField(TEXT("matched_assets"), Matched)))
+			{
+				TestEqual(TEXT("prefix matched zero assets"), static_cast<int32>((*Matched)->GetNumberField(Missing)), 0);
+			}
+			const TArray<TSharedPtr<FJsonValue>>* WarningValues = nullptr;
+			if (TestTrue(TEXT("warnings present"), Empty.Data->TryGetArrayField(TEXT("warnings"), WarningValues)))
+			{
+				TestEqual(TEXT("one warning for the empty prefix"), WarningValues->Num(), 1);
+			}
+		}
+	}
+
+	// With out_path the full result goes to the file and the response is a compact summary.
+	FDuplicateFixture Fixture;
+	UBlueprint* A = Fixture.MakeBlueprint(TEXT("BP_A"));
+	UBlueprint* B = Fixture.MakeBlueprint(TEXT("BP_B"));
+	if (!TestNotNull(TEXT("A"), A) || !TestNotNull(TEXT("B"), B))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	FDuplicateFixture::AddFunction(A, TEXT("Compute"), FourTexts, 0, false);
+	FDuplicateFixture::AddFunction(B, TEXT("Compute"), FourTexts, 600, false);
+	if (!TestTrue(TEXT("save A"), Fixture.SaveAsset(A)) || !TestTrue(TEXT("save B"), Fixture.SaveAsset(B)))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FString OutPath = FPaths::ConvertRelativePathToFull(
+		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Cortex120"), FString::Printf(TEXT("Duplicate_%s.json"), *Fixture.Suffix)));
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("path_prefixes"), JsonStrings({Fixture.Dir}));
+	Params->SetStringField(TEXT("out_path"), OutPath);
+	const FCortexCommandResult Result = Handler.Execute(TEXT("find_duplicate_graphs"), Params);
+	if (TestTrue(*FString::Printf(TEXT("out_path run succeeds (%s)"), *Result.ErrorMessage), Result.bSuccess) && TestTrue(TEXT("data"), Result.Data.IsValid()))
+	{
+		TestEqual(TEXT("response names the file"), Result.Data->GetStringField(TEXT("out_path")), OutPath);
+		TestEqual(TEXT("summary counts the exact groups"), static_cast<int32>(Result.Data->GetNumberField(TEXT("exact_groups_total"))), 1);
+		TestTrue(TEXT("summary keeps at most the first 10 groups"), ObjectArray(Result.Data, TEXT("exact_groups")).Num() <= 10);
+		TestTrue(TEXT("summary counts the pairs"), Result.Data->HasField(TEXT("blueprint_pairs_total")));
+		const TSharedPtr<FJsonObject>* Matched = nullptr;
+		if (TestTrue(TEXT("matched_assets in the summary"), Result.Data->TryGetObjectField(TEXT("matched_assets"), Matched)))
+		{
+			TestEqual(TEXT("two Blueprints matched the prefix"), static_cast<int32>((*Matched)->GetNumberField(Fixture.Dir)), 2);
+		}
+
+		FString Text;
+		TSharedPtr<FJsonObject> File;
+		if (TestTrue(TEXT("report file is written"), FFileHelper::LoadFileToString(Text, *OutPath))
+			&& TestTrue(TEXT("report parses"), FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), File) && File.IsValid()))
+		{
+			TestEqual(TEXT("file holds every exact group"), ObjectArray(File, TEXT("exact_groups")).Num(), 1);
+			TestFalse(TEXT("file is the full result, not a summary"), File->HasField(TEXT("out_path")));
+		}
+	}
+	IFileManager::Get().Delete(*OutPath);
+	Fixture.Cleanup();
 	return true;
 }

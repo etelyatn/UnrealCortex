@@ -12,4 +12,11 @@ class FCortexReflectDependencyGraphOps
 {
 public:
 	static FCortexCommandResult ExportDependencyGraph(const TSharedPtr<FJsonObject>& Params);
+
+	/**
+	 * Map package that owns an One-File-Per-Actor external actor package, or empty. External actor packages follow
+	 * ULevel::GetExternalActorsPath: "/Root/__ExternalActors__/<map package path>/<hashed actor path>". The map is
+	 * the longest member of WorldPackages whose external actors folder the package lies under.
+	 */
+	static FString ResolveExternalActorWorld(const FString& ActorPackage, const TSet<FString>& WorldPackages);
 };

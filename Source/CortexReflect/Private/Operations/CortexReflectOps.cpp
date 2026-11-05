@@ -2042,7 +2042,36 @@ FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObj
 	TArray<FAssetDependency> Referencers;
 	AssetRegistry.GetReferencers(FAssetIdentifier(FName(*AssetPath)), Referencers, Category);
 
+	// Config rows come first so `limit` keeps them; asset rows fill what remains.
 	TArray<TSharedPtr<FJsonValue>> ReferencerArray;
+	int32 ConfigRowCount = 0;
+	if (bIncludeConfig)
+	{
+		for (const CortexReflectConfigScan::FConfigReference& Ref : CortexReflectConfigScan::Scan())
+		{
+			if (Ref.bDirectory || Ref.PackageName != AssetPath)
+			{
+				continue;
+			}
+
+			++ConfigRowCount;
+			if (ReferencerArray.Num() >= Limit)
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> ConfigObj = MakeShared<FJsonObject>();
+			ConfigObj->SetStringField(TEXT("package"), Ref.File);
+			ConfigObj->SetBoolField(TEXT("is_code"), false);
+			ConfigObj->SetStringField(TEXT("type"), TEXT("config"));
+			ConfigObj->SetStringField(TEXT("file"), Ref.File);
+			ConfigObj->SetNumberField(TEXT("line"), Ref.Line);
+			ConfigObj->SetStringField(TEXT("section"), Ref.Section);
+			ConfigObj->SetStringField(TEXT("key"), Ref.Key);
+			ReferencerArray.Add(MakeShared<FJsonValueObject>(ConfigObj));
+		}
+	}
+
 	for (const FAssetDependency& Referencer : Referencers)
 	{
 		if (ReferencerArray.Num() >= Limit)
@@ -2089,33 +2118,6 @@ FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObj
 		ReferencerArray.Add(MakeShared<FJsonValueObject>(ReferencerObj));
 	}
 
-	int32 ConfigRowCount = 0;
-	if (bIncludeConfig)
-	{
-		for (const CortexReflectConfigScan::FConfigReference& Ref : CortexReflectConfigScan::Scan())
-		{
-			if (Ref.bDirectory || Ref.PackageName != AssetPath)
-			{
-				continue;
-			}
-
-			++ConfigRowCount;
-			if (ReferencerArray.Num() >= Limit)
-			{
-				continue;
-			}
-
-			TSharedPtr<FJsonObject> ConfigObj = MakeShared<FJsonObject>();
-			ConfigObj->SetStringField(TEXT("package"), Ref.File);
-			ConfigObj->SetBoolField(TEXT("is_code"), false);
-			ConfigObj->SetStringField(TEXT("type"), TEXT("config"));
-			ConfigObj->SetStringField(TEXT("file"), Ref.File);
-			ConfigObj->SetNumberField(TEXT("line"), Ref.Line);
-			ConfigObj->SetStringField(TEXT("section"), Ref.Section);
-			ConfigObj->SetStringField(TEXT("key"), Ref.Key);
-			ReferencerArray.Add(MakeShared<FJsonValueObject>(ConfigObj));
-		}
-	}
 
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), AssetPath);
@@ -2130,8 +2132,8 @@ FCortexCommandResult FCortexReflectOps::FindBrokenConfigPaths(const TSharedPtr<F
 {
 	(void)Params;
 
-	int32 ScannedFiles = 0;
-	const TArray<CortexReflectConfigScan::FConfigReference> Refs = CortexReflectConfigScan::Scan(&ScannedFiles);
+	CortexReflectConfigScan::FScanSummary ScanSummary;
+	const TArray<CortexReflectConfigScan::FConfigReference> Refs = CortexReflectConfigScan::Scan(&ScanSummary);
 
 	IAssetRegistry& AssetRegistry =
 		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
@@ -2180,7 +2182,13 @@ FCortexCommandResult FCortexReflectOps::FindBrokenConfigPaths(const TSharedPtr<F
 	}
 
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
-	Result->SetNumberField(TEXT("scanned_files"), ScannedFiles);
+	Result->SetNumberField(TEXT("scanned_files"), ScanSummary.ScannedFiles);
+	TArray<TSharedPtr<FJsonValue>> UnreadableValues;
+	for (const FString& Unreadable : ScanSummary.UnreadableFiles)
+	{
+		UnreadableValues.Add(MakeShared<FJsonValueString>(Unreadable));
+	}
+	Result->SetArrayField(TEXT("unreadable_files"), UnreadableValues);
 	Result->SetNumberField(TEXT("checked"), Refs.Num());
 	Result->SetArrayField(TEXT("broken"), BrokenArray);
 

@@ -1,12 +1,9 @@
 #include "Operations/CortexReflectDuplicateGraphOps.h"
 
 #include "Algo/Sort.h"
-#include "AssetRegistry/ARFilter.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
+#include "Operations/CortexReflectAssetEnumeration.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Widget.h"
-#include "CortexEditorUtils.h"
 #include "CortexReflectModule.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
@@ -18,7 +15,6 @@
 #include "EdGraphNode_Comment.h"
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
-#include "Engine/LevelScriptBlueprint.h"
 #include "Engine/MemberReference.h"
 #include "IO/IoHash.h"
 #include "K2Node.h"
@@ -54,12 +50,10 @@ namespace CortexReflectDuplicateGraphPrivate
 		TArray<FString> Prefixes;
 		int32 MinNodes = DefaultMinNodes;
 		double Similarity = DefaultSimilarity;
+		/** Optional report file; with it the response is a compact summary. */
+		bool bHasOutPath = false;
+		FCortexResolvedFilePath OutPath;
 	};
-
-	bool IsPlainFolderPath(const FString& Path)
-	{
-		return Path.StartsWith(TEXT("/")) && !Path.Contains(TEXT("..")) && !Path.Contains(TEXT("//")) && !Path.Contains(TEXT("."));
-	}
 
 	/** Validates every parameter before any asset is touched. Returns an error result or an empty optional. */
 	TOptional<FCortexCommandResult> ParseRequest(const TSharedPtr<FJsonObject>& Params, FRequest& OutRequest)
@@ -69,31 +63,10 @@ namespace CortexReflectDuplicateGraphPrivate
 			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));
 		}
 
-		const TArray<TSharedPtr<FJsonValue>>* PrefixValues = nullptr;
-		if (!Params->TryGetArrayField(TEXT("path_prefixes"), PrefixValues) || PrefixValues->Num() == 0)
+		FCortexCommandResult PrefixError;
+		if (!CortexReflectAssetEnumeration::ParsePathPrefixes(Params, OutRequest.Prefixes, PrefixError))
 		{
-			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				TEXT("path_prefixes must be a non-empty array of mounted folder paths"));
-		}
-		for (const TSharedPtr<FJsonValue>& Value : *PrefixValues)
-		{
-			FString Prefix;
-			if (!Value.IsValid() || !Value->TryGetString(Prefix) || Prefix.IsEmpty())
-			{
-				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-					TEXT("path_prefixes must contain only non-empty folder path strings"));
-			}
-			Prefix = FCortexEditorUtils::NormalizeMountedContentPath(Prefix);
-			while (Prefix.Len() > 1 && Prefix.EndsWith(TEXT("/")))
-			{
-				Prefix.LeftChopInline(1);
-			}
-			if (!IsPlainFolderPath(Prefix))
-			{
-				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-					FString::Printf(TEXT("path_prefixes entry is not a valid mounted folder path: %s"), *Prefix));
-			}
-			OutRequest.Prefixes.AddUnique(MoveTemp(Prefix));
+			return PrefixError;
 		}
 
 		if (Params->HasField(TEXT("min_nodes")))
@@ -115,6 +88,12 @@ namespace CortexReflectDuplicateGraphPrivate
 				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("similarity must be a number greater than 0 and at most 1"));
 			}
 			OutRequest.Similarity = Similarity;
+		}
+
+		FCortexCommandResult OutPathError;
+		if (!CortexReflectAssetEnumeration::ParseOptionalOutPath(Params, OutRequest.bHasOutPath, OutRequest.OutPath, OutPathError))
+		{
+			return OutPathError;
 		}
 		return {};
 	}
@@ -206,7 +185,6 @@ namespace CortexReflectDuplicateGraphPrivate
 		return Self.PinName(Pin->PinName) + TEXT(":") + TypeText(Pin->PinType, Self);
 	}
 
-	/** Member reference as owner.name; references to the owning Blueprint's own class read as `self`. */
 	/** Member reference as owner.name; self-context members of different Blueprints therefore compare equal. */
 	FString MemberText(const FMemberReference& Reference, const FSelfContext& Self)
 	{
@@ -800,24 +778,10 @@ FCortexCommandResult FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(const 
 		return Error.GetValue();
 	}
 
-	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-	for (const FString& Prefix : Request.Prefixes)
-	{
-		Registry.ScanPathsSynchronous({Prefix}, true);
-	}
-	FARFilter Filter;
-	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
-	Filter.bRecursiveClasses = true;
-	for (const FString& Prefix : Request.Prefixes)
-	{
-		Filter.PackagePaths.Add(FName(*Prefix));
-	}
-	Filter.bRecursivePaths = true;
-	TArray<FAssetData> Assets;
-	Registry.GetAssets(Filter, Assets);
-	const FTopLevelAssetPath LevelScriptClassPath = ULevelScriptBlueprint::StaticClass()->GetClassPathName();
-	Assets.RemoveAll([&LevelScriptClassPath](const FAssetData& Asset) { return Asset.AssetClassPath == LevelScriptClassPath; });
-	Algo::SortBy(Assets, [](const FAssetData& Asset) { return Asset.GetObjectPathString(); });
+	// Blueprints are enumerated (and prefixes checked for matches) before any is loaded.
+	const CortexReflectAssetEnumeration::FEnumeration Enumeration =
+		CortexReflectAssetEnumeration::Enumerate(Request.Prefixes, {UBlueprint::StaticClass()->GetClassPathName()});
+	const TArray<FAssetData>& Assets = Enumeration.Assets;
 
 	// Each Blueprint is loaded once; its units are extracted immediately and the loaded objects are released by one
 	// collection after the run.
@@ -1094,17 +1058,13 @@ FCortexCommandResult FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(const 
 		}
 		return Left.A != Right.A ? Left.A < Right.A : Left.B < Right.B;
 	});
-	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetNumberField(TEXT("blueprints_scanned"), BlueprintPaths.Num());
 	Result->SetNumberField(TEXT("graphs_scanned"), GraphsScanned);
 	Result->SetNumberField(TEXT("min_nodes"), Request.MinNodes);
 	Result->SetNumberField(TEXT("similarity_threshold"), Request.Similarity);
-	TArray<TSharedPtr<FJsonValue>> Failures;
-	for (const FString& Failure : LoadFailures)
-	{
-		Failures.Add(MakeShared<FJsonValueString>(Failure));
-	}
-	Result->SetArrayField(TEXT("load_failures"), Failures);
+	CortexReflectAssetEnumeration::WriteMatchedFields(Enumeration, *Result);
+	CortexReflectAssetEnumeration::WriteLoadFailures(LoadFailures, *Result);
 	Result->SetArrayField(TEXT("exact_groups"), GroupsJson(ExactGroups, Units, BlueprintPaths, true));
 	Result->SetArrayField(TEXT("similar_groups"), GroupsJson(SimilarGroups, Units, BlueprintPaths, false));
 	TArray<TSharedPtr<FJsonValue>> PairValues;
@@ -1120,5 +1080,11 @@ FCortexCommandResult FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(const 
 	Result->SetArrayField(TEXT("blueprint_pairs"), PairValues);
 	UE_LOG(LogCortexReflect, Log, TEXT("find_duplicate_graphs: %d Blueprints, %d graphs, %d units, %d exact, %d similar, %d pairs"),
 		BlueprintPaths.Num(), GraphsScanned, Units.Num(), ExactGroups.Num(), SimilarGroups.Num(), PairRows.Num());
+
+	if (Request.bHasOutPath)
+	{
+		return CortexReflectAssetEnumeration::WriteReportWithSummary(
+			Request.OutPath, Result, {TEXT("exact_groups"), TEXT("similar_groups"), TEXT("blueprint_pairs")});
+	}
 	return FCortexCommandRouter::Success(Result);
 }

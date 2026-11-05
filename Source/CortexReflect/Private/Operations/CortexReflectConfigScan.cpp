@@ -10,9 +10,38 @@ namespace CortexReflectConfigScan
 {
 namespace
 {
+/**
+ * True for every character that can be part of a content path token. A token ends at whitespace or at a character
+ * that is invalid in object paths (INVALID_OBJECTPATH_CHARACTERS: quotes, comma, parentheses, braces, brackets, '=',
+ * ';', '|', ...) or that ends the package part (':' sub-object separator, '\', '<', '>'). Everything FPackageName
+ * accepts in a long package name, including '+' and '-', stays inside the token. Wildcards '*' and '?' stay inside
+ * too so a wildcard path is recognised as one token and skipped instead of being cut into a false directory.
+ */
 bool IsPathChar(const TCHAR Ch)
 {
-	return FChar::IsAlnum(Ch) || Ch == TEXT('_') || Ch == TEXT('-') || Ch == TEXT('/') || Ch == TEXT('.');
+	static const TCHAR* const Delimiters = TEXT("\"' ,|&!~@#(){}[]=;^%$`:\\<>");
+	return Ch > TEXT(' ') && FCString::Strchr(Delimiters, Ch) == nullptr;
+}
+
+/** Name of the "Name=" attribute that directly precedes the token at Index, e.g. OldName for OldName="/Game/X". */
+FString AttributeBefore(const FString& Value, const int32 Index)
+{
+	int32 Cursor = Index - 1;
+	if (Cursor >= 0 && (Value[Cursor] == TEXT('"') || Value[Cursor] == TEXT('\'')))
+	{
+		--Cursor;
+	}
+	if (Cursor < 0 || Value[Cursor] != TEXT('='))
+	{
+		return FString();
+	}
+	--Cursor;
+	const int32 End = Cursor + 1;
+	while (Cursor >= 0 && (FChar::IsAlnum(Value[Cursor]) || Value[Cursor] == TEXT('_')))
+	{
+		--Cursor;
+	}
+	return Value.Mid(Cursor + 1, End - (Cursor + 1));
 }
 
 /** First path segment of each registered content root, e.g. "Game" for "/Game/". */
@@ -84,6 +113,10 @@ void ScanLine(
 		Key.RightChopInline(1);
 	}
 
+	// CoreRedirects entries name packages that intentionally no longer exist; only their targets are references.
+	const bool bRedirectLine = Section.Equals(TEXT("CoreRedirects"), ESearchCase::IgnoreCase)
+		|| Key.EndsWith(TEXT("Redirects"), ESearchCase::IgnoreCase);
+
 	const int32 Len = Value.Len();
 	for (int32 Index = 0; Index < Len; ++Index)
 	{
@@ -92,17 +125,24 @@ void ScanLine(
 			continue;
 		}
 
+		const int32 TokenStart = Index;
 		int32 End = Index;
 		while (End < Len && IsPathChar(Value[End]))
 		{
 			++End;
 		}
 
-		FString Token = Value.Mid(Index, End - Index);
+		FString Token = Value.Mid(TokenStart, End - TokenStart);
 		Index = End - 1;
 		while (Token.EndsWith(TEXT(".")))
 		{
 			Token.LeftChopInline(1);
+		}
+
+		// A wildcard pattern names no single package.
+		if (Token.Contains(TEXT("*")) || Token.Contains(TEXT("?")))
+		{
+			continue;
 		}
 
 		FString RootName = Token.RightChop(1);
@@ -112,6 +152,11 @@ void ScanLine(
 			RootName.LeftInline(SlashIndex);
 		}
 		if (!RootNames.Contains(RootName))
+		{
+			continue;
+		}
+
+		if (bRedirectLine && AttributeBefore(Value, TokenStart).StartsWith(TEXT("Old"), ESearchCase::IgnoreCase))
 		{
 			continue;
 		}
@@ -144,32 +189,36 @@ void ScanLine(
 }
 }
 
-TArray<FConfigReference> Scan(int32* OutScannedFiles)
+TArray<FConfigReference> Scan(FScanSummary* OutSummary)
 {
 	TArray<FConfigReference> Refs;
 	const TSet<FString> RootNames = CollectContentRootNames();
 	const TArray<FString> Files = CollectConfigFiles();
-	if (OutScannedFiles)
+	if (OutSummary)
 	{
-		*OutScannedFiles = 0;
+		*OutSummary = FScanSummary();
 	}
 
 	const FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
 	for (const FString& File : Files)
 	{
+		FString RelativeFile = File;
+		FPaths::MakePathRelativeTo(RelativeFile, *ProjectDir);
+
 		TArray<FString> Lines;
 		if (!FFileHelper::LoadFileToStringArray(Lines, *File))
 		{
 			UE_LOG(LogCortexReflect, Warning, TEXT("Config scan: could not read %s"), *File);
+			if (OutSummary)
+			{
+				OutSummary->UnreadableFiles.Add(RelativeFile);
+			}
 			continue;
 		}
-		if (OutScannedFiles)
+		if (OutSummary)
 		{
-			++(*OutScannedFiles);
+			++OutSummary->ScannedFiles;
 		}
-
-		FString RelativeFile = File;
-		FPaths::MakePathRelativeTo(RelativeFile, *ProjectDir);
 
 		FString Section;
 		for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)

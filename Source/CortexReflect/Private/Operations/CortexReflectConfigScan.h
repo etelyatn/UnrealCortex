@@ -27,9 +27,19 @@ namespace CortexReflectConfigScan
 		bool bDirectory = false;
 	};
 
+	/** Outcome of a scan: which INI files were actually read and which could not be. */
+	struct FScanSummary
+	{
+		/** INI files that were read successfully. */
+		int32 ScannedFiles = 0;
+		/** INI files (project-relative) found on disk but not readable. */
+		TArray<FString> UnreadableFiles;
+	};
+
 	/**
 	 * Scans Config/*.ini of the project and of every enabled plugin located under the project directory.
-	 * @param OutScannedFiles Optional; receives the number of INI files read.
+	 * Wildcard patterns and CoreRedirects "Old*" attributes are not references and are skipped.
+	 * @param OutSummary Optional; receives the files read and the files that could not be read.
 	 */
-	TArray<FConfigReference> Scan(int32* OutScannedFiles = nullptr);
+	TArray<FConfigReference> Scan(FScanSummary* OutSummary = nullptr);
 }

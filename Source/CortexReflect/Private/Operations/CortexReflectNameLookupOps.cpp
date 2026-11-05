@@ -3,17 +3,13 @@
 #include "Algo/Sort.h"
 #include "Algo/Find.h"
 #include "Algo/Unique.h"
-#include "AssetRegistry/ARFilter.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
-#include "CortexEditorUtils.h"
+#include "Operations/CortexReflectAssetEnumeration.h"
 #include "CortexReflectModule.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
-#include "Engine/LevelScriptBlueprint.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "HAL/FileManager.h"
@@ -550,16 +546,7 @@ namespace CortexReflectNameLookupPrivate
 		}
 	}
 
-	TArray<TSharedPtr<FJsonValue>> StringValues(const TArray<FString>& Strings)
-	{
-		TArray<TSharedPtr<FJsonValue>> Values;
-		Values.Reserve(Strings.Num());
-		for (const FString& String : Strings)
-		{
-			Values.Add(MakeShared<FJsonValueString>(String));
-		}
-		return Values;
-	}
+	using CortexReflectAssetEnumeration::StringValues;
 
 	TArray<TSharedPtr<FJsonValue>> MatchValues(const TArray<FBlueprintMember>* Members)
 	{
@@ -578,10 +565,6 @@ namespace CortexReflectNameLookupPrivate
 		return Values;
 	}
 
-	bool IsPlainFolderPath(const FString& Path)
-	{
-		return Path.StartsWith(TEXT("/")) && !Path.Contains(TEXT("..")) && !Path.Contains(TEXT("//")) && !Path.Contains(TEXT("."));
-	}
 }
 
 TArray<FString> FCortexReflectNameLookupOps::GetFixedSourceRoots()
@@ -632,39 +615,28 @@ TSharedPtr<FJsonObject> FCortexReflectNameLookupOps::FindNameLookupsInRoots(
 	Files.SetNum(Algo::Unique(Files));
 
 	TArray<FCppHit> CppHits;
+	TArray<FString> UnreadableFiles;
+	int32 ScannedFiles = 0;
 	for (const FString& File : Files)
 	{
 		FString Text;
 		if (FFileHelper::LoadFileToString(Text, *File))
 		{
+			++ScannedFiles;
 			ScanSource(Text, ProjectRelativePath(File), CppHits);
 		}
 		else
 		{
 			UE_LOG(LogCortexReflect, Warning, TEXT("find_name_lookups: could not read %s"), *File);
+			UnreadableFiles.Add(ProjectRelativePath(File));
 		}
 	}
 	CppHits.RemoveAll([&IsWanted](const FCppHit& Hit) { return !IsWanted(Hit.Name); });
 
 	// Blueprints: each one under the prefixes is loaded once for its members and its literal timer nodes.
-	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-	for (const FString& Prefix : PathPrefixes)
-	{
-		Registry.ScanPathsSynchronous({Prefix}, true);
-	}
-	FARFilter Filter;
-	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
-	Filter.bRecursiveClasses = true;
-	for (const FString& Prefix : PathPrefixes)
-	{
-		Filter.PackagePaths.Add(FName(*Prefix));
-	}
-	Filter.bRecursivePaths = true;
-	TArray<FAssetData> Assets;
-	Registry.GetAssets(Filter, Assets);
-	const FTopLevelAssetPath LevelScriptClassPath = ULevelScriptBlueprint::StaticClass()->GetClassPathName();
-	Assets.RemoveAll([&LevelScriptClassPath](const FAssetData& Asset) { return Asset.AssetClassPath == LevelScriptClassPath; });
-	Algo::SortBy(Assets, [](const FAssetData& Asset) { return Asset.GetObjectPathString(); });
+	const CortexReflectAssetEnumeration::FEnumeration Enumeration =
+		CortexReflectAssetEnumeration::Enumerate(PathPrefixes, {UBlueprint::StaticClass()->GetClassPathName()});
+	const TArray<FAssetData>& Assets = Enumeration.Assets;
 
 	TMap<FName, TArray<FBlueprintMember>> Members;
 	TArray<FBlueprintHit> TimerHits;
@@ -685,7 +657,8 @@ TSharedPtr<FJsonObject> FCortexReflectNameLookupOps::FindNameLookupsInRoots(
 	}
 	if (bLoadedAny)
 	{
-		// Loaded Blueprints are not rooted by this scan; one collection after the run lets the unreferenced ones go.
+		// RF_Standalone keeps loaded Blueprints alive, so this collection only releases the objects they no longer
+		// reference; the Blueprints themselves stay in memory until the editor unloads them.
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 	}
 	TimerHits.RemoveAll([&IsWanted](const FBlueprintHit& Hit) { return !IsWanted(Hit.Name); });
@@ -744,17 +717,16 @@ TSharedPtr<FJsonObject> FCortexReflectNameLookupOps::FindNameLookupsInRoots(
 	Algo::Sort(UnmatchedNames);
 
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
-	Result->SetNumberField(TEXT("scanned_files"), Files.Num());
+	Result->SetNumberField(TEXT("scanned_files"), ScannedFiles);
+	Result->SetArrayField(TEXT("unreadable_files"), StringValues(UnreadableFiles));
 	Result->SetArrayField(TEXT("cpp"), CppValues);
 	Result->SetArrayField(TEXT("blueprint"), BlueprintValues);
 	Result->SetArrayField(TEXT("matched_names"), StringValues(MatchedNames));
 	Result->SetArrayField(TEXT("unmatched_names"), StringValues(UnmatchedNames));
-	if (LoadFailures.Num() > 0)
-	{
-		Result->SetArrayField(TEXT("load_failures"), StringValues(LoadFailures));
-	}
-	UE_LOG(LogCortexReflect, Log, TEXT("find_name_lookups: %d files, %d cpp hits, %d blueprint hits, %d matched, %d unmatched names"),
-		Files.Num(), CppHits.Num(), TimerHits.Num(), MatchedNames.Num(), UnmatchedNames.Num());
+	CortexReflectAssetEnumeration::WriteMatchedFields(Enumeration, *Result);
+	CortexReflectAssetEnumeration::WriteLoadFailures(LoadFailures, *Result);
+	UE_LOG(LogCortexReflect, Log, TEXT("find_name_lookups: %d files (%d unreadable), %d cpp hits, %d blueprint hits, %d matched, %d unmatched names"),
+		ScannedFiles, UnreadableFiles.Num(), CppHits.Num(), TimerHits.Num(), MatchedNames.Num(), UnmatchedNames.Num());
 	return Result;
 }
 
@@ -762,37 +734,11 @@ FCortexCommandResult FCortexReflectNameLookupOps::FindNameLookups(const TSharedP
 {
 	using namespace CortexReflectNameLookupPrivate;
 
-	if (!Params.IsValid())
-	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params object"));
-	}
-
-	const TArray<TSharedPtr<FJsonValue>>* PrefixValues = nullptr;
-	if (!Params->TryGetArrayField(TEXT("path_prefixes"), PrefixValues) || PrefixValues->Num() == 0)
-	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-			TEXT("path_prefixes must be a non-empty array of mounted folder paths"));
-	}
 	TArray<FString> Prefixes;
-	for (const TSharedPtr<FJsonValue>& Value : *PrefixValues)
+	FCortexCommandResult RequestError;
+	if (!CortexReflectAssetEnumeration::ParsePathPrefixes(Params, Prefixes, RequestError))
 	{
-		FString Prefix;
-		if (!Value.IsValid() || !Value->TryGetString(Prefix) || Prefix.IsEmpty())
-		{
-			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				TEXT("path_prefixes must contain only non-empty folder path strings"));
-		}
-		Prefix = FCortexEditorUtils::NormalizeMountedContentPath(Prefix);
-		while (Prefix.Len() > 1 && Prefix.EndsWith(TEXT("/")))
-		{
-			Prefix.LeftChopInline(1);
-		}
-		if (!IsPlainFolderPath(Prefix))
-		{
-			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				FString::Printf(TEXT("path_prefixes entry is not a valid mounted folder path: %s"), *Prefix));
-		}
-		Prefixes.AddUnique(MoveTemp(Prefix));
+		return RequestError;
 	}
 
 	TSet<FString> Symbols;
@@ -818,5 +764,19 @@ FCortexCommandResult FCortexReflectNameLookupOps::FindNameLookups(const TSharedP
 		}
 	}
 
-	return FCortexCommandRouter::Success(FindNameLookupsInRoots(GetFixedSourceRoots(), Prefixes, Symbols));
+	// An unusable out_path is refused before any file or Blueprint is touched.
+	bool bHasOutPath = false;
+	FCortexResolvedFilePath OutPath;
+	if (!CortexReflectAssetEnumeration::ParseOptionalOutPath(Params, bHasOutPath, OutPath, RequestError))
+	{
+		return RequestError;
+	}
+
+	const TSharedRef<FJsonObject> Result = FindNameLookupsInRoots(GetFixedSourceRoots(), Prefixes, Symbols).ToSharedRef();
+	if (bHasOutPath)
+	{
+		return CortexReflectAssetEnumeration::WriteReportWithSummary(
+			OutPath, Result, {TEXT("cpp"), TEXT("blueprint"), TEXT("matched_names"), TEXT("unmatched_names")});
+	}
+	return FCortexCommandRouter::Success(Result);
 }
