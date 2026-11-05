@@ -13,8 +13,9 @@
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
 #include "EdGraphNode_Comment.h"
-#include "K2Node_Composite.h"
 #include "K2Node_FunctionResult.h"
+#include "K2Node_EditablePinBase.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "K2Node_Knot.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_Tunnel.h"
@@ -541,5 +542,178 @@ bool FCortexBPGraphMetricsSharedNodeTotalsTest::RunTest(const FString& Parameter
 		}
 		TestTrue(TEXT("blueprint violation fires at the union value"), bBlueprintViolation);
 	}
+	return true;
+}
+
+namespace
+{
+	/** Total unreachable-row count whose graph matches GraphName. */
+	int32 UnreachableCountForGraph(const TSharedPtr<FJsonObject>& Data, const FString& GraphName)
+	{
+		int32 Count = 0;
+		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+		if (Data.IsValid() && Data->TryGetArrayField(TEXT("unreachable"), Rows))
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Rows)
+			{
+				const TSharedPtr<FJsonObject> Row = Value->AsObject();
+				if (Row.IsValid() && Row->GetStringField(TEXT("graph")) == GraphName)
+				{
+					Count += static_cast<int32>(Row->GetNumberField(TEXT("count")));
+				}
+			}
+		}
+		return Count;
+	}
+
+	UK2Node_CallFunction* AddPureNot(UEdGraph* Graph)
+	{
+		UK2Node_CallFunction* Not = NewObject<UK2Node_CallFunction>(Graph);
+		Not->SetFromFunction(UKismetMathLibrary::StaticClass()->FindFunctionByName(TEXT("Not_PreBool")));
+		Not->CreateNewGuid();
+		Graph->AddNode(Not, false, false);
+		Not->AllocateDefaultPins();
+		return Not;
+	}
+
+	UEdGraphNode* FindFunctionEntry(UEdGraph* Graph)
+	{
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node && Node->IsA<UK2Node_FunctionEntry>())
+			{
+				return Node;
+			}
+		}
+		return nullptr;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsInterfaceGraphTest,
+	"Cortex.Blueprint.GraphMetrics.InterfaceFunctionGraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsInterfaceGraphTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsInterfaceGraph"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	// Interface function implementations live in FBPInterfaceDescription::Graphs, not FunctionGraphs.
+	UEdGraph* ImplGraph = FBlueprintEditorUtils::CreateNewGraph(
+		Blueprint, TEXT("InterfaceImpl"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	if (!TestNotNull(TEXT("Interface impl graph"), ImplGraph)) { return false; }
+	// AddFunctionGraph creates the entry node; the graph is then re-homed into the interface description.
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, ImplGraph, true, nullptr);
+	Blueprint->FunctionGraphs.Remove(ImplGraph);
+	UEdGraphNode* Entry = FindFunctionEntry(ImplGraph);
+	if (!TestNotNull(TEXT("Function entry"), Entry)) { return false; }
+	UK2Node_CallFunction* Print = AddPrintString(ImplGraph);
+	if (!TestTrue(TEXT("Impl wired"), LinkExec(Entry, UEdGraphSchema_K2::PN_Then, Print))) { return false; }
+
+	FBPInterfaceDescription Description;
+	Description.Interface = UInterface::StaticClass();
+	Description.Graphs.Add(ImplGraph);
+	Blueprint->ImplementedInterfaces.Add(Description);
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	const TSharedPtr<FJsonObject> Row = FindEntry(Result.Data, TEXT("InterfaceImpl"));
+	if (!TestTrue(TEXT("Interface implementation reported as an entry"), Row.IsValid())) { return false; }
+	TestEqual(TEXT("kind"), Row->GetStringField(TEXT("kind")), FString(TEXT("function")));
+	TestEqual(TEXT("graph"), Row->GetStringField(TEXT("graph")), ImplGraph->GetName());
+	TestEqual(TEXT("functional nodes"), static_cast<int32>(Row->GetNumberField(TEXT("functional_nodes"))), 1);
+
+	const TSharedPtr<FJsonObject>* Totals = nullptr;
+	if (TestTrue(TEXT("totals present"), Result.Data->TryGetObjectField(TEXT("totals"), Totals)))
+	{
+		TestEqual(TEXT("interface logic is counted in totals"),
+			static_cast<int32>((*Totals)->GetNumberField(TEXT("functional_nodes"))), 1);
+	}
+	TestEqual(TEXT("no unreachable rows for the implementation"), UnreachableCountForGraph(Result.Data, ImplGraph->GetName()), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsNonK2GraphSkippedTest,
+	"Cortex.Blueprint.GraphMetrics.NonK2GraphSkipped",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsNonK2GraphSkippedTest::RunTest(const FString& Parameters)
+{
+	UClass* AnimBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.AnimBlueprint"));
+	UClass* AnimGeneratedClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.AnimBlueprintGeneratedClass"));
+	UClass* AnimInstanceClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.AnimInstance"));
+	UClass* AnimSchemaClass = FindObject<UClass>(nullptr, TEXT("/Script/AnimGraph.AnimationGraphSchema"));
+	if (!AnimBlueprintClass || !AnimGeneratedClass || !AnimInstanceClass || !AnimSchemaClass)
+	{
+		AddInfo(TEXT("Animation classes unavailable; skipping AnimBlueprint non-K2 graph test"));
+		return true;
+	}
+
+	const FString UniqueName = FString::Printf(TEXT("ABP_MetricsNonK2_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AnimInstanceClass, GetTransientPackage(), FName(*UniqueName), BPTYPE_Normal, AnimBlueprintClass, AnimGeneratedClass);
+	if (!TestNotNull(TEXT("AnimBlueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* AnimGraph = NewObject<UEdGraph>(Blueprint, TEXT("AnimGraphLike"));
+	AnimGraph->Schema = AnimSchemaClass;
+	Blueprint->FunctionGraphs.Add(AnimGraph);
+	// A node with no wiring would be reported unreachable if the non-K2 graph were measured.
+	AddPrintString(AnimGraph);
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	Blueprint->MarkAsGarbage();
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	TestEqual(TEXT("non-K2 graph produces no unreachable rows"), UnreachableCountForGraph(Result.Data, AnimGraph->GetName()), 0);
+	TestNull(TEXT("non-K2 graph produces no entries"), FindEntry(Result.Data, AnimGraph->GetName()).Get());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsFunctionResultPureChainTest,
+	"Cortex.Blueprint.GraphMetrics.FunctionResultPureChain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsFunctionResultPureChainTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsResultPure"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* Function = FBlueprintEditorUtils::CreateNewGraph(
+		Blueprint, TEXT("PureResult"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	if (!TestNotNull(TEXT("Function graph"), Function)) { return false; }
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, Function, true, nullptr);
+
+	UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(FindFunctionEntry(Function));
+	if (!TestNotNull(TEXT("Function entry"), Entry)) { return false; }
+	UK2Node_FunctionResult* Result = FBlueprintEditorUtils::FindOrCreateFunctionResultNode(Entry);
+	if (!TestNotNull(TEXT("Function result"), Result)) { return false; }
+	FEdGraphPinType BoolType;
+	BoolType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+	if (!TestNotNull(TEXT("Result pin"), Result->CreateUserDefinedPin(TEXT("Out"), BoolType, EGPD_Input))) { return false; }
+	// FindOrCreateFunctionResultNode wires entry exec to the result; the scenario needs that link severed.
+	Entry->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output)->BreakAllPinLinks();
+
+	// Result is fed by two chained pure nodes; the entry's exec is deliberately NOT wired to the result.
+	UK2Node_CallFunction* NotA = AddPureNot(Function);
+	UK2Node_CallFunction* NotB = AddPureNot(Function);
+	const bool bLinked = Link(NotA, TEXT("ReturnValue"), NotB, TEXT("A"))
+		&& Link(NotB, TEXT("ReturnValue"), Result, TEXT("Out"));
+	if (!TestTrue(TEXT("Pure chain wired"), bLinked)) { return false; }
+	TestEqual(TEXT("Entry exec is not linked"), Entry->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output)->LinkedTo.Num(), 0);
+
+	const FCortexCommandResult Metrics = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Metrics.bSuccess) || !Metrics.Data.IsValid()) { return false; }
+
+	const TSharedPtr<FJsonObject> Row = FindEntry(Metrics.Data, TEXT("PureResult"));
+	if (!TestTrue(TEXT("Function entry reported"), Row.IsValid())) { return false; }
+	TestEqual(TEXT("pure nodes feeding the result are counted"), static_cast<int32>(Row->GetNumberField(TEXT("functional_nodes"))), 2);
+	TestEqual(TEXT("pure result feeders and the result node are not unreachable"),
+		UnreachableCountForGraph(Metrics.Data, Function->GetName()), 0);
 	return true;
 }

@@ -305,19 +305,30 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
+	// Plain K2 graphs only. UAnimationGraphSchema derives from UEdGraphSchema_K2 but its graphs are pose-flow
+	// networks without event/exec semantics, and state machine schemas are not K2 at all, so the match is exact.
+	// Macro graphs are not measured on their own; they count only where a macro instance expands them.
 	TArray<const UEdGraph*> Graphs;
-	for (const UEdGraph* Graph : Blueprint->UbergraphPages)
+	const auto AddMeasurableGraph = [&Graphs](const UEdGraph* Graph)
 	{
-		if (Graph)
+		if (Graph && Graph->Schema == UEdGraphSchema_K2::StaticClass())
 		{
 			Graphs.Add(Graph);
 		}
+	};
+	for (const UEdGraph* Graph : Blueprint->UbergraphPages)
+	{
+		AddMeasurableGraph(Graph);
 	}
 	for (const UEdGraph* Graph : Blueprint->FunctionGraphs)
 	{
-		if (Graph)
+		AddMeasurableGraph(Graph);
+	}
+	for (const FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
+	{
+		for (const UEdGraph* Graph : Interface.Graphs)
 		{
-			Graphs.Add(Graph);
+			AddMeasurableGraph(Graph);
 		}
 	}
 
@@ -338,6 +349,18 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 
 			TSet<UEdGraphNode*> Reachable;
 			CortexBPGraphReachability::GatherReachableFromEntry(Node, Reachable);
+			if (Node->IsA<UK2Node_FunctionEntry>())
+			{
+				// A function result may be fed by pure nodes with no exec wire from the entry; those nodes are logic too.
+				for (UEdGraphNode* ResultNode : Graph->Nodes)
+				{
+					if (ResultNode && ResultNode->IsA<UK2Node_FunctionResult>())
+					{
+						Reachable.Add(ResultNode);
+					}
+				}
+				CortexBPGraphReachability::ExpandBackwardDataClosure(Reachable);
+			}
 			GraphReachable.Append(Reachable);
 
 			FEntryMetrics Metrics;
