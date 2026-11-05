@@ -2522,6 +2522,11 @@ struct FGraphPatchJournal
 		bool bUserSetEnabledState = false;
 		bool bForceDisplayAsDisabled = false;
 		bool bOverrideFunction = false;
+		/**
+		 * The whole event reference, not its class parent: a component-bound or delegate event's
+		 * signature can be owned by a package (a file-scope delegate), which has no parent class.
+		 */
+		FMemberReference EventReference;
 		FName MemberName = NAME_None;
 		UClass* MemberParentClass = nullptr;
 		/**
@@ -2716,8 +2721,7 @@ void JournalNodeRemoved(UEdGraphNode* Node, FGraphPatchJournal& Journal)
 	if (const UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
 	{
 		Entry.bOverrideFunction = Event->bOverrideFunction;
-		Entry.MemberName = Event->EventReference.GetMemberName();
-		Entry.MemberParentClass = Event->EventReference.GetMemberParentClass();
+		Entry.EventReference = Event->EventReference;
 		Entry.CustomFunctionName = Event->CustomFunctionName;
 	}
 	else if (const UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
@@ -2809,14 +2813,7 @@ bool RestoreRemovedNodes(UBlueprint* Blueprint, const FGraphPatchJournal& Journa
 		if (UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
 		{
 			Event->bOverrideFunction = Entry.bOverrideFunction;
-			if (Entry.MemberParentClass)
-			{
-				Event->EventReference.SetExternalMember(Entry.MemberName, Entry.MemberParentClass);
-			}
-			else if (!Entry.MemberName.IsNone())
-			{
-				Event->EventReference.SetSelfMember(Entry.MemberName);
-			}
+			Event->EventReference = Entry.EventReference;
 		}
 		else if (UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
 		{

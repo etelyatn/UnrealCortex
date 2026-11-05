@@ -7912,8 +7912,12 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 		const FString FunctionName = !Entry.CustomFunctionName.IsEmpty()
 			? Entry.CustomFunctionName : Entry.BindingFunctionName;
 		if (FunctionName.IsEmpty()) continue;
+		// The selected entry defines the function; it is not a reference to it. A blocked entry is
+		// published through the partition's blocked inventory instead.
+		FGuid EntryGuid;
+		FGuid::Parse(Entry.NodeGuid, EntryGuid);
 		TArray<FString> References;
-		CollectGeneratedFunctionReferences(Blueprint, FName(*FunctionName), FGuid(), References, Graph, &FinalRemovable);
+		CollectGeneratedFunctionReferences(Blueprint, FName(*FunctionName), EntryGuid, References, Graph, &FinalRemovable);
 		if (!References.IsEmpty())
 		{
 			const FString Reason = Entry.CustomFunctionName.IsEmpty()

@@ -10,6 +10,7 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
+#include "Components/CheckBox.h"
 #include "CortexGraphMigrationTestTypes.h"
 #include "CortexGraphTestContentRoot.h"
 #include "EdGraph/EdGraph.h"
@@ -711,8 +712,12 @@ struct FGuardedEntryFixture
 			&& BoundBody && ConstructBody && InitializedBody && RetainedBody && CustomBody;
 	}
 
-	/** `bAddIncompatibleComponent` compiles a second widget variable of an unrelated widget class. */
-	bool Build(const TCHAR* Name, const bool bAddIncompatibleComponent = false)
+	/**
+	 * `bAddIncompatibleComponent` compiles a second widget variable of an unrelated widget class.
+	 * `bParameterisedDelegate` binds the component-bound node to `UCheckBox::OnCheckStateChanged(bool)`,
+	 * a file-scope delegate with a parameter, instead of the parameterless `UButton::OnClicked`.
+	 */
+	bool Build(const TCHAR* Name, const bool bAddIncompatibleComponent = false, const bool bParameterisedDelegate = false)
 	{
 		Package = CreateCortexGraphTestPackage(Name, OwnedPackageName);
 		Blueprint = Cast<UWidgetBlueprint>(FKismetEditorUtilities::CreateBlueprint(
@@ -732,6 +737,13 @@ struct FGuardedEntryFixture
 		Tree->RootWidget = Root;
 		ActionButton->bIsVariable = true;
 		Root->AddChild(ActionButton);
+		if (bParameterisedDelegate)
+		{
+			UCheckBox* OptionCheck = Tree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(), TEXT("OptionCheck"));
+			if (!OptionCheck) return false;
+			OptionCheck->bIsVariable = true;
+			Root->AddChild(OptionCheck);
+		}
 		if (bAddIncompatibleComponent)
 		{
 			UCanvasPanel* IncompatiblePanel =
@@ -753,11 +765,12 @@ struct FGuardedEntryFixture
 		// The widget variable becomes a generated object property only after a widget compile, and the
 		// component-bound node must bind to that real property.
 		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		const TCHAR* const BoundComponentName = bParameterisedDelegate ? TEXT("OptionCheck") : TEXT("ActionButton");
 		FObjectProperty* FoundComponentProperty = Blueprint->SkeletonGeneratedClass
-			? FindFProperty<FObjectProperty>(Blueprint->SkeletonGeneratedClass, TEXT("ActionButton")) : nullptr;
+			? FindFProperty<FObjectProperty>(Blueprint->SkeletonGeneratedClass, BoundComponentName) : nullptr;
 		if (!FoundComponentProperty && Blueprint->GeneratedClass)
 		{
-			FoundComponentProperty = FindFProperty<FObjectProperty>(Blueprint->GeneratedClass, TEXT("ActionButton"));
+			FoundComponentProperty = FindFProperty<FObjectProperty>(Blueprint->GeneratedClass, BoundComponentName);
 		}
 		if (bAddIncompatibleComponent)
 		{
@@ -770,8 +783,9 @@ struct FGuardedEntryFixture
 			}
 			if (!IncompatibleComponentProperty) return false;
 		}
-		FMulticastDelegateProperty* FoundClickedDelegate =
-			FindFProperty<FMulticastDelegateProperty>(UButton::StaticClass(), TEXT("OnClicked"));
+		FMulticastDelegateProperty* FoundClickedDelegate = bParameterisedDelegate
+			? FindFProperty<FMulticastDelegateProperty>(UCheckBox::StaticClass(), TEXT("OnCheckStateChanged"))
+			: FindFProperty<FMulticastDelegateProperty>(UButton::StaticClass(), TEXT("OnClicked"));
 		if (!FoundComponentProperty || !FoundClickedDelegate) return false;
 		ComponentProperty = FoundComponentProperty;
 		ClickedDelegate = FoundClickedDelegate;
@@ -3900,6 +3914,107 @@ bool FCortexGraphMigrationRetireComponentBoundReadbackFaultTest::RunTest(const F
 		CaptureComponentBindings(Fixture.Blueprint), BindingsBefore);
 	TestNotNull(TEXT("the recovery compile re-declares the binding function"),
 		Fixture.Blueprint->GeneratedClass ? Fixture.Blueprint->GeneratedClass->FindFunctionByName(BindingFunction) : nullptr);
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// CortexSandbox #107 live acceptance: a component-bound event on a file-scope delegate with parameters
+// (Ripper's CommonButtonBase OnButtonBaseClicked) keeps a package-owned event signature. Rolling back
+// its retirement must restore that exact event reference, or the recovery compile reports the restored
+// node out-of-date and the asset is blocked instead of restored.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireParameterisedBoundRollbackTest,
+	"Cortex.Graph.Authoring.Migration.Retire.ParameterisedBoundEventRollbackRestoresSignature",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireParameterisedBoundRollbackTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FGuardedEntryFixture Fixture;
+	TestTrue(TEXT("parameterised component-bound fixture is created"),
+		Fixture.Build(TEXT("BP_RetireParameterisedBoundRollback"), /*bAddIncompatibleComponent=*/false,
+			/*bParameterisedDelegate=*/true));
+	if (!Fixture.IsComplete()) { Fixture.Cleanup(); return false; }
+
+	const FGuid BoundGuid = Fixture.Bound->NodeGuid;
+	const UFunction* const SignatureBefore =
+		Fixture.Bound->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass);
+	TestNotNull(TEXT("the delegate signature resolves before the request"), SignatureBefore);
+	TestNotNull(TEXT("the delegate signature is owned by a package, not a class"),
+		Fixture.Bound->EventReference.GetMemberParentPackage());
+	TestTrue(TEXT("the bound event exposes the delegate parameter"),
+		Fixture.Bound->FindPin(FName(TEXT("bIsChecked"))) != nullptr);
+	const FString BindingsBefore = CaptureComponentBindings(Fixture.Blueprint);
+
+	TArray<FString> Approved;
+	TSharedPtr<FJsonObject> Request;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("the guarded apply request prepares: %s"), *Error.ErrorMessage),
+		PrepareGuardedRequest(Fixture, { BoundGuid.ToString() }, TEXT("00000000-0000-0000-0000-000000107101"),
+			Request, Approved, Error, /*bCompile=*/true, /*bSave=*/false));
+	if (!Request.IsValid()) { Fixture.Cleanup(); return false; }
+
+	FCortexGraphMigrationOps::SetRetirementReadbackFaultForTesting(TEXT("retire_after_binding"));
+	FCortexGraphPatchOutcome Outcome;
+	Error = FCortexCommandResult();
+	TestFalse(TEXT("the injected readback fault fails the retirement"),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	FCortexGraphMigrationOps::ClearRetirementReadbackFaultForTesting();
+	TestEqual(TEXT("the journal and the recovery compile restored the transaction"),
+		Outcome.RollbackStatus, FString(TEXT("restored")));
+	TestFalse(TEXT("the restored asset is not blocked"), Outcome.bBlocked);
+	TestFalse(TEXT("the recovery compile does not report the restored node out-of-date"),
+		FString::Join(Outcome.Diagnostics, TEXT("; ")).Contains(TEXT("out-of-date")));
+	UK2Node_ComponentBoundEvent* Restored = Cast<UK2Node_ComponentBoundEvent>(
+		FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, BoundGuid));
+	TestNotNull(TEXT("the component-bound node was restored"), Restored);
+	if (Restored)
+	{
+		TestTrue(TEXT("the restored event resolves the same delegate signature"),
+			Restored->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass) == SignatureBefore);
+	}
+	TestEqual(TEXT("the rolled-back retirement restores the exact component binding set"),
+		CaptureComponentBindings(Fixture.Blueprint), BindingsBefore);
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// CortexSandbox #107 live acceptance: a selected custom event whose body is also driven by retained
+// logic is blocked by the partition. The preview must publish that blocked entry with its reason; the
+// entry is not an in-asset reference to its own generated function.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireBlockedCustomEventPreviewTest,
+	"Cortex.Graph.Authoring.Migration.Retire.BlockedCustomEventPublishesBlockedEntry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireBlockedCustomEventPreviewTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FGuardedEntryFixture Fixture;
+	TestTrue(TEXT("guarded fixture is created"), Fixture.Build(TEXT("BP_RetireBlockedCustomEventPreview")));
+	if (!Fixture.IsComplete()) { Fixture.Cleanup(); return false; }
+	// The retained cosmetic chain also executes the custom event's body, so the body and therefore the
+	// selected custom event are owned by retained logic.
+	TestTrue(TEXT("the retained body also drives the custom event body"),
+		Fixture.LinkNodes(Fixture.RetainedBody, TEXT("then"), Fixture.CustomBody, TEXT("execute")));
+
+	FCortexGraphMigrationRetirePlan PlanValue;
+	bool bReused = false;
+	FCortexCommandResult Error;
+	const FString CustomGuid = Fixture.Custom->NodeGuid.ToString();
+	TestTrue(FString::Printf(TEXT("the preview publishes the partition instead of refusing: %s"), *Error.ErrorMessage),
+		Plan(Fixture, { CustomGuid }, PlanValue, bReused, Error));
+	TestFalse(TEXT("the refusal does not name the selected entry as its own reference"),
+		Error.ErrorMessage.Contains(TEXT("same_name_event")));
+	TestTrue(TEXT("the selected custom event is published as blocked"),
+		PlanValue.Blocked.ContainsByPredicate([&CustomGuid](const FCortexGraphPruneNode& Node) { return Node.NodeGuid == CustomGuid; }));
+	TestFalse(TEXT("the blocked custom event is not removable"), PlanValue.RemovableGuids.Contains(CustomGuid));
+
+	Error = FCortexCommandResult();
+	TestFalse(TEXT("an approval of the published removable set is still refused because of the blocked entry"),
+		Plan(Fixture, { CustomGuid }, PlanValue, bReused, Error, true, PlanValue.RemovableGuids));
 
 	Fixture.Cleanup();
 	return true;
