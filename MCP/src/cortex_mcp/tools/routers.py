@@ -148,11 +148,20 @@ def _validate_limit(limit) -> tuple[int | None, str | None]:
     return limit, None
 
 
-def _cursor_expired() -> str:
-    return json.dumps({
-        "_error": "CURSOR_EXPIRED",
-        "_message": "Cached results have expired. Re-send the original command with 'limit' to start a new pagination sequence.",
-    })
+_BATCH_QUERY_COMMAND = "core.batch_query"
+
+
+def _cursor_expired(qualified: str | None = None) -> str:
+    if qualified == _BATCH_QUERY_COMMAND:
+        # A batch is not a re-runnable read: its steps already executed (and may have changed state).
+        message = (
+            "This batch already executed and its stored results are no longer available "
+            "(the snapshot expired or was evicted). Do NOT re-send the batch: that would execute its "
+            "steps again. Check the editor state or run read-only queries to observe the outcome."
+        )
+    else:
+        message = "Cached results have expired. Re-send the original command with 'limit' to start a new pagination sequence."
+    return json.dumps({"_error": "CURSOR_EXPIRED", "_message": message})
 
 
 def _invalid_cursor(message: str) -> str:
@@ -308,7 +317,7 @@ def _handle_cursor_request(cursor_token: str, qualified: str) -> str:
 
     provenance = _pagination_cache.entry_provenance(key)
     if provenance is None:
-        return _cursor_expired()
+        return _cursor_expired(qualified)
     stored_command, stored_array, stored_snapshot_id = provenance
     if (
         decoded.get("array") != array_key
@@ -331,7 +340,7 @@ def _handle_cursor_request(cursor_token: str, qualified: str) -> str:
         page, meta = _pagination_cache.get_page(key, offset, limit)
         return _format_cached_page(qualified, array_key, key, offset, limit, page, meta["total"])
     except KeyError:
-        return _cursor_expired()
+        return _cursor_expired(qualified)
 
 
 def _handle_limit_request(qualified: str, params: dict, limit: int, connection) -> str:
@@ -360,7 +369,7 @@ def _handle_limit_request(qualified: str, params: dict, limit: int, connection) 
         page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
         return _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
     except KeyError:
-        return _cursor_expired()
+        return _cursor_expired(qualified)
 
 
 _EXECUTED_BATCH_NOTE = (
@@ -388,7 +397,7 @@ def _batch_query(connection, route_params: dict) -> str:
     never discarded or shortened: the executed results are snapshotted and the first page that fits
     is returned with a cursor and a note that the batch already ran.
     """
-    qualified = "core.batch_query"
+    qualified = _BATCH_QUERY_COMMAND
     cursor_token = route_params.get("cursor")
     if cursor_token is not None:
         return _handle_cursor_request(cursor_token, qualified)
@@ -446,7 +455,7 @@ def _batch_query(connection, route_params: dict) -> str:
         page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
         return _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
     except KeyError:
-        return _cursor_expired()
+        return _cursor_expired(qualified)
 
 
 def _error_payload(code: str, message: str, details) -> dict:

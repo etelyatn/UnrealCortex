@@ -1,4 +1,5 @@
 #include "CortexBPCommandHandler.h"
+#include "CortexCommandContract.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPAnalysisOps.h"
@@ -49,6 +50,15 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	FDeferredResponseCallback DeferredCallback)
 {
 	(void)DeferredCallback;
+
+	// The declaration is the contract: commands that opt in with StrictParams() refuse unknown or missing params
+	// before any work, exactly as the Data, UMG and Reflect handlers do.
+	static const TArray<FCortexCommandInfo> DeclaredCommands = GetSupportedCommands();
+	FCortexCommandResult ContractError;
+	if (!FCortexCommandContract::ValidateDeclaredParams(DeclaredCommands, Command, Params, ContractError))
+	{
+		return ContractError;
+	}
 
 	const bool bReadOnly = Command == TEXT("list") || Command == TEXT("get_info")
 		|| Command == TEXT("get_class_defaults") || Command == TEXT("list_inherited_properties")

@@ -18,6 +18,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/UserDefinedEnum.h"
 #include "StructUtils/UserDefinedStruct.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
@@ -819,6 +820,97 @@ bool FCortexReflectDependencyGraphLevelPlacementTest::RunTest(const FString& Par
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectDependencyGraphOfpaOutsidePrefixTest,
+	"Cortex.Reflect.DependencyGraph.ExternalActorOutsidePrefix",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectDependencyGraphOfpaOutsidePrefixTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectDependencyGraphTestSupport;
+	FGraphFixture Fixture;  // the exported prefix: holds the map only
+	FGraphFixture Outside;  // another folder: holds the Blueprint the map places
+
+	UBlueprint* Placed = Outside.MakeBlueprint(TEXT("BP_OutsideActor"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("placed blueprint"), Placed) || !TestNotNull(TEXT("placed class"), Placed->GeneratedClass.Get())
+		|| !TestTrue(TEXT("save placed"), Outside.SaveAsset(Placed, *FPackageName::GetAssetPackageExtension())))
+	{
+		Fixture.Cleanup();
+		Outside.Cleanup();
+		return false;
+	}
+
+	// One-File-Per-Actor: the placed actor lives in its own package; the map package does not depend on the Blueprint.
+	UPackage* MapPackage = CreatePackage(*FString::Printf(TEXT("%s/L_Ofpa"), *Fixture.Dir));
+	UWorld* World = UWorld::CreateWorld(EWorldType::Inactive, false, TEXT("L_Ofpa"), MapPackage);
+	if (!TestNotNull(TEXT("world"), World))
+	{
+		Fixture.Cleanup();
+		Outside.Cleanup();
+		return false;
+	}
+	World->SetFlags(RF_Public | RF_Standalone);
+	World->PersistentLevel->SetUseExternalActors(true);
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.OverrideLevel = World->PersistentLevel;
+	AActor* Actor = World->SpawnActor<AActor>(Placed->GeneratedClass, FTransform::Identity, SpawnParameters);
+	const FString ExternalActorsPath = ULevel::GetExternalActorsPath(MapPackage->GetName());
+	bool bSaved = TestNotNull(TEXT("placed actor"), Actor) && Fixture.SaveAsset(World, *FPackageName::GetMapPackageExtension());
+	if (bSaved)
+	{
+		for (AActor* LevelActor : World->PersistentLevel->Actors)
+		{
+			UPackage* ExternalPackage = LevelActor ? LevelActor->GetExternalPackage() : nullptr;
+			if (!ExternalPackage)
+			{
+				continue;
+			}
+			FString ExternalFile;
+			bSaved &= FPackageName::TryConvertLongPackageNameToFilename(ExternalPackage->GetName(), ExternalFile, FPackageName::GetAssetPackageExtension());
+			IFileManager::Get().MakeDirectory(*FPaths::GetPath(ExternalFile), true);
+			FSavePackageArgs ExternalArgs;
+			ExternalArgs.TopLevelFlags = RF_Standalone;
+			bSaved &= UPackage::SavePackage(ExternalPackage, nullptr, *ExternalFile, ExternalArgs);
+			Fixture.SavedFiles.Add(ExternalFile);
+		}
+	}
+	const auto Cleanup = [&]()
+	{
+		Fixture.Cleanup();
+		Outside.Cleanup();
+		IFileManager::Get().DeleteDirectory(*FPackageName::LongPackageNameToFilename(ExternalActorsPath), false, true);
+	};
+	if (!TestTrue(TEXT("map and its external actor saved"), bSaved))
+	{
+		Cleanup();
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+	Outside.RegisterSavedFiles();
+
+	const FString OutPath = Fixture.ReportPath(TEXT("ofpa"));
+	const FCortexCommandResult Result = Run(Fixture.ExportParams(OutPath));
+	if (!TestTrue(*FString::Printf(TEXT("export succeeds (%s: %s)"), *Result.ErrorCode, *Result.ErrorMessage), Result.bSuccess && Result.Data.IsValid()))
+	{
+		Cleanup();
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Report = ReadJsonDocument(OutPath);
+	if (TestTrue(TEXT("report parses"), Report.IsValid()))
+	{
+		TestTrue(TEXT("level_placement: world -> a Blueprint outside the prefixes"),
+			HasEdge(Report, World->GetPathName(), Placed->GetPathName(), TEXT("level_placement")));
+		const TSharedPtr<FJsonObject> Node = FindNode(Report, Placed->GetPathName());
+		if (TestNotNull(TEXT("the outside Blueprint is an external node"), Node.Get()))
+		{
+			TestTrue(TEXT("flagged external"), Node->HasField(TEXT("external")) && Node->GetBoolField(TEXT("external")));
+		}
+	}
+	Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexReflectDependencyGraphRefusalsTest,
 	"Cortex.Reflect.DependencyGraph.Refusals",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -988,23 +1080,94 @@ bool FCortexReflectDependencyGraphSelfAndInterfaceCallTest::RunTest(const FStrin
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexReflectDependencyGraphExternalActorWorldTest,
-	"Cortex.Reflect.DependencyGraph.ExternalActorWorld",
+	FCortexReflectDependencyGraphNestedOfpaOwnerTest,
+	"Cortex.Reflect.DependencyGraph.ExternalActorLongestOwner",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FCortexReflectDependencyGraphExternalActorWorldTest::RunTest(const FString& Parameters)
+bool FCortexReflectDependencyGraphNestedOfpaOwnerTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	const TSet<FString> Worlds = {TEXT("/Game/Maps/Arena"), TEXT("/Game/Maps/Arena/Sub"), TEXT("/Game/Other/Map")};
-	const auto Resolve = [&Worlds](const TCHAR* Package) { return FCortexReflectDependencyGraphOps::ResolveExternalActorWorld(Package, Worlds); };
+	using namespace CortexReflectDependencyGraphTestSupport;
+	FGraphFixture Fixture;
+	TArray<FString> ExternalRoots;
+	const auto Cleanup = [&]()
+	{
+		Fixture.Cleanup();
+		for (const FString& Root : ExternalRoots)
+		{
+			IFileManager::Get().DeleteDirectory(*FPackageName::LongPackageNameToFilename(Root), false, true);
+		}
+	};
 
-	// The convention is ULevel::GetExternalActorsPath: /<Root>/__ExternalActors__/<map package path>/<hashed actor path>.
-	TestEqual(TEXT("actor package maps to its map"), Resolve(TEXT("/Game/__ExternalActors__/Maps/Arena/A/BC/XYZ123")), FString(TEXT("/Game/Maps/Arena")));
-	TestEqual(TEXT("the longest matching map wins"), Resolve(TEXT("/Game/__ExternalActors__/Maps/Arena/Sub/A/BC/XYZ123")), FString(TEXT("/Game/Maps/Arena/Sub")));
-	TestEqual(TEXT("a sibling folder prefix does not match"), Resolve(TEXT("/Game/__ExternalActors__/Maps/Arenax/A/BC/XYZ123")), FString());
-	TestEqual(TEXT("the map package itself is not an actor package"), Resolve(TEXT("/Game/Maps/Arena")), FString());
-	TestEqual(TEXT("an ordinary asset is not an actor package"), Resolve(TEXT("/Game/Props/BP_Thing")), FString());
-	TestEqual(TEXT("another mount point does not match"), Resolve(TEXT("/Plugin/__ExternalActors__/Maps/Arena/A/BC/XYZ123")), FString());
-	TestEqual(TEXT("a map of another folder"), Resolve(TEXT("/Game/__ExternalActors__/Other/Map/F/GH/ABC")), FString(TEXT("/Game/Other/Map")));
+	// /Arena and /Arena/Sub are both exported; each places its own Blueprint through One-File-Per-Actor.
+	UBlueprint* OuterBlueprint = Fixture.MakeBlueprint(TEXT("BP_OuterActor"), AActor::StaticClass());
+	UBlueprint* SubBlueprint = Fixture.MakeBlueprint(TEXT("BP_SubActor"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("blueprints"), OuterBlueprint) || !TestNotNull(TEXT("blueprints"), SubBlueprint)
+		|| !TestTrue(TEXT("save blueprints"), Fixture.SaveAsset(OuterBlueprint, *FPackageName::GetAssetPackageExtension())
+			&& Fixture.SaveAsset(SubBlueprint, *FPackageName::GetAssetPackageExtension())))
+	{
+		Cleanup();
+		return false;
+	}
+
+	const auto MakeMap = [&](const FString& Name, UBlueprint* Placed) -> UWorld*
+	{
+		UPackage* Package = CreatePackage(*FString::Printf(TEXT("%s/%s"), *Fixture.Dir, *Name));
+		UWorld* World = UWorld::CreateWorld(EWorldType::Inactive, false, FName(*FPackageName::GetShortName(Name)), Package);
+		if (!World)
+		{
+			return nullptr;
+		}
+		World->SetFlags(RF_Public | RF_Standalone);
+		World->PersistentLevel->SetUseExternalActors(true);
+		ExternalRoots.Add(ULevel::GetExternalActorsPath(Package->GetName()));
+		FActorSpawnParameters Parameters;
+		Parameters.OverrideLevel = World->PersistentLevel;
+		bool bSaved = World->SpawnActor<AActor>(Placed->GeneratedClass, FTransform::Identity, Parameters) != nullptr
+			&& Fixture.SaveAsset(World, *FPackageName::GetMapPackageExtension());
+		for (AActor* LevelActor : World->PersistentLevel->Actors)
+		{
+			UPackage* ExternalPackage = LevelActor ? LevelActor->GetExternalPackage() : nullptr;
+			if (!ExternalPackage)
+			{
+				continue;
+			}
+			FString ExternalFile;
+			bSaved &= FPackageName::TryConvertLongPackageNameToFilename(ExternalPackage->GetName(), ExternalFile, FPackageName::GetAssetPackageExtension());
+			IFileManager::Get().MakeDirectory(*FPaths::GetPath(ExternalFile), true);
+			FSavePackageArgs ExternalArgs;
+			ExternalArgs.TopLevelFlags = RF_Standalone;
+			bSaved &= UPackage::SavePackage(ExternalPackage, nullptr, *ExternalFile, ExternalArgs);
+			Fixture.SavedFiles.Add(ExternalFile);
+		}
+		return bSaved ? World : nullptr;
+	};
+	UWorld* OuterWorld = MakeMap(TEXT("Arena"), OuterBlueprint);
+	UWorld* SubWorld = MakeMap(TEXT("Arena/Sub"), SubBlueprint);
+	if (!TestTrue(TEXT("both maps and their external actors saved"), OuterWorld && SubWorld))
+	{
+		Cleanup();
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FString OutPath = Fixture.ReportPath(TEXT("nested"));
+	const FCortexCommandResult Result = Run(Fixture.ExportParams(OutPath));
+	if (!TestTrue(*FString::Printf(TEXT("export succeeds (%s)"), *Result.ErrorMessage), Result.bSuccess))
+	{
+		Cleanup();
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Report = ReadJsonDocument(OutPath);
+	if (TestTrue(TEXT("report parses"), Report.IsValid()))
+	{
+		TestTrue(TEXT("Arena places its own Blueprint"),
+			HasEdge(Report, OuterWorld->GetPathName(), OuterBlueprint->GetPathName(), TEXT("level_placement")));
+		TestTrue(TEXT("Arena/Sub places its own Blueprint"),
+			HasEdge(Report, SubWorld->GetPathName(), SubBlueprint->GetPathName(), TEXT("level_placement")));
+		TestFalse(TEXT("the nested map's actor is not attributed to the enclosing map"),
+			HasEdge(Report, OuterWorld->GetPathName(), SubBlueprint->GetPathName(), TEXT("level_placement")));
+	}
+	Cleanup();
 	return true;
 }

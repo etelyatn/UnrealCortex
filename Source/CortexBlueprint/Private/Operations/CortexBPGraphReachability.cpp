@@ -65,12 +65,12 @@ namespace CortexBPGraphReachability
 		return GraphType == GT_Animation || GraphType == GT_StateMachine;
 	}
 
-	void GatherExecForward(const TArray<UEdGraphNode*>& Seeds, TSet<UEdGraphNode*>& OutReachable, const bool bEnabledOnly)
+	void GatherExecForward(const TArray<UEdGraphNode*>& Seeds, TSet<UEdGraphNode*>& OutReachable)
 	{
 		TArray<UEdGraphNode*> Queue;
 		for (UEdGraphNode* Seed : Seeds)
 		{
-			if (Seed && (!bEnabledOnly || Seed->IsNodeEnabled()))
+			if (Seed)
 			{
 				OutReachable.Add(Seed);
 				Queue.Add(Seed);
@@ -91,7 +91,7 @@ namespace CortexBPGraphReachability
 				for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
 				{
 					UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
-					if (LinkedNode && (!bEnabledOnly || LinkedNode->IsNodeEnabled()) && !OutReachable.Contains(LinkedNode))
+					if (LinkedNode && !OutReachable.Contains(LinkedNode))
 					{
 						OutReachable.Add(LinkedNode);
 						Queue.Add(LinkedNode);
@@ -133,35 +133,4 @@ namespace CortexBPGraphReachability
 		}
 	}
 
-	void ExpandBackwardDataClosure(TSet<UEdGraphNode*>& InOutReachable, const bool bEnabledOnly)
-	{
-		TArray<UEdGraphNode*> Queue = InOutReachable.Array();
-		int32 QueueIndex = 0;
-		while (QueueIndex < Queue.Num())
-		{
-			const UEdGraphNode* CurrentNode = Queue[QueueIndex++];
-			if (!CurrentNode)
-			{
-				continue;
-			}
-
-			for (const UEdGraphPin* Pin : CurrentNode->Pins)
-			{
-				if (!Pin || Pin->Direction != EGPD_Input || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
-				{
-					continue;
-				}
-
-				for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
-				{
-					UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
-					if (LinkedNode && (!bEnabledOnly || LinkedNode->IsNodeEnabled()) && !InOutReachable.Contains(LinkedNode))
-					{
-						InOutReachable.Add(LinkedNode);
-						Queue.Add(LinkedNode);
-					}
-				}
-			}
-		}
-	}
 }

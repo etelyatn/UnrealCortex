@@ -223,7 +223,7 @@ namespace CortexReflectDuplicateGraphTestSupport
 		}
 
 		/** Widget Blueprint with a canvas root and one text block per name, added in the given order. */
-		UBlueprint* MakeWidgetBlueprint(const FString& Name, const TArray<FString>& TextNames)
+		UBlueprint* MakeWidgetBlueprint(const FString& Name, const TArray<FString>& TextNames, const FString& SubDir = FString())
 		{
 			UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
 			UClass* WidgetGeneratedClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.WidgetBlueprintGeneratedClass"));
@@ -231,7 +231,7 @@ namespace CortexReflectDuplicateGraphTestSupport
 			{
 				return nullptr;
 			}
-			UPackage* Package = CreatePackage(*FString::Printf(TEXT("%s/%s"), *Dir, *Name));
+			UPackage* Package = CreatePackage(*FString::Printf(TEXT("%s%s/%s"), *Dir, *SubDir, *Name));
 			UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
 				UUserWidget::StaticClass(), Package, FName(*Name), BPTYPE_Normal, WidgetBlueprintClass, WidgetGeneratedClass, NAME_None);
 			if (!Blueprint)
@@ -838,6 +838,86 @@ bool FCortexReflectDuplicateGraphLooseTest::RunTest(const FString& Parameters)
 		if (TestNotNull(TEXT("host pair"), HostPair.Get()))
 		{
 			TestEqual(TEXT("widget_tree_similarity ignores the sibling class"), HostPair->GetNumberField(TEXT("widget_tree_similarity")), 1.0, 0.0001);
+		}
+	}
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectDuplicateGraphStrictWidgetClassTest,
+	"Cortex.Reflect.DuplicateGraphs.StrictWidgetClassIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectDuplicateGraphStrictWidgetClassTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectDuplicateGraphTestSupport;
+
+	// Two different child widget classes share the short name WBP_Row (/FeatureA and /FeatureB). Hosts H1 and H3 place
+	// the FeatureA one, H2 the FeatureB one, with identical widget names: only H1 and H3 are strictly identical.
+	FDuplicateFixture Fixture;
+	UBlueprint* RowA = Fixture.MakeWidgetBlueprint(TEXT("WBP_Row"), {}, TEXT("/FeatureA"));
+	UBlueprint* RowB = Fixture.MakeWidgetBlueprint(TEXT("WBP_Row"), {}, TEXT("/FeatureB"));
+	if (!TestNotNull(TEXT("row A"), RowA) || !TestNotNull(TEXT("row B"), RowB))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(RowA);
+	FKismetEditorUtilities::CompileBlueprint(RowB);
+	if (!TestNotNull(TEXT("row A class"), RowA->GeneratedClass.Get()) || !TestNotNull(TEXT("row B class"), RowB->GeneratedClass.Get()))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	TestNotEqual(TEXT("the two row classes share a short name but not a path"), RowA->GeneratedClass->GetPathName(), RowB->GeneratedClass->GetPathName());
+	TestEqual(TEXT("the two row classes share a short name"), RowA->GeneratedClass->GetName(), RowB->GeneratedClass->GetName());
+
+	UBlueprint* Hosts[3] = {
+		Fixture.MakeWidgetBlueprint(TEXT("WBP_HostH1"), {}), Fixture.MakeWidgetBlueprint(TEXT("WBP_HostH2"), {}),
+		Fixture.MakeWidgetBlueprint(TEXT("WBP_HostH3"), {})};
+	UBlueprint* RowFor[3] = {RowA, RowB, RowA};
+	for (int32 Slot = 0; Slot < 3; ++Slot)
+	{
+		if (!TestNotNull(TEXT("host"), Hosts[Slot]))
+		{
+			Fixture.Cleanup();
+			return false;
+		}
+		UWidgetTree* Tree = FDuplicateFixture::GetWidgetTree(Hosts[Slot]);
+		UPanelWidget* Root = Cast<UPanelWidget>(Tree->RootWidget);
+		UClass* RowClass = RowFor[Slot]->GeneratedClass;
+		for (const TCHAR* Name : {TEXT("Row1"), TEXT("Row2"), TEXT("Row3")})
+		{
+			Root->AddChild(Tree->ConstructWidget<UUserWidget>(RowClass, Name));
+		}
+		Root->AddChild(Tree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("Label")));
+	}
+	if (!TestTrue(TEXT("save row A"), Fixture.SaveAsset(RowA)) || !TestTrue(TEXT("save row B"), Fixture.SaveAsset(RowB))
+		|| !TestTrue(TEXT("save H1"), Fixture.SaveAsset(Hosts[0])) || !TestTrue(TEXT("save H2"), Fixture.SaveAsset(Hosts[1]))
+		|| !TestTrue(TEXT("save H3"), Fixture.SaveAsset(Hosts[2])))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FCortexCommandResult Run = Fixture.Run({}, {});
+	if (TestTrue(TEXT("run succeeds"), Run.bSuccess) && TestTrue(TEXT("data"), Run.Data.IsValid()))
+	{
+		const TSharedPtr<FJsonObject> Group = FindGroup(ObjectArray(Run.Data, TEXT("exact_groups")), TEXT("widget_tree"));
+		if (TestNotNull(TEXT("H1 and H3 are an exact widget_tree group"), Group.Get()))
+		{
+			const TArray<FString> Labels = MemberLabels(Group);
+			TestEqual(TEXT("exactly the two hosts that place the same row class"), Labels.Num(), 2);
+			const auto Has = [&Labels](const TCHAR* Host)
+			{
+				return Labels.ContainsByPredicate([Host](const FString& Label) { return Label.StartsWith(Host); });
+			};
+			TestTrue(TEXT("H1 grouped"), Has(TEXT("WBP_HostH1")));
+			TestTrue(TEXT("H3 grouped"), Has(TEXT("WBP_HostH3")));
+			TestFalse(TEXT("H2 places a different class of the same short name"), Has(TEXT("WBP_HostH2")));
 		}
 	}
 	Fixture.Cleanup();

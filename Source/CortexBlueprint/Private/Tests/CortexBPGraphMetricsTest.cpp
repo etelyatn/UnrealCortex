@@ -119,7 +119,16 @@ namespace
 		return Link(From, FromPin, To, UEdGraphSchema_K2::PN_Execute);
 	}
 
-	/** Adds an inner-graph boundary tunnel with one exec pin: an entry (outputs only) or an exit (inputs only). */
+	/** Links an output pin to the exec input of an inner-graph exit tunnel (named like the instance's Then output). */
+	bool LinkExit(UEdGraphNode* From, const FName FromPin, UEdGraphNode* Exit)
+	{
+		return Link(From, FromPin, Exit, UEdGraphSchema_K2::PN_Then);
+	}
+
+	/**
+	 * Adds an inner-graph boundary tunnel: an entry (one exec output named like the instance's Execute input) or an exit
+	 * (one exec input named like the instance's Then output). Pin names are how the compiler matches tunnel and instance pins.
+	 */
 	UK2Node_Tunnel* AddBoundaryTunnel(UEdGraph* Graph, const bool bEntry)
 	{
 		UK2Node_Tunnel* Tunnel = NewObject<UK2Node_Tunnel>(Graph);
@@ -128,7 +137,7 @@ namespace
 		Tunnel->CreateNewGuid();
 		Graph->AddNode(Tunnel, false, false);
 		Tunnel->CreatePin(bEntry ? EGPD_Output : EGPD_Input, UEdGraphSchema_K2::PC_Exec,
-			bEntry ? UEdGraphSchema_K2::PN_Then : UEdGraphSchema_K2::PN_Execute);
+			bEntry ? UEdGraphSchema_K2::PN_Execute : UEdGraphSchema_K2::PN_Then);
 		return Tunnel;
 	}
 
@@ -346,6 +355,7 @@ bool FCortexBPGraphMetricsMacroAndCompositeExpandedTest::RunTest(const FString& 
 	UEdGraph* Inner1 = MakeInnerGraph(Outer, TEXT("Inner1"));
 	Outer->BoundGraph = Inner1;
 	UK2Node_Tunnel* Entry1 = AddBoundaryTunnel(Inner1, true);
+	UK2Node_Tunnel* Exit1 = AddBoundaryTunnel(Inner1, false);
 	UK2Node_CallFunction* PrintOne = AddPrintString(Inner1);
 	UK2Node_CallFunction* PrintTwo = AddPrintString(Inner1);
 
@@ -354,6 +364,7 @@ bool FCortexBPGraphMetricsMacroAndCompositeExpandedTest::RunTest(const FString& 
 	UEdGraph* Inner2 = MakeInnerGraph(Nested, TEXT("Inner2"));
 	Nested->BoundGraph = Inner2;
 	UK2Node_Tunnel* Entry2 = AddBoundaryTunnel(Inner2, true);
+	UK2Node_Tunnel* Exit2 = AddBoundaryTunnel(Inner2, false);
 	UK2Node_CallFunction* PrintNested = AddPrintString(Inner2);
 
 	// Cycle: a composite inside Inner1 that is bound back to Inner1.
@@ -361,11 +372,13 @@ bool FCortexBPGraphMetricsMacroAndCompositeExpandedTest::RunTest(const FString& 
 	Cyclic->BoundGraph = Inner1;
 
 	if (!TestTrue(TEXT("Inner graphs wired"),
-		LinkExec(Entry1, UEdGraphSchema_K2::PN_Then, PrintOne)
+		LinkExec(Entry1, UEdGraphSchema_K2::PN_Execute, PrintOne)
 		&& LinkExec(PrintOne, UEdGraphSchema_K2::PN_Then, PrintTwo)
 		&& LinkExec(PrintTwo, UEdGraphSchema_K2::PN_Then, Nested)
 		&& LinkExec(Nested, UEdGraphSchema_K2::PN_Then, Cyclic)
-		&& LinkExec(Entry2, UEdGraphSchema_K2::PN_Then, PrintNested))) { return false; }
+		&& LinkExec(Entry2, UEdGraphSchema_K2::PN_Execute, PrintNested)
+		&& LinkExit(PrintNested, UEdGraphSchema_K2::PN_Then, Exit2)
+		&& LinkExit(Cyclic, UEdGraphSchema_K2::PN_Then, Exit1))) { return false; }
 
 	// Standard macro instance: counted as its macro graph's functional nodes.
 	UBlueprint* StandardMacros = LoadObject<UBlueprint>(nullptr, TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros"));
@@ -878,19 +891,22 @@ bool FCortexBPGraphMetricsDisabledNodeInLiveChainTest::RunTest(const FString& Pa
 	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
 	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay)) { return false; }
 
-	// BeginPlay -> A -> B (user-disabled) -> C, and a disabled pure feeder into A.
+	// BeginPlay -> A -> B (user-disabled) -> B2 (user-disabled) -> C, and a disabled pure feeder into A.
 	UK2Node_CallFunction* PrintA = AddPrintString(EventGraph);
 	UK2Node_CallFunction* PrintB = AddPrintString(EventGraph);
+	UK2Node_CallFunction* PrintB2 = AddPrintString(EventGraph);
 	UK2Node_CallFunction* PrintC = AddPrintString(EventGraph);
 	UK2Node_CallFunction* DisabledFeeder = AddPureNot(EventGraph);
 	UK2Node_CallFunction* LiveFeeder = AddPureNot(EventGraph);
 	if (!TestTrue(TEXT("Graph wired"),
 		LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, PrintA)
 		&& LinkExec(PrintA, UEdGraphSchema_K2::PN_Then, PrintB)
-		&& LinkExec(PrintB, UEdGraphSchema_K2::PN_Then, PrintC)
+		&& LinkExec(PrintB, UEdGraphSchema_K2::PN_Then, PrintB2)
+		&& LinkExec(PrintB2, UEdGraphSchema_K2::PN_Then, PrintC)
 		&& Link(LiveFeeder, TEXT("ReturnValue"), PrintA, TEXT("bPrintToScreen"))
 		&& Link(DisabledFeeder, TEXT("ReturnValue"), PrintA, TEXT("bPrintToLog")))) { return false; }
 	PrintB->SetEnabledState(ENodeEnabledState::Disabled);
+	PrintB2->SetEnabledState(ENodeEnabledState::Disabled);
 	DisabledFeeder->SetEnabledState(ENodeEnabledState::Disabled);
 
 	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
@@ -898,9 +914,9 @@ bool FCortexBPGraphMetricsDisabledNodeInLiveChainTest::RunTest(const FString& Pa
 
 	const TSharedPtr<FJsonObject> Entry = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
 	if (!TestTrue(TEXT("BeginPlay entry"), Entry.IsValid())) { return false; }
-	TestEqual(TEXT("only A and its enabled feeder count; the disabled node blocks the rest"),
-		static_cast<int32>(Entry->GetNumberField(TEXT("functional_nodes"))), 2);
-	TestEqual(TEXT("totals match"), TotalField(Result.Data, TEXT("functional_nodes")), 2);
+	TestEqual(TEXT("A, its enabled feeder and C count; B and B2 are disabled passthroughs, never logic"),
+		static_cast<int32>(Entry->GetNumberField(TEXT("functional_nodes"))), 3);
+	TestEqual(TEXT("totals match"), TotalField(Result.Data, TEXT("functional_nodes")), 3);
 	const auto RowsListNode = [&Result](const UEdGraphNode* Node)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
@@ -921,10 +937,11 @@ bool FCortexBPGraphMetricsDisabledNodeInLiveChainTest::RunTest(const FString& Pa
 	};
 	TestTrue(TEXT("the user-disabled node is reported under disabled"), RowsListNode(PrintB));
 	TestTrue(TEXT("the disabled feeder is reported under disabled"), RowsListNode(DisabledFeeder));
+	TestTrue(TEXT("the second disabled passthrough is reported under disabled"), RowsListNode(PrintB2));
 	TestEqual(TEXT("disabled totals equal the disabled rows"), TotalField(Result.Data, TEXT("disabled_nodes")),
 		RowCount(Result.Data, TEXT("disabled"), FString()));
-	TestEqual(TEXT("C is enabled but only reachable through the disabled node, so it is unreachable"),
-		RowCount(Result.Data, TEXT("unreachable"), FString()), 1);
+	TestEqual(TEXT("C is enabled and reached through the disabled node's passthrough, so nothing is unreachable"),
+		RowCount(Result.Data, TEXT("unreachable"), FString()), 0);
 	return true;
 }
 
@@ -956,9 +973,11 @@ bool FCortexBPGraphMetricsCompositeInnerReachabilityTest::RunTest(const FString&
 	UK2Node_CallFunction* Connected = AddPrintString(Inner);
 	AddPrintString(Inner); // disconnected
 	AddPrintString(Inner); // disconnected
+	UK2Node_Tunnel* InnerExit = AddBoundaryTunnel(Inner, false);
 	if (!TestTrue(TEXT("Composite wired"),
 		LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, Composite)
-		&& LinkExec(InnerEntry, UEdGraphSchema_K2::PN_Then, Connected))) { return false; }
+		&& LinkExec(InnerEntry, UEdGraphSchema_K2::PN_Execute, Connected)
+		&& LinkExit(Connected, UEdGraphSchema_K2::PN_Then, InnerExit))) { return false; }
 
 	// A macro instance whose macro graph cannot be resolved still counts as one node of the budget.
 	UK2Node_MacroInstance* BrokenMacro = NewObject<UK2Node_MacroInstance>(EventGraph);
@@ -1083,7 +1102,7 @@ bool FCortexBPGraphMetricsForeignMacroNoFindingsTest::RunTest(const FString& Par
 	UK2Node_Tunnel* MacroEntry = AddBoundaryTunnel(ForeignMacro, true);
 	UK2Node_CallFunction* Reached = AddPrintString(ForeignMacro);
 	AddPrintString(ForeignMacro);
-	if (!TestTrue(TEXT("Macro wired"), LinkExec(MacroEntry, UEdGraphSchema_K2::PN_Then, Reached))) { return false; }
+	if (!TestTrue(TEXT("Macro wired"), LinkExec(MacroEntry, UEdGraphSchema_K2::PN_Execute, Reached))) { return false; }
 
 	UK2Node_MacroInstance* Instance = NewObject<UK2Node_MacroInstance>(EventGraph);
 	Instance->SetMacroGraph(ForeignMacro);
@@ -1098,5 +1117,316 @@ bool FCortexBPGraphMetricsForeignMacroNoFindingsTest::RunTest(const FString& Par
 	TestEqual(TEXT("the foreign macro's reached node is still counted"), TotalField(Result.Data, TEXT("functional_nodes")), 1);
 	TestEqual(TEXT("no findings rows for a macro owned by another asset"), RowCount(Result.Data, TEXT("unreachable"), ForeignMacro->GetName()), 0);
 	TestEqual(TEXT("no unreachable total from it"), TotalField(Result.Data, TEXT("unreachable_nodes")), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsDisabledMultiOutputBlocksTest,
+	"Cortex.Blueprint.GraphMetrics.DisabledMultiOutputBlocks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsDisabledMultiOutputBlocksTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsDisabledBranch"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay)) { return false; }
+
+	// BeginPlay -> A -> Branch (disabled, two exec outputs: the compiler supplies no passthrough) -> C / D.
+	UK2Node_CallFunction* PrintA = AddPrintString(EventGraph);
+	UK2Node_CallFunction* PrintC = AddPrintString(EventGraph);
+	UK2Node_CallFunction* PrintD = AddPrintString(EventGraph);
+	UK2Node_IfThenElse* Branch = NewObject<UK2Node_IfThenElse>(EventGraph);
+	Branch->CreateNewGuid();
+	EventGraph->AddNode(Branch, false, false);
+	Branch->AllocateDefaultPins();
+	if (!TestTrue(TEXT("Graph wired"),
+		LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, PrintA)
+		&& LinkExec(PrintA, UEdGraphSchema_K2::PN_Then, Branch)
+		&& LinkExec(Branch, UEdGraphSchema_K2::PN_Then, PrintC)
+		&& Link(Branch, UEdGraphSchema_K2::PN_Else, PrintD, UEdGraphSchema_K2::PN_Execute))) { return false; }
+	Branch->SetEnabledState(ENodeEnabledState::Disabled);
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	const TSharedPtr<FJsonObject> Entry = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
+	if (!TestTrue(TEXT("BeginPlay entry"), Entry.IsValid())) { return false; }
+	TestEqual(TEXT("only A counts; the ambiguous disabled branch blocks the flow"),
+		static_cast<int32>(Entry->GetNumberField(TEXT("functional_nodes"))), 1);
+	TestEqual(TEXT("C and D are unreachable"), RowCount(Result.Data, TEXT("unreachable"), FString()), 2);
+	bool bBranchListedDisabled = false;
+	const TArray<TSharedPtr<FJsonValue>>* DisabledRows = nullptr;
+	if (Result.Data->TryGetArrayField(TEXT("disabled"), DisabledRows))
+	{
+		for (const TSharedPtr<FJsonValue>& Row : *DisabledRows)
+		{
+			for (const TSharedPtr<FJsonValue>& Id : Row->AsObject()->GetArrayField(TEXT("node_ids")))
+			{
+				bBranchListedDisabled |= Id->AsString() == Branch->GetName();
+			}
+		}
+	}
+	TestTrue(TEXT("the disabled branch is reported disabled"), bBranchListedDisabled);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsTunnelPinRoutingTest,
+	"Cortex.Blueprint.GraphMetrics.TunnelPinRouting",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsTunnelPinRoutingTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsTunnelRouting"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	UEdGraphNode* Tick = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveTick")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay) || !TestNotNull(TEXT("Tick node"), Tick)) { return false; }
+
+	// A collapsed graph with two independent exec inputs (Execute, Other) and two exec outputs (Then, Done).
+	const FName OtherIn(TEXT("Other"));
+	const FName DoneOut(TEXT("Done"));
+	UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(EventGraph);
+	Composite->CreateNewGuid();
+	EventGraph->AddNode(Composite, false, false);
+	Composite->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Execute);
+	Composite->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, OtherIn);
+	Composite->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Then);
+	Composite->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, DoneOut);
+	UEdGraph* Inner = NewObject<UEdGraph>(Composite, TEXT("TwoRouteInner"));
+	Inner->Schema = UEdGraphSchema_K2::StaticClass();
+	Composite->BoundGraph = Inner;
+
+	UK2Node_Tunnel* InnerEntry = AddBoundaryTunnel(Inner, true);
+	InnerEntry->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, OtherIn);
+	UK2Node_Tunnel* InnerExit = AddBoundaryTunnel(Inner, false);
+	InnerExit->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, DoneOut);
+
+	// Route A (Execute -> Then): one print. Route B (Other -> Done): eleven prints.
+	UK2Node_CallFunction* RouteA = AddPrintString(Inner);
+	bool bWired = LinkExec(InnerEntry, UEdGraphSchema_K2::PN_Execute, RouteA)
+		&& LinkExit(RouteA, UEdGraphSchema_K2::PN_Then, InnerExit);
+	UEdGraphNode* Previous = InnerEntry;
+	FName PreviousPin = OtherIn;
+	for (int32 Index = 0; Index < 11; ++Index)
+	{
+		UK2Node_CallFunction* RouteB = AddPrintString(Inner);
+		bWired = bWired && Link(Previous, PreviousPin, RouteB, UEdGraphSchema_K2::PN_Execute);
+		Previous = RouteB;
+		PreviousPin = UEdGraphSchema_K2::PN_Then;
+	}
+	bWired = bWired && Link(Previous, PreviousPin, InnerExit, DoneOut);
+
+	UK2Node_CallFunction* AfterThen = AddPrintString(EventGraph);
+	UK2Node_CallFunction* AfterDone = AddPrintString(EventGraph);
+	bWired = bWired
+		&& LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, Composite)
+		&& Link(Composite, UEdGraphSchema_K2::PN_Then, AfterThen, UEdGraphSchema_K2::PN_Execute)
+		&& Link(Composite, DoneOut, AfterDone, UEdGraphSchema_K2::PN_Execute);
+	if (!TestTrue(TEXT("Graph wired"), bWired)) { return false; }
+
+	{
+		const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+		if (!TestTrue(TEXT("graph_metrics succeeded (Execute only)"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+		const TSharedPtr<FJsonObject> Entry = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
+		if (!TestTrue(TEXT("BeginPlay entry"), Entry.IsValid())) { return false; }
+		TestEqual(TEXT("only route A and the Then continuation count"),
+			static_cast<int32>(Entry->GetNumberField(TEXT("functional_nodes"))), 2);
+		TestEqual(TEXT("route B's eleven nodes are unreachable inside the collapsed graph"),
+			RowCount(Result.Data, TEXT("unreachable"), Inner->GetName()), 11);
+		TestEqual(TEXT("the Done continuation is unreachable in the outer graph"),
+			RowCount(Result.Data, TEXT("unreachable"), FString()), 1);
+	}
+
+	if (!TestTrue(TEXT("Tick wired to the Other input"), Link(Tick, UEdGraphSchema_K2::PN_Then, Composite, OtherIn))) { return false; }
+	{
+		const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+		if (!TestTrue(TEXT("graph_metrics succeeded (both inputs)"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+		const TSharedPtr<FJsonObject> BeginPlayEntry = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
+		const TSharedPtr<FJsonObject> TickEntry = FindEntry(Result.Data, TEXT("ReceiveTick"));
+		if (!TestTrue(TEXT("both entries"), BeginPlayEntry.IsValid() && TickEntry.IsValid())) { return false; }
+		TestEqual(TEXT("BeginPlay still counts route A plus Then"),
+			static_cast<int32>(BeginPlayEntry->GetNumberField(TEXT("functional_nodes"))), 2);
+		TestEqual(TEXT("Tick counts route B plus Done"),
+			static_cast<int32>(TickEntry->GetNumberField(TEXT("functional_nodes"))), 12);
+		TestEqual(TEXT("totals are the distinct union over both entries"), TotalField(Result.Data, TEXT("functional_nodes")), 14);
+		TestEqual(TEXT("nothing is unreachable once both inputs are used"), TotalField(Result.Data, TEXT("unreachable_nodes")), 0);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsGettersAcrossExpansionTest,
+	"Cortex.Blueprint.GraphMetrics.GettersAcrossExpansion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsGettersAcrossExpansionTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsGetterExpansion"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	FEdGraphPinType StringType;
+	StringType.PinCategory = UEdGraphSchema_K2::PC_String;
+	FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("Msg"), StringType);
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	UEdGraphNode* Tick = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveTick")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay) || !TestNotNull(TEXT("Tick node"), Tick)) { return false; }
+
+	const auto MakeComposite = [EventGraph](const TCHAR* InnerName, const bool bWithMsgInput, UEdGraph*& OutInner)
+	{
+		UK2Node_Composite* Composite = NewObject<UK2Node_Composite>(EventGraph);
+		Composite->CreateNewGuid();
+		EventGraph->AddNode(Composite, false, false);
+		Composite->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Execute);
+		Composite->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Then);
+		if (bWithMsgInput)
+		{
+			Composite->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_String, TEXT("Msg"));
+		}
+		OutInner = NewObject<UEdGraph>(Composite, FName(InnerName));
+		OutInner->Schema = UEdGraphSchema_K2::StaticClass();
+		Composite->BoundGraph = OutInner;
+		return Composite;
+	};
+	const auto AddGetter = [](UEdGraph* Graph)
+	{
+		UK2Node_VariableGet* Getter = NewObject<UK2Node_VariableGet>(Graph);
+		Getter->VariableReference.SetSelfMember(TEXT("Msg"));
+		Getter->CreateNewGuid();
+		Graph->AddNode(Getter, false, false);
+		Getter->AllocateDefaultPins();
+		return Getter;
+	};
+
+	// BeginPlay: a getter inside a collapsed graph feeding two prints.
+	UEdGraph* InnerA = nullptr;
+	UK2Node_Composite* CompositeA = MakeComposite(TEXT("GetterInner"), false, InnerA);
+	UK2Node_Tunnel* EntryA = AddBoundaryTunnel(InnerA, true);
+	UK2Node_Tunnel* ExitA = AddBoundaryTunnel(InnerA, false);
+	UK2Node_CallFunction* PrintX = AddPrintString(InnerA);
+	UK2Node_CallFunction* PrintY = AddPrintString(InnerA);
+	UK2Node_VariableGet* InnerGetter = AddGetter(InnerA);
+
+	// Tick: an outer getter wired into a collapsed graph whose entry tunnel feeds two prints.
+	UEdGraph* InnerB = nullptr;
+	UK2Node_Composite* CompositeB = MakeComposite(TEXT("BoundaryInner"), true, InnerB);
+	UK2Node_Tunnel* EntryB = AddBoundaryTunnel(InnerB, true);
+	EntryB->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_String, TEXT("Msg"));
+	UK2Node_Tunnel* ExitB = AddBoundaryTunnel(InnerB, false);
+	UK2Node_CallFunction* PrintZ1 = AddPrintString(InnerB);
+	UK2Node_CallFunction* PrintZ2 = AddPrintString(InnerB);
+	UK2Node_VariableGet* OuterGetter = AddGetter(EventGraph);
+
+	if (!TestTrue(TEXT("Graph wired"),
+		LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, CompositeA)
+		&& LinkExec(EntryA, UEdGraphSchema_K2::PN_Execute, PrintX)
+		&& LinkExec(PrintX, UEdGraphSchema_K2::PN_Then, PrintY)
+		&& LinkExit(PrintY, UEdGraphSchema_K2::PN_Then, ExitA)
+		&& Link(InnerGetter, TEXT("Msg"), PrintX, TEXT("InString"))
+		&& Link(InnerGetter, TEXT("Msg"), PrintY, TEXT("InString"))
+		&& LinkExec(Tick, UEdGraphSchema_K2::PN_Then, CompositeB)
+		&& Link(OuterGetter, TEXT("Msg"), CompositeB, TEXT("Msg"))
+		&& LinkExec(EntryB, UEdGraphSchema_K2::PN_Execute, PrintZ1)
+		&& LinkExec(PrintZ1, UEdGraphSchema_K2::PN_Then, PrintZ2)
+		&& LinkExit(PrintZ2, UEdGraphSchema_K2::PN_Then, ExitB)
+		&& Link(EntryB, TEXT("Msg"), PrintZ1, TEXT("InString"))
+		&& Link(EntryB, TEXT("Msg"), PrintZ2, TEXT("InString")))) { return false; }
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+
+	const TSharedPtr<FJsonObject> InnerEntry = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
+	const TSharedPtr<FJsonObject> BoundaryEntry = FindEntry(Result.Data, TEXT("ReceiveTick"));
+	if (!TestTrue(TEXT("both entries"), InnerEntry.IsValid() && BoundaryEntry.IsValid())) { return false; }
+
+	TestEqual(TEXT("getter inside the collapsed graph: functional nodes"),
+		static_cast<int32>(InnerEntry->GetNumberField(TEXT("functional_nodes"))), 3);
+	TestEqual(TEXT("getter inside the collapsed graph: variable_gets"),
+		static_cast<int32>(InnerEntry->GetNumberField(TEXT("variable_gets"))), 1);
+	TestEqual(TEXT("getter inside the collapsed graph: max_getter_fanout"),
+		static_cast<int32>(InnerEntry->GetNumberField(TEXT("max_getter_fanout"))), 2);
+
+	TestEqual(TEXT("getter across the boundary: functional nodes"),
+		static_cast<int32>(BoundaryEntry->GetNumberField(TEXT("functional_nodes"))), 3);
+	TestEqual(TEXT("getter across the boundary: variable_gets"),
+		static_cast<int32>(BoundaryEntry->GetNumberField(TEXT("variable_gets"))), 1);
+	TestEqual(TEXT("getter across the boundary: fan-out counts the consumers inside the collapsed graph"),
+		static_cast<int32>(BoundaryEntry->GetNumberField(TEXT("max_getter_fanout"))), 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsGetterFanoutSharedGraphTest,
+	"Cortex.Blueprint.GraphMetrics.GetterFanoutSharedGraphInstances",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsGetterFanoutSharedGraphTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsGetterSharedGraph"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	FEdGraphPinType StringType;
+	StringType.PinCategory = UEdGraphSchema_K2::PC_String;
+	FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("Msg"), StringType);
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay)) { return false; }
+
+	// One inner graph shared by two composite instances; its single PrintString consumes the entry tunnel's Msg.
+	UK2Node_Composite* Instances[2] = {nullptr, nullptr};
+	UEdGraph* Shared = NewObject<UEdGraph>(EventGraph, TEXT("SharedInner"));
+	Shared->Schema = UEdGraphSchema_K2::StaticClass();
+	for (UK2Node_Composite*& Instance : Instances)
+	{
+		Instance = NewObject<UK2Node_Composite>(EventGraph);
+		Instance->CreateNewGuid();
+		EventGraph->AddNode(Instance, false, false);
+		Instance->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Execute);
+		Instance->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, UEdGraphSchema_K2::PN_Then);
+		Instance->CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_String, TEXT("Msg"));
+		Instance->BoundGraph = Shared;
+	}
+	UK2Node_Tunnel* Entry = AddBoundaryTunnel(Shared, true);
+	Entry->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_String, TEXT("Msg"));
+	UK2Node_Tunnel* Exit = AddBoundaryTunnel(Shared, false);
+	UK2Node_CallFunction* Print = AddPrintString(Shared);
+
+	UK2Node_VariableGet* Getter = NewObject<UK2Node_VariableGet>(EventGraph);
+	Getter->VariableReference.SetSelfMember(TEXT("Msg"));
+	Getter->CreateNewGuid();
+	EventGraph->AddNode(Getter, false, false);
+	Getter->AllocateDefaultPins();
+
+	if (!TestTrue(TEXT("Graph wired"),
+		LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, Instances[0])
+		&& LinkExec(Instances[0], UEdGraphSchema_K2::PN_Then, Instances[1])
+		&& LinkExec(Entry, UEdGraphSchema_K2::PN_Execute, Print)
+		&& LinkExit(Print, UEdGraphSchema_K2::PN_Then, Exit)
+		&& Link(Entry, TEXT("Msg"), Print, TEXT("InString"))
+		&& Link(Getter, TEXT("Msg"), Instances[0], TEXT("Msg"))
+		&& Link(Getter, TEXT("Msg"), Instances[1], TEXT("Msg")))) { return false; }
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+	const TSharedPtr<FJsonObject> Entry2 = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
+	if (!TestTrue(TEXT("BeginPlay entry"), Entry2.IsValid())) { return false; }
+	TestEqual(TEXT("two instances each reach the shared print"),
+		static_cast<int32>(Entry2->GetNumberField(TEXT("functional_nodes"))), 3);
+	TestEqual(TEXT("the getter feeds one print per instance"),
+		static_cast<int32>(Entry2->GetNumberField(TEXT("max_getter_fanout"))), 2);
 	return true;
 }

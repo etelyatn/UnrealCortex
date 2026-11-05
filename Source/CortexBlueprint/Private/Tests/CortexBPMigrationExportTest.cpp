@@ -14,6 +14,8 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
+#include "GenericPlatform/GenericPlatformFile.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
@@ -774,6 +776,156 @@ bool FCortexBPMigrationExportIndexContentTest::RunTest(const FString& Parameters
 		TestEqual(TEXT("index confidence is the analysis confidence"),
 			Row->GetStringField(TEXT("migration_confidence")), Complexity->GetStringField(TEXT("migration_confidence")));
 	}
+
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPStrictParamsEnforcedTest,
+	"Cortex.Blueprint.StrictParams.DeclaredContractEnforced",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPStrictParamsEnforcedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexBPMigrationExportTestSupport;
+	FExportFixture Fixture;
+	const FString OutPath = Fixture.ReportPath(TEXT("strict"));
+
+	const auto ExpectRefused = [this](const TCHAR* Command, const TSharedPtr<FJsonObject>& Params, const TCHAR* Unknown)
+	{
+		const FCortexCommandResult Result = Run(Command, Params);
+		TestFalse(*FString::Printf(TEXT("%s refuses the unknown param '%s'"), Command, Unknown), Result.bSuccess);
+		TestEqual(*FString::Printf(TEXT("%s refusal code"), Command), Result.ErrorCode, CortexErrorCodes::InvalidField);
+		TestTrue(*FString::Printf(TEXT("%s refusal names '%s' (%s)"), Command, Unknown, *Result.ErrorMessage),
+			Result.ErrorMessage.Contains(Unknown));
+	};
+
+	// The documented typo: type instead of types would silently export every Blueprint.
+	{
+		TSharedPtr<FJsonObject> Params = ExportParams(Fixture.Dir, OutPath);
+		Params->SetArrayField(TEXT("type"), JsonStrings({TEXT("Widget")}));
+		ExpectRefused(TEXT("export_migration_analysis"), Params, TEXT("type"));
+		TestFalse(TEXT("a refused export writes no JSONL"), IFileManager::Get().FileExists(*OutPath));
+		TestFalse(TEXT("a refused export writes no index"), IFileManager::Get().FileExists(*IndexPathOf(OutPath)));
+	}
+	{
+		TSharedPtr<FJsonObject> Params = ExportParams(Fixture.Dir, OutPath);
+		Params->SetArrayField(TEXT("section"), JsonStrings({TEXT("variables")}));
+		ExpectRefused(TEXT("export_migration_analysis"), Params, TEXT("section"));
+	}
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("out_path"), OutPath);
+		Params->SetStringField(TEXT("path_prefix"), Fixture.Dir);
+		Params->SetStringField(TEXT("typo"), TEXT("1"));
+		ExpectRefused(TEXT("compile_all"), Params, TEXT("typo"));
+		TestFalse(TEXT("a refused compile_all writes no report"), IFileManager::Get().FileExists(*OutPath));
+	}
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), Fixture.Dir + TEXT("/BP_None.BP_None"));
+		Params->SetStringField(TEXT("out_path"), OutPath);
+		Params->SetArrayField(TEXT("section"), JsonStrings({TEXT("variables")}));
+		ExpectRefused(TEXT("export_snapshot"), Params, TEXT("section"));
+	}
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("before"), OutPath);
+		Params->SetStringField(TEXT("after"), OutPath);
+		Params->SetStringField(TEXT("extra"), TEXT("1"));
+		ExpectRefused(TEXT("compare_snapshots"), Params, TEXT("extra"));
+	}
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), Fixture.Dir + TEXT("/BP_None.BP_None"));
+		Params->SetStringField(TEXT("format"), TEXT("json"));
+		ExpectRefused(TEXT("export_text_inventory"), Params, TEXT("format"));
+	}
+
+	// Params the commands declare still reach the handler.
+	{
+		TSharedPtr<FJsonObject> Params = ExportParams(Fixture.Dir + TEXT("/NoSuchFolder"), OutPath);
+		const FCortexCommandResult Accepted = Run(TEXT("export_migration_analysis"), Params);
+		TestTrue(*FString::Printf(TEXT("declared params are accepted (%s)"), *Accepted.ErrorMessage), Accepted.bSuccess);
+	}
+	Fixture.Cleanup();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPMigrationExportPairConsistencyTest,
+	"Cortex.Blueprint.MigrationExport.PairConsistency",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPMigrationExportPairConsistencyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexBPMigrationExportTestSupport;
+	FExportFixture Fixture;
+	if (!Fixture.Create(*this, /*bWithWidget=*/false))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+
+	const FString OutPath = Fixture.ReportPath(TEXT("pair"));
+	const FString IndexPath = IndexPathOf(OutPath);
+	const FCortexCommandResult First = Run(TEXT("export_migration_analysis"), ExportParams(Fixture.Dir, OutPath));
+	if (!TestTrue(*FString::Printf(TEXT("first export succeeds (%s)"), *First.ErrorMessage), First.bSuccess))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	FString PreviousJsonl;
+	FString PreviousIndex;
+	if (!TestTrue(TEXT("previous JSONL readable"), FFileHelper::LoadFileToString(PreviousJsonl, *OutPath))
+		|| !TestTrue(TEXT("previous index readable"), FFileHelper::LoadFileToString(PreviousIndex, *IndexPath)))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+
+	// A reader holding the index open (read sharing only) makes replacing it fail after the JSONL could already be replaced.
+	TSharedPtr<FJsonObject> Narrow = ExportParams(Fixture.Dir, OutPath);
+	Narrow->SetArrayField(TEXT("sections"), JsonStrings({TEXT("graph_metrics")}));
+	{
+		TUniquePtr<IFileHandle> IndexLock(FPlatformFileManager::Get().GetPlatformFile().OpenRead(*IndexPath));
+		if (!TestTrue(TEXT("index held open"), IndexLock.IsValid()))
+		{
+			Fixture.Cleanup();
+			return false;
+		}
+		const FCortexCommandResult Failed = Run(TEXT("export_migration_analysis"), Narrow);
+		TestFalse(TEXT("export fails when the index cannot be replaced"), Failed.bSuccess);
+	}
+	FString JsonlAfter;
+	FString IndexAfter;
+	FFileHelper::LoadFileToString(JsonlAfter, *OutPath);
+	FFileHelper::LoadFileToString(IndexAfter, *IndexPath);
+	TestTrue(TEXT("the previous JSONL is still beside the previous index"), JsonlAfter == PreviousJsonl);
+	TestTrue(TEXT("the previous index is untouched"), IndexAfter == PreviousIndex);
+
+	// No previous JSONL: a failed index publication must not leave the new JSONL beside the stale index.
+	IFileManager::Get().Delete(*OutPath, false, true, true);
+	{
+		TUniquePtr<IFileHandle> IndexLock(FPlatformFileManager::Get().GetPlatformFile().OpenRead(*IndexPath));
+		if (!TestTrue(TEXT("index held open again"), IndexLock.IsValid()))
+		{
+			Fixture.Cleanup();
+			return false;
+		}
+		const FCortexCommandResult Failed = Run(TEXT("export_migration_analysis"), Narrow);
+		TestFalse(TEXT("export fails again"), Failed.bSuccess);
+	}
+	TestFalse(TEXT("no new JSONL is left beside the stale index"), IFileManager::Get().FileExists(*OutPath));
+
+	// With nothing holding the files the next export publishes a coherent pair.
+	const FCortexCommandResult Recovered = Run(TEXT("export_migration_analysis"), Narrow);
+	TestTrue(*FString::Printf(TEXT("export succeeds once the index is free (%s)"), *Recovered.ErrorMessage), Recovered.bSuccess);
+	TestEqual(TEXT("rows and index rows agree after publishing"),
+		ReadJsonLines(OutPath).Num(), IndexRows(ReadJsonDocument(IndexPath)).Num());
 
 	Fixture.Cleanup();
 	return true;

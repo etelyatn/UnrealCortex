@@ -659,7 +659,8 @@ namespace CortexReflectDuplicateGraphPrivate
 			}
 		}
 
-		// Widget trees are compared as class+name multisets of their widgets.
+		// Widget trees are compared as class+name multisets of their widgets. The strict hash keeps the full class path
+		// (child widget classes of different packages can share a short name); the loose descriptors use the native ancestor.
 		const FObjectProperty* TreeProperty = CastField<FObjectProperty>(Blueprint->GetClass()->FindPropertyByName(TEXT("WidgetTree")));
 		const UWidgetTree* Tree = TreeProperty ? Cast<UWidgetTree>(TreeProperty->GetObjectPropertyValue_InContainer(Blueprint)) : nullptr;
 		if (Tree)
@@ -679,7 +680,7 @@ namespace CortexReflectDuplicateGraphPrivate
 					const UPanelWidget* Parent = Widget->GetParent();
 					Unit.Descriptors.Add(FString::Printf(TEXT("%s|%s|%s"), *Widget->GetName(),
 						*NativeAncestorName(Widget->GetClass()), Parent ? *Parent->GetName() : TEXT("")));
-					Strict.Add(FString::Printf(TEXT("%s|%s"), *Widget->GetClass()->GetName(), *Widget->GetName()));
+					Strict.Add(FString::Printf(TEXT("%s|%s"), *Self.Text(Widget->GetClass()->GetPathName()), *Widget->GetName()));
 				}
 				Unit.Descriptors.Sort();
 				Strict.Sort();

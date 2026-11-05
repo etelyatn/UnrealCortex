@@ -733,20 +733,6 @@ namespace CortexReflectDependencyGraphPrivate
 	}
 }
 
-FString FCortexReflectDependencyGraphOps::ResolveExternalActorWorld(const FString& ActorPackage, const TSet<FString>& WorldPackages)
-{
-	FString Best;
-	for (const FString& WorldPackage : WorldPackages)
-	{
-		const FString ExternalActorsPath = ULevel::GetExternalActorsPath(WorldPackage);
-		if (!ExternalActorsPath.IsEmpty() && ActorPackage.StartsWith(ExternalActorsPath + TEXT("/")) && WorldPackage.Len() > Best.Len())
-		{
-			Best = WorldPackage;
-		}
-	}
-	return Best;
-}
-
 FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(const TSharedPtr<FJsonObject>& Params)
 {
 	using namespace CortexReflectDependencyGraphPrivate;
@@ -787,14 +773,21 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 	const bool bNeedsLoad = Request.NeedsBlueprintLoad();
 	const bool bNeedsDependencies = Request.Wants(EdgeKind::StructUse) || Request.Wants(EdgeKind::EnumUse) || Request.Wants(EdgeKind::LevelPlacement);
 	const UE::AssetRegistry::FDependencyQuery HardQuery(UE::AssetRegistry::EDependencyQuery::Hard);
-	TSet<FString> WorldPackages;
-	for (const FAssetEntry& Entry : Entries)
+	// (World package, "<external actors root>/") pairs, longest root first: the first match owns an actor package.
+	TArray<TPair<FString, FString>> WorldActorRoots;
+	for (const FAssetEntry& WorldEntry : Entries)
 	{
-		if (Entry.Kind == NodeKind::World)
+		if (WorldEntry.Kind == NodeKind::World)
 		{
-			WorldPackages.Add(Entry.Asset->PackageName.ToString());
+			const FString WorldPackage = WorldEntry.Asset->PackageName.ToString();
+			const FString Root = ULevel::GetExternalActorsPath(WorldPackage);
+			if (!Root.IsEmpty())
+			{
+				WorldActorRoots.Emplace(WorldPackage, Root + TEXT("/"));
+			}
 		}
 	}
+	WorldActorRoots.Sort([](const TPair<FString, FString>& A, const TPair<FString, FString>& B) { return A.Value.Len() > B.Value.Len(); });
 	bool bLoadedAny = false;
 	TArray<FString> LoadFailures;
 	FUnresolved Unresolved;
@@ -874,24 +867,53 @@ FCortexCommandResult FCortexReflectDependencyGraphOps::ExportDependencyGraph(con
 				}
 			}
 
-			// level_placement with World Partition / One-File-Per-Actor: placed actors live in external actor packages
-			// that the map package does not depend on. A package referencing the Blueprint that sits under the map's
-			// __ExternalActors__ folder is a placement in that map.
-			if (Entry.Kind == NodeKind::Blueprint && Request.Wants(EdgeKind::LevelPlacement) && WorldPackages.Num() > 0)
+			// level_placement with World Partition / One-File-Per-Actor: placed actors live in external actor packages that
+			// the map package does not depend on. The packages under the World's __ExternalActors__ folder are enumerated
+			// and every Blueprint they depend on is a placement in that map, whether or not it is under the prefixes
+			// (an ordinary map's hard dependencies emit out-of-prefix Blueprints as external nodes the same way).
+			if (Entry.Kind == NodeKind::World && Request.Wants(EdgeKind::LevelPlacement))
 			{
-				TArray<FName> Referencers;
-				Registry.GetReferencers(Asset.PackageName, Referencers, UE::AssetRegistry::EDependencyCategory::Package, HardQuery);
-				for (const FName Referencer : Referencers)
+				const FString ExternalActorsPath = ULevel::GetExternalActorsPath(Asset.PackageName.ToString());
+				TArray<FAssetData> ActorAssets;
+				if (!ExternalActorsPath.IsEmpty())
 				{
-					const FString WorldPackage = ResolveExternalActorWorld(Referencer.ToString(), WorldPackages);
-					if (WorldPackage.IsEmpty())
+					Registry.GetAssetsByPath(FName(*ExternalActorsPath), ActorAssets, /*bRecursive=*/true);
+				}
+				TSet<FName> ActorPackages;
+				for (const FAssetData& ActorAsset : ActorAssets)
+				{
+					// Nested maps (/Maps/Arena and /Maps/Arena/Sub) share a folder prefix: the longest owning World wins.
+					const FString ActorPackageName = ActorAsset.PackageName.ToString();
+					FString Owner;
+					for (const TPair<FString, FString>& WorldRoot : WorldActorRoots)
 					{
-						continue;
+						if (ActorPackageName.StartsWith(WorldRoot.Value))
+						{
+							Owner = WorldRoot.Key;
+							break;
+						}
 					}
-					const FPackageLookup::FInfo& World = Packages.Find(FName(*WorldPackage));
-					if (World.Kind == NodeKind::World)
+					if (Owner == Asset.PackageName.ToString())
 					{
-						Graph.AddEdge(World.ObjectPath, Entry.Id, EdgeKind::LevelPlacement);
+						ActorPackages.Add(ActorAsset.PackageName);
+					}
+				}
+				for (const FName ActorPackage : ActorPackages)
+				{
+					TArray<FName> ActorDependencies;
+					Registry.GetDependencies(ActorPackage, ActorDependencies, UE::AssetRegistry::EDependencyCategory::Package, HardQuery);
+					for (const FName ActorDependency : ActorDependencies)
+					{
+						if (ActorDependency.ToString().StartsWith(TEXT("/Script/")))
+						{
+							continue;
+						}
+						const FPackageLookup::FInfo& Placed = Packages.Find(ActorDependency);
+						if (Placed.Kind == NodeKind::Blueprint)
+						{
+							Graph.EnsureNode(Placed.ObjectPath, *Placed.Kind);
+							Graph.AddEdge(Entry.Id, Placed.ObjectPath, EdgeKind::LevelPlacement);
+						}
 					}
 				}
 			}
