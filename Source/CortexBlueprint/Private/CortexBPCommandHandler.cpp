@@ -359,7 +359,14 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("parent_component"), TEXT("string"), TEXT("Parent SCS component variable name"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding")));
 	Commands.Add(FCortexCommandInfo{TEXT("analyze_for_migration"), TEXT("Analyze a Blueprint for C++ migration")}
-		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path")));
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("sections"), TEXT("array"),
+			TEXT("Optional section names to return (omitted or empty = all). Identity fields name, asset_path, type, "
+				"parent_class, parent_class_path are always included. Valid: is_compiled, variables, functions, "
+				"scs_components, scs_collisions, dynamic_components, graphs, per_graph_elements, latent_nodes, "
+				"timelines, event_dispatchers, interfaces_implemented, input_bindings, construction_script, widgets, "
+				"named_slots, widget_animations, widget_bindings, referenced_user_types, cdo_overrides, "
+				"instanced_subobjects, widget_dependencies, entity_summary, complexity_metrics")));
 	Commands.Add(FCortexCommandInfo{TEXT("graph_metrics"),
 		TEXT("Reachability-aware logic metrics per entry node (events, custom/bound/input events, functions): functional node count, conditionals, variable getter fan-out, unreachable nodes, ghost (unconnected) entries, has_tick for live Tick events, and threshold violations")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))

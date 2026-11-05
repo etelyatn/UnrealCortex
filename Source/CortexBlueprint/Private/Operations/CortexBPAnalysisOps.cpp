@@ -1492,6 +1492,19 @@ FString BuildRenameSuggestion(UBlueprint* Blueprint, const FString& Name)
 }
 } // namespace
 
+TConstArrayView<const TCHAR*> FCortexBPAnalysisOps::GetMigrationSectionNames()
+{
+	static const TCHAR* const Names[] = {
+		TEXT("is_compiled"), TEXT("variables"), TEXT("functions"), TEXT("scs_components"),
+		TEXT("scs_collisions"), TEXT("dynamic_components"), TEXT("graphs"), TEXT("per_graph_elements"),
+		TEXT("latent_nodes"), TEXT("timelines"), TEXT("event_dispatchers"), TEXT("interfaces_implemented"),
+		TEXT("input_bindings"), TEXT("construction_script"), TEXT("widgets"), TEXT("named_slots"),
+		TEXT("widget_animations"), TEXT("widget_bindings"), TEXT("referenced_user_types"),
+		TEXT("cdo_overrides"), TEXT("instanced_subobjects"), TEXT("widget_dependencies"),
+		TEXT("entity_summary"), TEXT("complexity_metrics")};
+	return MakeArrayView(Names);
+}
+
 FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -1500,6 +1513,59 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: asset_path"));
+	}
+
+	// Optional section selector: validated before any work so a bad request yields no partial output.
+	TSet<FString> SelectedSections;
+	if (Params->HasField(TEXT("sections")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SectionsArray = nullptr;
+		if (!Params->TryGetArrayField(TEXT("sections"), SectionsArray))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField, TEXT("'sections' must be an array of strings"));
+		}
+
+		TArray<FString> BadEntries;
+		for (const TSharedPtr<FJsonValue>& SectionValue : *SectionsArray)
+		{
+			FString SectionName;
+			if (!SectionValue.IsValid() || !SectionValue->TryGetString(SectionName))
+			{
+				BadEntries.Add(TEXT("<non-string entry>"));
+				continue;
+			}
+			bool bKnown = false;
+			for (const TCHAR* Valid : GetMigrationSectionNames())
+			{
+				if (SectionName == Valid)
+				{
+					bKnown = true;
+					break;
+				}
+			}
+			if (!bKnown)
+			{
+				BadEntries.Add(FString::Printf(TEXT("'%s'"), *SectionName));
+				continue;
+			}
+			SelectedSections.Add(SectionName);
+		}
+
+		if (BadEntries.Num() > 0)
+		{
+			TArray<FString> ValidNames;
+			for (const TCHAR* Valid : GetMigrationSectionNames())
+			{
+				ValidNames.Add(Valid);
+			}
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(
+					TEXT("Invalid 'sections' entries (unknown name or non-string): %s. Valid sections: %s"),
+					*FString::Join(BadEntries, TEXT(", ")),
+					*FString::Join(ValidNames, TEXT(", "))));
+		}
 	}
 
 	FString LoadError;
@@ -2264,6 +2330,21 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 
 	Data->SetArrayField(TEXT("entity_summary"), BuildEntitySummary(Data));
 	Data->SetObjectField(TEXT("complexity_metrics"), BuildComplexityMetrics(BP));
+
+	// Later sections read earlier ones (widgets, entity summary), so everything is built and then trimmed.
+	if (SelectedSections.Num() > 0)
+	{
+		static const TSet<FString> IdentityFields = {
+			TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("parent_class_path")};
+		for (auto It = Data->Values.CreateIterator(); It; ++It)
+		{
+			const FString KeyName(*It.Key());
+			if (!IdentityFields.Contains(KeyName) && !SelectedSections.Contains(KeyName))
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
 
 	return FCortexCommandRouter::Success(Data);
 }

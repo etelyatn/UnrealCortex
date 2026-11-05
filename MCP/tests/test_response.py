@@ -747,3 +747,57 @@ class TestMaterialInputStateResponsePolicy:
         assert "paginate" not in payload["_suggestion"].lower()
         assert "limit" not in payload["_suggestion"].lower()
         assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+
+
+class TestAnalyzeForMigrationResponsePolicy:
+    """Oversized migration analysis refuses naming 'sections'; unfiltered node search pages fully."""
+
+    def test_analyze_for_migration_oversized_refuses_with_sections_suggestion(self):
+        data = {
+            "name": "BP_Huge",
+            "asset_path": "/Game/BP_Huge",
+            "type": "Actor",
+            "variables": [{"name": f"Var_{i}", "type": "float", "default_value": "0"} for i in range(1500)],
+        }
+        router, _ = _router_with_mock("blueprint", data)
+        payload = json.loads(router("analyze_for_migration", {"asset_path": "/Game/BP_Huge"}))
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert payload["reader_complete"] is False
+        assert "variables" not in payload
+        assert "_truncated" not in payload
+        assert "'sections'" in payload["_suggestion"]
+        assert payload["asset_path"] == "/Game/BP_Huge"
+        assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+
+    def test_analyze_for_migration_within_budget_is_untouched(self):
+        data = {"name": "BP_Small", "asset_path": "/Game/BP_Small", "variables": [{"name": "A"}]}
+        router, _ = _router_with_mock("blueprint", data)
+        payload = json.loads(router("analyze_for_migration", {
+            "asset_path": "/Game/BP_Small", "sections": ["variables"],
+        }))
+        assert payload["variables"] == [{"name": "A"}]
+        assert "_error" not in payload
+
+    def test_unfiltered_search_nodes_pages_completely_via_limit_and_cursor(self):
+        results = [
+            {"node_id": f"node_{i}", "graph_name": "EventGraph", "title": "T" * 120}
+            for i in range(900)
+        ]
+        assert len(compact_json({"results": results})) > MAX_RESPONSE_CHARS
+        router, connection = _router_with_mock(
+            "graph", {"results": results, "count": len(results), "asset_path": "/Game/BP_Big"}
+        )
+
+        seen: list[str] = []
+        payload = json.loads(router("search_nodes", {"asset_path": "/Game/BP_Big", "limit": 100}))
+        while True:
+            assert "_error" not in payload
+            assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+            seen.extend(item["node_id"] for item in payload["results"])
+            cursor = payload["_pagination"]["next_cursor"]
+            if cursor is None:
+                break
+            payload = json.loads(router("search_nodes", {"cursor": cursor}))
+
+        assert seen == [f"node_{i}" for i in range(900)]
+        assert connection.send_command.call_count == 1

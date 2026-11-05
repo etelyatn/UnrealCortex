@@ -197,9 +197,10 @@ def register_datatable_tools(mcp, connection: UEConnection):
         TInstancedStruct fields that can hold different subtypes.
 
         Args:
-            struct_name: Name of the struct (e.g., 'FRipQuestDefinition', 'FGameplayTag').
-                         The 'F' prefix is optional — both 'RipQuestDefinition' and
-                         'FRipQuestDefinition' will work.
+            struct_name: Name of the struct (e.g., 'FRipQuestDefinition', 'FGameplayTag') or a
+                         full object path (e.g., '/Script/Engine.HitResult' or
+                         '/Game/Data/S_Foo.S_Foo'). For short names the 'F' prefix is optional —
+                         both 'RipQuestDefinition' and 'FRipQuestDefinition' will work.
             include_subtypes: For TInstancedStruct base types, include a list of known
                               subtypes and their schemas (default: False).
 

@@ -54,19 +54,27 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
     def list_blueprints(
         path: str = "",
         type: str = "",
+        exclude_types: list[str] | None = None,
     ) -> str:
         """List Blueprint assets in the project.
 
         Args:
             path: Optional path filter (e.g., '/Game/Blueprints')
-            type: Optional type filter (Actor, Component, Widget, Interface, FunctionLibrary)
+            type: Optional type filter, case-insensitive. Vocabulary: Interface,
+                FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget,
+                Component, Actor, Object, Unknown.
+            exclude_types: Optional list of types to omit (same vocabulary as `type`);
+                combines with `type`. Unknown names are refused with INVALID_FIELD.
 
         Returns:
             JSON with:
             - blueprints: Array of Blueprint objects, each containing:
               - asset_path: Full path
               - name: Asset name
-              - type: Blueprint type
+              - type: Blueprint type (same vocabulary as the `type` filter)
+              - asset_class: Asset class of the Blueprint (e.g. Blueprint, WidgetBlueprint)
+              - parent_class / parent_class_path: direct parent class name and path
+              - native_parent_class: nearest native (C++) ancestor class
         """
         try:
             params = {}
@@ -74,6 +82,8 @@ def register_blueprint_asset_tools(mcp, connection: UEConnection):
                 params["path"] = path
             if type:
                 params["type"] = type
+            if exclude_types:
+                params["exclude_types"] = exclude_types
             response = connection.send_command("blueprint.list", params)
             return format_response(response.get("data", {}), "list_blueprints")
         except ConnectionError as e:

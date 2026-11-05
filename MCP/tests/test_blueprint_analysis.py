@@ -32,6 +32,32 @@ def _setup():
     return mcp, connection
 
 
+
+def test_analyze_blueprint_for_migration_forwards_sections_only_when_provided():
+    mcp, connection = _setup()
+    connection.send_command.return_value = {"data": {"name": "BP_Test"}}
+
+    mcp.tools["analyze_blueprint_for_migration"]("/Game/BP_Test")
+    assert connection.send_command.call_args.args == (
+        "blueprint.analyze_for_migration", {"asset_path": "/Game/BP_Test"})
+
+    mcp.tools["analyze_blueprint_for_migration"]("/Game/BP_Test", sections=["variables"])
+    assert connection.send_command.call_args.args == (
+        "blueprint.analyze_for_migration",
+        {"asset_path": "/Game/BP_Test", "sections": ["variables"]})
+
+
+def test_analyze_blueprint_for_migration_oversized_refuses_naming_sections():
+    mcp, connection = _setup()
+    connection.send_command.return_value = {"data": {
+        "name": "BP_Huge", "asset_path": "/Game/BP_Huge",
+        "variables": [{"name": f"Var_{i}", "type": "float"} for i in range(3000)],
+    }}
+    payload = json.loads(mcp.tools["analyze_blueprint_for_migration"]("/Game/BP_Huge"))
+    assert payload["_error"] == "RESPONSE_TOO_LARGE"
+    assert "'sections'" in payload["_suggestion"]
+
+
 def test_analyze_blueprint_for_migration_wires_command():
     mcp, connection = _setup()
     connection.send_command.return_value = {
