@@ -1071,6 +1071,24 @@ class TestBatchQueryPagination:
 
         assert payload["_error"] == "INVALID_CURSOR"
 
+    def test_expired_batch_cursor_never_advises_resending_the_batch(self):
+        connection = _CountingConnection(6)
+        router = _core_router(connection)
+        cursor = json.loads(router("batch_query", {"commands": _batch_steps(6), "limit": 2}))["_pagination"]["next_cursor"]
+        level_router, _ = _router("level", {"matches": _actors(7), "count": 7, "pattern": "Actor"})
+        for i in range(routers_mod._pagination_cache._max_entries):
+            level_router("find_actors", {"pattern": f"other_{i}", "limit": 2})
+
+        payload = json.loads(router("batch_query", {"cursor": cursor}))
+
+        assert payload["_error"] == "CURSOR_EXPIRED"
+        message = payload["_message"].lower()
+        assert "re-send the original command" not in message
+        assert "do not re-send the batch" in message
+        assert "already executed" in message
+        assert "no longer available" in message
+        assert len(connection.sends) == 1
+
 
 class TestSnapshotOwnedCursors:
     def test_pagination_meta_and_cursor_carry_snapshot_id(self):
