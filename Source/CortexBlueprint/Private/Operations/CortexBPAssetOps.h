@@ -5,6 +5,7 @@
 #include "CortexCommandRouter.h"
 
 class UBlueprint;
+struct FAssetData;
 
 /**
  * Blueprint asset operations
@@ -45,8 +46,9 @@ public:
 	/**
 	 * Compile Blueprint
 	 * Params: asset_path (string)
+	 * bSkipGarbageCollection: the caller compiles many assets and collects garbage once itself.
 	 */
-	static FCortexCommandResult Compile(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult Compile(const TSharedPtr<FJsonObject>& Params, bool bSkipGarbageCollection = false);
 
 	/**
 	 * Save Blueprint
@@ -74,4 +76,7 @@ public:
 
 	/** Determine Blueprint type string (Actor, Component, Widget, Interface, FunctionLibrary) from a loaded UBlueprint */
 	static FString DetermineBlueprintType(const UBlueprint* BP);
+
+	/** Determine the Blueprint type string from AssetRegistry tags, without loading the asset. */
+	static FString DetermineBlueprintTypeFromAssetData(const FAssetData& AssetData);
 };

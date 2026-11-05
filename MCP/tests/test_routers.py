@@ -754,6 +754,54 @@ def test_core_router_dispatches_normal_commands_via_tcp():
     )
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_wait_ready_non_finite_timeout_falls_back_to_default_window(bad):
+    from cortex_mcp.tools.routers import _dispatch_timeout
+
+    assert _dispatch_timeout("editor.wait_ready", {"timeout": bad}) == 150.0
+
+
+@pytest.mark.parametrize(
+    ("command", "params", "expected_timeout"),
+    [
+        ("wait_ready", {}, 150.0),
+        ("wait_ready", {"timeout": 300}, 330.0),
+        ("live_coding_compile", {}, 1830.0),
+    ],
+)
+def test_editor_router_widens_receive_window_for_deferred_turnaround_commands(command, params, expected_timeout):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {"ready": True}}
+
+    router = make_router("editor", connection, "editor docs")
+    payload = json.loads(router(command, params))
+
+    assert payload["ready"] is True
+    connection.send_command.assert_called_once_with(
+        f"editor.{command}",
+        params,
+        timeout=expected_timeout,
+    )
+
+
+@pytest.mark.parametrize(
+    ("domain", "command", "params"),
+    [
+        ("blueprint", "compile_all", {"path_prefix": "/Game/Ripper", "out_path": "x.json"}),
+        ("level", "export_class_instances", {"class": "A", "maps": ["/Game/M"], "out_path": "x.json"}),
+    ],
+)
+def test_router_widens_receive_window_for_long_synchronous_commands(domain, command, params):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {"ok": True}}
+
+    router = make_router(domain, connection, f"{domain} docs")
+    payload = json.loads(router(command, params))
+
+    assert payload["ok"] is True
+    connection.send_command.assert_called_once_with(f"{domain}.{command}", params, timeout=1800.0)
+
+
 def test_blueprint_router_uses_cached_send_for_discovery_reads():
     connection = MagicMock()
     connection.send_command_cached.return_value = {
