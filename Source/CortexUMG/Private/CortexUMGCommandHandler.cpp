@@ -238,7 +238,10 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Exact current widget name"))
             .Required(TEXT("new_name"), TEXT("string"), TEXT("Literal identifier; no silent sanitizing or case-only rename"))
-            .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Complete current UMG tree fingerprint, including compiled_signature_crc")),
+            .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Complete current UMG tree fingerprint, including compiled_signature_crc"))
+            .Optional(TEXT("scope"), TEXT("string"), TEXT("asset (default, single-asset contract) or dependents (also renames the member references in child and referencing Blueprints, loading unloaded ones)"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("scope=dependents only; defaults to true and returns the plan (assets with role, fingerprint and references, plus conflicts) without mutating"))
+            .Optional(TEXT("expected_dependent_fingerprints"), TEXT("object"), TEXT("scope=dependents apply: object keyed by asset_path whose key set equals the plan's modified dependents exactly, each value that dependent's plan fingerprint")),
         FCortexCommandInfo{ TEXT("set_widget_variable"), TEXT("Set whether a designer widget becomes a Blueprint variable") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
