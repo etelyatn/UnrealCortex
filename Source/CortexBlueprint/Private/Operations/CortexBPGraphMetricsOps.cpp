@@ -83,10 +83,10 @@ namespace
 		return Node->IsA<UEdGraphNode_Comment>() || Node->IsA<UK2Node_Knot>();
 	}
 
-	/** Counted as logic: not a comment, knot, or function result. */
+	/** Counted as logic: enabled, and not a comment, knot, or function result. */
 	bool IsFunctionalNode(const UEdGraphNode* Node)
 	{
-		return !IsCommentOrKnot(Node) && !Node->IsA<UK2Node_FunctionResult>();
+		return Node->IsNodeEnabled() && !IsCommentOrKnot(Node) && !Node->IsA<UK2Node_FunctionResult>();
 	}
 
 	bool IsConditionalNode(const UEdGraphNode* Node)
@@ -117,9 +117,64 @@ namespace
 		return Node->IsA<UK2Node_MacroInstance>() || Node->IsA<UK2Node_Composite>();
 	}
 
+	/** A tunnel that is not a macro instance or composite: an inner graph's entry or exit boundary, never logic. */
+	bool IsStructuralTunnel(const UEdGraphNode* Node)
+	{
+		return Node->IsA<UK2Node_Tunnel>() && !IsExpandableNode(Node);
+	}
+
+	bool HasLinkedExecOutput(const UEdGraphNode* Node)
+	{
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin && Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec
+				&& Pin->LinkedTo.Num() > 0)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Reachable set of an inner graph: exec-forward from the entry tunnel(s) plus the backward data closure, enabled nodes only.
+	 * A pure inner graph (no entry exec output at all) is seeded from its exit tunnel(s) instead, so the nodes computing its
+	 * outputs are reached.
+	 */
+	void GatherInnerReachable(const UEdGraph* Graph, TSet<UEdGraphNode*>& OutReachable)
+	{
+		TArray<UEdGraphNode*> EntryTunnels;
+		TArray<UEdGraphNode*> ExitTunnels;
+		bool bHasExecFlow = false;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			const UK2Node_Tunnel* Tunnel = (Node && IsStructuralTunnel(Node)) ? Cast<UK2Node_Tunnel>(Node) : nullptr;
+			if (!Tunnel)
+			{
+				continue;
+			}
+			if (Tunnel->bCanHaveOutputs && !Tunnel->bCanHaveInputs)
+			{
+				EntryTunnels.Add(Node);
+				bHasExecFlow |= CortexBPGraphReachability::IsEntryNode(Node);
+			}
+			else if (Tunnel->bCanHaveInputs && !Tunnel->bCanHaveOutputs)
+			{
+				ExitTunnels.Add(Node);
+			}
+		}
+
+		CortexBPGraphReachability::GatherExecForward(EntryTunnels, OutReachable, true);
+		if (!bHasExecFlow)
+		{
+			CortexBPGraphReachability::GatherExecForward(ExitTunnels, OutReachable, true);
+		}
+		CortexBPGraphReachability::ExpandBackwardDataClosure(OutReachable, true);
+	}
+
 	void AddNodeCounts(const UEdGraphNode* Node, TSet<const UEdGraph*>& GraphsInProgress, FLogicCounts& InOutCounts);
 
-	/** Functional count of every node of an inner graph (macro or collapsed), recursing into nested inner graphs. */
+	/** Functional count of the nodes of an inner graph (macro or collapsed) that its entry tunnel reaches, recursing into nested inner graphs. */
 	void CountInnerGraph(const UEdGraph* Graph, TSet<const UEdGraph*>& GraphsInProgress, FLogicCounts& InOutCounts)
 	{
 		if (!Graph || GraphsInProgress.Contains(Graph))
@@ -128,18 +183,19 @@ namespace
 		}
 
 		GraphsInProgress.Add(Graph);
-		for (const UEdGraphNode* Node : Graph->Nodes)
+		TSet<UEdGraphNode*> Reachable;
+		GatherInnerReachable(Graph, Reachable);
+		for (const UEdGraphNode* Node : Reachable)
 		{
-			if (!Node || (Node->IsA<UK2Node_Tunnel>() && !IsExpandableNode(Node)))
+			if (Node && !IsStructuralTunnel(Node))
 			{
-				continue;
+				AddNodeCounts(Node, GraphsInProgress, InOutCounts);
 			}
-			AddNodeCounts(Node, GraphsInProgress, InOutCounts);
 		}
 		GraphsInProgress.Remove(Graph);
 	}
 
-	/** Adds one node's contribution: macro/composite nodes are replaced by their inner graph's counts. */
+	/** Adds one node's contribution: macro/composite nodes are replaced by their inner graph's counts; an unresolved inner graph counts as the node itself. */
 	void AddNodeCounts(const UEdGraphNode* Node, TSet<const UEdGraph*>& GraphsInProgress, FLogicCounts& InOutCounts)
 	{
 		if (!IsFunctionalNode(Node))
@@ -149,8 +205,11 @@ namespace
 
 		if (IsExpandableNode(Node))
 		{
-			CountInnerGraph(GetInnerGraph(Node), GraphsInProgress, InOutCounts);
-			return;
+			if (const UEdGraph* Inner = GetInnerGraph(Node))
+			{
+				CountInnerGraph(Inner, GraphsInProgress, InOutCounts);
+				return;
+			}
 		}
 
 		++InOutCounts.Functional;
@@ -248,7 +307,8 @@ namespace
 	/** Reads an optional strictly-positive integer threshold. Returns false and fills OutError when invalid. */
 	bool ReadThreshold(const TSharedPtr<FJsonObject>& Thresholds, const TCHAR* Field, int32& InOutValue, FString& OutError)
 	{
-		if (!Thresholds.IsValid() || !Thresholds->HasField(Field))
+		const TSharedPtr<FJsonValue> FieldValue = Thresholds.IsValid() ? Thresholds->TryGetField(Field) : nullptr;
+		if (!FieldValue.IsValid() || FieldValue->IsNull())
 		{
 			return true;
 		}
@@ -268,6 +328,78 @@ namespace
 	{
 		return MakeShared<FJsonValueString>(Value);
 	}
+
+	/** Appends one {graph[, subgraph], count, node_ids} row; no-op for an empty node list. */
+	void AddNodeRow(TArray<TSharedPtr<FJsonValue>>& Rows, int32& InOutTotal, const UEdGraph* Graph, const UEdGraph* Subgraph,
+		const TArray<const UEdGraphNode*>& Nodes)
+	{
+		if (Nodes.IsEmpty())
+		{
+			return;
+		}
+
+		TArray<TSharedPtr<FJsonValue>> NodeIds;
+		for (const UEdGraphNode* Node : Nodes)
+		{
+			if (NodeIds.Num() >= MaxUnreachableNodeIds)
+			{
+				break;
+			}
+			NodeIds.Add(StringValue(Node->GetName()));
+		}
+
+		TSharedPtr<FJsonObject> Row = MakeShared<FJsonObject>();
+		Row->SetStringField(TEXT("graph"), Graph ? Graph->GetName() : FString());
+		if (Subgraph)
+		{
+			Row->SetStringField(TEXT("subgraph"), Subgraph->GetName());
+		}
+		Row->SetNumberField(TEXT("count"), Nodes.Num());
+		Row->SetArrayField(TEXT("node_ids"), NodeIds);
+		Rows.Add(MakeShared<FJsonValueObject>(Row));
+		InOutTotal += Nodes.Num();
+	}
+
+	/** Reports the unreachable and disabled nodes of every inner graph reached through the node, once per inner graph. */
+	void ReportInnerGraphFindings(const UEdGraphNode* Node, TSet<const UEdGraph*>& VisitedInnerGraphs,
+		TArray<TSharedPtr<FJsonValue>>& UnreachableRows, int32& InOutUnreachable,
+		TArray<TSharedPtr<FJsonValue>>& DisabledRows, int32& InOutDisabled)
+	{
+		const UEdGraph* Inner = (Node && IsExpandableNode(Node) && Node->IsNodeEnabled()) ? GetInnerGraph(Node) : nullptr;
+		if (!Inner || VisitedInnerGraphs.Contains(Inner))
+		{
+			return;
+		}
+		VisitedInnerGraphs.Add(Inner);
+
+		TSet<UEdGraphNode*> Reachable;
+		GatherInnerReachable(Inner, Reachable);
+
+		TArray<const UEdGraphNode*> UnreachableNodes;
+		TArray<const UEdGraphNode*> DisabledNodes;
+		for (const UEdGraphNode* InnerNode : Inner->Nodes)
+		{
+			if (!InnerNode || IsCommentOrKnot(InnerNode) || IsStructuralTunnel(InnerNode))
+			{
+				continue;
+			}
+			if (!InnerNode->IsNodeEnabled())
+			{
+				DisabledNodes.Add(InnerNode);
+			}
+			else if (!Reachable.Contains(const_cast<UEdGraphNode*>(InnerNode)))
+			{
+				UnreachableNodes.Add(InnerNode);
+			}
+		}
+		AddNodeRow(UnreachableRows, InOutUnreachable, Node->GetGraph(), Inner, UnreachableNodes);
+		AddNodeRow(DisabledRows, InOutDisabled, Node->GetGraph(), Inner, DisabledNodes);
+
+		for (const UEdGraphNode* Reached : Reachable)
+		{
+			ReportInnerGraphFindings(Reached, VisitedInnerGraphs, UnreachableRows, InOutUnreachable, DisabledRows, InOutDisabled);
+		}
+	}
 }
 
 FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJsonObject>& Params)
@@ -282,12 +414,22 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 
 	int32 MaxNodesPerEntry = DefaultMaxNodesPerEntry;
 	int32 MaxNodesPerBlueprint = DefaultMaxNodesPerBlueprint;
-	if (Params->HasField(TEXT("thresholds")))
+	const TSharedPtr<FJsonValue> ThresholdsValue = Params->TryGetField(TEXT("thresholds"));
+	if (ThresholdsValue.IsValid() && !ThresholdsValue->IsNull())
 	{
 		const TSharedPtr<FJsonObject>* ThresholdsPtr = nullptr;
-		if (!Params->TryGetObjectField(TEXT("thresholds"), ThresholdsPtr) || !ThresholdsPtr || !ThresholdsPtr->IsValid())
+		if (!ThresholdsValue->TryGetObject(ThresholdsPtr) || !ThresholdsPtr || !ThresholdsPtr->IsValid())
 		{
 			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("thresholds must be an object"));
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*ThresholdsPtr)->Values)
+		{
+			if (Pair.Key != TEXT("max_nodes_per_entry") && Pair.Key != TEXT("max_nodes_per_blueprint"))
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(
+					TEXT("Unknown thresholds key '%s'; allowed: max_nodes_per_entry, max_nodes_per_blueprint"), *Pair.Key));
+			}
 		}
 
 		FString ThresholdError;
@@ -311,12 +453,8 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 	TArray<const UEdGraph*> Graphs;
 	const auto AddMeasurableGraph = [&Graphs](const UEdGraph* Graph)
 	{
-		if (!Graph || !Graph->Schema || !Graph->Schema->IsChildOf(UEdGraphSchema_K2::StaticClass()))
-		{
-			return;
-		}
-		const EGraphType GraphType = GetDefault<UEdGraphSchema>(Graph->Schema)->GetGraphType(Graph);
-		if (GraphType != GT_Animation && GraphType != GT_StateMachine)
+		if (Graph && Graph->Schema && Graph->Schema->IsChildOf(UEdGraphSchema_K2::StaticClass())
+			&& !CortexBPGraphReachability::IsAnimationOrStateMachineGraph(Graph))
 		{
 			Graphs.Add(Graph);
 		}
@@ -340,11 +478,22 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 	TArray<FEntryMetrics> Entries;
 	TSet<UEdGraphNode*> LiveUnion;
 	TArray<TSharedPtr<FJsonValue>> UnreachableArray;
+	TArray<TSharedPtr<FJsonValue>> DisabledArray;
 	int32 TotalUnreachable = 0;
+	int32 TotalDisabled = 0;
 
 	for (const UEdGraph* Graph : Graphs)
 	{
 		TSet<UEdGraphNode*> GraphReachable;
+		TArray<UEdGraphNode*> FunctionResults;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node && Node->IsA<UK2Node_FunctionResult>() && Node->IsNodeEnabled())
+			{
+				FunctionResults.Add(Node);
+			}
+		}
+
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (!Node || !CortexBPGraphReachability::IsEntryNode(Node))
@@ -352,20 +501,26 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 				continue;
 			}
 
+			// A disabled entry seeds nothing: the compiler prunes it and everything only it reaches.
 			TSet<UEdGraphNode*> Reachable;
-			CortexBPGraphReachability::GatherReachableFromEntry(Node, Reachable);
-			if (Node->IsA<UK2Node_FunctionEntry>())
+			CortexBPGraphReachability::GatherExecForward({Node}, Reachable, true);
+			const UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node);
+			if (FunctionEntry && Reachable.Contains(Node))
 			{
-				// A function result may be fed by pure nodes with no exec wire from the entry; those nodes are logic too.
-				for (UEdGraphNode* ResultNode : Graph->Nodes)
+				// A result with no exec wire from the entry is logic only for a pure function or a function whose single
+				// result is simply unwired (its pure feeders then compute the return value). Any other exec-unreachable
+				// result is dead code and is reported as unreachable together with its feeders.
+				const bool bPure = (FunctionEntry->GetExtraFlags() & FUNC_BlueprintPure) != 0;
+				const bool bSoleUnwiredResult = FunctionResults.Num() == 1 && !HasLinkedExecOutput(Node);
+				if (bPure || bSoleUnwiredResult)
 				{
-					if (ResultNode && ResultNode->IsA<UK2Node_FunctionResult>())
+					for (UEdGraphNode* ResultNode : FunctionResults)
 					{
 						Reachable.Add(ResultNode);
 					}
 				}
-				CortexBPGraphReachability::ExpandBackwardDataClosure(Reachable);
 			}
+			CortexBPGraphReachability::ExpandBackwardDataClosure(Reachable, true);
 			GraphReachable.Append(Reachable);
 
 			FEntryMetrics Metrics;
@@ -388,30 +543,34 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 			Entries.Add(MoveTemp(Metrics));
 		}
 
-		int32 UnreachableInGraph = 0;
-		TArray<TSharedPtr<FJsonValue>> UnreachableIds;
+		TArray<const UEdGraphNode*> UnreachableNodes;
+		TArray<const UEdGraphNode*> DisabledNodes;
 		for (const UEdGraphNode* Node : Graph->Nodes)
 		{
-			if (!Node || IsCommentOrKnot(Node) || CortexBPGraphReachability::IsEntryNode(Node)
-				|| GraphReachable.Contains(const_cast<UEdGraphNode*>(Node)))
+			if (!Node || IsCommentOrKnot(Node))
 			{
 				continue;
 			}
-			++UnreachableInGraph;
-			if (UnreachableIds.Num() < MaxUnreachableNodeIds)
+			if (!Node->IsNodeEnabled())
 			{
-				UnreachableIds.Add(StringValue(Node->GetName()));
+				DisabledNodes.Add(Node);
+			}
+			else if (!CortexBPGraphReachability::IsEntryNode(Node) && !GraphReachable.Contains(const_cast<UEdGraphNode*>(Node)))
+			{
+				UnreachableNodes.Add(Node);
 			}
 		}
+		AddNodeRow(UnreachableArray, TotalUnreachable, Graph, nullptr, UnreachableNodes);
+		AddNodeRow(DisabledArray, TotalDisabled, Graph, nullptr, DisabledNodes);
+	}
 
-		if (UnreachableInGraph > 0)
+	// Macro and collapsed-graph contents: inner nodes that no entry tunnel reaches (or that are disabled) are reported
+	// once per inner graph, with the owning graph and the inner graph's name.
+	{
+		TSet<const UEdGraph*> VisitedInnerGraphs;
+		for (const UEdGraphNode* Node : LiveUnion)
 		{
-			TSharedPtr<FJsonObject> UnreachableObject = MakeShared<FJsonObject>();
-			UnreachableObject->SetStringField(TEXT("graph"), Graph->GetName());
-			UnreachableObject->SetNumberField(TEXT("count"), UnreachableInGraph);
-			UnreachableObject->SetArrayField(TEXT("node_ids"), UnreachableIds);
-			UnreachableArray.Add(MakeShared<FJsonValueObject>(UnreachableObject));
-			TotalUnreachable += UnreachableInGraph;
+			ReportInnerGraphFindings(Node, VisitedInnerGraphs, UnreachableArray, TotalUnreachable, DisabledArray, TotalDisabled);
 		}
 	}
 
@@ -485,6 +644,7 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 	TSharedPtr<FJsonObject> Totals = MakeShared<FJsonObject>();
 	Totals->SetNumberField(TEXT("functional_nodes"), TotalFunctional);
 	Totals->SetNumberField(TEXT("unreachable_nodes"), TotalUnreachable);
+	Totals->SetNumberField(TEXT("disabled_nodes"), TotalDisabled);
 	Totals->SetNumberField(TEXT("ghost_entries"), GhostCount);
 	Totals->SetNumberField(TEXT("entries"), Entries.Num());
 
@@ -498,6 +658,7 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 	Data->SetObjectField(TEXT("totals"), Totals);
 	Data->SetArrayField(TEXT("entries"), EntryArray);
 	Data->SetArrayField(TEXT("unreachable"), UnreachableArray);
+	Data->SetArrayField(TEXT("disabled"), DisabledArray);
 	Data->SetArrayField(TEXT("ghost_entries"), GhostArray);
 	Data->SetObjectField(TEXT("thresholds"), ThresholdsOut);
 	Data->SetArrayField(TEXT("violations"), ViolationArray);

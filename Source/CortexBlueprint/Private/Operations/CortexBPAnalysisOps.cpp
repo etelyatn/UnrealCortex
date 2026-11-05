@@ -1431,7 +1431,9 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			}
 
 			const FString NodeClassName = Node->GetClass()->GetName();
-			const bool bSupportedNode = Node->IsA<UK2Node>()
+			// K2 nodes are supported, except nodes of animation and state machine graphs (anim graph nodes derive from
+			// UK2Node too), which keep counting as unsupported so they still lower the migration confidence.
+			const bool bSupportedNode = (Node->IsA<UK2Node>() && !CortexBPGraphReachability::IsAnimationOrStateMachineGraph(Node->GetGraph()))
 				|| Node->IsA<UEdGraphNode_Comment>()
 				|| NodeClassName.StartsWith(TEXT("MaterialGraphNode_"));
 			if (!bSupportedNode)
@@ -2336,7 +2338,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 					continue;
 				}
 				const UClass* EventParent = InterfaceEvent->EventReference.GetMemberParentClass();
-				if (!EventParent || !EventParent->IsChildOf(InterfaceDesc.Interface))
+				if (!EventParent || EventParent != InterfaceDesc.Interface)
 				{
 					continue;
 				}

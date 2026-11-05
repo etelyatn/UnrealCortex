@@ -10,6 +10,8 @@
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "GameFramework/Actor.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_CallParentFunction.h"
 #include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Event.h"
@@ -20,6 +22,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/Guid.h"
 #include "UObject/UObjectIterator.h"
+#include "Kismet/KismetSystemLibrary.h"
 
 namespace
 {
@@ -526,5 +529,141 @@ bool FCortexBPAnalysisNonBoolDefaultsFromCDOTest::RunTest(const FString& Paramet
 	ExpectDefault(TEXT("UntouchedVector"), TEXT("(X=0.000000,Y=0.000000,Z=0.000000)"));
 	ExpectDefault(TEXT("UntouchedObject"), TEXT("None"));
 	ExpectDefault(TEXT("ExplicitInt"), TEXT("5"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisGhostTickLinkedParentCallTest,
+	"Cortex.Blueprint.Analysis.GhostTickLinkedToDisabledParentCall",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisGhostTickLinkedParentCallTest::RunTest(const FString& Parameters)
+{
+	FOutputFixesBlueprintScope Scope(AActor::StaticClass(), TEXT("BP_GhostTickParentCall"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	if (!TestNotNull(TEXT("Event graph"), EventGraph)) { return false; }
+
+	UK2Node_Event* Tick = nullptr;
+	for (UEdGraphNode* Node : EventGraph->Nodes)
+	{
+		UK2Node_Event* Candidate = Cast<UK2Node_Event>(Node);
+		if (Candidate && Candidate->EventReference.GetMemberName() == TEXT("ReceiveTick"))
+		{
+			Tick = Candidate;
+		}
+	}
+	if (!TestNotNull(TEXT("Default ReceiveTick ghost"), Tick)) { return false; }
+
+	// Kismet2.cpp AddDefaultEventNode: ghost event `then` -> auto-placed ghost CallParentFunction; linking first, ghosting after.
+	UK2Node_CallParentFunction* ParentCall = NewObject<UK2Node_CallParentFunction>(EventGraph);
+	ParentCall->SetFromFunction(AActor::StaticClass()->FindFunctionByName(TEXT("ReceiveTick")));
+	ParentCall->CreateNewGuid();
+	EventGraph->AddNode(ParentCall, false, false);
+	ParentCall->AllocateDefaultPins();
+	if (!TestTrue(TEXT("Tick linked to the parent call"), LinkExec(Tick, UEdGraphSchema_K2::PN_Then, ParentCall))) { return false; }
+	ParentCall->MakeAutomaticallyPlacedGhostNode();
+	Tick->MakeAutomaticallyPlacedGhostNode();
+
+	const TSharedPtr<FJsonObject> Data = RunAnalysis(*this, Blueprint);
+	if (!Data.IsValid()) { return false; }
+	const TSharedPtr<FJsonObject> GraphObj = FindNamedObject(Data, TEXT("graphs"), EventGraph->GetName());
+	const TSharedPtr<FJsonObject>* Metrics = nullptr;
+	if (!TestTrue(TEXT("graph and metrics present"), GraphObj.IsValid() && Data->TryGetObjectField(TEXT("complexity_metrics"), Metrics))) { return false; }
+	TestFalse(TEXT("Ghost Tick linked to a disabled parent call is not has_tick per graph"), GraphObj->GetBoolField(TEXT("has_tick")));
+	TestFalse(TEXT("Ghost Tick linked to a disabled parent call is not has_tick in complexity_metrics"), (*Metrics)->GetBoolField(TEXT("has_tick")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisAnimGraphNodesUnsupportedTest,
+	"Cortex.Blueprint.Analysis.AnimGraphNodesStayUnsupported",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisAnimGraphNodesUnsupportedTest::RunTest(const FString& Parameters)
+{
+	UClass* AnimBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.AnimBlueprint"));
+	UClass* AnimGeneratedClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.AnimBlueprintGeneratedClass"));
+	UClass* AnimInstanceClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.AnimInstance"));
+	UClass* AnimSchemaClass = FindObject<UClass>(nullptr, TEXT("/Script/AnimGraph.AnimationGraphSchema"));
+	if (!AnimBlueprintClass || !AnimGeneratedClass || !AnimInstanceClass || !AnimSchemaClass)
+	{
+		AddInfo(TEXT("Animation classes unavailable; skipping AnimBlueprint unsupported-node test"));
+		return true;
+	}
+
+	const FString UniqueName = FString::Printf(TEXT("ABP_AnalysisUnsupported_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AnimInstanceClass, GetTransientPackage(), FName(*UniqueName), BPTYPE_Normal, AnimBlueprintClass, AnimGeneratedClass);
+	if (!TestNotNull(TEXT("AnimBlueprint created"), Blueprint)) { return false; }
+
+	// A K2 node placed inside a graph that uses the animation schema stands in for the UAnimGraphNode_Base nodes (also UK2Node subclasses).
+	UEdGraph* AnimGraph = NewObject<UEdGraph>(Blueprint, TEXT("AnimGraphLike"));
+	AnimGraph->Schema = AnimSchemaClass;
+	Blueprint->FunctionGraphs.Add(AnimGraph);
+	UK2Node_CallFunction* Print = NewObject<UK2Node_CallFunction>(AnimGraph);
+	Print->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+	Print->CreateNewGuid();
+	AnimGraph->AddNode(Print, false, false);
+	Print->AllocateDefaultPins();
+
+	const TSharedPtr<FJsonObject> Data = RunAnalysis(*this, Blueprint);
+	Blueprint->MarkAsGarbage();
+	if (!Data.IsValid()) { return false; }
+
+	const TSharedPtr<FJsonObject>* Metrics = nullptr;
+	if (!TestTrue(TEXT("complexity_metrics present"), Data->TryGetObjectField(TEXT("complexity_metrics"), Metrics))) { return false; }
+	TestTrue(TEXT("K2 node in an animation graph is unsupported"),
+		static_cast<int32>((*Metrics)->GetNumberField(TEXT("unsupported_node_count"))) >= 1);
+	TestTrue(TEXT("its class is listed"), StringArray(*Metrics, TEXT("unsupported_node_types")).Contains(UK2Node_CallFunction::StaticClass()->GetName()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAnalysisInterfaceEventExactParentTest,
+	"Cortex.Blueprint.Analysis.InterfaceEventExactParent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAnalysisInterfaceEventExactParentTest::RunTest(const FString& Parameters)
+{
+	FOutputFixesBlueprintScope ParentScope(UInterface::StaticClass(), TEXT("BPI_ExactParent"), BPTYPE_Interface);
+	UBlueprint* ParentBP = ParentScope.Blueprint;
+	if (!TestNotNull(TEXT("Parent interface created"), ParentBP)) { return false; }
+	if (!TestNotNull(TEXT("Parent function"), AddFunctionGraphTo(ParentBP, TEXT("ParentPing")))) { return false; }
+	FKismetEditorUtilities::CompileBlueprint(ParentBP);
+	UClass* ParentInterface = ParentBP->GeneratedClass;
+	if (!TestNotNull(TEXT("Parent interface compiled"), ParentInterface)) { return false; }
+
+	// A child interface derives from the parent interface class; its events must not be attributed to the parent.
+	FOutputFixesBlueprintScope ChildScope(ParentInterface, TEXT("BPI_ExactChild"), BPTYPE_Interface);
+	UBlueprint* ChildBP = ChildScope.Blueprint;
+	if (!TestNotNull(TEXT("Child interface created"), ChildBP)) { return false; }
+	if (!TestNotNull(TEXT("Child function"), AddFunctionGraphTo(ChildBP, TEXT("ChildPing")))) { return false; }
+	FKismetEditorUtilities::CompileBlueprint(ChildBP);
+	UClass* ChildInterface = ChildBP->GeneratedClass;
+	if (!TestNotNull(TEXT("Child interface compiled"), ChildInterface)) { return false; }
+	if (!TestTrue(TEXT("Child interface derives from the parent interface"), ChildInterface->IsChildOf(ParentInterface))) { return false; }
+
+	FOutputFixesBlueprintScope ImplementerScope(AActor::StaticClass(), TEXT("BP_ExactImplementer"));
+	UBlueprint* Blueprint = ImplementerScope.Blueprint;
+	if (!TestNotNull(TEXT("Implementer created"), Blueprint)) { return false; }
+	if (!TestTrue(TEXT("Parent interface implemented"), FBlueprintEditorUtils::ImplementNewInterface(Blueprint, FTopLevelAssetPath(ParentInterface)))) { return false; }
+	if (!TestTrue(TEXT("Child interface implemented"), FBlueprintEditorUtils::ImplementNewInterface(Blueprint, FTopLevelAssetPath(ChildInterface)))) { return false; }
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	if (!TestNotNull(TEXT("Event graph"), EventGraph)) { return false; }
+	AddEventNode(EventGraph, TEXT("ChildPing"), ChildInterface);
+
+	const TSharedPtr<FJsonObject> Data = RunAnalysis(*this, Blueprint);
+	if (!Data.IsValid()) { return false; }
+
+	const TSharedPtr<FJsonObject> ParentObj = FindNamedObject(Data, TEXT("interfaces_implemented"), ParentInterface->GetName());
+	const TSharedPtr<FJsonObject> ChildObj = FindNamedObject(Data, TEXT("interfaces_implemented"), ChildInterface->GetName());
+	if (!TestTrue(TEXT("Both interfaces reported"), ParentObj.IsValid() && ChildObj.IsValid())) { return false; }
+	TestTrue(TEXT("The child interface lists its own event"), StringArray(ChildObj, TEXT("functions")).Contains(TEXT("ChildPing")));
+	TestFalse(TEXT("The parent interface does not list the child interface's event"),
+		StringArray(ParentObj, TEXT("functions")).Contains(TEXT("ChildPing")));
 	return true;
 }

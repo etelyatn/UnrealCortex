@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
@@ -62,6 +63,7 @@ namespace
 			ResetLoaders(Pkg);
 			if (UObject* Asset = FindObject<UObject>(nullptr, *ObjectPath))
 			{
+				FAssetRegistryModule::AssetDeleted(Asset);
 				Asset->ClearFlags(RF_Public | RF_Standalone);
 				Asset->MarkAsGarbage();
 			}
@@ -79,7 +81,7 @@ bool FCortexBPAnalysisWidgetDependenciesTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
-	const FString Dir = TEXT("/Game/Temp/Cortex119");
+	const FString Dir = FString::Printf(TEXT("/Game/Temp/Cortex119/Deps_%s"), *Suffix);
 	const FString ChildName = FString::Printf(TEXT("WBP_DepChild_%s"), *Suffix);
 	const FString ParentName = FString::Printf(TEXT("WBP_DepParent_%s"), *Suffix);
 	const FString ChildPackage = FString::Printf(TEXT("%s/%s"), *Dir, *ChildName);
@@ -101,6 +103,10 @@ bool FCortexBPAnalysisWidgetDependenciesTest::RunTest(const FString& Parameters)
 				IFileManager::Get().Delete(*Filename);
 			}
 		}
+
+		// Files are gone: rescan the folder so the registry forgets both assets, then remove the folder if (and only if) it is empty.
+		IAssetRegistry::GetChecked().ScanPathsSynchronous({Dir}, true);
+		IFileManager::Get().DeleteDirectory(*FPackageName::LongPackageNameToFilename(Dir + TEXT("/")), false, false);
 	};
 
 	for (const FString& Name : {ChildName, ParentName})
@@ -175,5 +181,12 @@ bool FCortexBPAnalysisWidgetDependenciesTest::RunTest(const FString& Parameters)
 	}
 
 	Cleanup();
+	for (const FString& ObjectPath : {ParentObject, ChildObject})
+	{
+		TestFalse(*FString::Printf(TEXT("cleanup leaves no Asset Registry entry for %s"), *ObjectPath),
+			IAssetRegistry::GetChecked().GetAssetByObjectPath(FSoftObjectPath(ObjectPath)).IsValid());
+	}
+	TestFalse(TEXT("cleanup removes the empty test folder"),
+		IFileManager::Get().DirectoryExists(*FPackageName::LongPackageNameToFilename(Dir + TEXT("/"))));
 	return true;
 }

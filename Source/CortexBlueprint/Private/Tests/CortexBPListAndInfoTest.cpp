@@ -340,6 +340,23 @@ bool FCortexBPListFilterTypeTest::RunTest(const FString& Parameters)
 		Bogus.ErrorMessage.Contains(TEXT("Interface")) && Bogus.ErrorMessage.Contains(TEXT("EditorUtility"))
 		&& Bogus.ErrorMessage.Contains(TEXT("MacroLibrary")) && Bogus.ErrorMessage.Contains(TEXT("Unknown")));
 
+	// Routed callers send an absent filter as type:"" or type:null; both mean "no type filter".
+	for (int32 Variant = 0; Variant < 2; ++Variant)
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("path"), Dir);
+		if (Variant == 0)
+		{
+			Params->SetStringField(TEXT("type"), FString());
+		}
+		else
+		{
+			Params->SetField(TEXT("type"), MakeShared<FJsonValueNull>());
+		}
+		const FCortexCommandResult Absent = Handler.Execute(TEXT("list"), Params);
+		TestTrue(Variant == 0 ? TEXT("type:\"\" is treated as absent") : TEXT("type:null is treated as absent"), Absent.bSuccess);
+		TestEqual(Variant == 0 ? TEXT("type:\"\" returns all three") : TEXT("type:null returns all three"), RowNames(Absent).Num(), 3);
+	}
 	DeleteBlueprint(Handler, Dir, TEXT("BPI_FT_Interface"));
 	DeleteBlueprint(Handler, Dir, TEXT("WBP_FT_Widget"));
 	DeleteBlueprint(Handler, Dir, TEXT("BP_FT_Actor"));
