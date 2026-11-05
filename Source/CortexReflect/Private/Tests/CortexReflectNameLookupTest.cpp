@@ -11,6 +11,9 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
+#include "Components/SceneComponent.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
 #include "GameFramework/Actor.h"
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
@@ -176,15 +179,21 @@ namespace CortexReflectNameLookupTestSupport
 			}
 			AddTimer(Event, TEXT("Other"));
 			AddTimer(Event, FString());
+			AddTimer(Event, TEXT("DoThing"), GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_ClearTimer));
+			if (Blueprint->SimpleConstructionScript)
+			{
+				USCS_Node* Component = Blueprint->SimpleConstructionScript->CreateNode(USceneComponent::StaticClass(), TEXT("BodyComp"));
+				Blueprint->SimpleConstructionScript->AddNode(Component);
+			}
 			return Blueprint;
 		}
 
-		static void AddTimer(UEdGraph* Graph, const FString& FunctionName)
+		static void AddTimer(UEdGraph* Graph, const FString& FunctionName, const FName TimerFunction = GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_SetTimer))
 		{
 			FGraphNodeCreator<UK2Node_CallFunction> Creator(*Graph);
 			UK2Node_CallFunction* Node = Creator.CreateNode();
 			Node->FunctionReference.SetExternalMember(
-				GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_SetTimer), UKismetSystemLibrary::StaticClass());
+				TimerFunction, UKismetSystemLibrary::StaticClass());
 			Node->AllocateDefaultPins();
 			if (UEdGraphPin* Pin = Node->FindPin(TEXT("FunctionName"), EGPD_Input))
 			{
@@ -301,6 +310,73 @@ bool FCortexReflectNameLookupCppTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectNameLookupCoverageTest,
+	"Cortex.Reflect.NameLookup.Coverage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectNameLookupCoverageTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexReflectNameLookupTestSupport;
+
+	// Line accuracy after an apostrophe in a directive and a multi-line raw string; more APIs; multi-line calls.
+	FTempSource Source(TEXT("Coverage.inl"),
+		TEXT("#error don't do this\n")                                                            // 1
+		TEXT("void A(UObject* O)\n")                                                              // 2
+		TEXT("{\n")                                                                               // 3
+		TEXT("\tO->FindFunction(TEXT(\"AfterApostrophe\"));\n")                                   // 4
+		TEXT("\tDelegate.AddUFunction(this, FName(TEXT(\"Added\"), FNAME_Find));\n")              // 5
+		TEXT("\tO->CallFunctionByNameWithArguments(TEXT(\"RunCmd arg1 arg2\"), Ar, nullptr);\n")  // 6
+		TEXT("\tO->ProcessEvent(O->FindFunction(TEXT(\"Nested\")), nullptr);\n")                  // 7
+		TEXT("\tK2_SetTimer(\n")                                                                  // 8
+		TEXT("\t\tGetOuter(Foo(1, 2)),\n")                                                        // 9
+		TEXT("\t\tTEXT(\"Multi,(Line)\"),\n")                                                     // 10
+		TEXT("\t\t1.f, false);\n")                                                                // 11
+		TEXT("\tconst char* Raw = R\"x(\n")                                                       // 12
+		TEXT("FindFunction(TEXT(\"InRaw\"))\n")                                                   // 13
+		TEXT(")x\";\n")                                                                           // 14
+		TEXT("\tO->RemoveUFunction(this, \"AfterRaw\");\n")                                       // 15
+		TEXT("\tFindFieldChecked<FProperty>(Scope, TEXT(\"Field\"));\n")                          // 16
+		TEXT("\tK2_ClearTimer(this, TEXT(\"Clr\"));\n")                                           // 17
+		TEXT("}\n"));
+	const TSharedPtr<FJsonObject> Result = FCortexReflectNameLookupOps::FindNameLookupsInRoots(
+		{Source.SourceRoot}, {FString::Printf(TEXT("/Game/Temp/Cortex120/NameLookup/None_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits))}, {});
+	if (!TestNotNull(TEXT("result"), Result.Get()))
+	{
+		return false;
+	}
+	TestEqual(TEXT("an .inl file is scanned"), static_cast<int32>(Result->GetNumberField(TEXT("scanned_files"))), 1);
+	const TArray<TSharedPtr<FJsonObject>> Hits = ObjectArray(Result, TEXT("cpp"));
+	TestEqual(TEXT("hit count (raw string body is not code)"), Hits.Num(), 8);
+
+	struct FExpected
+	{
+		const TCHAR* Api;
+		const TCHAR* Name;
+		int32 Line;
+	};
+	const FExpected Expected[] = {
+		{TEXT("FindFunction"), TEXT("AfterApostrophe"), 4},
+		{TEXT("AddUFunction"), TEXT("Added"), 5},
+		{TEXT("CallFunctionByNameWithArguments"), TEXT("RunCmd"), 6},
+		{TEXT("FindFunction"), TEXT("Nested"), 7},
+		{TEXT("K2_SetTimer"), TEXT("Multi,(Line)"), 8},
+		{TEXT("RemoveUFunction"), TEXT("AfterRaw"), 15},
+		{TEXT("FindFieldChecked"), TEXT("Field"), 16},
+		{TEXT("K2_ClearTimer"), TEXT("Clr"), 17},
+	};
+	for (const FExpected& Want : Expected)
+	{
+		const TSharedPtr<FJsonObject> Hit = FindHit(Hits, Want.Api, Want.Name);
+		if (TestNotNull(*FString::Printf(TEXT("hit %s(%s)"), Want.Api, Want.Name), Hit.Get()))
+		{
+			TestEqual(*FString::Printf(TEXT("%s line"), Want.Name), static_cast<int32>(Hit->GetNumberField(TEXT("line"))), Want.Line);
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexReflectNameLookupBlueprintTest,
 	"Cortex.Reflect.NameLookup.Blueprint",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -323,6 +399,7 @@ bool FCortexReflectNameLookupBlueprintTest::RunTest(const FString& Parameters)
 		TEXT("void A(UObject* O)\n{\n")
 		TEXT("\tO->FindFunction(TEXT(\"DoThing\"));\n")
 		TEXT("\tO->GetClass()->FindPropertyByName(TEXT(\"Health\"));\n")
+		TEXT("\tO->GetClass()->FindPropertyByName(TEXT(\"BodyComp\"));\n")
 		TEXT("\tFTimerDelegate::CreateUFunction(this, FName(\"Other\"));\n")
 		TEXT("\tO->FindFunction(TEXT(\"Missing\"));\n}\n"));
 
@@ -331,11 +408,16 @@ bool FCortexReflectNameLookupBlueprintTest::RunTest(const FString& Parameters)
 	{
 		const FString Asset = TEXT("/BP_Target.BP_Target");
 		const TArray<TSharedPtr<FJsonObject>> Cpp = ObjectArray(Result, TEXT("cpp"));
-		TestEqual(TEXT("cpp hits"), Cpp.Num(), 4);
+		TestEqual(TEXT("cpp hits"), Cpp.Num(), 5);
 		const TSharedPtr<FJsonObject> DoThing = FindHit(Cpp, TEXT("FindFunction"), TEXT("DoThing"));
 		const TSharedPtr<FJsonObject> Health = FindHit(Cpp, TEXT("FindPropertyByName"), TEXT("Health"));
 		const TSharedPtr<FJsonObject> Other = FindHit(Cpp, TEXT("CreateUFunction"), TEXT("Other"));
 		const TSharedPtr<FJsonObject> Missing = FindHit(Cpp, TEXT("FindFunction"), TEXT("Missing"));
+		const TSharedPtr<FJsonObject> BodyComp = FindHit(Cpp, TEXT("FindPropertyByName"), TEXT("BodyComp"));
+		if (TestNotNull(TEXT("BodyComp hit"), BodyComp.Get()))
+		{
+			TestTrue(TEXT("BodyComp matches SCS component variable"), HasMatch(BodyComp, Asset, TEXT("BodyComp"), TEXT("component")));
+		}
 		if (TestNotNull(TEXT("DoThing hit"), DoThing.Get()))
 		{
 			TestTrue(TEXT("DoThing matches BP function"), HasMatch(DoThing, Asset, TEXT("DoThing"), TEXT("function")));
@@ -354,15 +436,19 @@ bool FCortexReflectNameLookupBlueprintTest::RunTest(const FString& Parameters)
 		}
 
 		const TArray<TSharedPtr<FJsonObject>> Blueprint = ObjectArray(Result, TEXT("blueprint"));
-		TestEqual(TEXT("one literal K2_SetTimer node (the empty one is not a by-name lookup)"), Blueprint.Num(), 1);
-		if (Blueprint.Num() == 1)
+		TestEqual(TEXT("two literal timer nodes (the empty one is not a by-name lookup)"), Blueprint.Num(), 2);
+		const TSharedPtr<FJsonObject> SetTimer = FindHit(Blueprint, TEXT("K2_SetTimer"), TEXT("Other"));
+		const TSharedPtr<FJsonObject> ClearTimer = FindHit(Blueprint, TEXT("K2_ClearTimer"), TEXT("DoThing"));
+		if (TestNotNull(TEXT("K2_SetTimer hit"), SetTimer.Get()))
 		{
-			TestEqual(TEXT("blueprint source"), Blueprint[0]->GetStringField(TEXT("source")), FString(TEXT("blueprint")));
-			TestEqual(TEXT("blueprint api"), Blueprint[0]->GetStringField(TEXT("api")), FString(TEXT("K2_SetTimer")));
-			TestEqual(TEXT("blueprint name"), Blueprint[0]->GetStringField(TEXT("name")), FString(TEXT("Other")));
-			TestTrue(TEXT("blueprint asset_path"), Blueprint[0]->GetStringField(TEXT("asset_path")).EndsWith(Asset));
-			TestTrue(TEXT("blueprint node_id"), !Blueprint[0]->GetStringField(TEXT("node_id")).IsEmpty());
-			TestTrue(TEXT("blueprint hit matches the custom event"), HasMatch(Blueprint[0], Asset, TEXT("Other"), TEXT("custom_event")));
+			TestEqual(TEXT("blueprint source"), SetTimer->GetStringField(TEXT("source")), FString(TEXT("blueprint")));
+			TestTrue(TEXT("blueprint asset_path"), SetTimer->GetStringField(TEXT("asset_path")).EndsWith(Asset));
+			TestTrue(TEXT("blueprint node_id"), !SetTimer->GetStringField(TEXT("node_id")).IsEmpty());
+			TestTrue(TEXT("blueprint hit matches the custom event"), HasMatch(SetTimer, Asset, TEXT("Other"), TEXT("custom_event")));
+		}
+		if (TestNotNull(TEXT("K2_ClearTimer hit"), ClearTimer.Get()))
+		{
+			TestTrue(TEXT("clear timer hit matches the function"), HasMatch(ClearTimer, Asset, TEXT("DoThing"), TEXT("function")));
 		}
 
 		const TArray<FString> Matched = StringArray(Result, TEXT("matched_names"));
@@ -370,7 +456,7 @@ bool FCortexReflectNameLookupBlueprintTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("DoThing matched"), Matched.Contains(TEXT("DoThing")));
 		TestTrue(TEXT("Health matched"), Matched.Contains(TEXT("Health")));
 		TestTrue(TEXT("Other matched"), Matched.Contains(TEXT("Other")));
-		TestEqual(TEXT("matched count"), Matched.Num(), 3);
+		TestEqual(TEXT("matched count"), Matched.Num(), 4);
 		TestTrue(TEXT("Missing unmatched"), Unmatched.Contains(TEXT("Missing")));
 		TestEqual(TEXT("unmatched count"), Unmatched.Num(), 1);
 

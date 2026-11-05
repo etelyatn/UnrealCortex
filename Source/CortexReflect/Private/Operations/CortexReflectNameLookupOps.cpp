@@ -1,6 +1,7 @@
 #include "Operations/CortexReflectNameLookupOps.h"
 
 #include "Algo/Sort.h"
+#include "Algo/Find.h"
 #include "Algo/Unique.h"
 #include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -13,6 +14,8 @@
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
 #include "Engine/LevelScriptBlueprint.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "K2Node_CallFunction.h"
@@ -34,20 +37,37 @@ namespace CortexReflectNameLookupPrivate
 	{
 		const TCHAR* Name;
 		int32 ArgumentIndex;
+		/** The argument is a command string; only its first whitespace-separated token is the name. */
+		bool bFirstToken = false;
 	};
 
 	// GET_FUNCTION_NAME_STRING_CHECKED is compile-time checked, so it is not a by-name risk: it never matches the
-	// literal forms below.
+	// literal forms below. Only literal names are detected; a name held in a variable or constant is not.
+	// SetTimerByFunctionName is not an engine API; it only matches a project-defined wrapper and is not advertised.
 	const FLookupApi LookupApis[] = {
 		{TEXT("FindFunction"), 0},
 		{TEXT("FindFunctionByName"), 0},
 		{TEXT("FindFunctionChecked"), 0},
 		{TEXT("FindPropertyByName"), 0},
 		{TEXT("FindFProperty"), 1},
+		{TEXT("FindUField"), 1},
+		{TEXT("FindField"), 1},
+		{TEXT("FindFieldChecked"), 1},
 		{TEXT("SetTimerByFunctionName"), 1},
 		{TEXT("K2_SetTimer"), 1},
+		{TEXT("K2_ClearTimer"), 1},
+		{TEXT("K2_PauseTimer"), 1},
+		{TEXT("K2_UnPauseTimer"), 1},
+		{TEXT("K2_IsTimerActive"), 1},
+		{TEXT("K2_IsTimerPaused"), 1},
+		{TEXT("K2_TimerExists"), 1},
+		{TEXT("K2_GetTimerElapsedTime"), 1},
+		{TEXT("K2_GetTimerRemainingTime"), 1},
 		{TEXT("CreateUFunction"), 1},
 		{TEXT("BindUFunction"), 1},
+		{TEXT("AddUFunction"), 1},
+		{TEXT("RemoveUFunction"), 1},
+		{TEXT("CallFunctionByNameWithArguments"), 0, true},
 	};
 
 	bool IsIdentifierStart(const TCHAR Char)
@@ -60,20 +80,42 @@ namespace CortexReflectNameLookupPrivate
 		return FChar::IsAlnum(Char) || Char == TEXT('_');
 	}
 
-	/** Index just past the string or character literal opening at Start (text[Start] is the quote). */
+	/**
+	 * Index just past the string or character literal opening at Start (text[Start] is the quote). An unterminated
+	 * ordinary literal ends before its newline so the newline is never swallowed; a raw string R"d(...)d" may span lines.
+	 */
 	int32 SkipLiteral(const FString& Text, const int32 Start)
 	{
 		const TCHAR Quote = Text[Start];
+		if (Quote == TEXT('"') && Start > 0 && Text[Start - 1] == TEXT('R'))
+		{
+			int32 Open = Start + 1;
+			while (Open < Text.Len() && Open - Start <= 17 && Text[Open] != TEXT('(') && !FChar::IsWhitespace(Text[Open])
+				&& Text[Open] != TEXT(')') && Text[Open] != TEXT('\\') && Text[Open] != TEXT('"'))
+			{
+				++Open;
+			}
+			if (Open < Text.Len() && Text[Open] == TEXT('(') && Open - Start <= 17)
+			{
+				const FString Terminator = TEXT(")") + Text.Mid(Start + 1, Open - Start - 1) + TEXT("\"");
+				const int32 End = Text.Find(Terminator, ESearchCase::CaseSensitive, ESearchDir::FromStart, Open + 1);
+				return End == INDEX_NONE ? Text.Len() : End + Terminator.Len();
+			}
+		}
 		int32 Index = Start + 1;
 		while (Index < Text.Len())
 		{
 			const TCHAR Char = Text[Index];
-			if (Char == TEXT('\\'))
+			if (Char == TEXT('\\') && Index + 1 < Text.Len() && Text[Index + 1] != TEXT('\n'))
 			{
 				Index += 2;
 				continue;
 			}
-			if (Char == Quote || Char == TEXT('\n'))
+			if (Char == TEXT('\n'))
+			{
+				return Index;
+			}
+			if (Char == Quote)
 			{
 				return Index + 1;
 			}
@@ -218,8 +260,8 @@ namespace CortexReflectNameLookupPrivate
 		return Arguments;
 	}
 
-	/** If Argument is Wrapper( inner ) spanning the whole argument, the single trimmed inner argument. */
-	bool UnwrapCall(const FString& Argument, const TCHAR* Wrapper, FString& OutInner)
+	/** If Argument is Wrapper( inner ) spanning the whole argument, the first trimmed inner argument. */
+	bool UnwrapCall(const FString& Argument, const TCHAR* Wrapper, FString& OutInner, const bool bAllowExtraArguments = false)
 	{
 		const int32 WrapperLength = FCString::Strlen(Wrapper);
 		if (!Argument.StartsWith(Wrapper, ESearchCase::CaseSensitive))
@@ -236,7 +278,7 @@ namespace CortexReflectNameLookupPrivate
 			return false;
 		}
 		const TArray<FString> Inner = ParseArguments(Argument, Open);
-		if (Inner.Num() != 1)
+		if (Inner.Num() == 0 || (Inner.Num() != 1 && !bAllowExtraArguments))
 		{
 			return false;
 		}
@@ -244,11 +286,11 @@ namespace CortexReflectNameLookupPrivate
 		return true;
 	}
 
-	/** The name when Argument is "X", TEXT("X"), FName("X") or FName(TEXT("X")); false for anything computed. */
-	bool ExtractLiteralName(FString Argument, FString& OutName)
+	/** The name when Argument is "X", TEXT("X"), FName("X"[, find type]) or FName(TEXT("X")); false for anything computed. */
+	bool ExtractLiteralName(FString Argument, const bool bFirstToken, FString& OutName)
 	{
 		FString Inner;
-		if (UnwrapCall(Argument, TEXT("FName"), Inner))
+		if (UnwrapCall(Argument, TEXT("FName"), Inner, true))
 		{
 			Argument = Inner;
 		}
@@ -260,11 +302,21 @@ namespace CortexReflectNameLookupPrivate
 		{
 			return false;
 		}
-		const FString Body = Argument.Mid(1, Argument.Len() - 2);
+		FString Body = Argument.Mid(1, Argument.Len() - 2);
 		// Adjacent literals and escapes are not plain names.
 		if (Body.Contains(TEXT("\"")) || Body.Contains(TEXT("\\")))
 		{
 			return false;
+		}
+		if (bFirstToken)
+		{
+			Body.TrimStartInline();
+			int32 End = 0;
+			while (End < Body.Len() && !FChar::IsWhitespace(Body[End]))
+			{
+				++End;
+			}
+			Body.LeftInline(End);
 		}
 		OutName = Body;
 		return true;
@@ -282,13 +334,13 @@ namespace CortexReflectNameLookupPrivate
 	{
 		const FString Source = StripComments(Text);
 		int32 Line = 1;
+		int32 CountedTo = 0;
 		int32 Index = 0;
 		while (Index < Source.Len())
 		{
 			const TCHAR Char = Source[Index];
 			if (Char == TEXT('\n'))
 			{
-				++Line;
 				++Index;
 			}
 			else if (Char == TEXT('"') || (Char == TEXT('\'') && !IsDigitSeparator(Source, Index)))
@@ -298,6 +350,10 @@ namespace CortexReflectNameLookupPrivate
 			else if (IsIdentifierStart(Char))
 			{
 				const int32 Start = Index;
+				for (; CountedTo < Start; ++CountedTo)
+				{
+					Line += Source[CountedTo] == TEXT('\n') ? 1 : 0;
+				}
 				while (Index < Source.Len() && IsIdentifierChar(Source[Index]))
 				{
 					++Index;
@@ -353,7 +409,7 @@ namespace CortexReflectNameLookupPrivate
 				}
 				const TArray<FString> Arguments = ParseArguments(Source, Cursor);
 				FString Name;
-				if (Arguments.IsValidIndex(Api->ArgumentIndex) && ExtractLiteralName(Arguments[Api->ArgumentIndex], Name) && !Name.IsEmpty())
+				if (Arguments.IsValidIndex(Api->ArgumentIndex) && ExtractLiteralName(Arguments[Api->ArgumentIndex], Api->bFirstToken, Name) && !Name.IsEmpty())
 				{
 					FCppHit& Hit = OutHits.AddDefaulted_GetRef();
 					Hit.File = RelativeFile;
@@ -394,10 +450,20 @@ namespace CortexReflectNameLookupPrivate
 
 	bool IsTimerNode(const UK2Node_CallFunction* Node)
 	{
-		const FName Function = Node->FunctionReference.GetMemberName();
-		return (Function == GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_SetTimer)
-				|| Function == GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_SetTimerForNextTick))
-			&& Node->FunctionReference.GetMemberParentClass() == UKismetSystemLibrary::StaticClass();
+		static const FName TimerFunctions[] = {
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_SetTimer),
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_SetTimerForNextTick),
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_ClearTimer),
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_PauseTimer),
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_UnPauseTimer),
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_IsTimerActive),
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_IsTimerPaused),
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_TimerExists),
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_GetTimerElapsedTime),
+			GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, K2_GetTimerRemainingTime),
+		};
+		return Node->FunctionReference.GetMemberParentClass() == UKismetSystemLibrary::StaticClass()
+			&& Algo::Find(TimerFunctions, Node->FunctionReference.GetMemberName()) != nullptr;
 	}
 
 	void CollectBlueprint(
@@ -415,6 +481,16 @@ namespace CortexReflectNameLookupPrivate
 		for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
 		{
 			AddMember(Variable.VarName, TEXT("variable"));
+		}
+		if (Blueprint->SimpleConstructionScript)
+		{
+			for (const USCS_Node* ComponentNode : Blueprint->SimpleConstructionScript->GetAllNodes())
+			{
+				if (ComponentNode)
+				{
+					AddMember(ComponentNode->GetVariableName(), TEXT("component"));
+				}
+			}
 		}
 		for (const UEdGraph* Graph : Blueprint->FunctionGraphs)
 		{
@@ -545,6 +621,7 @@ TSharedPtr<FJsonObject> FCortexReflectNameLookupOps::FindNameLookupsInRoots(
 	for (const FString& Root : SourceRoots)
 	{
 		IFileManager::Get().FindFilesRecursive(Files, *Root, TEXT("*.h"), true, false, false);
+		IFileManager::Get().FindFilesRecursive(Files, *Root, TEXT("*.inl"), true, false, false);
 		IFileManager::Get().FindFilesRecursive(Files, *Root, TEXT("*.cpp"), true, false, false);
 	}
 	for (FString& File : Files)
@@ -608,7 +685,7 @@ TSharedPtr<FJsonObject> FCortexReflectNameLookupOps::FindNameLookupsInRoots(
 	}
 	if (bLoadedAny)
 	{
-		// Loaded Blueprints are not kept; one collection for the whole run.
+		// Loaded Blueprints are not rooted by this scan; one collection after the run lets the unreferenced ones go.
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 	}
 	TimerHits.RemoveAll([&IsWanted](const FBlueprintHit& Hit) { return !IsWanted(Hit.Name); });
