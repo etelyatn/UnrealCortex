@@ -354,3 +354,121 @@ bool FCortexBPCompareSnapshotsTest::RunTest(const FString& Parameters)
 	Retire(Actor.Get());
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPCompareSnapshotsEdgeCasesTest,
+	"Cortex.Blueprint.CompareSnapshotsEdgeCases",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPCompareSnapshotsEdgeCasesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexBPSnapshotTestSupport;
+
+	const FString Suffix = NewSuffix();
+
+	// A member moved from a Blueprint double to a native float with the same value is `moved`, never `changed`,
+	// and the type change is recorded on the difference. 0.1 differs between double and float only past float precision.
+	{
+		TStrongObjectPtr<UBlueprint> Actor(MakeBlueprint(FString::Printf(TEXT("CortexCompareFloat_%s"), *Suffix), AActor::StaticClass()));
+		if (!TestNotNull(TEXT("actor Blueprint created"), Actor.Get()))
+		{
+			return false;
+		}
+		FEdGraphPinType DoubleType;
+		DoubleType.PinCategory = UEdGraphSchema_K2::PC_Real;
+		DoubleType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+		if (!TestTrue(TEXT("double variable added"), FBlueprintEditorUtils::AddMemberVariable(Actor.Get(), TEXT("MovedFloat"), DoubleType)))
+		{
+			Retire(Actor.Get());
+			return false;
+		}
+		for (FBPVariableDescription& Variable : Actor->NewVariables)
+		{
+			if (Variable.VarName == TEXT("MovedFloat"))
+			{
+				Variable.DefaultValue = TEXT("0.1");
+			}
+		}
+		FKismetEditorUtilities::CompileBlueprint(Actor.Get());
+		const FString BeforePath = OutputPath(TEXT("edge_before"), Suffix);
+		const FString AfterPath = OutputPath(TEXT("edge_after"), Suffix);
+		TestTrue(TEXT("before export"), Export(Actor->GetPathName(), BeforePath).bSuccess);
+
+		// The "after" side is a Blueprint on the native parent that declares the float (reparenting the live Blueprint
+		// would make the engine reinstance the double CDO into a float and warn about the conversion).
+		TStrongObjectPtr<UBlueprint> Native(MakeBlueprint(
+			FString::Printf(TEXT("CortexCompareFloatNative_%s"), *Suffix), ACortexBPSnapshotFloatMoveParent::StaticClass()));
+		if (!TestNotNull(TEXT("native-parent Blueprint created"), Native.Get()))
+		{
+			Retire(Actor.Get());
+			return false;
+		}
+		FKismetEditorUtilities::CompileBlueprint(Native.Get());
+		TestTrue(TEXT("after export"), Export(Native->GetPathName(), AfterPath).bSuccess);
+
+		const FCortexCommandResult Result = CompareSnapshotFiles(BeforePath, AfterPath);
+		if (TestTrue(*FString::Printf(TEXT("compare succeeds (%s: %s)"), *Result.ErrorCode, *Result.ErrorMessage),
+			Result.bSuccess && Result.Data.IsValid()))
+		{
+			const TSharedPtr<FJsonObject> Moved = FindDifference(Result.Data->GetArrayField(TEXT("differences")), TEXT("cdo"), TEXT("MovedFloat"));
+			if (TestTrue(TEXT("cdo/MovedFloat difference"), Moved.IsValid()))
+			{
+				TestEqual(TEXT("double -> float with an equal value is moved, not changed"),
+					Moved->GetStringField(TEXT("kind")), FString(TEXT("moved")));
+				const TSharedPtr<FJsonObject>* TypeChange = nullptr;
+				if (TestTrue(TEXT("the type change is recorded"), Moved->TryGetObjectField(TEXT("type_change"), TypeChange)))
+				{
+					TestEqual(TEXT("type before"), (*TypeChange)->GetStringField(TEXT("before")), FString(TEXT("double")));
+					TestEqual(TEXT("type after"), (*TypeChange)->GetStringField(TEXT("after")), FString(TEXT("float")));
+				}
+			}
+		}
+		IFileManager::Get().Delete(*BeforePath);
+		IFileManager::Get().Delete(*AfterPath);
+		Retire(Actor.Get());
+		Retire(Native.Get());
+	}
+
+	// Two snapshots that record no section at all compare nothing and are refused, never reported identical.
+	{
+		const auto WriteSnapshot = [&Suffix](const TCHAR* Label, const TSharedRef<FJsonObject>& Sections) -> FString
+		{
+			TSharedRef<FJsonObject> Snapshot = MakeShared<FJsonObject>();
+			Snapshot->SetNumberField(TEXT("format_version"), 1);
+			Snapshot->SetStringField(TEXT("asset_path"), TEXT("/Temp/Synthetic"));
+			Snapshot->SetStringField(TEXT("parent_class"), TEXT("/Script/Engine.Actor"));
+			Snapshot->SetObjectField(TEXT("sections"), Sections);
+			const FString Path = OutputPath(Label, Suffix);
+			WriteJsonFile(Path, Snapshot);
+			return Path;
+		};
+		const FString EmptyA = WriteSnapshot(TEXT("edge_empty_a"), MakeShared<FJsonObject>());
+		const FString EmptyB = WriteSnapshot(TEXT("edge_empty_b"), MakeShared<FJsonObject>());
+		const FCortexCommandResult Empty = CompareSnapshotFiles(EmptyA, EmptyB);
+		TestFalse(TEXT("an empty compared set is refused"), Empty.bSuccess);
+		TestEqual(TEXT("empty compared set code"), Empty.ErrorCode, CortexErrorCodes::InvalidField);
+		IFileManager::Get().Delete(*EmptyA);
+		IFileManager::Get().Delete(*EmptyB);
+
+		// A duplicate record key would be silently overwritten; it is refused instead.
+		const TSharedRef<FJsonObject> Duplicated = MakeSyntheticSnapshot(1);
+		TArray<TSharedPtr<FJsonValue>> Records = Duplicated->GetObjectField(TEXT("sections"))->GetArrayField(TEXT("variables"));
+		TSharedPtr<FJsonObject> Twin = MakeShared<FJsonObject>();
+		Twin->SetStringField(TEXT("key"), TEXT("Variable_0000"));
+		Twin->SetStringField(TEXT("type"), TEXT("float"));
+		Records.Add(MakeShared<FJsonValueObject>(Twin));
+		Duplicated->GetObjectField(TEXT("sections"))->SetArrayField(TEXT("variables"), Records);
+		const FString DuplicatePath = OutputPath(TEXT("edge_duplicate"), Suffix);
+		const FString CleanPath = OutputPath(TEXT("edge_clean"), Suffix);
+		TestTrue(TEXT("duplicate snapshot written"), WriteJsonFile(DuplicatePath, Duplicated));
+		TestTrue(TEXT("clean snapshot written"), WriteJsonFile(CleanPath, MakeSyntheticSnapshot(1)));
+		const FCortexCommandResult Duplicate = CompareSnapshotFiles(CleanPath, DuplicatePath);
+		TestFalse(TEXT("a duplicate record key is refused"), Duplicate.bSuccess);
+		TestEqual(TEXT("duplicate key code"), Duplicate.ErrorCode, CortexErrorCodes::InvalidField);
+		TestTrue(TEXT("refusal names the duplicate key"), Duplicate.ErrorMessage.Contains(TEXT("Variable_0000")));
+		IFileManager::Get().Delete(*DuplicatePath);
+		IFileManager::Get().Delete(*CleanPath);
+	}
+	return true;
+}

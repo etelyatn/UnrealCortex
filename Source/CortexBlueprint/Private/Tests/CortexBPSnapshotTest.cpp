@@ -13,6 +13,8 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/InheritableComponentHandler.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "GameFramework/Actor.h"
@@ -241,8 +243,8 @@ bool FCortexBPExportSnapshotTest::RunTest(const FString& Parameters)
 		{
 			TestEqual(TEXT("Health type"), Health->GetStringField(TEXT("type")), CortexBPTypeUtils::FriendlyTypeName(IntType));
 			// A full compile copies the default into the CDO and clears the editor-side value (KismetCompiler), so the
-			// record carries the field and the CDO record below carries the value.
-			TestTrue(TEXT("Health default field present"), Health->HasField(TEXT("default")));
+			// record reads the effective default from the CDO.
+			TestEqual(TEXT("Health default is the CDO value"), static_cast<int32>(Health->GetNumberField(TEXT("default"))), 5);
 			TestEqual(TEXT("Health category"), Health->GetStringField(TEXT("category")), FString(TEXT("Stats")));
 		}
 
@@ -263,6 +265,8 @@ bool FCortexBPExportSnapshotTest::RunTest(const FString& Parameters)
 		const TSharedPtr<FJsonObject> Mesh = FindRecord(Snapshot, TEXT("components"), TEXT("scs:Mesh"));
 		if (TestTrue(TEXT("SCS component record"), Mesh.IsValid()))
 		{
+			TestTrue(TEXT("attached_to_inherited field present"), Mesh->HasField(TEXT("attached_to_inherited")));
+			TestFalse(TEXT("misnamed is_inherited field is gone"), Mesh->HasField(TEXT("is_inherited")));
 			TestEqual(TEXT("component class"), Mesh->GetStringField(TEXT("class_path")), UStaticMeshComponent::StaticClass()->GetPathName());
 			const TSharedPtr<FJsonObject>* Overrides = nullptr;
 			if (TestTrue(TEXT("component overrides object"), Mesh->TryGetObjectField(TEXT("overrides"), Overrides)))
@@ -390,5 +394,96 @@ bool FCortexBPExportSnapshotTest::RunTest(const FString& Parameters)
 	IFileManager::Get().Delete(*SecondPath);
 	IFileManager::Get().Delete(*SubsetPath);
 	Retire(Actor.Get());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPExportSnapshotInheritedComponentsTest,
+	"Cortex.Blueprint.ExportSnapshotInheritedComponents",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPExportSnapshotInheritedComponentsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexBPSnapshotTestSupport;
+
+	const FString Suffix = NewSuffix();
+	const auto OverridesOf = [](const TSharedPtr<FJsonObject>& Record) -> TSharedPtr<FJsonObject>
+	{
+		const TSharedPtr<FJsonObject>* Overrides = nullptr;
+		return Record.IsValid() && Record->TryGetObjectField(TEXT("overrides"), Overrides) ? *Overrides : nullptr;
+	};
+
+	// Native parent: the child's change lives on the default subobject of its own generated-class CDO.
+	{
+		TStrongObjectPtr<UBlueprint> Child(MakeBlueprint(FString::Printf(TEXT("CortexSnapNativeChild_%s"), *Suffix), ACortexBPSnapshotComponentParent::StaticClass()));
+		if (!TestNotNull(TEXT("native-parent child Blueprint"), Child.Get()))
+		{
+			return false;
+		}
+		FKismetEditorUtilities::CompileBlueprint(Child.Get());
+		UObject* Cdo = Child->GeneratedClass ? Child->GeneratedClass->GetDefaultObject() : nullptr;
+		UStaticMeshComponent* NativeMesh = Cdo ? Cast<UStaticMeshComponent>(Cdo->GetDefaultSubobjectByName(TEXT("NativeMesh"))) : nullptr;
+		if (TestNotNull(TEXT("child CDO carries the inherited native component"), NativeMesh))
+		{
+			NativeMesh->bHiddenInGame = true;
+			const FString OutPath = OutputPath(TEXT("inherited_native"), Suffix);
+			TestTrue(TEXT("native-parent export succeeds"), Export(Child->GetPathName(), OutPath).bSuccess);
+			const TSharedPtr<FJsonObject> Snapshot = ReadJsonFile(OutPath);
+			const TSharedPtr<FJsonObject> Record = FindRecord(Snapshot, TEXT("components"), TEXT("inherited:NativeMesh"));
+			if (TestTrue(TEXT("inherited native component record"), Record.IsValid()))
+			{
+				const TSharedPtr<FJsonObject> Overrides = OverridesOf(Record);
+				TestTrue(TEXT("this Blueprint's override of the inherited native component is recorded"),
+					Overrides.IsValid() && Overrides->HasField(TEXT("bHiddenInGame")));
+			}
+			IFileManager::Get().Delete(*OutPath);
+		}
+		Retire(Child.Get());
+	}
+
+	// Blueprint parent: the child's change lives in its generated class's InheritableComponentHandler.
+	{
+		TStrongObjectPtr<UBlueprint> Parent(MakeBlueprint(FString::Printf(TEXT("CortexSnapBPParent_%s"), *Suffix), AActor::StaticClass()));
+		if (!TestNotNull(TEXT("parent Blueprint"), Parent.Get()))
+		{
+			return false;
+		}
+		USCS_Node* ParentNode = Parent->SimpleConstructionScript->CreateNode(UStaticMeshComponent::StaticClass(), TEXT("ParentMesh"));
+		Parent->SimpleConstructionScript->AddNode(ParentNode);
+		FKismetEditorUtilities::CompileBlueprint(Parent.Get());
+		if (!TestNotNull(TEXT("parent generated class"), Parent->GeneratedClass.Get()))
+		{
+			Retire(Parent.Get());
+			return false;
+		}
+		TStrongObjectPtr<UBlueprint> Child(MakeBlueprint(FString::Printf(TEXT("CortexSnapBPChild_%s"), *Suffix), Parent->GeneratedClass));
+		if (!TestNotNull(TEXT("Blueprint-parent child"), Child.Get()))
+		{
+			Retire(Parent.Get());
+			return false;
+		}
+		FKismetEditorUtilities::CompileBlueprint(Child.Get());
+		UBlueprintGeneratedClass* ChildClass = Cast<UBlueprintGeneratedClass>(Child->GeneratedClass);
+		UInheritableComponentHandler* Handler = ChildClass ? ChildClass->GetInheritableComponentHandler(true) : nullptr;
+		UActorComponent* Override = Handler ? Handler->CreateOverridenComponentTemplate(FComponentKey(ParentNode)) : nullptr;
+		if (TestNotNull(TEXT("child override template created"), Override))
+		{
+			CastChecked<UStaticMeshComponent>(Override)->bHiddenInGame = true;
+			const FString OutPath = OutputPath(TEXT("inherited_bp"), Suffix);
+			TestTrue(TEXT("Blueprint-parent export succeeds"), Export(Child->GetPathName(), OutPath).bSuccess);
+			const TSharedPtr<FJsonObject> Snapshot = ReadJsonFile(OutPath);
+			const TSharedPtr<FJsonObject> Record = FindRecord(Snapshot, TEXT("components"), TEXT("inherited:ParentMesh"));
+			if (TestTrue(TEXT("inherited Blueprint component record"), Record.IsValid()))
+			{
+				const TSharedPtr<FJsonObject> Overrides = OverridesOf(Record);
+				TestTrue(TEXT("this Blueprint's override of the parent's component is recorded"),
+					Overrides.IsValid() && Overrides->HasField(TEXT("bHiddenInGame")));
+			}
+			IFileManager::Get().Delete(*OutPath);
+		}
+		Retire(Child.Get());
+		Retire(Parent.Get());
+	}
 	return true;
 }

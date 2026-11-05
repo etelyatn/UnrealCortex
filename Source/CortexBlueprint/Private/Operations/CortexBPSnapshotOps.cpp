@@ -11,6 +11,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/InheritableComponentHandler.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "K2Node_CustomEvent.h"
@@ -105,15 +106,35 @@ namespace CortexBPSnapshotPrivate
 
 	// ---- section builders ----
 
+	TSharedPtr<FJsonValue> SerializeProperty(
+		const FProperty* Property, const void* Container, const FString& Name, bool& bOutIncomplete);
+
 	TArray<TSharedPtr<FJsonValue>> BuildVariables(const UBlueprint* Blueprint)
 	{
 		FRecords Records;
+		// A full compile copies FBPVariableDescription::DefaultValue into the CDO and clears it, so the effective
+		// default is read from the generated class CDO instead.
+		const UClass* GeneratedClass = Blueprint->GeneratedClass;
+		const UObject* DefaultsObject = GeneratedClass ? GeneratedClass->GetDefaultObject() : nullptr;
 		for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
 		{
 			TSharedPtr<FJsonObject> Record = NewRecord(Variable.VarName.ToString());
 			Record->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Variable.VarType));
 			Record->SetStringField(TEXT("category"), Variable.Category.ToString());
-			Record->SetStringField(TEXT("default"), Variable.DefaultValue);
+			const FProperty* DefaultProperty = DefaultsObject ? GeneratedClass->FindPropertyByName(Variable.VarName) : nullptr;
+			if (DefaultProperty)
+			{
+				bool bIncomplete = false;
+				Record->SetField(TEXT("default"), SerializeProperty(DefaultProperty, DefaultsObject, Variable.VarName.ToString(), bIncomplete));
+				if (bIncomplete)
+				{
+					Record->SetBoolField(TEXT("default_incomplete"), true);
+				}
+			}
+			else
+			{
+				Record->SetField(TEXT("default"), MakeShared<FJsonValueNull>());
+			}
 
 			struct FFlagName { uint64 Flag; const TCHAR* Name; };
 			static const FFlagName FlagNames[] = {
@@ -243,7 +264,8 @@ namespace CortexBPSnapshotPrivate
 				}
 				Keys.Add(Key);
 				TSharedPtr<FJsonObject> Record = NewRecord(Key);
-				Record->SetBoolField(TEXT("is_inherited"), !Node->ParentComponentOwnerClassName.IsNone());
+				// The node is attached to a component of a parent class (ParentComponentOwnerClassName); it is not itself inherited.
+				Record->SetBoolField(TEXT("attached_to_inherited"), !Node->ParentComponentOwnerClassName.IsNone());
 				Record->SetStringField(TEXT("parent_component"), Node->ParentComponentOrVariableName.ToString());
 				Record->SetStringField(TEXT("attach_socket"), Node->AttachToName.ToString());
 				AddComponentFields(Record, Node->ComponentTemplate);
@@ -251,7 +273,12 @@ namespace CortexBPSnapshotPrivate
 			}
 		}
 
-		// Inherited templates: SCS nodes of parent Blueprints, then the default subobjects of the first native class.
+		// Inherited templates as this Blueprint sees them. A parent Blueprint's SCS node is read through this Blueprint's
+		// InheritableComponentHandler (where its own overrides of that component live); a native parent's default
+		// subobjects are read from this Blueprint's generated-class CDO (whose subobjects carry its own overrides and
+		// whose archetype is the parent's subobject).
+		UBlueprintGeneratedClass* OwnClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+		const UInheritableComponentHandler* OverrideHandler = OwnClass ? OwnClass->GetInheritableComponentHandler(false) : nullptr;
 		for (const UClass* Class = Blueprint->ParentClass; Class; Class = Class->GetSuperClass())
 		{
 			if (const UBlueprintGeneratedClass* BlueprintClass = Cast<UBlueprintGeneratedClass>(Class))
@@ -272,16 +299,25 @@ namespace CortexBPSnapshotPrivate
 						continue;
 					}
 					Keys.Add(Key);
+					const UActorComponent* Template = Node->ComponentTemplate;
+					if (OverrideHandler)
+					{
+						if (const UActorComponent* Override = OverrideHandler->GetOverridenComponentTemplate(FComponentKey(Node)))
+						{
+							Template = Override;
+						}
+					}
 					TSharedPtr<FJsonObject> Record = NewRecord(Key);
 					Record->SetStringField(TEXT("owner_class"), Class->GetPathName());
-					AddComponentFields(Record, Node->ComponentTemplate);
+					AddComponentFields(Record, Template);
 					Records.Add(Record);
 				}
 				continue;
 			}
 
+			UObject* Cdo = OwnClass ? OwnClass->GetDefaultObject() : Class->GetDefaultObject();
 			TArray<UObject*> Subobjects;
-			Class->GetDefaultObject()->GetDefaultSubobjects(Subobjects);
+			Cdo->GetDefaultSubobjects(Subobjects);
 			for (const UObject* Subobject : Subobjects)
 			{
 				if (!Subobject || !Subobject->IsA<UActorComponent>())
@@ -563,25 +599,47 @@ namespace CortexBPSnapshotPrivate
 					FString::Printf(TEXT("%s snapshot section '%s' holds a record without a key"), Label, *SectionName));
 				return false;
 			}
+			if (OutRecords.Contains(Key))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("%s snapshot section '%s' holds the record key '%s' more than once"), Label, *SectionName, *Key));
+				return false;
+			}
 			OutRecords.Add(Key, Record);
 		}
 		return true;
 	}
 
-	bool FieldsEqual(const TSharedPtr<FJsonObject>& A, const TSharedPtr<FJsonObject>& B, const TCHAR* IgnoredField = nullptr)
+	/** Equal on every field except those ignored; the `value` field of a float/double pair compares at float precision. */
+	bool FieldsEqual(const TSharedPtr<FJsonObject>& A, const TSharedPtr<FJsonObject>& B,
+		const TSet<FString>& Ignored = TSet<FString>(), const bool bFloatPrecisionValue = false)
 	{
 		TSet<FString> Names;
 		for (const auto& Pair : A->Values) { Names.Add(FString(Pair.Key.ToView())); }
 		for (const auto& Pair : B->Values) { Names.Add(FString(Pair.Key.ToView())); }
 		for (const FString& Name : Names)
 		{
-			if (IgnoredField && Name == IgnoredField)
+			if (Ignored.Contains(Name))
 			{
 				continue;
 			}
 			const TSharedPtr<FJsonValue> Left = A->TryGetField(Name);
 			const TSharedPtr<FJsonValue> Right = B->TryGetField(Name);
-			if (!Left.IsValid() || !Right.IsValid() || !FJsonValue::CompareEqual(*Left, *Right))
+			if (!Left.IsValid() || !Right.IsValid())
+			{
+				return false;
+			}
+			double LeftNumber = 0.0;
+			double RightNumber = 0.0;
+			if (bFloatPrecisionValue && Name == TEXT("value") && Left->TryGetNumber(LeftNumber) && Right->TryGetNumber(RightNumber))
+			{
+				if (static_cast<float>(LeftNumber) != static_cast<float>(RightNumber))
+				{
+					return false;
+				}
+				continue;
+			}
+			if (!FJsonValue::CompareEqual(*Left, *Right))
 			{
 				return false;
 			}
@@ -834,6 +892,11 @@ FCortexCommandResult FCortexBPSnapshotOps::CompareSnapshots(const TSharedPtr<FJs
 			Compared.Add(Name);
 		}
 	}
+	if (Compared.Num() == 0)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			TEXT("The snapshots record no section to compare; export them with at least one section"));
+	}
 
 	TArray<TSharedPtr<FJsonValue>> Differences;
 	TSharedPtr<FJsonObject> SectionCounts = MakeShared<FJsonObject>();
@@ -869,14 +932,38 @@ FCortexCommandResult FCortexBPSnapshotOps::CompareSnapshots(const TSharedPtr<FJs
 			}
 			else if (!FieldsEqual(*Old, *New))
 			{
-				// A CDO property whose declaring class changed while everything else stayed equal moved, it did not change.
-				const bool bMoved = Name == Section::Cdo
-					&& (*Old)->GetStringField(TEXT("declared_in")) != (*New)->GetStringField(TEXT("declared_in"))
-					&& FieldsEqual(*Old, *New, TEXT("declared_in"));
+				// A CDO property whose declaring class changed while its value stayed equal moved, it did not change.
+				// The type text may differ across the move (a Blueprint float is a double, a native bool is a bitfield), so
+				// the decision is made on the value alone; float/double pairs are compared at float precision.
+				bool bMoved = false;
+				TSharedPtr<FJsonObject> TypeChange;
+				if (Name == Section::Cdo && (*Old)->GetStringField(TEXT("declared_in")) != (*New)->GetStringField(TEXT("declared_in")))
+				{
+					const FString OldType = (*Old)->GetStringField(TEXT("type"));
+					const FString NewType = (*New)->GetStringField(TEXT("type"));
+					const bool bFloatPair = (OldType == TEXT("double") && NewType == TEXT("float"))
+						|| (OldType == TEXT("float") && NewType == TEXT("double"));
+					static const TSet<FString> MoveIgnored = {TEXT("declared_in"), TEXT("type"), TEXT("incomplete")};
+					bMoved = FieldsEqual(*Old, *New, MoveIgnored, bFloatPair);
+					if (bMoved && OldType != NewType)
+					{
+						TypeChange = MakeShared<FJsonObject>();
+						TypeChange->SetStringField(TEXT("before"), OldType);
+						TypeChange->SetStringField(TEXT("after"), NewType);
+					}
+				}
 				TSharedPtr<FJsonObject> Difference = MakeDifference(Name, Key, bMoved ? TEXT("moved") : TEXT("changed"), *Old, *New);
 				if (!bMoved)
 				{
 					Difference->SetArrayField(TEXT("fields"), ChangedFieldNames(*Old, *New));
+				}
+				if (TypeChange.IsValid())
+				{
+					Difference->SetObjectField(TEXT("type_change"), TypeChange);
+				}
+				if (bMoved && ((*Old)->HasField(TEXT("incomplete")) || (*New)->HasField(TEXT("incomplete"))))
+				{
+					Difference->SetBoolField(TEXT("incomplete"), true); // an unproven value comparison is flagged, never silent
 				}
 				Differences.Add(MakeShared<FJsonValueObject>(Difference));
 				++Counts[bMoved ? 3 : 2];

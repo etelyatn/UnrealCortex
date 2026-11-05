@@ -417,17 +417,17 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full inventory JSON to this file (under Project Saved, Content or Config) and return only asset_path, out_path and counts; required when the inline response would exceed 40000 characters"))
 		.StrictParams());
-	Commands.Add(FCortexCommandInfo{TEXT("export_snapshot"), TEXT("Write a deterministic migration snapshot of a Blueprint (variables, CDO with declaring class, components, widgets, bindings, animations, text, interfaces, graph entries) to a file; returns only a compact summary (read-only)")}
+	Commands.Add(FCortexCommandInfo{TEXT("export_snapshot"), TEXT("Write a deterministic migration snapshot of a Blueprint (variables with their effective default read from the CDO, CDO with declaring class, components incl. this Blueprint's own overrides of inherited components, widgets, bindings, animations, text, interfaces, graph entries) to a file; returns only a compact summary (read-only)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("out_path"), TEXT("string"), TEXT("File to write the snapshot JSON to (under Project Saved, Content or Config)"))
 		.Optional(TEXT("sections"), TEXT("array"), TEXT("Sections to include (variables, cdo, components, widgets, bindings, animations, text, interfaces, graph_entries); default all"))
 		.StrictParams());
-	Commands.Add(FCortexCommandInfo{TEXT("compare_snapshots"), TEXT("Diff two Blueprint snapshot files by section and record identity into added/removed/changed/moved; a CDO property whose declaring class changed with an equal value is moved (read-only)")}
+	Commands.Add(FCortexCommandInfo{TEXT("compare_snapshots"), TEXT("Diff two Blueprint snapshot files by section and record identity into added/removed/changed/moved; a CDO property whose declaring class changed with an equal value is moved (decided on the value alone; a type change such as double to float is attached as type_change, float/double compared at float precision); refuses an empty compared set and duplicate record keys (read-only)")}
 		.Required(TEXT("before"), TEXT("string"), TEXT("Snapshot file written before the change"))
 		.Required(TEXT("after"), TEXT("string"), TEXT("Snapshot file written after the change"))
 		.Optional(TEXT("report_path"), TEXT("string"), TEXT("Write the full report to this file (under Project Saved, Content or Config) and omit the inline difference list; required when the inline report would exceed 40000 characters"))
 		.StrictParams());
-	Commands.Add(FCortexCommandInfo{TEXT("compile_all"), TEXT("Compile every Blueprint of a folder (recursive) or an explicit asset list through the single-asset compile, write a per-asset report (status, error/warning counts, diagnostics) and return totals plus the first failing assets; read-only content is skipped with a reason, level script Blueprints are not enumerated")}
+	Commands.Add(FCortexCommandInfo{TEXT("compile_all"), TEXT("Compile every Blueprint of a folder (recursive) or an explicit asset list through the single-asset compile, write a per-asset report (status, error/warning counts, diagnostics) and return totals plus the first failing assets; read-only content and assets blocked after a failed recovery are skipped with a reason, level script Blueprints are not enumerated; synchronous, garbage is collected once at the end, large prefixes take minutes")}
 		.Required(TEXT("out_path"), TEXT("string"), TEXT("File to write the full compile report JSON to (under Project Saved, Content or Config)"))
 		.Optional(TEXT("path_prefix"), TEXT("string"), TEXT("Content folder compiled recursively (exactly one of path_prefix or paths)"))
 		.Optional(TEXT("paths"), TEXT("array"), TEXT("Explicit Blueprint asset paths (exactly one of path_prefix or paths)"))
