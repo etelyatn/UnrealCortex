@@ -5,6 +5,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "CortexBPTestLiftActor.h"
 #include "GameFramework/Actor.h"
+#include "UObject/Interface.h"
 #include "UObject/Object.h"
 #include "CortexBPAdoptTestTypes.generated.h"
 
@@ -92,4 +93,20 @@ public:
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UCortexBPAdoptNativeComponent> NativeMirror;
+};
+
+/** Native interface whose value-returning event is implemented as an interface function graph. */
+UINTERFACE(Blueprintable, MinimalAPI)
+class UCortexBPAdoptInterface : public UInterface
+{
+	GENERATED_BODY()
+};
+
+class ICortexBPAdoptInterface
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable)
+	int32 CortexAdoptGetValue();
 };

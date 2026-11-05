@@ -10,7 +10,11 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "GameFramework/Actor.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "HAL/FileManager.h"
+#include "Misc/PackageName.h"
 #include "Operations/CortexBPParentRules.h"
+#include "PackageTools.h"
+#include "UObject/SavePackage.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPParentRulesResolveTest,
@@ -98,6 +102,40 @@ bool FCortexBPParentRulesResolveTest::RunTest(const FString& Parameters)
 			}
 			TestTrue(TEXT("Native class listed"), Paths.Contains(ACortexBPAdoptParent::StaticClass()->GetPathName()));
 			TestTrue(TEXT("Blueprint class listed"), Paths.Contains(NativeTwin->GeneratedClass->GetPathName()));
+		}
+	}
+
+	// A saved but unloaded Blueprint's generated class path (/Game/..._C) loads the Blueprint and resolves.
+	UBlueprint* OnDisk = MakeBlueprint(TEXT("BP_ParentRulesOnDisk"), AActor::StaticClass());
+	if (TestNotNull(TEXT("On-disk Blueprint"), OnDisk))
+	{
+		UPackage* Package = OnDisk->GetOutermost();
+		const FString PackageName = Package->GetName();
+		const FString ClassPath = FString::Printf(TEXT("%s.%s_C"), *PackageName, *OnDisk->GetName());
+		const FString Filename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Standalone;
+		if (TestTrue(TEXT("On-disk Blueprint saved"), UPackage::SavePackage(Package, OnDisk, *Filename, SaveArgs)))
+		{
+			FText UnloadError;
+			TestTrue(TEXT("On-disk Blueprint unloaded"), UPackageTools::UnloadPackages({Package}, UnloadError, true));
+			TestNull(TEXT("Class is no longer in memory"), FindObject<UClass>(nullptr, *ClassPath));
+			Resolved = nullptr;
+			TestTrue(TEXT("Unloaded /Game/..._C class path resolves"), FCortexBPClassResolver::Resolve(ClassPath, Resolved, Error));
+			TestNotNull(TEXT("Resolved class"), Resolved);
+			if (Resolved != nullptr)
+			{
+				TestTrue(TEXT("Resolved to the Blueprint's generated class"), Resolved->GetPathName() == ClassPath);
+			}
+			if (UPackage* Reloaded = FindPackage(nullptr, *PackageName))
+			{
+				UPackageTools::UnloadPackages({Reloaded}, UnloadError, true);
+			}
+			IFileManager::Get().Delete(*Filename, false, true);
+		}
+		else
+		{
+			Discard(OnDisk);
 		}
 	}
 

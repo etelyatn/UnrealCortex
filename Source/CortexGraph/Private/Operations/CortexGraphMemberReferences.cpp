@@ -6,6 +6,7 @@
 #include "Engine/Blueprint.h"
 #include "K2Node.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CreateDelegate.h"
 #include "K2Node_Variable.h"
 #include "UObject/Class.h"
 #include "UObject/UObjectGlobals.h"
@@ -74,6 +75,10 @@ namespace CortexGraphMemberReferencesPrivate
 						if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
 						{
 							bReferences = CallNode->FunctionReference.GetMemberName() == Member;
+						}
+						else if (const UK2Node_CreateDelegate* DelegateNode = Cast<UK2Node_CreateDelegate>(Node))
+						{
+							bReferences = DelegateNode->GetFunctionName() == Member;
 						}
 					}
 				}

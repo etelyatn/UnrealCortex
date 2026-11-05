@@ -12,6 +12,7 @@
 #include "K2Node_CustomEvent.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPCompileSupport.h"
 #include "UObject/UObjectIterator.h"
@@ -127,21 +128,29 @@ bool FCortexBPCompileSupportTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	// Warning Blueprint: a deprecated callable produces a warning where the runtime has one.
+	// Warning Blueprint: a reachable call to a deprecated engine function produces a compile warning.
 	UBlueprint* Warn = MakeBlueprint(TEXT("BP_CompileSupportWarn"), AActor::StaticClass());
 	bool bWarningFound = false;
-	if (TestNotNull(TEXT("Warning Blueprint"), Warn) && Warn->UbergraphPages.Num() > 0)
+	if (TestNotNull(TEXT("Warning Blueprint"), Warn) && TestTrue(TEXT("Event graph"), Warn->UbergraphPages.Num() > 0))
 	{
 		UEdGraph* EventGraph = Warn->UbergraphPages[0];
+		UK2Node_CustomEvent* Entry = NewObject<UK2Node_CustomEvent>(EventGraph);
+		Entry->CreateNewGuid();
+		Entry->CustomFunctionName = FName("WarnEntry");
+		EventGraph->AddNode(Entry, false, false);
+		Entry->AllocateDefaultPins();
+
 		TArray<UFunction*> Candidates;
 		for (TObjectIterator<UFunction> It; It; ++It)
 		{
 			UFunction* Function = *It;
 			UClass* Owner = Function ? Function->GetOwnerClass() : nullptr;
 			if (Function && IsValid(Function) && Owner && IsValid(Owner) && Owner->IsNative()
-				&& Function->HasAllFunctionFlags(FUNC_BlueprintCallable | FUNC_Static)
+				&& Function->HasAllFunctionFlags(FUNC_BlueprintCallable)
 				&& Function->HasMetaData(TEXT("DeprecatedFunction"))
-				&& Owner->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
+				&& ((Function->HasAllFunctionFlags(FUNC_Static) && Owner->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
+					|| (!Function->HasAnyFunctionFlags(FUNC_Static) && Owner->IsChildOf(AActor::StaticClass())))
+				&& !Owner->GetOutermost()->GetName().Contains(TEXT("Cortex")))
 			{
 				Candidates.Add(Function);
 			}
@@ -154,6 +163,9 @@ bool FCortexBPCompileSupportTest::RunTest(const FString& Parameters)
 			Node->SetFromFunction(Candidate);
 			EventGraph->AddNode(Node, false, false);
 			Node->AllocateDefaultPins();
+			// Only nodes reachable from an event are compiled and validated.
+			Entry->FindPinChecked(UEdGraphSchema_K2::PN_Then)->BreakAllPinLinks();
+			Entry->FindPinChecked(UEdGraphSchema_K2::PN_Then)->MakeLinkTo(Node->GetExecPin());
 			FBlueprintEditorUtils::MarkBlueprintAsModified(Warn);
 
 			FCortexBPCompileOutcome Outcome;
@@ -162,16 +174,23 @@ bool FCortexBPCompileSupportTest::RunTest(const FString& Parameters)
 			{
 				bWarningFound = true;
 				PayloadMatches(*this, TEXT("warning"), Outcome.ToPayload(Warn->GetPathName()), Outcome, Warn->GetPathName());
+
+				TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+				Params->SetStringField(TEXT("asset_path"), Warn->GetPathName());
+				const FCortexCommandResult Command = FCortexBPAssetOps::Compile(Params);
+				TestTrue(TEXT("compile command succeeds on a warning"), Command.bSuccess);
+				if (Command.Data.IsValid())
+				{
+					PayloadMatches(*this, TEXT("warning command"), Command.Data, Outcome, Warn->GetPathName());
+				}
 				break;
 			}
+			Entry->FindPinChecked(UEdGraphSchema_K2::PN_Then)->BreakAllPinLinks();
 			EventGraph->RemoveNode(Node);
 			Node->MarkAsGarbage();
 		}
 	}
-	if (!bWarningFound)
-	{
-		AddInfo(TEXT("Warning path skipped: no deprecated callable produced a compile warning in this runtime"));
-	}
+	TestTrue(TEXT("A warning-producing Blueprint was built from a deprecated engine callable"), bWarningFound);
 
 	// A pending reparent compiles with the delta flags for every caller, so the native parent's default wins (C4).
 	UBlueprint* Pending = MakeBlueprint(TEXT("BP_CompileSupportPending"), AActor::StaticClass());

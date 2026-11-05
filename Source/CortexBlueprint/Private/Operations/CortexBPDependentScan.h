@@ -15,6 +15,9 @@ struct FCortexBPDependentHit
 	/** False when the scan had to load the package to inspect it. */
 	bool bWasLoaded = false;
 	TArray<FCortexMemberReference> References;
+	/** True when the dependent could not be inspected; consumers must refuse conservatively. */
+	bool bUnscanned = false;
+	FString Error;
 
 	TSharedRef<FJsonObject> ToJson() const;
 };
@@ -38,4 +41,9 @@ public:
 	};
 
 	static void Find(UBlueprint* Owner, FName Member, EMemberKind Kind, TArray<FCortexBPDependentHit>& OutHits);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Test hook: a load of a package whose name contains this text is treated as failed. Empty clears it. */
+	static void SetForcedLoadFailureForTest(const FString& PackageNameContains);
+#endif
 };

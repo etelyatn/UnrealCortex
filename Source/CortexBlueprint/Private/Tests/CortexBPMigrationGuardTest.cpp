@@ -121,6 +121,20 @@ bool FCortexBPMigrationGuardTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Missing migration_state_hash refused"), FCortexBPMigrationGuard::CheckExpected(Blueprint, Missing, Error));
 	TestEqual(TEXT("Missing hash code"), Error.ErrorCode, CortexErrorCodes::StalePrecondition);
 
+	// Graph edits since the dry run must be caught: migration_state_hash alone is not enough.
+	TSharedPtr<FJsonObject> StateOnly = MakeShared<FJsonObject>();
+	StateOnly->SetStringField(TEXT("migration_state_hash"), Baseline);
+	StateOnly->SetNumberField(TEXT("migration_state_version"), 1);
+	TestFalse(TEXT("migration_state_hash without the graph hash is stale"), FCortexBPMigrationGuard::CheckExpected(Blueprint, StateOnly, Error));
+	TestEqual(TEXT("State-only code"), Error.ErrorCode, CortexErrorCodes::StalePrecondition);
+
+	TSharedPtr<FJsonObject> NoVersion = MakeShared<FJsonObject>();
+	NoVersion->SetStringField(TEXT("migration_state_hash"), Baseline);
+	NoVersion->SetStringField(TEXT("graph_authoring_hash"), Current->GetStringField(TEXT("graph_authoring_hash")));
+	NoVersion->SetNumberField(TEXT("graph_authoring_version"), 1);
+	TestFalse(TEXT("Missing migration_state_version is stale"), FCortexBPMigrationGuard::CheckExpected(Blueprint, NoVersion, Error));
+	TestTrue(TEXT("The fingerprint carries migration_state_version 1"), Current->HasTypedField<EJson::Number>(TEXT("migration_state_version")));
+
 	TestFalse(TEXT("Null expected refused"), FCortexBPMigrationGuard::CheckExpected(Blueprint, nullptr, Error));
 	TestEqual(TEXT("Null expected code"), Error.ErrorCode, CortexErrorCodes::InvalidField);
 

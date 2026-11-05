@@ -65,6 +65,10 @@ public:
 	static void SetPostRestoreHookForTest(TFunction<void(UBlueprint*)> Hook);
 	static void ClearPostRestoreHookForTest();
 
+	/** Test hook run after the restore and before the single recovery compile (fault injection). */
+	static void SetPreRecoveryCompileHookForTest(TFunction<void(UBlueprint*)> Hook);
+	static void ClearPreRecoveryCompileHookForTest();
+
 	/** Test hook: skip the editor undo so the generic journal alone has to restore. */
 	static void SetSkipUndoForTest(bool bSkip);
 #endif

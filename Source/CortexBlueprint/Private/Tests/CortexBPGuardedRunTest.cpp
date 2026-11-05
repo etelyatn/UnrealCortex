@@ -3,6 +3,12 @@
 #include "CortexAdoptTestHelpers.h"
 #include "CortexBPAdoptTestTypes.h"
 #include "CortexAssetMutationGuard.h"
+#include "Components/StaticMeshComponent.h"
+#include "Editor.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "K2Node_VariableGet.h"
+#include "ScopedTransaction.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -368,6 +374,121 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 				FString(bProvideRestore ? TEXT("restored") : TEXT("unverified")));
 			TestEqual(TEXT("External state back only with a Restore"), External, bProvideRestore ? 1 : 2);
 		}
+	}
+
+	// 11. Undo is detected by transaction id, not by undo-list growth: redo history must not suppress it (I1).
+	if (UBlueprint* Blueprint = Make(TEXT("BP_GuardedRedoHistory")))
+	{
+		{
+			const FScopedTransaction UserEdit(FText::FromString(TEXT("user edit")));
+			Blueprint->Modify();
+			FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("UserVar"), BoolPin());
+		}
+		TestTrue(TEXT("User undo leaves redo history"), GEditor != nullptr && GEditor->UndoTransaction(/*bCanRedo=*/true));
+		const TSharedPtr<FJsonObject> Before = Snapshot(Blueprint);
+		const int32 ScsNodesBefore = Blueprint->SimpleConstructionScript->GetAllNodes().Num();
+		FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("Unused"));
+		Spec.Apply = [](UBlueprint* Target, FString&)
+		{
+			USimpleConstructionScript* SCS = Target->SimpleConstructionScript;
+			SCS->Modify();
+			SCS->AddNode(SCS->CreateNode(UStaticMeshComponent::StaticClass(), TEXT("RedoMesh")));
+			return true;
+		};
+		Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
+		const FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
+		TestFalse(TEXT("Run fails"), Result.bSuccess);
+		TestEqual(TEXT("A structural SCS change is undone despite redo history"),
+			StringField(Result.ErrorDetails, TEXT("rollback_status")), FString(TEXT("restored")));
+		TestEqual(TEXT("SCS node removed again"), Blueprint->SimpleConstructionScript->GetAllNodes().Num(), ScsNodesBefore);
+		TestTrue(TEXT("Snapshot restored"), SnapshotsEqual(Before, Snapshot(Blueprint)));
+	}
+
+	// 12. A template property that was at its class default is put back by the journal (I2).
+	if (UBlueprint* Blueprint = Make(TEXT("BP_GuardedTemplateDefault")))
+	{
+		struct FSkipUndoScope
+		{
+			FSkipUndoScope() { FCortexBPGuardedRun::SetSkipUndoForTest(true); }
+			~FSkipUndoScope() { FCortexBPGuardedRun::SetSkipUndoForTest(false); }
+		};
+		USCS_Node* Node = Blueprint->SimpleConstructionScript->CreateNode(UStaticMeshComponent::StaticClass(), TEXT("TplMesh"));
+		Blueprint->SimpleConstructionScript->AddNode(Node);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		USceneComponent* Template = CastChecked<USceneComponent>(Node->ComponentTemplate);
+		TestFalse(TEXT("Template starts at the class default"), Template->bHiddenInGame);
+		const FSkipUndoScope SkipUndo;
+		FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("Unused"));
+		Spec.Apply = [Template](UBlueprint*, FString&) { Template->Modify(); Template->bHiddenInGame = true; return true; };
+		Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
+		const FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
+		TestFalse(TEXT("Run fails"), Result.bSuccess);
+		TestFalse(TEXT("Template property reset to the class default"), Template->bHiddenInGame);
+		TestEqual(TEXT("Journal restored the template"), StringField(Result.ErrorDetails, TEXT("rollback_status")), FString(TEXT("restored")));
+	}
+
+	// 13. Interface implementation graphs are journaled (I3).
+	if (UBlueprint* Blueprint = Make(TEXT("BP_GuardedInterface")))
+	{
+		struct FSkipUndoScope
+		{
+			FSkipUndoScope() { FCortexBPGuardedRun::SetSkipUndoForTest(true); }
+			~FSkipUndoScope() { FCortexBPGuardedRun::SetSkipUndoForTest(false); }
+		};
+		FBlueprintEditorUtils::ImplementNewInterface(Blueprint, FTopLevelAssetPath(UCortexBPAdoptInterface::StaticClass()));
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (TestTrue(TEXT("Interface implementation has a graph"),
+			Blueprint->ImplementedInterfaces.Num() == 1 && Blueprint->ImplementedInterfaces[0].Graphs.Num() > 0))
+		{
+			UEdGraph* InterfaceGraph = Blueprint->ImplementedInterfaces[0].Graphs[0];
+			const int32 NodesBefore = InterfaceGraph->Nodes.Num();
+			const FSkipUndoScope SkipUndo;
+			FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("Unused"));
+			Spec.Apply = [](UBlueprint* Target, FString&)
+			{
+				UEdGraph* Graph = Target->ImplementedInterfaces[0].Graphs[0];
+				Graph->Modify();
+				FGraphNodeCreator<UK2Node_VariableGet> Creator(*Graph);
+				UK2Node_VariableGet* Get = Creator.CreateNode();
+				Get->VariableReference.SetSelfMember(TEXT("Existing"));
+				Creator.Finalize();
+				return true;
+			};
+			Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
+			const FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
+			TestFalse(TEXT("Run fails"), Result.bSuccess);
+			TestEqual(TEXT("Interface graph restored by the journal"), StringField(Result.ErrorDetails, TEXT("rollback_status")), FString(TEXT("restored")));
+			TestEqual(TEXT("Interface graph node count restored"), Blueprint->ImplementedInterfaces[0].Graphs[0]->Nodes.Num(), NodesBefore);
+		}
+	}
+
+	// 14. A failing recovery compile is reported and is part of the verdict (I4).
+	if (UBlueprint* Blueprint = Make(TEXT("BP_GuardedRecoveryCompile")))
+	{
+		struct FPreRecoveryScope
+		{
+			explicit FPreRecoveryScope(TFunction<void(UBlueprint*)> Hook) { FCortexBPGuardedRun::SetPreRecoveryCompileHookForTest(MoveTemp(Hook)); }
+			~FPreRecoveryScope() { FCortexBPGuardedRun::ClearPreRecoveryCompileHookForTest(); }
+		};
+		const FPreRecoveryScope Scope([](UBlueprint* Target)
+		{
+			UEdGraph* EventGraph = Target->UbergraphPages[0];
+			for (int32 Index = 0; Index < 2; ++Index)
+			{
+				UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(EventGraph);
+				Event->CreateNewGuid();
+				Event->CustomFunctionName = FName("RecoveryBreaker");
+				EventGraph->AddNode(Event, false, false);
+				Event->AllocateDefaultPins();
+			}
+		});
+		FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("Unused"));
+		Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
+		const FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
+		TestFalse(TEXT("Run fails"), Result.bSuccess);
+		TestEqual(TEXT("Recovery compile status is reported"), StringField(Result.ErrorDetails, TEXT("recovery_compile_status")), FString(TEXT("error")));
+		TestEqual(TEXT("A failing recovery compile is not 'restored'"), StringField(Result.ErrorDetails, TEXT("rollback_status")), FString(TEXT("unverified")));
+		TestTrue(TEXT("Recovery diagnostics are emitted"), Result.ErrorDetails.IsValid() && Result.ErrorDetails->HasField(TEXT("recovery_diagnostics")));
 	}
 
 	// 8. Stale expected_fingerprint refuses before any mutation.

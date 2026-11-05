@@ -8,6 +8,7 @@
 #include "Engine/Blueprint.h"
 #include "GameFramework/Actor.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CreateDelegate.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -201,6 +202,17 @@ bool FCortexGraphMemberReferencesFunctionsTest::RunTest(const FString& Parameter
 		TestEqual(TEXT("Graph guid"), References[0].GraphGuid, EventGraph->GraphGuid);
 		TestFalse(TEXT("Unrelated call excluded"), References[0].NodeGuid == OtherCall->NodeGuid);
 	}
+
+	// A Create Event / Create Delegate node that binds the function is a reference too.
+	FGraphNodeCreator<UK2Node_CreateDelegate> DelegateCreator(*EventGraph);
+	UK2Node_CreateDelegate* DelegateNode = DelegateCreator.CreateNode();
+	DelegateCreator.Finalize();
+	DelegateNode->SetFunction(FunctionName);
+	References.Reset();
+	FCortexGraphMemberReferences::FindFunctionReferences(Blueprint, FunctionName, References);
+	TestEqual(TEXT("Create Event binding is counted"), References.Num(), 2);
+	TestTrue(TEXT("Create Event node is listed"), References.ContainsByPredicate(
+		[DelegateNode](const FCortexMemberReference& Reference) { return Reference.NodeGuid == DelegateNode->NodeGuid; }));
 
 	Cleanup(Blueprint);
 	return true;

@@ -27,17 +27,13 @@
 namespace
 {
 	TFunction<void(UBlueprint*)> GPostRestoreHookForTest;
+	TFunction<void(UBlueprint*)> GPreRecoveryCompileHookForTest;
 	bool GSkipUndoForTest = false;
 }
 #endif
 
 namespace
 {
-	int32 TransactionQueueLength()
-	{
-		return (GEditor && GEditor->Trans) ? GEditor->Trans->GetQueueLength() : INDEX_NONE;
-	}
-
 	struct FRunState
 	{
 		bool bDryRun = false;
@@ -102,7 +98,10 @@ namespace
 
 		struct FGraphCopy
 		{
+			/** 0 ubergraph, 1 function, 2 macro, 3 delegate signature, 4 interface implementation graph. */
 			int32 Category = 0;
+			/** Category 4: the implemented interface that owns the graph. */
+			UClass* Interface = nullptr;
 			TStrongObjectPtr<UEdGraph> Copy;
 		};
 		TArray<FGraphCopy> Graphs;
@@ -158,9 +157,9 @@ namespace
 			return false;
 		}
 
-		for (int32 Category = 0; Category < 4; ++Category)
+		const auto CopyGraphs = [&Journal](const TArray<TObjectPtr<UEdGraph>>& Graphs, int32 Category, UClass* Interface)
 		{
-			for (UEdGraph* Graph : *GraphArray(Blueprint, Category))
+			for (UEdGraph* Graph : Graphs)
 			{
 				if (Graph == nullptr)
 				{
@@ -173,7 +172,23 @@ namespace
 				}
 				FJournal::FGraphCopy& Saved = Journal.Graphs.AddDefaulted_GetRef();
 				Saved.Category = Category;
+				Saved.Interface = Interface;
 				Saved.Copy = TStrongObjectPtr<UEdGraph>(Copy);
+			}
+			return true;
+		};
+		for (int32 Category = 0; Category < 4; ++Category)
+		{
+			if (!CopyGraphs(*GraphArray(Blueprint, Category), Category, nullptr))
+			{
+				return false;
+			}
+		}
+		for (const FBPInterfaceDescription& Description : Blueprint->ImplementedInterfaces)
+		{
+			if (!CopyGraphs(Description.Graphs, 4, Description.Interface))
+			{
+				return false;
 			}
 		}
 
@@ -242,9 +257,8 @@ namespace
 
 		if (GraphAuthoringHash(Blueprint) != Journal.GraphHash)
 		{
-			for (int32 Category = 0; Category < 4; ++Category)
+			const auto Rebuild = [&](TArray<TObjectPtr<UEdGraph>>& Array, int32 Category, UClass* Interface)
 			{
-				TArray<TObjectPtr<UEdGraph>>& Array = *GraphArray(Blueprint, Category);
 				TArray<UEdGraph*> Replaced;
 				for (UEdGraph* Graph : Array)
 				{
@@ -257,7 +271,7 @@ namespace
 				Array.Reset();
 				for (const FJournal::FGraphCopy& Saved : Journal.Graphs)
 				{
-					if (Saved.Category != Category)
+					if (Saved.Category != Category || Saved.Interface != Interface)
 					{
 						continue;
 					}
@@ -273,6 +287,14 @@ namespace
 				{
 					Old->MarkAsGarbage();
 				}
+			};
+			for (int32 Category = 0; Category < 4; ++Category)
+			{
+				Rebuild(*GraphArray(Blueprint, Category), Category, nullptr);
+			}
+			for (FBPInterfaceDescription& Description : Blueprint->ImplementedInterfaces)
+			{
+				Rebuild(Description.Graphs, 4, Description.Interface);
 			}
 		}
 
@@ -318,7 +340,11 @@ namespace
 				bOk = false;
 				continue;
 			}
-			UEngine::CopyPropertiesForUnrelatedObjects(Saved.Copy.Get(), Current);
+			// Full copy, not a delta against the class default: a property the mutation moved away from its default must come back.
+			UEngine::FCopyPropertiesForUnrelatedObjectsParams CopyParams;
+			CopyParams.bDoDelta = false;
+			CopyParams.bNotifyObjectReplacement = false;
+			UEngine::CopyPropertiesForUnrelatedObjects(Saved.Copy.Get(), Current, CopyParams);
 		}
 		return bOk;
 	}
@@ -395,10 +421,12 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 			FString::Printf(TEXT("%s: could not record the recovery journal"), *Spec.OpName));
 	}
 
-	const int32 QueueBefore = TransactionQueueLength();
+	const EBlueprintStatus StatusBefore = Blueprint->Status;
 	TUniquePtr<FScopedTransaction> Transaction = MakeUnique<FScopedTransaction>(
 		FText::FromString(FString::Printf(TEXT("Cortex: %s"), *Spec.OpName)));
 	Blueprint->Modify();
+	// The guarded transaction is identified by id, not by undo-list growth: redo history or eviction keeps the length flat.
+	const FGuid TransactionId = (GEditor && GEditor->Trans) ? GEditor->Trans->GetUndoContext(false).TransactionId : FGuid();
 
 	FString FailurePhase;
 	FString FailureMessage;
@@ -456,9 +484,10 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 #if WITH_DEV_AUTOMATION_TESTS
 		bSkipUndo = GSkipUndoForTest;
 #endif
-		if (!bSkipUndo && TransactionQueueLength() > QueueBefore)
+		if (!bSkipUndo && TransactionId.IsValid() && GEditor != nullptr && GEditor->Trans != nullptr
+			&& GEditor->Trans->GetUndoContext(false).TransactionId == TransactionId)
 		{
-			bUndone = GEditor != nullptr && GEditor->UndoTransaction(/*bCanRedo=*/false);
+			bUndone = GEditor->UndoTransaction(/*bCanRedo=*/false);
 		}
 		const bool bJournalRestored = RestoreFromJournal(Blueprint, Journal);
 		FString RestoreError;
@@ -468,6 +497,12 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 		FCortexBPCompileOutcome Recovery;
 		if (Spec.bCompile)
 		{
+#if WITH_DEV_AUTOMATION_TESTS
+			if (GPreRecoveryCompileHookForTest)
+			{
+				GPreRecoveryCompileHookForTest(Blueprint);
+			}
+#endif
 			// Exactly one recovery compile; it reuses the failed compile's options when the parent changed in the run so
 			// restored inherited CDO values are not overwritten by the new parent's constructor defaults.
 			const EBlueprintCompileOptions RecoveryOptions = bParentChanged
@@ -499,7 +534,8 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 		const bool bGeneratedEqual = !Spec.bCompile
 			|| FCortexGraphFingerprint::ComputeGeneratedStateDigest(Blueprint) == Journal.GeneratedDigest;
 		const bool bExtraEqual = !Spec.DigestExtra || Spec.DigestExtra(Blueprint) == Journal.ExtraDigest;
-		const bool bVerified = bRestored && bSnapshotsEqual && bFingerprintEqual && bGraphEqual && bGeneratedEqual && bExtraEqual;
+		const bool bRecoveryCompileOk = !Spec.bCompile || !Recovery.HasErrors() || StatusBefore == BS_Error;
+		const bool bVerified = bRestored && bRecoveryCompileOk && bSnapshotsEqual && bFingerprintEqual && bGraphEqual && bGeneratedEqual && bExtraEqual;
 
 		if (bVerified)
 		{
@@ -531,6 +567,11 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 		Details->SetBoolField(TEXT("rollback_graphs_match"), bGraphEqual);
 		Details->SetBoolField(TEXT("rollback_generated_state_matches"), bGeneratedEqual);
 		Details->SetBoolField(TEXT("rollback_extra_digest_matches"), bExtraEqual);
+		if (Spec.bCompile)
+		{
+			Details->SetStringField(TEXT("recovery_compile_status"), Recovery.Status);
+			Details->SetArrayField(TEXT("recovery_diagnostics"), Recovery.Diagnostics);
+		}
 		if (!RestoreError.IsEmpty())
 		{
 			Details->SetStringField(TEXT("rollback_error"), RestoreError);
@@ -573,6 +614,16 @@ void FCortexBPGuardedRun::SetPostRestoreHookForTest(TFunction<void(UBlueprint*)>
 void FCortexBPGuardedRun::ClearPostRestoreHookForTest()
 {
 	GPostRestoreHookForTest = nullptr;
+}
+
+void FCortexBPGuardedRun::SetPreRecoveryCompileHookForTest(TFunction<void(UBlueprint*)> Hook)
+{
+	GPreRecoveryCompileHookForTest = MoveTemp(Hook);
+}
+
+void FCortexBPGuardedRun::ClearPreRecoveryCompileHookForTest()
+{
+	GPreRecoveryCompileHookForTest = nullptr;
 }
 
 void FCortexBPGuardedRun::SetSkipUndoForTest(bool bSkip)

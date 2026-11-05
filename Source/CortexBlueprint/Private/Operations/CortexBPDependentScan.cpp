@@ -1,5 +1,8 @@
 #include "Operations/CortexBPDependentScan.h"
 
+#include "Engine/Level.h"
+#include "Engine/LevelScriptBlueprint.h"
+#include "Engine/World.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -12,8 +15,29 @@
 #include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
 
+#if WITH_DEV_AUTOMATION_TESTS
 namespace
 {
+	FString GForcedLoadFailureForTest;
+}
+
+void FCortexBPDependentScan::SetForcedLoadFailureForTest(const FString& PackageNameContains)
+{
+	GForcedLoadFailureForTest = PackageNameContains;
+}
+#endif
+
+namespace
+{
+	bool LoadForcedToFail(const FString& PackageName)
+	{
+#if WITH_DEV_AUTOMATION_TESTS
+		return !GForcedLoadFailureForTest.IsEmpty() && PackageName.Contains(GForcedLoadFailureForTest);
+#else
+		return false;
+#endif
+	}
+
 	struct FCandidate
 	{
 		FName PackageName;
@@ -65,6 +89,11 @@ TSharedRef<FJsonObject> FCortexBPDependentHit::ToJson() const
 	Json->SetStringField(TEXT("asset_path"), AssetPath);
 	Json->SetStringField(TEXT("role"), Role);
 	Json->SetBoolField(TEXT("was_loaded"), bWasLoaded);
+	Json->SetBoolField(TEXT("unscanned"), bUnscanned);
+	if (bUnscanned)
+	{
+		Json->SetStringField(TEXT("error"), Error);
+	}
 	Json->SetNumberField(TEXT("reference_count"), References.Num());
 	TArray<TSharedPtr<FJsonValue>> Values;
 	for (const FCortexMemberReference& Reference : References)
@@ -135,6 +164,11 @@ void FCortexBPDependentScan::Find(UBlueprint* Owner, FName Member, EMemberKind K
 			{
 				AddCandidate(Candidates, PackageName, Asset.AssetName.ToString(), TEXT("referencer"));
 			}
+			else if (Asset.IsInstanceOf(UWorld::StaticClass()))
+			{
+				// The Level Blueprint is a subobject of the map's persistent level, never a top-level asset.
+				AddCandidate(Candidates, PackageName, Asset.AssetName.ToString(), TEXT("level_script"));
+			}
 		}
 	}
 
@@ -147,23 +181,74 @@ void FCortexBPDependentScan::Find(UBlueprint* Owner, FName Member, EMemberKind K
 		const FString PackageString = PackageName.ToString();
 
 		bool bWasLoaded = true;
-		UBlueprint* Blueprint = FindLoadedBlueprint(PackageString, Candidate.AssetName);
-		if (Blueprint == nullptr)
+		UBlueprint* Blueprint = nullptr;
+		FString AssetPath;
+		FString LoadError;
+		if (Candidate.Role == TEXT("level_script"))
 		{
-			bWasLoaded = false;
-			if (!BlueprintPackageFileExists(PackageString))
+			AssetPath = TEXT("__level_bp__:") + PackageString;
+			UPackage* MapPackage = FindPackage(nullptr, *PackageString);
+			UWorld* World = MapPackage ? UWorld::FindWorldInPackage(MapPackage) : nullptr;
+			if (World == nullptr)
 			{
-				continue; // the registry lists it but it is gone from disk
+				bWasLoaded = false;
+				FString MapFilename;
+				if (!FPackageName::TryConvertLongPackageNameToFilename(PackageString, MapFilename, FPackageName::GetMapPackageExtension())
+					|| IFileManager::Get().FileSize(*MapFilename) < 0)
+				{
+					continue; // the registry lists it but it is gone from disk
+				}
+				MapPackage = LoadForcedToFail(PackageString) ? nullptr : LoadPackage(nullptr, *PackageString, LOAD_None);
+				World = MapPackage ? UWorld::FindWorldInPackage(MapPackage) : nullptr;
+				if (World == nullptr)
+				{
+					LoadError = TEXT("The map package could not be loaded");
+				}
 			}
-			Blueprint = LoadObject<UBlueprint>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackageString, *Candidate.AssetName));
+			if (World != nullptr)
+			{
+				// bDontCreate: scanning must never create a Level Blueprint in a map that has none.
+				Blueprint = World->PersistentLevel ? World->PersistentLevel->GetLevelScriptBlueprint(/*bDontCreate=*/true) : nullptr;
+				if (Blueprint == nullptr)
+				{
+					continue; // no Level Blueprint, nothing references the member
+				}
+			}
+		}
+		else
+		{
+			AssetPath = FString::Printf(TEXT("%s.%s"), *PackageString, *Candidate.AssetName);
+			Blueprint = FindLoadedBlueprint(PackageString, Candidate.AssetName);
 			if (Blueprint == nullptr)
 			{
-				continue;
+				bWasLoaded = false;
+				if (!BlueprintPackageFileExists(PackageString))
+				{
+					continue; // the registry lists it but it is gone from disk
+				}
+				Blueprint = LoadForcedToFail(PackageString) ? nullptr : LoadObject<UBlueprint>(nullptr, *AssetPath);
+				if (Blueprint == nullptr)
+				{
+					LoadError = TEXT("The Blueprint package exists but could not be loaded");
+				}
 			}
 		}
 
+		if (Blueprint == nullptr)
+		{
+			// Never fail open: the caller must treat an unscanned dependent as blocking.
+			FCortexBPDependentHit Unscanned;
+			Unscanned.AssetPath = AssetPath;
+			Unscanned.Role = Candidate.Role;
+			Unscanned.bWasLoaded = false;
+			Unscanned.bUnscanned = true;
+			Unscanned.Error = LoadError;
+			OutHits.Add(MoveTemp(Unscanned));
+			continue;
+		}
+
 		FCortexBPDependentHit Hit;
-		Hit.AssetPath = Blueprint->GetPathName();
+		Hit.AssetPath = Candidate.Role == TEXT("level_script") ? AssetPath : Blueprint->GetPathName();
 		Hit.Role = Candidate.Role;
 		Hit.bWasLoaded = bWasLoaded;
 		if (Kind == EMemberKind::Variable)

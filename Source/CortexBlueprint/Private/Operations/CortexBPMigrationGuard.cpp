@@ -18,6 +18,7 @@ namespace
 	const TCHAR* const MigrationStateHashField = TEXT("migration_state_hash");
 	const TCHAR* const GraphHashField = TEXT("graph_authoring_hash");
 	const TCHAR* const GraphVersionField = TEXT("graph_authoring_version");
+	const TCHAR* const StateVersionField = TEXT("migration_state_version");
 
 	FString SerializeMigrationCompact(const TSharedRef<FJsonObject>& Object)
 	{
@@ -78,6 +79,7 @@ TSharedPtr<FJsonObject> FCortexBPMigrationGuard::ComputeFingerprint(UBlueprint* 
 	TSharedPtr<FJsonObject> Fingerprint = MakeShared<FJsonObject>();
 	const TSharedPtr<FJsonObject> Graph = FCortexGraphFingerprint::Compute(Blueprint);
 	Fingerprint->SetNumberField(GraphVersionField, 1);
+	Fingerprint->SetNumberField(StateVersionField, 1);
 	Fingerprint->SetStringField(GraphHashField, Graph.IsValid() ? Graph->GetStringField(GraphHashField) : FString());
 	Fingerprint->SetStringField(MigrationStateHashField, Blueprint ? ComputeMigrationStateHash(Blueprint) : FString());
 	return Fingerprint;
@@ -94,7 +96,7 @@ bool FCortexBPMigrationGuard::CheckExpected(UBlueprint* Blueprint, const TShared
 	for (const auto& Pair : Expected->Values)
 	{
 		const FString Name = CortexEngineCompat::JsonKeyToString(Pair.Key);
-		if (Name != MigrationStateHashField && Name != GraphHashField && Name != GraphVersionField)
+		if (Name != MigrationStateHashField && Name != GraphHashField && Name != GraphVersionField && Name != StateVersionField)
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
 				FString::Printf(TEXT("Unknown field '%s' in expected_fingerprint"), *Name));
@@ -121,16 +123,26 @@ bool FCortexBPMigrationGuard::CheckExpected(UBlueprint* Blueprint, const TShared
 		return Stale(TEXT("migration_state_hash does not match the current Blueprint state"));
 	}
 
+	// Graphs are not part of migration_state_hash, so the graph hash and both versions are required too.
 	FString ExpectedGraph;
-	if (Expected->TryGetStringField(GraphHashField, ExpectedGraph) && ExpectedGraph != Current->GetStringField(GraphHashField))
+	if (!Expected->TryGetStringField(GraphHashField, ExpectedGraph) || ExpectedGraph.IsEmpty())
+	{
+		return Stale(TEXT("expected_fingerprint needs graph_authoring_hash (read the current fingerprint from a dry run)"));
+	}
+	if (ExpectedGraph != Current->GetStringField(GraphHashField))
 	{
 		return Stale(TEXT("graph_authoring_hash does not match the current Blueprint graphs"));
 	}
 
-	double ExpectedVersion = 0.0;
-	if (Expected->TryGetNumberField(GraphVersionField, ExpectedVersion) && static_cast<int32>(ExpectedVersion) != 1)
+	double ExpectedGraphVersion = 0.0;
+	if (!Expected->TryGetNumberField(GraphVersionField, ExpectedGraphVersion) || static_cast<int32>(ExpectedGraphVersion) != 1)
 	{
-		return Stale(TEXT("graph_authoring_version is not supported (expected 1)"));
+		return Stale(TEXT("graph_authoring_version is missing or not supported (expected 1)"));
+	}
+	double ExpectedStateVersion = 0.0;
+	if (!Expected->TryGetNumberField(StateVersionField, ExpectedStateVersion) || static_cast<int32>(ExpectedStateVersion) != 1)
+	{
+		return Stale(TEXT("migration_state_version is missing or not supported (expected 1)"));
 	}
 	return true;
 }
