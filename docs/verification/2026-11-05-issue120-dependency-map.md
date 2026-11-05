@@ -49,6 +49,7 @@ Runs were made at the stated revisions. Controller runs are listed separately fr
 - **Sandbox live.** Task-owned editor: all new commands were exercised, and an `out_path` outside the allowed roots was refused with `INVALID_FILE_PATH`.
 - **Merged-base gate.** At `0894d510`: Blueprint 313/313, Reflect 70/70, Python 1119.
 - **Fix wave.** Controller `Cortex.Blueprint+` at `ea47f607` passed 314/314.
+- Final candidate (code at `3b312c10`, plus this report): controller gated build `Result: Succeeded`; `Cortex.Reflect+` 88/88 (`AutomationTest_2026-11-05_141650`), `Cortex.Blueprint+` 314/314 (`141801`), `Cortex.Core+` 207/207 (`141937`); Python non-e2e 1154 passed; `sync_fallback --from-fixture --check` OK; fixture parity with native reflect/blueprint declarations verified programmatically.
 - **Environment.** An implementer reported a crash ordering in `RemoveSCS` that did not reproduce (`RemoveSCS+` 15/15; full suite green). It matches the known environment flake that appears while another editor runs.
 
 ## Limitations
