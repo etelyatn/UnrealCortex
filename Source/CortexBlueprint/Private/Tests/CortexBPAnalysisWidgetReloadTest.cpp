@@ -2,6 +2,7 @@
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
 #include "Blueprint/WidgetTree.h"
+#include "Components/Border.h"
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
 #include "Components/ListView.h"
@@ -116,13 +117,22 @@ bool FCortexBPAnalysisWidgetEntitiesAfterReloadTest::RunTest(const FString& Para
 	Root->AddChild(Slot);
 	Root->AddChild(List);
 	Slot->SetContent(SlotChild);
+	// Non-variable layout widgets (root panel and an inner Border) must still be reported.
+	UBorder* InnerBorder = Tree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("InnerBorder"));
+	Root->AddChild(InnerBorder);
 
-	const TArray<UWidget*> Built = {Root, Text, Button, Slot, SlotChild, List};
+	const TArray<UWidget*> Built = {Root, Text, Button, Slot, SlotChild, List, InnerBorder};
 	TSet<FString> ExpectedNames;
+	TSet<FString> NonVariableNames;
 	for (UWidget* Widget : Built)
 	{
-		Widget->bIsVariable = true;
+		const bool bNonVariable = Widget == Root || Widget == InnerBorder;
+		Widget->bIsVariable = !bNonVariable;
 		ExpectedNames.Add(Widget->GetName());
+		if (bNonVariable)
+		{
+			NonVariableNames.Add(Widget->GetName());
+		}
 	}
 
 	FKismetEditorUtilities::CompileBlueprint(WidgetBP);
@@ -194,6 +204,10 @@ bool FCortexBPAnalysisWidgetEntitiesAfterReloadTest::RunTest(const FString& Para
 				if (Entry.IsValid())
 				{
 					ActualNames.Add(Entry->GetStringField(TEXT("name")));
+					if (NonVariableNames.Contains(Entry->GetStringField(TEXT("name"))))
+					{
+						TestFalse(TEXT("non-variable widget row keeps is_variable=false"), Entry->GetBoolField(TEXT("is_variable")));
+					}
 				}
 			}
 		}

@@ -696,11 +696,7 @@ TArray<TSharedPtr<FJsonValue>> ExtractWidgetEntities(UBlueprint* BP, const TMap<
 			}
 		}
 
-		if (!bIsVariable && BoundEventsArr.Num() == 0)
-		{
-			continue;
-		}
-
+		// Every widget of the tree is reported (pre-order); is_variable and bound_events_in_graph let consumers filter.
 		TSharedPtr<FJsonObject> WidgetObj = MakeShared<FJsonObject>();
 		WidgetObj->SetStringField(TEXT("name"), Name);
 		WidgetObj->SetStringField(TEXT("class"), WidgetObject->GetClass()->GetName());
@@ -987,7 +983,7 @@ TArray<TSharedPtr<FJsonValue>> BuildEntitySummary(const TSharedPtr<FJsonObject>&
 		return Summary;
 	}
 
-	auto AddFromArray = [&Summary, &Data](const TCHAR* ArrayField, const TCHAR* EntityType)
+	auto AddFromArray = [&Summary, &Data](const TCHAR* ArrayField, const TCHAR* EntityType, const bool bBindableWidgetsOnly = false)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
 		if (!Data->TryGetArrayField(ArrayField, ArrayValues) || !ArrayValues)
@@ -1001,6 +997,17 @@ TArray<TSharedPtr<FJsonValue>> BuildEntitySummary(const TSharedPtr<FJsonObject>&
 			if (!Obj.IsValid() || !Obj->HasField(TEXT("name")))
 			{
 				continue;
+			}
+			if (bBindableWidgetsOnly)
+			{
+				// entity_summary lists widgets a C++ migration must bind: variables and widgets with graph-bound events.
+				const TArray<TSharedPtr<FJsonValue>>* BoundEvents = nullptr;
+				const bool bHasBoundEvents = Obj->TryGetArrayField(TEXT("bound_events_in_graph"), BoundEvents)
+					&& BoundEvents && BoundEvents->Num() > 0;
+				if (!Obj->GetBoolField(TEXT("is_variable")) && !bHasBoundEvents)
+				{
+					continue;
+				}
 			}
 
 			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
@@ -1018,7 +1025,7 @@ TArray<TSharedPtr<FJsonValue>> BuildEntitySummary(const TSharedPtr<FJsonObject>&
 	AddFromArray(TEXT("dynamic_components"), TEXT("dynamic_component"));
 	AddFromArray(TEXT("timelines"), TEXT("timeline"));
 	AddFromArray(TEXT("event_dispatchers"), TEXT("event_dispatcher"));
-	AddFromArray(TEXT("widgets"), TEXT("widget"));
+	AddFromArray(TEXT("widgets"), TEXT("widget"), /*bBindableWidgetsOnly=*/true);
 	AddFromArray(TEXT("widget_animations"), TEXT("widget_animation"));
 	AddFromArray(TEXT("named_slots"), TEXT("named_slot"));
 
