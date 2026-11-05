@@ -10,7 +10,13 @@
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Components/StaticMeshComponent.h"
 #include "Editor.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -429,6 +435,31 @@ bool FCortexLevelExportClassInstancesExternalActorsTest::RunTest(const FString& 
 		return false;
 	}
 
+	// A map that is already resident (like the open editor world) is read as it is, never refused for a mismatch
+	// with the files on disk.
+	{
+		UPackage* Held = LoadPackage(nullptr, *MapName, LOAD_None);
+		if (TestNotNull(TEXT("map held resident"), Held))
+		{
+			const FCortexCommandResult Resident = RunExport(TEXT("CortexLevelInstanceExportTestActor"), {MapName}, OutPath, TOptional<bool>());
+			TestTrue(TEXT("a resident map is exported without the disk-count check"), Resident.bSuccess);
+			if (UWorld* HeldWorld = UWorld::FindWorldInPackage(Held))
+			{
+				if (HeldWorld->IsInitialized())
+				{
+					HeldWorld->DestroyWorld(false);
+				}
+				HeldWorld->ClearFlags(RF_Standalone | RF_Public);
+				HeldWorld->MarkAsGarbage();
+			}
+			Held->ClearFlags(RF_Standalone);
+			Held->MarkAsGarbage();
+			ResetLoaders(Held);
+			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		}
+		TestNull(TEXT("held map released"), FindPackage(nullptr, *MapName));
+	}
+
 	// Until the Asset Registry knows the freshly written actor files the engine loads none of them: that must be a
 	// refusal, never a successful export that silently lacks the actor.
 	const FCortexCommandResult Unscanned = RunExport(TEXT("CortexLevelInstanceExportTestActor"), {MapName}, OutPath, TOptional<bool>());
@@ -457,5 +488,101 @@ bool FCortexLevelExportClassInstancesExternalActorsTest::RunTest(const FString& 
 	TestTrue(TEXT("the external actor's instance is in the report"), External.IsValid());
 	TestEqual(TEXT("the unchanged external actor reports no override"), CountArray(External, TEXT("properties")), 0);
 	TestNull(TEXT("map package is not left resident"), FindPackage(nullptr, *MapName));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelExportClassInstancesBlueprintComponentsTest,
+	"Cortex.Level.ExportClassInstancesBlueprintComponents",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexLevelExportClassInstancesBlueprintComponentsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!TestNotNull(TEXT("Editor is available"), GEditor))
+	{
+		return false;
+	}
+
+	const FString Suffix = NewSuffix();
+	const FString Dir = FString::Printf(TEXT("/Game/Temp/InstanceExportBPComp_%s"), *Suffix);
+	const FString BlueprintPackageName = Dir + TEXT("/BP_Comp");
+	const FString MapName = Dir + TEXT("/MapComp");
+	const FString OutPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(
+		FPaths::ProjectSavedDir(), TEXT("CortexInstanceExportTest"), FString::Printf(TEXT("bpcomp_%s.json"), *Suffix)));
+
+	FSavedMapFixture Map;
+	UPackage* BlueprintPackage = CreatePackage(*BlueprintPackageName);
+	ON_SCOPE_EXIT
+	{
+		BlueprintPackage->ClearDirtyFlag();
+		BlueprintPackage->ClearFlags(RF_Standalone);
+		BlueprintPackage->MarkAsGarbage();
+		Map.Cleanup();
+		IFileManager::Get().Delete(*OutPath, false, true);
+	};
+
+	// A Blueprint actor whose SCS StaticMeshComponent "Comp" is a Blueprint component variable.
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(), BlueprintPackage, TEXT("BP_Comp"), BPTYPE_Normal, UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass(), NAME_None);
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint))
+	{
+		return false;
+	}
+	USCS_Node* Node = Blueprint->SimpleConstructionScript->CreateNode(UStaticMeshComponent::StaticClass(), TEXT("Comp"));
+	Blueprint->SimpleConstructionScript->AddNode(Node);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	UClass* GeneratedClass = Blueprint->GeneratedClass;
+	if (!TestNotNull(TEXT("generated class"), GeneratedClass))
+	{
+		return false;
+	}
+	{
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		const FString BlueprintFile = FPackageName::LongPackageNameToFilename(BlueprintPackageName, FPackageName::GetAssetPackageExtension());
+		if (!TestTrue(TEXT("Blueprint saved"), UPackage::SavePackage(BlueprintPackage, Blueprint, *BlueprintFile, SaveArgs)))
+		{
+			return false;
+		}
+	}
+
+	const bool bCreated = Map.Create(MapName, [GeneratedClass](UWorld* World)
+	{
+		AActor* Overridden = Spawn(World, GeneratedClass, TEXT("CompOverridden"), TEXT("Overridden"));
+		if (UStaticMeshComponent* Comp = Overridden ? Overridden->FindComponentByClass<UStaticMeshComponent>() : nullptr)
+		{
+			Comp->bHiddenInGame = true;
+		}
+		Spawn(World, GeneratedClass, TEXT("CompDefault"), TEXT("Default"));
+	});
+	if (!TestTrue(TEXT("map fixture created"), bCreated))
+	{
+		return false;
+	}
+
+	const FCortexCommandResult Result = RunExport(Dir + TEXT("/BP_Comp"), {MapName}, OutPath, TOptional<bool>());
+	if (!TestTrue(*FString::Printf(TEXT("export succeeds (%s)"), *Result.ErrorMessage), Result.bSuccess))
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonObject> ReportMap = FindMap(ReadJson(OutPath), MapName);
+	const TSharedPtr<FJsonObject> Overridden = FindInstance(ReportMap, TEXT("CompOverridden"));
+	const TSharedPtr<FJsonObject> Untouched = FindInstance(ReportMap, TEXT("CompDefault"));
+	if (!TestTrue(TEXT("both instances reported"), Overridden.IsValid() && Untouched.IsValid()))
+	{
+		return false;
+	}
+	TestEqual(TEXT("the overridden instance reports exactly one property"), CountArray(Overridden, TEXT("properties")), 1);
+	const TSharedPtr<FJsonObject> Hidden = FindProperty(Overridden, TEXT("Comp.bHiddenInGame"));
+	if (TestTrue(TEXT("the component override is reported as Comp.bHiddenInGame"), Hidden.IsValid()))
+	{
+		TestEqual(TEXT("override value"), Hidden->GetBoolField(TEXT("value")), true);
+		TestEqual(TEXT("archetype value"), Hidden->GetBoolField(TEXT("archetype_value")), false);
+		TestFalse(TEXT("the override is a complete comparison"), Hidden->HasField(TEXT("incomplete")));
+	}
+	TestFalse(TEXT("the component reference itself is not reported"), FindProperty(Overridden, TEXT("Comp")).IsValid());
+	TestEqual(TEXT("the untouched instance reports nothing"), CountArray(Untouched, TEXT("properties")), 0);
 	return true;
 }

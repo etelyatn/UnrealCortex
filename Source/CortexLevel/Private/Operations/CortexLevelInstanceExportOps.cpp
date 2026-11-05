@@ -99,18 +99,53 @@ namespace CortexLevelInstanceExportPrivate
 		return Entry;
 	}
 
-	TSharedPtr<FJsonObject> BuildInstance(AActor* Actor, const bool bChangedOnly, int32& OutPropertyCount)
+	/**
+	 * Reports the reportable properties of Object against its archetype. An object property whose value is a subobject
+	 * (component) owned by the actor is never compared as a reference: its own editable properties are diffed against
+	 * that component's archetype (the SCS template or inherited override) one level down, as `Name.Property`.
+	 */
+	void CollectProperties(const AActor* Owner, const UObject* Object, const UObject* Archetype, const FString& Prefix,
+		const bool bChangedOnly, const bool bRecurseOwned, TSet<const UObject*>& Visited,
+		TArray<TSharedPtr<FJsonValue>>& OutProperties, int32& OutPropertyCount)
 	{
-		TSharedPtr<FJsonObject> Instance = MakeShared<FJsonObject>();
-		Instance->SetStringField(TEXT("actor_name"), Actor->GetName());
-		Instance->SetStringField(TEXT("actor_label"), Actor->GetActorLabel());
-		Instance->SetStringField(TEXT("class"), Actor->GetClass()->GetPathName());
-
-		UObject* Archetype = Actor->GetArchetype();
-		TArray<TSharedPtr<FJsonValue>> Properties;
-		for (TFieldIterator<FProperty> It(Actor->GetClass()); It; ++It)
+		for (TFieldIterator<FProperty> It(Object->GetClass()); It; ++It)
 		{
 			const FProperty* Property = *It;
+
+			// A component the actor owns is diffed through its own properties, whatever flags its variable carries
+			// (Blueprint component variables are not necessarily editable); each component is walked once, under the
+			// first variable that names it.
+			if (bRecurseOwned)
+			{
+				const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property);
+				if (ObjectProperty && !Property->HasAnyPropertyFlags(CPF_Deprecated))
+				{
+					bool bOwnedReference = false;
+					for (int32 Index = 0; Index < Property->ArrayDim; ++Index)
+					{
+						const UObject* Owned = ObjectProperty->GetObjectPropertyValue(Property->ContainerPtrToValuePtr<void>(Object, Index));
+						if (Owned && Owned->GetOuter() == Owner)
+						{
+							bOwnedReference = true;
+							bool bAlreadyWalked = false;
+							Visited.Add(Owned, &bAlreadyWalked);
+							if (!bAlreadyWalked)
+							{
+								const FString Name = Property->ArrayDim > 1
+									? FString::Printf(TEXT("%s[%d]"), *Property->GetName(), Index)
+									: Property->GetName();
+								CollectProperties(Owner, Owned, Owned->GetArchetype(), Prefix + Name + TEXT("."), bChangedOnly,
+									/*bRecurseOwned=*/false, Visited, OutProperties, OutPropertyCount);
+							}
+						}
+					}
+					if (bOwnedReference)
+					{
+						continue;
+					}
+				}
+			}
+
 			if (!IsReportableProperty(Property))
 			{
 				continue;
@@ -122,18 +157,31 @@ namespace CortexLevelInstanceExportPrivate
 
 			for (int32 Index = 0; Index < Property->ArrayDim; ++Index)
 			{
-				const FString Key = Property->ArrayDim > 1
+				const FString Name = Property->ArrayDim > 1
 					? FString::Printf(TEXT("%s[%d]"), *Property->GetName(), Index)
 					: Property->GetName();
-				const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Actor, Index);
+				const FString Key = Prefix + Name;
+				const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object, Index);
 				const void* BaselinePtr = bHasBaseline ? Property->ContainerPtrToValuePtr<void>(Archetype, Index) : nullptr;
 				if (const TSharedPtr<FJsonObject> Entry = BuildPropertyEntry(Property, Key, ValuePtr, BaselinePtr, bChangedOnly))
 				{
-					Properties.Add(MakeShared<FJsonValueObject>(Entry));
+					OutProperties.Add(MakeShared<FJsonValueObject>(Entry));
 					++OutPropertyCount;
 				}
 			}
 		}
+	}
+
+	TSharedPtr<FJsonObject> BuildInstance(AActor* Actor, const bool bChangedOnly, int32& OutPropertyCount)
+	{
+		TSharedPtr<FJsonObject> Instance = MakeShared<FJsonObject>();
+		Instance->SetStringField(TEXT("actor_name"), Actor->GetName());
+		Instance->SetStringField(TEXT("actor_label"), Actor->GetActorLabel());
+		Instance->SetStringField(TEXT("class"), Actor->GetClass()->GetPathName());
+
+		TArray<TSharedPtr<FJsonValue>> Properties;
+		TSet<const UObject*> Visited;
+		CollectProperties(Actor, Actor, Actor->GetArchetype(), FString(), bChangedOnly, /*bRecurseOwned=*/true, Visited, Properties, OutPropertyCount);
 		Properties.Sort([](const TSharedPtr<FJsonValue>& A, const TSharedPtr<FJsonValue>& B)
 		{
 			return A->AsObject()->GetStringField(TEXT("property")).Compare(B->AsObject()->GetStringField(TEXT("property")), ESearchCase::CaseSensitive) < 0;
@@ -280,10 +328,10 @@ FCortexCommandResult FCortexLevelInstanceExportOps::ExportClassInstances(const T
 		}
 		// A non-partitioned level's external actors are loaded into Level->Actors by the engine when the level loads,
 		// so they are read like any other actor; only World Partition maps (refused above) keep actors unloaded.
-		// The engine finds those packages through the Asset Registry, so a registry that has not seen the files yet
-		// would load none of them: the on-disk package count is compared with the loaded one instead of exporting
-		// a silently incomplete map.
-		if (Level->IsUsingExternalActors())
+		// For a map this call loaded, a package-count mismatch means the engine did not load every external actor
+		// package found on disk, so the export would be incomplete. A map that was already resident (for example the
+		// open editor world) legitimately differs from disk through unsaved edits and is read as it is.
+		if (!bAlreadyResident && Level->IsUsingExternalActors())
 		{
 			FString ExternalDirectory;
 			TArray<FString> ExternalFiles;
@@ -302,7 +350,7 @@ FCortexCommandResult FCortexLevelInstanceExportOps::ExportClassInstances(const T
 			if (ExternalFiles.Num() > LoadedExternalPackages.Num())
 			{
 				return FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
-					FString::Printf(TEXT("%s has %d external actor package(s) on disk but the engine loaded only %d with the level (the Asset Registry may not know the files yet); the export would be incomplete"),
+					FString::Printf(TEXT("%s has %d external actor package(s) on disk but only %d were loaded with the map; the export would be incomplete"),
 						*PackageName, ExternalFiles.Num(), LoadedExternalPackages.Num()));
 			}
 		}
