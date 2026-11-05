@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "Operations/CortexReflectOps.h"
 #include "Operations/CortexReflectDependencyGraphOps.h"
+#include "Operations/CortexReflectNameLookupOps.h"
 
 FCortexCommandResult FCortexReflectCommandHandler::Execute(
 	const FString& Command,
@@ -60,6 +61,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 		return FCortexReflectDependencyGraphOps::ExportDependencyGraph(Params);
 	}
 
+	if (Command == TEXT("find_name_lookups"))
+	{
+		return FCortexReflectNameLookupOps::FindNameLookups(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown reflect command: %s"), *Command)
@@ -113,5 +119,8 @@ TArray<FCortexCommandInfo> FCortexReflectCommandHandler::GetSupportedCommands() 
 			.Required(TEXT("out_path"), TEXT("string"), TEXT("Report file under the project Saved, Content or Config directory"))
 			.Optional(TEXT("edge_kinds"), TEXT("array"), TEXT("Edge kinds to derive (default all): inherits, implements, calls_message, casts, spawns, creates_widget, widget_tree_child, listview_entry, level_placement, struct_use, enum_use, config"))
 			.Optional(TEXT("ordering_kinds"), TEXT("array"), TEXT("Edge kinds that order waves (default: inherits, implements, struct_use, enum_use, widget_tree_child, listview_entry); other kinds are emitted as edges only")),
+		FCortexCommandInfo{ TEXT("find_name_lookups"), TEXT("Find by-name access to Blueprint members: string-literal arguments of FindFunction, FindFunctionByName, FindFunctionChecked, FindPropertyByName, FindFProperty, SetTimerByFunctionName, K2_SetTimer, CreateUFunction and BindUFunction in project and project-plugin C++ sources (fixed roots; the UnrealCortex plugin is excluded), plus K2_SetTimer/K2_SetTimerForNextTick Blueprint nodes with a literal FunctionName. Each hit lists the Blueprint functions, events, custom events and variables of that name under the prefixes; matched_names/unmatched_names split the looked-up names by whether any Blueprint member matched") }
+			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose Blueprints are matched against (e.g. /Game/MyFeature)"))
+			.Optional(TEXT("symbols"), TEXT("array"), TEXT("Only report looked-up names in this list (case-insensitive)")),
 	};
 }
