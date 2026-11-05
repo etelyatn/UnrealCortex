@@ -240,6 +240,71 @@ static bool ReadBoundedTreeBoolParam(const TSharedPtr<FJsonObject>& Params, cons
     return true;
 }
 
+namespace
+{
+/** Margin as the {left, top, right, bottom} object every padding/offset field uses. */
+TSharedPtr<FJsonObject> MarginToJson(const FMargin& Margin)
+{
+    TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+    Obj->SetNumberField(TEXT("left"), Margin.Left);
+    Obj->SetNumberField(TEXT("top"), Margin.Top);
+    Obj->SetNumberField(TEXT("right"), Margin.Right);
+    Obj->SetNumberField(TEXT("bottom"), Margin.Bottom);
+    return Obj;
+}
+
+TSharedPtr<FJsonObject> Vector2DToJson(const FVector2D& Vector)
+{
+    TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+    Obj->SetNumberField(TEXT("x"), Vector.X);
+    Obj->SetNumberField(TEXT("y"), Vector.Y);
+    return Obj;
+}
+
+/**
+ * Typed layout summary of a widget's slot, shared by get_tree and get_widget: `type` is the slot
+ * class name, followed by the layout fields of the slot kinds with a dedicated summary (canvas,
+ * horizontal/vertical box, overlay). Returns null for a widget without a slot (the root).
+ */
+TSharedPtr<FJsonObject> BuildSlotSummaryJson(const UWidget* Widget)
+{
+    const UPanelSlot* WidgetSlot = Widget ? Widget->Slot.Get() : nullptr;
+    if (!WidgetSlot)
+    {
+        return nullptr;
+    }
+
+    TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+    SlotObj->SetStringField(TEXT("type"), WidgetSlot->GetClass()->GetName());
+
+    if (const UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(WidgetSlot))
+    {
+        const FAnchors Anchors = CanvasSlot->GetAnchors();
+        TSharedPtr<FJsonObject> AnchorsObj = MakeShared<FJsonObject>();
+        AnchorsObj->SetObjectField(TEXT("min"), Vector2DToJson(FVector2D(Anchors.Minimum)));
+        AnchorsObj->SetObjectField(TEXT("max"), Vector2DToJson(FVector2D(Anchors.Maximum)));
+        SlotObj->SetObjectField(TEXT("anchors"), AnchorsObj);
+        SlotObj->SetObjectField(TEXT("offsets"), MarginToJson(CanvasSlot->GetOffsets()));
+        SlotObj->SetObjectField(TEXT("alignment"), Vector2DToJson(CanvasSlot->GetAlignment()));
+        SlotObj->SetNumberField(TEXT("z_order"), CanvasSlot->GetZOrder());
+        SlotObj->SetBoolField(TEXT("auto_size"), CanvasSlot->GetAutoSize());
+    }
+    else if (const UHorizontalBoxSlot* HBoxSlot = Cast<UHorizontalBoxSlot>(WidgetSlot))
+    {
+        SlotObj->SetObjectField(TEXT("padding"), MarginToJson(HBoxSlot->GetPadding()));
+    }
+    else if (const UVerticalBoxSlot* VBoxSlot = Cast<UVerticalBoxSlot>(WidgetSlot))
+    {
+        SlotObj->SetObjectField(TEXT("padding"), MarginToJson(VBoxSlot->GetPadding()));
+    }
+    else if (const UOverlaySlot* OverlaySlot = Cast<UOverlaySlot>(WidgetSlot))
+    {
+        SlotObj->SetObjectField(TEXT("padding"), MarginToJson(OverlaySlot->GetPadding()));
+    }
+    return SlotObj;
+}
+}
+
 TSharedPtr<FJsonObject> FCortexUMGWidgetTreeOps::BuildWidgetTreeJson(
     UWidget* Widget, const int32 Depth, FTreeReadBudget& Budget)
 {
@@ -255,6 +320,11 @@ TSharedPtr<FJsonObject> FCortexUMGWidgetTreeOps::BuildWidgetTreeJson(
     if (!Budget.bNamesOnly)
     {
         Obj->SetStringField(TEXT("class"), Widget->GetClass()->GetName());
+        Obj->SetBoolField(TEXT("is_variable"), Widget->bIsVariable);
+        if (TSharedPtr<FJsonObject> SlotJson = BuildSlotSummaryJson(Widget))
+        {
+            Obj->SetObjectField(TEXT("slot"), SlotJson);
+        }
 
         // WBP breadcrumb for nested user widgets.
         if (Widget->GetClass()->IsChildOf(UUserWidget::StaticClass()) &&
@@ -771,86 +841,10 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::GetWidget(const TSharedPtr<FJsonOb
     }
 
     // slot_type and slot detail
-    UPanelSlot* WidgetSlot = Widget->Slot;
-    if (WidgetSlot)
+    if (Widget->Slot)
     {
-        Data->SetStringField(TEXT("slot_type"), WidgetSlot->GetClass()->GetName());
-
-        if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(WidgetSlot))
-        {
-            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
-
-            const FAnchors Anchors = CanvasSlot->GetAnchors();
-            TSharedPtr<FJsonObject> AnchorsObj = MakeShared<FJsonObject>();
-            TSharedPtr<FJsonObject> AnchorMin = MakeShared<FJsonObject>();
-            AnchorMin->SetNumberField(TEXT("x"), Anchors.Minimum.X);
-            AnchorMin->SetNumberField(TEXT("y"), Anchors.Minimum.Y);
-            TSharedPtr<FJsonObject> AnchorMax = MakeShared<FJsonObject>();
-            AnchorMax->SetNumberField(TEXT("x"), Anchors.Maximum.X);
-            AnchorMax->SetNumberField(TEXT("y"), Anchors.Maximum.Y);
-            AnchorsObj->SetObjectField(TEXT("min"), AnchorMin);
-            AnchorsObj->SetObjectField(TEXT("max"), AnchorMax);
-            SlotObj->SetObjectField(TEXT("anchors"), AnchorsObj);
-
-            const FMargin Offsets = CanvasSlot->GetOffsets();
-            TSharedPtr<FJsonObject> OffsetsObj = MakeShared<FJsonObject>();
-            OffsetsObj->SetNumberField(TEXT("left"), Offsets.Left);
-            OffsetsObj->SetNumberField(TEXT("top"), Offsets.Top);
-            OffsetsObj->SetNumberField(TEXT("right"), Offsets.Right);
-            OffsetsObj->SetNumberField(TEXT("bottom"), Offsets.Bottom);
-            SlotObj->SetObjectField(TEXT("offsets"), OffsetsObj);
-
-            const FVector2D Alignment = CanvasSlot->GetAlignment();
-            TSharedPtr<FJsonObject> AlignmentObj = MakeShared<FJsonObject>();
-            AlignmentObj->SetNumberField(TEXT("x"), Alignment.X);
-            AlignmentObj->SetNumberField(TEXT("y"), Alignment.Y);
-            SlotObj->SetObjectField(TEXT("alignment"), AlignmentObj);
-
-            SlotObj->SetNumberField(TEXT("z_order"), CanvasSlot->GetZOrder());
-            SlotObj->SetBoolField(TEXT("auto_size"), CanvasSlot->GetAutoSize());
-
-            Data->SetObjectField(TEXT("slot"), SlotObj);
-        }
-        else if (UHorizontalBoxSlot* HBoxSlot = Cast<UHorizontalBoxSlot>(WidgetSlot))
-        {
-            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
-            const FMargin Padding = HBoxSlot->GetPadding();
-            TSharedPtr<FJsonObject> PaddingObj = MakeShared<FJsonObject>();
-            PaddingObj->SetNumberField(TEXT("left"), Padding.Left);
-            PaddingObj->SetNumberField(TEXT("top"), Padding.Top);
-            PaddingObj->SetNumberField(TEXT("right"), Padding.Right);
-            PaddingObj->SetNumberField(TEXT("bottom"), Padding.Bottom);
-            SlotObj->SetObjectField(TEXT("padding"), PaddingObj);
-            Data->SetObjectField(TEXT("slot"), SlotObj);
-        }
-        else if (UVerticalBoxSlot* VBoxSlot = Cast<UVerticalBoxSlot>(WidgetSlot))
-        {
-            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
-            const FMargin Padding = VBoxSlot->GetPadding();
-            TSharedPtr<FJsonObject> PaddingObj = MakeShared<FJsonObject>();
-            PaddingObj->SetNumberField(TEXT("left"), Padding.Left);
-            PaddingObj->SetNumberField(TEXT("top"), Padding.Top);
-            PaddingObj->SetNumberField(TEXT("right"), Padding.Right);
-            PaddingObj->SetNumberField(TEXT("bottom"), Padding.Bottom);
-            SlotObj->SetObjectField(TEXT("padding"), PaddingObj);
-            Data->SetObjectField(TEXT("slot"), SlotObj);
-        }
-        else if (UOverlaySlot* OverlaySlot = Cast<UOverlaySlot>(WidgetSlot))
-        {
-            TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
-            const FMargin Padding = OverlaySlot->GetPadding();
-            TSharedPtr<FJsonObject> PaddingObj = MakeShared<FJsonObject>();
-            PaddingObj->SetNumberField(TEXT("left"), Padding.Left);
-            PaddingObj->SetNumberField(TEXT("top"), Padding.Top);
-            PaddingObj->SetNumberField(TEXT("right"), Padding.Right);
-            PaddingObj->SetNumberField(TEXT("bottom"), Padding.Bottom);
-            SlotObj->SetObjectField(TEXT("padding"), PaddingObj);
-            Data->SetObjectField(TEXT("slot"), SlotObj);
-        }
-        else
-        {
-            Data->SetField(TEXT("slot"), MakeShared<FJsonValueNull>());
-        }
+        Data->SetStringField(TEXT("slot_type"), Widget->Slot->GetClass()->GetName());
+        Data->SetObjectField(TEXT("slot"), BuildSlotSummaryJson(Widget));
     }
     else
     {

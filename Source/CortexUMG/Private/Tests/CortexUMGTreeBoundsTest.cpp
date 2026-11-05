@@ -728,9 +728,10 @@ bool FCortexUMGTreeBoundsFullTreeRecoveryTest::RunTest(const FString& Parameters
 // --- compact-admissible combined read is never refused ----------------------------------------
 
 // The bounded-response ceiling applies to the compact (model-facing) JSON text the command actually
-// ships. 450 children with a 25-character fill put the combined tree + inventory payload at roughly
-// 33 kB of condensed text while its pretty-indented estimate is roughly 48 kB, so a read judged on
-// the shipped text must stay accepted even though a pretty-estimate ceiling would have refused it.
+// ships. 110 children with a 25-character fill put the combined tree + inventory payload at roughly
+// 34 kB of condensed text (each node carries is_variable and its slot summary) while its
+// pretty-indented estimate is far larger, so a read judged on the shipped text must stay accepted
+// even though a pretty-estimate ceiling would have refused it.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexUMGTreeBoundsCompactAdmissibleCombinedTest,
 	"Cortex.UMG.TreeBounds.CompactAdmissibleCombinedReadAccepted",
@@ -740,7 +741,7 @@ bool FCortexUMGTreeBoundsCompactAdmissibleCombinedTest::RunTest(const FString& P
 {
 	(void)Parameters;
 	FCortexUMGTreeBoundsFixture Fixture(FGuid::NewGuid().ToString(EGuidFormats::Digits));
-	if (!Fixture.BuildOversizedTree(450, 25))
+	if (!Fixture.BuildOversizedTree(110, 25))
 	{
 		AddError(TEXT("compact-admissible fixture tree could not be created"));
 		return false;
@@ -774,11 +775,11 @@ bool FCortexUMGTreeBoundsCompactAdmissibleCombinedTest::RunTest(const FString& P
 	int32 Returned = -1;
 	TestTrue(TEXT("compact-admissible read declares returned_widgets"),
 			 Read.Data->TryGetNumberField(TEXT("returned_widgets"), Returned));
-	TestEqual(TEXT("compact-admissible read returns every widget"), Returned, 451);
+	TestEqual(TEXT("compact-admissible read returns every widget"), Returned, 111);
 	int32 Total = -1;
 	TestTrue(TEXT("compact-admissible read declares total_widgets"),
 			 Read.Data->TryGetNumberField(TEXT("total_widgets"), Total));
-	TestEqual(TEXT("compact-admissible read counts every widget"), Total, 451);
+	TestEqual(TEXT("compact-admissible read counts every widget"), Total, 111);
 
 	const TSharedPtr<FJsonObject>* State = nullptr;
 	TestTrue(TEXT("compact-admissible read still returns the binding inventory"),
