@@ -171,6 +171,57 @@ def _cached_refusal(array_key: str) -> str:
     })
 
 
+def _batch_oversized_step_refusal(
+    qualified: str,
+    array_key: str,
+    cache_key: str,
+    offset: int,
+    limit: int,
+    total: int,
+) -> str:
+    """Refusal for one executed batch step that alone exceeds the budget.
+
+    The batch already ran (its steps may have mutated state), so the refusal says so, names the
+    snapshot and the oversized step, and carries a cursor positioned after that step so the
+    remaining step results stay retrievable without re-executing anything.
+    """
+    snapshot_id = _pagination_cache.snapshot_id(cache_key)
+    next_offset = offset + 1
+    has_more = next_offset < total
+    next_cursor = (
+        encode_cursor(
+            cache_key, next_offset, limit,
+            command=qualified, array=array_key, snapshot_id=snapshot_id,
+        )
+        if has_more
+        else None
+    )
+    return compact_json({
+        "_error": "RESPONSE_TOO_LARGE",
+        "_message": (
+            f"Batch step at index {offset} alone exceeds the {MAX_RESPONSE_CHARS}-character "
+            "response budget and was not returned. The batch already executed (its steps may have "
+            "changed state); do not re-run it."
+        ),
+        "reader_complete": False,
+        "snapshot_id": snapshot_id,
+        "oversized_step_index": offset,
+        "_pagination": {
+            "returned": 0,
+            "total": total,
+            "has_more": has_more,
+            "snapshot_id": snapshot_id,
+            "next_cursor": next_cursor,
+        },
+        "_suggestion": (
+            "Call core.batch_query with cursor=_pagination.next_cursor to read the remaining step "
+            "results from the stored snapshot; this never re-executes the batch."
+            if has_more
+            else "No further step results remain in the snapshot; do not re-run the batch."
+        ),
+    })
+
+
 def _format_cached_page(
     qualified: str,
     array_key: str,
@@ -223,6 +274,8 @@ def _format_cached_page(
         text = compact_json(_pagination_cache.rebuild_response(cache_key, page[:count], meta))
         if len(text) <= MAX_RESPONSE_CHARS:
             return text
+    if qualified == "core.batch_query":
+        return _batch_oversized_step_refusal(qualified, array_key, cache_key, offset, limit, total)
     return _cached_refusal(array_key)
 
 

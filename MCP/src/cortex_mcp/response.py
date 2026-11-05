@@ -95,8 +95,8 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
     "query_class_context": _REFLECT_CONTEXT_SELECTOR,
     "reflect.class_context": _REFLECT_CONTEXT_SELECTOR,
     "batch_query": (
-        "The batch has already executed and must not be re-run: its executed results are served "
-        "from a cached snapshot by 'cursor' (_pagination.next_cursor)."
+        "The batch has already executed and must not be re-run; its response could not be "
+        "snapshotted for paging, so narrow the steps of a new, read-only query instead."
     ),
     "reflect.find_duplicate_graphs": (
         "Pass 'out_path' to write the full result to a file and get a compact summary, or narrow "

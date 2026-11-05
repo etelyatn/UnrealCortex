@@ -1017,6 +1017,50 @@ class TestBatchQueryPagination:
         assert seen == list(range(30))
         assert len(connection.sends) == 1
 
+    def test_single_oversized_step_keeps_snapshot_and_cursor_after_it(self):
+        connection = _CountingConnection(3)
+        connection._results[1]["data"]["blob"] = "x" * (MAX_RESPONSE_CHARS + 1_000)
+        router = _core_router(connection)
+
+        first = json.loads(router("batch_query", {"commands": _batch_steps(3)}))
+        assert [step["index"] for step in first["results"]] == [0]
+        assert "already executed" in first["_note"]
+
+        payload = json.loads(router("batch_query", {"cursor": first["_pagination"]["next_cursor"]}))
+
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert "already executed" in payload["_message"]
+        assert "do not re-run" in payload["_message"]
+        assert payload["oversized_step_index"] == 1
+        assert payload["snapshot_id"] >= 1
+        assert "Reduce the per-entry fields" not in compact_json(payload)
+        cursor = payload["_pagination"]["next_cursor"]
+        assert cursor
+
+        rest = json.loads(router("batch_query", {"cursor": cursor}))
+        assert [step["index"] for step in rest["results"]] == [2]
+        assert rest["_pagination"]["has_more"] is False
+        assert len(connection.sends) == 1
+
+    def test_oversized_batch_with_no_results_does_not_promise_cursor(self):
+        connection = _CountingConnection(0)
+        send = connection.send_command
+
+        def oversized(command, params=None, **kwargs):
+            response = send(command, params, **kwargs)
+            response["data"]["blob"] = "x" * (MAX_RESPONSE_CHARS + 1_000)
+            return response
+
+        connection.send_command = oversized
+        router = _core_router(connection)
+
+        payload = json.loads(router("batch_query", {"commands": _batch_steps(1)}))
+
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert "cursor" not in compact_json(payload).lower()
+        assert "do not re-run" in compact_json(payload).lower() or "must not be re-run" in compact_json(payload)
+        assert len(connection.sends) == 1
+
     def test_batch_cursor_cannot_be_used_on_another_read(self):
         connection = _CountingConnection(6)
         router = _core_router(connection)
