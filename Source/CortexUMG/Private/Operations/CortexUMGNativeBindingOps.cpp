@@ -163,6 +163,10 @@ TMap<FName, int32> CountGraphMemberReferences(const UWidgetBlueprint* Blueprint)
     Blueprint->GetAllGraphs(Graphs);
     for (const UEdGraph* Graph : Graphs)
     {
+        if (Graph == nullptr)
+        {
+            continue;
+        }
         for (const UEdGraphNode* Node : Graph->Nodes)
         {
             const UK2Node_Variable* Variable = Cast<UK2Node_Variable>(Node);
