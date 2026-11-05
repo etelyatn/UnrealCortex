@@ -5,7 +5,8 @@
 
 FCortexCommandResult FCortexDeferredExec::RunNextTick(
 	TFunction<FCortexCommandResult()>&& Work,
-	FDeferredResponseCallback DeferredCallback)
+	FDeferredResponseCallback DeferredCallback,
+	const double DeferredTimeoutSeconds)
 {
 	if (!IsInGameThread())
 	{
@@ -33,5 +34,6 @@ FCortexCommandResult FCortexDeferredExec::RunNextTick(
 
 	FCortexCommandResult Deferred;
 	Deferred.bIsDeferred = true;
+	Deferred.DeferredTimeoutSeconds = DeferredTimeoutSeconds;
 	return Deferred;
 }

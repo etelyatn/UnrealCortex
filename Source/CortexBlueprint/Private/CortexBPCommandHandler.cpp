@@ -4,6 +4,7 @@
 #include "Operations/CortexBPAnalysisOps.h"
 #include "Operations/CortexBPCleanupOps.h"
 #include "Operations/CortexBPClassDefaultsOps.h"
+#include "Operations/CortexBPCompileAllOps.h"
 #include "Operations/CortexBPCompareOps.h"
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPGraphCleanupOps.h"
@@ -11,6 +12,8 @@
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPSearchOps.h"
 #include "Operations/CortexBPStructureOps.h"
+#include "Operations/CortexBPSnapshotOps.h"
+#include "Operations/CortexBPTextInventoryOps.h"
 #include "Operations/CortexBPTimelineOps.h"
 #include "Operations/CortexBPClassSettingsOps.h"
 #include "CortexAssetMutationGuard.h"
@@ -50,7 +53,8 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		|| Command == TEXT("get_class_defaults") || Command == TEXT("list_inherited_properties")
 		|| Command == TEXT("list_settable_defaults") || Command == TEXT("list_scs_components")
 		|| Command == TEXT("analyze_for_migration") || Command == TEXT("compare_blueprints")
-		|| Command == TEXT("search") || Command == TEXT("graph_metrics");
+		|| Command == TEXT("search") || Command == TEXT("graph_metrics") || Command == TEXT("export_text_inventory")
+		|| Command == TEXT("export_snapshot") || Command == TEXT("compare_snapshots");
 	if (!bReadOnly)
 	{
 		FCortexCommandResult GuardError;
@@ -205,6 +209,26 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("search"))
 	{
 		return FCortexBPSearchOps::Search(Params);
+	}
+
+	if (Command == TEXT("export_text_inventory"))
+	{
+		return FCortexBPTextInventoryOps::ExportTextInventory(Params);
+	}
+
+	if (Command == TEXT("export_snapshot"))
+	{
+		return FCortexBPSnapshotOps::ExportSnapshot(Params);
+	}
+
+	if (Command == TEXT("compare_snapshots"))
+	{
+		return FCortexBPSnapshotOps::CompareSnapshots(Params);
+	}
+
+	if (Command == TEXT("compile_all"))
+	{
+		return FCortexBPCompileAllOps::CompileAll(Params);
 	}
 
 	if (Command == TEXT("reparent"))
@@ -409,6 +433,26 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("search_in"), TEXT("array"), TEXT("Search scopes"))
 		.Optional(TEXT("case_sensitive"), TEXT("boolean"), TEXT("Case-sensitive matching"))
 		.Optional(TEXT("max_results"), TEXT("number"), TEXT("Maximum matches to return")));
+	Commands.Add(FCortexCommandInfo{TEXT("export_text_inventory"), TEXT("Export every FText of a Blueprint (class defaults, widgets, text pin defaults) as a sorted inventory with source kind and string table identity (read-only)")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full inventory JSON to this file (under Project Saved, Content or Config) and return only asset_path, out_path and counts; required when the inline response would exceed 40000 characters"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("export_snapshot"), TEXT("Write a deterministic migration snapshot of a Blueprint (variables with their effective default read from the CDO, CDO with declaring class, components incl. this Blueprint's own overrides of inherited components, widgets, bindings, animations, text, interfaces, graph entries) to a file; returns only a compact summary (read-only)")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("out_path"), TEXT("string"), TEXT("File to write the snapshot JSON to (under Project Saved, Content or Config)"))
+		.Optional(TEXT("sections"), TEXT("array"), TEXT("Sections to include (variables, cdo, components, widgets, bindings, animations, text, interfaces, graph_entries); default all"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("compare_snapshots"), TEXT("Diff two Blueprint snapshot files by section and record identity into added/removed/changed/moved; a CDO property whose declaring class changed with an equal value is moved (decided on the value alone; a type change such as double to float is attached as type_change, float/double compared at float precision); refuses an empty compared set and duplicate record keys (read-only)")}
+		.Required(TEXT("before"), TEXT("string"), TEXT("Snapshot file written before the change"))
+		.Required(TEXT("after"), TEXT("string"), TEXT("Snapshot file written after the change"))
+		.Optional(TEXT("report_path"), TEXT("string"), TEXT("Write the full report to this file (under Project Saved, Content or Config) and omit the inline difference list; required when the inline report would exceed 40000 characters"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("compile_all"), TEXT("Compile every Blueprint of a folder (recursive) or an explicit asset list through the single-asset compile, write a per-asset report (status, error/warning counts, diagnostics) and return totals plus the first failing assets; read-only content and assets blocked after a failed recovery are skipped with a reason, level script Blueprints are not enumerated; synchronous, garbage is collected once at the end, large prefixes take minutes")}
+		.Required(TEXT("out_path"), TEXT("string"), TEXT("File to write the full compile report JSON to (under Project Saved, Content or Config)"))
+		.Optional(TEXT("path_prefix"), TEXT("string"), TEXT("Content folder compiled recursively (exactly one of path_prefix or paths)"))
+		.Optional(TEXT("paths"), TEXT("array"), TEXT("Explicit Blueprint asset paths (exactly one of path_prefix or paths)"))
+		.Optional(TEXT("types"), TEXT("array"), TEXT("Only compile these Blueprint types (case-insensitive, same vocabulary as list): Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown (from registry tags, no load)"))
+		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("new_parent"), TEXT("string"), TEXT("New parent class (Blueprint path or C++ class name)")));

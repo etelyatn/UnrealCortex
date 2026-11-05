@@ -1,5 +1,6 @@
 #include "Misc/AutomationTest.h"
 #include "CortexBPList119TestUtils.h"
+#include "Operations/CortexBPAssetOps.h"
 #include "GameFramework/Actor.h"
 
 // Issue #119: blueprint.list, get_info, analyze_for_migration and create must agree on `type`,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Annotated, Any, Callable
 
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
@@ -32,6 +33,36 @@ from cortex_mcp.tcp_client import UECommandError
 logger = logging.getLogger(__name__)
 _TTL_CATALOG = 600
 _CACHED_READ_TTL = 300
+
+# Deferred editor commands answer after the native work completes, which can outlast the 60 s default
+# socket window: wait_ready waits up to its own `timeout` (default 120 s); live_coding_compile blocks the
+# editor until the patch is built (native transport bound 1800 s). compile_all and export_class_instances
+# are synchronous natively and scale with the project (a 829-Blueprint compile_all measured 177 s), so
+# they get a long fixed window.
+_WAIT_READY_DEFAULT_SECONDS = 120.0
+_DEFERRED_TIMEOUT_MARGIN = 30.0
+_LIVE_CODING_COMPILE_WINDOW = 1830.0
+_LONG_SYNCHRONOUS_WINDOW = 1800.0
+_LONG_SYNCHRONOUS_COMMANDS = frozenset({"blueprint.compile_all", "level.export_class_instances"})
+
+
+def _dispatch_timeout(qualified: str, params: dict) -> float | None:
+    """Per-command receive window in seconds, or None to keep the connection default."""
+    if qualified == "editor.live_coding_compile":
+        return _LIVE_CODING_COMPILE_WINDOW
+    if qualified in _LONG_SYNCHRONOUS_COMMANDS:
+        return _LONG_SYNCHRONOUS_WINDOW
+    if qualified == "editor.wait_ready":
+        requested = params.get("timeout")
+        if (
+            isinstance(requested, bool)
+            or not isinstance(requested, (int, float))
+            or not math.isfinite(requested)
+        ):
+            requested = _WAIT_READY_DEFAULT_SECONDS
+        return float(requested) + _DEFERRED_TIMEOUT_MARGIN
+    return None
+
 
 _pagination_cache = PaginationCache(max_entries=5, ttl_seconds=60.0)
 _CACHED_READ_COMMANDS = {
@@ -556,7 +587,11 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                     request_params=route_params,
                 )
 
-            response = connection.send_command(qualified, route_params)
+            dispatch_timeout = _dispatch_timeout(qualified, route_params)
+            if dispatch_timeout is None:
+                response = connection.send_command(qualified, route_params)
+            else:
+                response = connection.send_command(qualified, route_params, timeout=dispatch_timeout)
             return format_response(
                 response.get("data", {}),
                 f"{domain}_cmd",

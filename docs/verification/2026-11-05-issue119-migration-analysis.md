@@ -35,6 +35,7 @@
 
 - Controller: `Cortex.Blueprint+` 290/290 @`6ff5688d` and 291/291 @`0638aaa1` (`AutomationTest_2026-11-05_085330.log`; one environment warning: engine `LogHttp` 3 s timeout probing `www.google.com/generate_204`, not plugin code); `Cortex.Core+` 205/205; Python non-e2e 1111 passed; `sync_fallback --check` OK.
 - Implementers: `Cortex.Graph+` 324/324, `Cortex.Data+` 134/134 @`e2c4bf85` (no later Graph/Data changes); `Cortex.Blueprint+` 291/291 @`0638aaa1`.
+- Base refresh: `origin/main` advanced to `d445f99c` (#123 widget migration, #124 migration verification) during delivery and was merged into the branch. Conflicts: Blueprint read-only command list (union), `FCortexBPAssetOps` declarations (union), capabilities fixture (both sides' disjoint command entries) and regenerated fallback. `compile_all.types` now uses the shared Blueprint type vocabulary (`FCortexBPAssetOps::GetBlueprintTypeNames`) so it cannot drift from `list`. Merged-tree controller runs (`AutomationTest_2026-11-05_091107` … `091540`): `Cortex.Blueprint+` 299/299, `Cortex.Graph+` 328/328, `Cortex.Data+` 134/134, `Cortex.Core+` 207/207, `Cortex.UMG+` 172/172, zero warnings; Python non-e2e 1119 passed; `sync_fallback --check` OK.
 - Environment: intermittent full-suite editor crash (60 s Blueprint-compile stall, then `Background Worker crashed`) while another editor was running; confirmed by the maintainer as a known environment flake; affected runs were rerun clean.
 
 ## Limitations

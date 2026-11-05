@@ -2522,6 +2522,11 @@ struct FGraphPatchJournal
 		bool bUserSetEnabledState = false;
 		bool bForceDisplayAsDisabled = false;
 		bool bOverrideFunction = false;
+		/**
+		 * The whole event reference, not its class parent: a component-bound or delegate event's
+		 * signature can be owned by a package (a file-scope delegate), which has no parent class.
+		 */
+		FMemberReference EventReference;
 		FName MemberName = NAME_None;
 		UClass* MemberParentClass = nullptr;
 		/**
@@ -2716,8 +2721,7 @@ void JournalNodeRemoved(UEdGraphNode* Node, FGraphPatchJournal& Journal)
 	if (const UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
 	{
 		Entry.bOverrideFunction = Event->bOverrideFunction;
-		Entry.MemberName = Event->EventReference.GetMemberName();
-		Entry.MemberParentClass = Event->EventReference.GetMemberParentClass();
+		Entry.EventReference = Event->EventReference;
 		Entry.CustomFunctionName = Event->CustomFunctionName;
 	}
 	else if (const UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
@@ -2809,14 +2813,7 @@ bool RestoreRemovedNodes(UBlueprint* Blueprint, const FGraphPatchJournal& Journa
 		if (UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
 		{
 			Event->bOverrideFunction = Entry.bOverrideFunction;
-			if (Entry.MemberParentClass)
-			{
-				Event->EventReference.SetExternalMember(Entry.MemberName, Entry.MemberParentClass);
-			}
-			else if (!Entry.MemberName.IsNone())
-			{
-				Event->EventReference.SetSelfMember(Entry.MemberName);
-			}
+			Event->EventReference = Entry.EventReference;
 		}
 		else if (UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
 		{
@@ -5458,15 +5455,18 @@ bool FCortexGraphPatchOps::ValidateEligibility(
 		&& Params->TryGetObjectField(TEXT("migration"), Migration)
 		&& Migration && Migration->IsValid()
 		&& (*Migration)->TryGetStringField(TEXT("op"), Op);
-	// The two repair operations exist to clear a compiler-invalid state, so they are the only
-	// migrations a BS_Error asset accepts. Everything else still refuses to touch a broken asset.
-	const bool bRepairOp = bMigrationOp && (Op == TEXT("retire_entries") || Op == TEXT("replace_call_output"));
+	// The repair operations exist to clear a compiler-invalid state, so they are the only
+	// migrations a BS_Error asset accepts. prune_island is admitted because stale non-entry islands
+	// left by a reparent can be the remaining compiler errors; its entry-retention contract is unchanged.
+	// Everything else still refuses to touch a broken asset.
+	const bool bRepairOp = bMigrationOp
+		&& (Op == TEXT("retire_entries") || Op == TEXT("replace_call_output") || Op == TEXT("prune_island"));
 
 	if (Blueprint->Status == BS_Error && !bRepairOp)
 	{
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidOperation,
-			TEXT("Blueprint has pre-existing compiler errors; only retire_entries and replace_call_output may repair this state through graph.apply_patch"));
+			TEXT("Blueprint has pre-existing compiler errors; only retire_entries, replace_call_output and prune_island may repair this state through graph.apply_patch"));
 		return false;
 	}
 	return true;

@@ -5,6 +5,7 @@
 #include "CortexEditorLogCapture.h"
 #include "Operations/CortexEditorPIEOps.h"
 #include "Operations/CortexEditorInputOps.h"
+#include "Operations/CortexEditorTurnaroundOps.h"
 #include "Operations/CortexEditorUtilityOps.h"
 #include "Operations/CortexEditorViewportOps.h"
 
@@ -137,6 +138,14 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorUtilityOps::RunPython(Params, MoveTemp(DeferredCallback));
 	}
+	if (Command == TEXT("live_coding_compile"))
+	{
+		return FCortexEditorTurnaroundOps::LiveCodingCompile(Params, MoveTemp(DeferredCallback));
+	}
+	if (Command == TEXT("wait_ready"))
+	{
+		return FCortexEditorTurnaroundOps::WaitReady(Params, MoveTemp(DeferredCallback));
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
@@ -217,6 +226,12 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 		FCortexCommandInfo{ TEXT("run_python"), TEXT("Run trusted editor Python as a high-trust escape hatch; prefer structured Cortex commands; can mutate assets/files") }
 			.Required(TEXT("code"), TEXT("string"), TEXT("Python code to execute inside the local editor process"))
 			.Optional(TEXT("run_next_tick"), TEXT("boolean"), TEXT("Run on the next core ticker tick; requires deferred callback")),
+		FCortexCommandInfo{ TEXT("live_coding_compile"), TEXT("Trigger a Live Coding patch and answer when it completes (success, no_changes, failure, cancelled, in_progress); NOT_AVAILABLE when the build has no Live Coding or it is not started for this session (it is never started by this command). The patch build blocks the editor until it finishes, so the MCP/transport timeout must cover the compile time (the server allows up to 1800 s). New reflected types (UCLASS/USTRUCT/UPROPERTY changes) need a full editor build instead")}
+			.StrictParams(),
+		FCortexCommandInfo{ TEXT("wait_ready"), TEXT("Answer once the editor is usable: GEditor valid, Asset Registry finished loading, no asset (shader, texture, mesh) compilation pending; TIMEOUT otherwise. Blueprint compiles run synchronously on the game thread and are never pending between ticks, so they are not a condition. Then opens every reopen_assets path in its asset editor and reports opened and failed (maps are refused, never opened). The transport waits timeout plus a short grace. Never restarts the editor") }
+			.Optional(TEXT("reopen_assets"), TEXT("array"), TEXT("Asset paths to open in their asset editors once the editor is ready"))
+			.Optional(TEXT("timeout"), TEXT("number"), TEXT("Seconds to wait for readiness, greater than 0 and at most 3600 (default 120)"))
+			.StrictParams(),
 	};
 }
 

@@ -120,6 +120,8 @@ namespace CortexErrorCodes
 	static const FString ConsoleCommandFailed = TEXT("CONSOLE_COMMAND_FAILED");
 	static const FString InvalidTimeScale = TEXT("INVALID_TIME_SCALE");
 	static const FString GameModeNotFound = TEXT("GAME_MODE_NOT_FOUND");
+	static const FString Timeout = TEXT("TIMEOUT");
+	static const FString NotAvailable = TEXT("NOT_AVAILABLE");
 	// QA errors
 	static const FString NavigationFailed = TEXT("NAVIGATION_FAILED");
 	static const FString InteractionFailed = TEXT("INTERACTION_FAILED");
@@ -159,6 +161,8 @@ struct CORTEXCORE_API FCortexCommandResult
 {
 	bool bSuccess = false;
 	bool bIsDeferred = false;
+	/** Only meaningful with bIsDeferred: how long the server waits for the deferred callback. 0 = server default (30 s). */
+	double DeferredTimeoutSeconds = 0.0;
 	TSharedPtr<FJsonObject> Data;
 	FString ErrorCode;
 	FString ErrorMessage;

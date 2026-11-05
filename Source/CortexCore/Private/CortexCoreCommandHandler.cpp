@@ -52,6 +52,10 @@ FCortexCommandResult FCortexCoreCommandHandler::Execute(
 	{
 		return FCortexAssetOps::ReloadAsset(Params);
 	}
+	if (Command == TEXT("list_redirectors"))
+	{
+		return FCortexAssetOps::ListRedirectors(Params);
+	}
 	if (Command == TEXT("asset_fingerprint"))
 	{
 		return FCortexAssetFingerprintOps::AssetFingerprint(Params);
@@ -266,6 +270,10 @@ TArray<FCortexCommandInfo> FCortexCoreCommandHandler::GetSupportedCommands() con
 		FCortexCommandInfo{ TEXT("reload_asset"), TEXT("Discard changes and reload asset(s) from disk") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path, paths, or glob to reload"))
 			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview which assets would be reloaded")),
+		FCortexCommandInfo{ TEXT("list_redirectors"), TEXT("Read-only listing of the redirectors under a content folder: per redirector its object path, destination (from the registry tag; a redirector without one is loaded) and the packages that still reference it. Scans the folder synchronously; nothing is fixed up, deleted or saved") }
+			.Required(TEXT("path"), TEXT("string"), TEXT("Content folder, for example /Game/Ripper"))
+			.Optional(TEXT("recursive"), TEXT("boolean"), TEXT("Include subfolders (default true)"))
+			.StrictParams(),
 		FCortexCommandInfo{ TEXT("asset_fingerprint"), TEXT("Read fingerprint metadata for asset path(s)") }
 			.Required(TEXT("paths"), TEXT("array"), TEXT("Asset paths to fingerprint")),
 		FCortexCommandInfo{ TEXT("delete_asset"), TEXT("Delete a single asset by path") }

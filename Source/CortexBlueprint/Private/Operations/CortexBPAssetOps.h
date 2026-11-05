@@ -5,6 +5,7 @@
 #include "CortexCommandRouter.h"
 
 class UBlueprint;
+struct FAssetData;
 
 /**
  * Blueprint asset operations
@@ -45,8 +46,9 @@ public:
 	/**
 	 * Compile Blueprint
 	 * Params: asset_path (string)
+	 * bSkipGarbageCollection: the caller compiles many assets and collects garbage once itself.
 	 */
-	static FCortexCommandResult Compile(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult Compile(const TSharedPtr<FJsonObject>& Params, bool bSkipGarbageCollection = false);
 
 	/**
 	 * Save Blueprint
@@ -83,4 +85,10 @@ public:
 
 	/** Asset Registry class-path tag value to object path; empty for empty or "None" tags. */
 	static FString ClassTagToObjectPath(const FString& TagValue);
+
+	/** Determine the Blueprint type string from AssetRegistry tags, without loading the asset (same classifier as DetermineBlueprintType). */
+	static FString DetermineBlueprintTypeFromAssetData(const FAssetData& AssetData);
+
+	/** Canonical Blueprint type vocabulary in classification precedence order (shared by list, get_info, analyze_for_migration and compile_all). */
+	static const TArray<FString>& GetBlueprintTypeNames();
 };
