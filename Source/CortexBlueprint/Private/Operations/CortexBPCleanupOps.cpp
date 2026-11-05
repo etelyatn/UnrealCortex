@@ -1,5 +1,6 @@
 #include "Operations/CortexBPCleanupOps.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPParentRules.h"
 #include "Operations/CortexBPSCSDiagnostics.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
@@ -331,37 +332,15 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 				FString::Printf(TEXT("Parent class not found: %s"), *NewParentClassPath));
 		}
 
-		// Type compatibility check: allow same-family reparent only.
-		static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-		const UClass* CurrentParent = BP->ParentClass.Get();
-		const bool bCurrentIsActor = CurrentParent && CurrentParent->IsChildOf(AActor::StaticClass());
-		const bool bCurrentIsComponent = CurrentParent && CurrentParent->IsChildOf(UActorComponent::StaticClass());
-		const bool bCurrentIsWidget = UserWidgetClass && CurrentParent && CurrentParent->IsChildOf(UserWidgetClass);
-		const bool bNewIsActor = NewParentClass->IsChildOf(AActor::StaticClass());
-		const bool bNewIsComponent = NewParentClass->IsChildOf(UActorComponent::StaticClass());
-		const bool bNewIsWidget = UserWidgetClass && NewParentClass->IsChildOf(UserWidgetClass);
-		bool bOrdinaryObjectFamily = false;
-		if (CurrentParent && BP->GetClass() == UBlueprint::StaticClass() && BP->BlueprintType == BPTYPE_Normal
-			&& !bCurrentIsActor && !bCurrentIsComponent && !bCurrentIsWidget
-			&& !bNewIsActor && !bNewIsComponent && !bNewIsWidget
-			&& !NewParentClass->HasAnyClassFlags(CLASS_Interface)
-			&& FKismetEditorUtilities::CanCreateBlueprintOfClass(NewParentClass))
+		TSharedPtr<FJsonObject> FamilyDetails;
+		if (!FCortexBPFamily::CheckReparent(BP, NewParentClass, FamilyDetails))
 		{
-			UClass* BlueprintClass = nullptr;
-			UClass* GeneratedClass = nullptr;
-			FModuleManager::LoadModuleChecked<IKismetCompilerInterface>(TEXT("KismetCompiler"))
-				.GetBlueprintTypesForClass(NewParentClass, BlueprintClass, GeneratedClass);
-			bOrdinaryObjectFamily = BlueprintClass == UBlueprint::StaticClass()
-				&& GeneratedClass == UBlueprintGeneratedClass::StaticClass();
-		}
-
-		if (!((bCurrentIsActor && bNewIsActor) ||
-			  (bCurrentIsComponent && bNewIsComponent) ||
-			  (bCurrentIsWidget && bNewIsWidget) || bOrdinaryObjectFamily))
-		{
+			FString Reason;
+			FamilyDetails->TryGetStringField(TEXT("reason"), Reason);
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
-				TEXT("Type mismatch: reparenting requires the same Actor, Component, Widget, or ordinary Object Blueprint family"));
+				FString::Printf(TEXT("Invalid reparent target (%s): reparenting requires the same Actor, Component, Widget, AnimInstance, or ordinary Object Blueprint family"), *Reason),
+				FamilyDetails);
 		}
 	}
 
