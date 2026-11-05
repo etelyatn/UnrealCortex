@@ -5,6 +5,7 @@
 #include "CortexCommandRouter.h"
 
 class UBlueprint;
+struct FAssetData;
 
 /**
  * Blueprint asset operations
@@ -74,4 +75,7 @@ public:
 
 	/** Determine Blueprint type string (Actor, Component, Widget, Interface, FunctionLibrary) from a loaded UBlueprint */
 	static FString DetermineBlueprintType(const UBlueprint* BP);
+
+	/** Determine the Blueprint type string from AssetRegistry tags, without loading the asset. */
+	static FString DetermineBlueprintTypeFromAssetData(const FAssetData& AssetData);
 };

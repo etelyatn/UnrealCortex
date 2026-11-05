@@ -1033,6 +1033,11 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 	return Result;
 }
 
+FString FCortexBPAssetOps::DetermineBlueprintTypeFromAssetData(const FAssetData& AssetData)
+{
+	return DetermineTypeFromAssetData(AssetData);
+}
+
 FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Params)
 {
 	FCortexCommandResult Result;

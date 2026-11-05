@@ -4,6 +4,7 @@
 #include "Operations/CortexBPAnalysisOps.h"
 #include "Operations/CortexBPCleanupOps.h"
 #include "Operations/CortexBPClassDefaultsOps.h"
+#include "Operations/CortexBPCompileAllOps.h"
 #include "Operations/CortexBPCompareOps.h"
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPGraphCleanupOps.h"
@@ -219,6 +220,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPSnapshotOps::CompareSnapshots(Params);
 	}
 
+	if (Command == TEXT("compile_all"))
+	{
+		return FCortexBPCompileAllOps::CompileAll(Params);
+	}
+
 	if (Command == TEXT("reparent"))
 	{
 		return FCortexBPAssetOps::Reparent(Params);
@@ -420,6 +426,12 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("before"), TEXT("string"), TEXT("Snapshot file written before the change"))
 		.Required(TEXT("after"), TEXT("string"), TEXT("Snapshot file written after the change"))
 		.Optional(TEXT("report_path"), TEXT("string"), TEXT("Write the full report to this file (under Project Saved, Content or Config) and omit the inline difference list; required when the inline report would exceed 40000 characters"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("compile_all"), TEXT("Compile every Blueprint of a folder (recursive) or an explicit asset list through the single-asset compile, write a per-asset report (status, error/warning counts, diagnostics) and return totals plus the first failing assets; read-only content is skipped with a reason, level script Blueprints are not enumerated")}
+		.Required(TEXT("out_path"), TEXT("string"), TEXT("File to write the full compile report JSON to (under Project Saved, Content or Config)"))
+		.Optional(TEXT("path_prefix"), TEXT("string"), TEXT("Content folder compiled recursively (exactly one of path_prefix or paths)"))
+		.Optional(TEXT("paths"), TEXT("array"), TEXT("Explicit Blueprint asset paths (exactly one of path_prefix or paths)"))
+		.Optional(TEXT("types"), TEXT("array"), TEXT("Only compile these Blueprint types: Actor, Component, Widget, Interface, FunctionLibrary, Unknown (from registry tags, no load)"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("reparent"), TEXT("Reparent a Blueprint to a new parent class")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
