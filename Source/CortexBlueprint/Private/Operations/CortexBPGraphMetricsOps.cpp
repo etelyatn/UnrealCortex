@@ -11,7 +11,6 @@
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
 #include "K2Node_ComponentBoundEvent.h"
-#include "K2Node_Composite.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_Event.h"
@@ -19,12 +18,11 @@
 #include "K2Node_FunctionResult.h"
 #include "K2Node_IfThenElse.h"
 #include "K2Node_Knot.h"
-#include "K2Node_MacroInstance.h"
 #include "K2Node_Select.h"
 #include "K2Node_Switch.h"
-#include "K2Node_Tunnel.h"
 #include "K2Node_VariableGet.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPGraphExecReach.h"
 #include "Operations/CortexBPGraphReachability.h"
 
 namespace
@@ -97,29 +95,10 @@ namespace
 		return DynamicCast && !DynamicCast->IsNodePure();
 	}
 
-	const UEdGraph* GetInnerGraph(const UEdGraphNode* Node)
-	{
-		if (const UK2Node_MacroInstance* Macro = Cast<UK2Node_MacroInstance>(Node))
-		{
-			return Macro->GetMacroGraph();
-		}
-		if (const UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
-		{
-			return Composite->BoundGraph;
-		}
-		return nullptr;
-	}
-
-	bool IsExpandableNode(const UEdGraphNode* Node)
-	{
-		return Node->IsA<UK2Node_MacroInstance>() || Node->IsA<UK2Node_Composite>();
-	}
-
-	/** A tunnel that is not a macro instance or composite: an inner graph's entry or exit boundary, never logic. */
-	bool IsStructuralTunnel(const UEdGraphNode* Node)
-	{
-		return Node->IsA<UK2Node_Tunnel>() && !IsExpandableNode(Node);
-	}
+	using CortexBPGraphReachability::FReachContext;
+	using CortexBPGraphReachability::GetInnerGraph;
+	using CortexBPGraphReachability::IsExpandableNode;
+	using CortexBPGraphReachability::IsStructuralTunnel;
 
 	bool HasLinkedExecOutput(const UEdGraphNode* Node)
 	{
@@ -135,85 +114,37 @@ namespace
 	}
 
 	/**
-	 * Reachable set of an inner graph: exec-forward from the entry tunnel(s) plus the backward data closure, enabled nodes only.
-	 * A pure inner graph (no entry exec output at all) is seeded from its exit tunnel(s) instead, so the nodes computing its
-	 * outputs are reached.
+	 * Functional/conditional count of what a context reached. A macro or composite instance is replaced by the nodes its own
+	 * context reached; an unresolved instance counts as the node itself, a recursive one adds nothing (its ancestor counts it).
 	 */
-	void GatherInnerReachable(const UEdGraph* Graph, TSet<UEdGraphNode*>& OutReachable)
+	void CountContext(const FReachContext& Context, FLogicCounts& InOutCounts)
 	{
-		TArray<UEdGraphNode*> EntryTunnels;
-		TArray<UEdGraphNode*> ExitTunnels;
-		bool bHasExecFlow = false;
-		for (UEdGraphNode* Node : Graph->Nodes)
+		for (const UEdGraphNode* Node : Context.Reached)
 		{
-			const UK2Node_Tunnel* Tunnel = (Node && IsStructuralTunnel(Node)) ? Cast<UK2Node_Tunnel>(Node) : nullptr;
-			if (!Tunnel)
+			if (!Node || (Context.IsRoot() && CortexBPGraphReachability::IsEntryNode(Node))
+				|| IsStructuralTunnel(Node) || !IsFunctionalNode(Node))
 			{
 				continue;
 			}
-			if (Tunnel->bCanHaveOutputs && !Tunnel->bCanHaveInputs)
+
+			if (IsExpandableNode(Node))
 			{
-				EntryTunnels.Add(Node);
-				bHasExecFlow |= CortexBPGraphReachability::IsEntryNode(Node);
+				if (const FReachContext* Child = Context.FindChild(Node))
+				{
+					CountContext(*Child, InOutCounts);
+					continue;
+				}
+				if (GetInnerGraph(Node))
+				{
+					continue;
+				}
 			}
-			else if (Tunnel->bCanHaveInputs && !Tunnel->bCanHaveOutputs)
+
+			++InOutCounts.Functional;
+			if (IsConditionalNode(Node))
 			{
-				ExitTunnels.Add(Node);
+				++InOutCounts.Conditionals;
 			}
-		}
-
-		CortexBPGraphReachability::GatherExecForward(EntryTunnels, OutReachable, true);
-		if (!bHasExecFlow)
-		{
-			CortexBPGraphReachability::GatherExecForward(ExitTunnels, OutReachable, true);
-		}
-		CortexBPGraphReachability::ExpandBackwardDataClosure(OutReachable, true);
-	}
-
-	void AddNodeCounts(const UEdGraphNode* Node, TSet<const UEdGraph*>& GraphsInProgress, FLogicCounts& InOutCounts);
-
-	/** Functional count of the nodes of an inner graph (macro or collapsed) that its entry tunnel reaches, recursing into nested inner graphs. */
-	void CountInnerGraph(const UEdGraph* Graph, TSet<const UEdGraph*>& GraphsInProgress, FLogicCounts& InOutCounts)
-	{
-		if (!Graph || GraphsInProgress.Contains(Graph))
-		{
-			return;
-		}
-
-		GraphsInProgress.Add(Graph);
-		TSet<UEdGraphNode*> Reachable;
-		GatherInnerReachable(Graph, Reachable);
-		for (const UEdGraphNode* Node : Reachable)
-		{
-			if (Node && !IsStructuralTunnel(Node))
-			{
-				AddNodeCounts(Node, GraphsInProgress, InOutCounts);
-			}
-		}
-		GraphsInProgress.Remove(Graph);
-	}
-
-	/** Adds one node's contribution: macro/composite nodes are replaced by their inner graph's counts; an unresolved inner graph counts as the node itself. */
-	void AddNodeCounts(const UEdGraphNode* Node, TSet<const UEdGraph*>& GraphsInProgress, FLogicCounts& InOutCounts)
-	{
-		if (!IsFunctionalNode(Node))
-		{
-			return;
-		}
-
-		if (IsExpandableNode(Node))
-		{
-			if (const UEdGraph* Inner = GetInnerGraph(Node))
-			{
-				CountInnerGraph(Inner, GraphsInProgress, InOutCounts);
-				return;
-			}
-		}
-
-		++InOutCounts.Functional;
-		if (IsConditionalNode(Node))
-		{
-			++InOutCounts.Conditionals;
 		}
 	}
 
@@ -267,39 +198,80 @@ namespace
 		return Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
 	}
 
-	void MeasureEntry(const TSet<UEdGraphNode*>& Reachable, FEntryMetrics& InOutMetrics)
+	/**
+	 * Distinct consumer nodes of an output pin. A boundary edge is translated instead of counted: a wire into a reached
+	 * macro/composite continues to the consumers of the matching entry tunnel pin inside it, and a wire into an exit tunnel
+	 * continues to the consumers of the matching output pin of the owning instance.
+	 */
+	void CollectConsumers(const FReachContext& Context, const UEdGraphPin* Output, TSet<const UEdGraphNode*>& OutConsumers)
 	{
-		TSet<const UEdGraph*> GraphsInProgress;
-		for (const UEdGraphNode* Node : Reachable)
+		for (const UEdGraphPin* Linked : Output->LinkedTo)
 		{
-			if (!Node || Node == InOutMetrics.Node || CortexBPGraphReachability::IsEntryNode(Node))
+			const UEdGraphNode* Consumer = Linked ? Linked->GetOwningNode() : nullptr;
+			if (!Consumer)
 			{
 				continue;
 			}
 
-			AddNodeCounts(Node, GraphsInProgress, InOutMetrics.Counts);
-
-			if (Node->IsA<UK2Node_VariableGet>())
+			if (IsStructuralTunnel(Consumer))
 			{
-				TSet<const UEdGraphNode*> Consumers;
-				for (const UEdGraphPin* Pin : Node->Pins)
+				const UEdGraphPin* InstanceOutput = (Context.Parent && Context.Instance)
+					? Context.Instance->FindPin(Linked->PinName, EGPD_Output) : nullptr;
+				if (InstanceOutput)
 				{
-					if (!Pin || Pin->Direction != EGPD_Output)
+					CollectConsumers(*Context.Parent, InstanceOutput, OutConsumers);
+				}
+				continue;
+			}
+
+			if (const FReachContext* Child = Context.FindChild(Consumer))
+			{
+				for (const UEdGraphNode* InnerNode : Child->Graph->Nodes)
+				{
+					const UEdGraphPin* EntryPin = IsStructuralTunnel(InnerNode) ? InnerNode->FindPin(Linked->PinName, EGPD_Output) : nullptr;
+					if (EntryPin)
 					{
-						continue;
-					}
-					for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
-					{
-						if (LinkedPin && LinkedPin->GetOwningNode())
-						{
-							Consumers.Add(LinkedPin->GetOwningNode());
-						}
+						CollectConsumers(*Child, EntryPin, OutConsumers);
 					}
 				}
-				++InOutMetrics.VariableGets;
-				InOutMetrics.MaxGetterFanout = FMath::Max(InOutMetrics.MaxGetterFanout, Consumers.Num());
+				continue;
 			}
+
+			OutConsumers.Add(Consumer);
 		}
+	}
+
+	/** Variable getters of the context and of every instance it expanded; fan-out is measured over the expanded consumers. */
+	void MeasureGetters(const FReachContext& Context, FEntryMetrics& InOutMetrics)
+	{
+		for (const UEdGraphNode* Node : Context.Reached)
+		{
+			if (!Node || !Node->IsA<UK2Node_VariableGet>())
+			{
+				continue;
+			}
+
+			TSet<const UEdGraphNode*> Consumers;
+			for (const UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin && Pin->Direction == EGPD_Output)
+				{
+					CollectConsumers(Context, Pin, Consumers);
+				}
+			}
+			++InOutMetrics.VariableGets;
+			InOutMetrics.MaxGetterFanout = FMath::Max(InOutMetrics.MaxGetterFanout, Consumers.Num());
+		}
+		for (const TPair<const UEdGraphNode*, TUniquePtr<FReachContext>>& Pair : Context.Children)
+		{
+			MeasureGetters(*Pair.Value, InOutMetrics);
+		}
+	}
+
+	void MeasureEntry(const FReachContext& Root, FEntryMetrics& InOutMetrics)
+	{
+		CountContext(Root, InOutMetrics.Counts);
+		MeasureGetters(Root, InOutMetrics);
 	}
 
 	/** Reads an optional strictly-positive integer threshold. Returns false and fills OutError when invalid. */
@@ -358,48 +330,29 @@ namespace
 		InOutTotal += Nodes.Num();
 	}
 
-	/** Reports the unreachable and disabled nodes of every inner graph (outered by Owner) reached through the node, once per inner graph. */
-	void ReportInnerGraphFindings(const UEdGraphNode* Node, const UBlueprint* Owner, TSet<const UEdGraph*>& VisitedInnerGraphs,
-		TArray<TSharedPtr<FJsonValue>>& UnreachableRows, int32& InOutUnreachable,
-		TArray<TSharedPtr<FJsonValue>>& DisabledRows, int32& InOutDisabled)
+	/** One inner graph with the union of the nodes its instances' contexts reached, and the graph that holds the first instance. */
+	struct FInnerGraphReach
 	{
-		const UEdGraph* Inner = (Node && IsExpandableNode(Node) && Node->IsNodeEnabled()) ? GetInnerGraph(Node) : nullptr;
-		if (!Inner || VisitedInnerGraphs.Contains(Inner))
-		{
-			return;
-		}
-		VisitedInnerGraphs.Add(Inner);
+		const UEdGraph* Inner = nullptr;
+		const UEdGraph* OuterGraph = nullptr;
+		TSet<UEdGraphNode*> Reached;
+	};
 
-		TSet<UEdGraphNode*> Reachable;
-		GatherInnerReachable(Inner, Reachable);
-
-		TArray<const UEdGraphNode*> UnreachableNodes;
-		TArray<const UEdGraphNode*> DisabledNodes;
-		for (const UEdGraphNode* InnerNode : Inner->Nodes)
+	void CollectInnerGraphs(const FReachContext& Context, TArray<FInnerGraphReach>& OutInnerGraphs)
+	{
+		for (const TPair<const UEdGraphNode*, TUniquePtr<FReachContext>>& Pair : Context.Children)
 		{
-			if (!InnerNode || IsCommentOrKnot(InnerNode) || IsStructuralTunnel(InnerNode))
+			const FReachContext& Child = *Pair.Value;
+			FInnerGraphReach* Existing = OutInnerGraphs.FindByPredicate(
+				[&Child](const FInnerGraphReach& Candidate) { return Candidate.Inner == Child.Graph; });
+			if (!Existing)
 			{
-				continue;
+				Existing = &OutInnerGraphs.AddDefaulted_GetRef();
+				Existing->Inner = Child.Graph;
+				Existing->OuterGraph = Pair.Key->GetGraph();
 			}
-			if (!InnerNode->IsNodeEnabled())
-			{
-				DisabledNodes.Add(InnerNode);
-			}
-			else if (!Reachable.Contains(const_cast<UEdGraphNode*>(InnerNode)))
-			{
-				UnreachableNodes.Add(InnerNode);
-			}
-		}
-		// Macros of other assets are counted by reachability but are not this Blueprint's findings.
-		if (Inner->GetTypedOuter<UBlueprint>() == Owner)
-		{
-			AddNodeRow(UnreachableRows, InOutUnreachable, Node->GetGraph(), Inner, UnreachableNodes);
-			AddNodeRow(DisabledRows, InOutDisabled, Node->GetGraph(), Inner, DisabledNodes);
-		}
-
-		for (const UEdGraphNode* Reached : Reachable)
-		{
-			ReportInnerGraphFindings(Reached, Owner, VisitedInnerGraphs, UnreachableRows, InOutUnreachable, DisabledRows, InOutDisabled);
+			Existing->Reached.Append(Child.Reached);
+			CollectInnerGraphs(Child, OutInnerGraphs);
 		}
 	}
 }
@@ -486,7 +439,8 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 	}
 
 	TArray<FEntryMetrics> Entries;
-	TSet<UEdGraphNode*> LiveUnion;
+	// One merged context per graph over its live entries: the distinct union behind the Blueprint totals and the inner-graph findings.
+	TMap<const UEdGraph*, TUniquePtr<FReachContext>> LiveRoots;
 	TArray<TSharedPtr<FJsonValue>> UnreachableArray;
 	TArray<TSharedPtr<FJsonValue>> DisabledArray;
 	int32 TotalUnreachable = 0;
@@ -512,10 +466,10 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 			}
 
 			// A disabled entry seeds nothing: the compiler prunes it and everything only it reaches.
-			TSet<UEdGraphNode*> Reachable;
-			CortexBPGraphReachability::GatherExecForward({Node}, Reachable, true);
+			FReachContext Root(Graph, nullptr, nullptr);
+			Root.SeedEntry(Node);
 			const UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node);
-			if (FunctionEntry && Reachable.Contains(Node))
+			if (FunctionEntry && Root.Reached.Contains(Node))
 			{
 				// A result with no exec wire from the entry is logic only for a pure function or a function whose single
 				// result is simply unwired (its pure feeders then compute the return value). Any other exec-unreachable
@@ -526,12 +480,12 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 				{
 					for (UEdGraphNode* ResultNode : FunctionResults)
 					{
-						Reachable.Add(ResultNode);
+						Root.AddNode(ResultNode);
 					}
 				}
 			}
-			CortexBPGraphReachability::ExpandBackwardDataClosure(Reachable, true);
-			GraphReachable.Append(Reachable);
+			Root.ExpandDataClosure();
+			GraphReachable.Append(Root.Reached);
 
 			FEntryMetrics Metrics;
 			Metrics.Graph = Graph;
@@ -541,14 +495,13 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 			Metrics.bLive = CortexBPGraphReachability::IsLiveEntry(Node);
 			if (Metrics.bLive)
 			{
-				MeasureEntry(Reachable, Metrics);
-				for (UEdGraphNode* Reached : Reachable)
+				MeasureEntry(Root, Metrics);
+				TUniquePtr<FReachContext>& Merged = LiveRoots.FindOrAdd(Graph);
+				if (!Merged)
 				{
-					if (Reached && !CortexBPGraphReachability::IsEntryNode(Reached))
-					{
-						LiveUnion.Add(Reached);
-					}
+					Merged = MakeUnique<FReachContext>(Graph, nullptr, nullptr);
 				}
+				Merged->MergeFrom(Root);
 			}
 			Entries.Add(MoveTemp(Metrics));
 		}
@@ -577,24 +530,54 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 	// Macro and collapsed-graph contents: inner nodes that no entry tunnel reaches (or that are disabled) are reported
 	// once per inner graph, with the owning graph and the inner graph's name.
 	{
-		TSet<const UEdGraph*> VisitedInnerGraphs;
-		for (const UEdGraphNode* Node : LiveUnion)
+		TArray<FInnerGraphReach> InnerGraphs;
+		for (const TPair<const UEdGraph*, TUniquePtr<FReachContext>>& Pair : LiveRoots)
 		{
-			ReportInnerGraphFindings(Node, Blueprint, VisitedInnerGraphs, UnreachableArray, TotalUnreachable, DisabledArray, TotalDisabled);
+			CollectInnerGraphs(*Pair.Value, InnerGraphs);
+		}
+		InnerGraphs.Sort([](const FInnerGraphReach& A, const FInnerGraphReach& B)
+		{
+			return A.Inner->GetPathName() < B.Inner->GetPathName();
+		});
+
+		for (const FInnerGraphReach& InnerReach : InnerGraphs)
+		{
+			// Macros of other assets are counted by reachability but are not this Blueprint's findings.
+			if (InnerReach.Inner->GetTypedOuter<UBlueprint>() != Blueprint)
+			{
+				continue;
+			}
+
+			TArray<const UEdGraphNode*> UnreachableNodes;
+			TArray<const UEdGraphNode*> DisabledNodes;
+			for (const UEdGraphNode* InnerNode : InnerReach.Inner->Nodes)
+			{
+				if (!InnerNode || IsCommentOrKnot(InnerNode) || IsStructuralTunnel(InnerNode))
+				{
+					continue;
+				}
+				if (!InnerNode->IsNodeEnabled())
+				{
+					DisabledNodes.Add(InnerNode);
+				}
+				else if (!InnerReach.Reached.Contains(const_cast<UEdGraphNode*>(InnerNode)))
+				{
+					UnreachableNodes.Add(InnerNode);
+				}
+			}
+			AddNodeRow(UnreachableArray, TotalUnreachable, InnerReach.OuterGraph, InnerReach.Inner, UnreachableNodes);
+			AddNodeRow(DisabledArray, TotalDisabled, InnerReach.OuterGraph, InnerReach.Inner, DisabledNodes);
 		}
 	}
 
 	bool bHasTick = false;
-	const int32 TotalFunctional = [&LiveUnion]()
+	int32 TotalFunctional = 0;
+	for (const TPair<const UEdGraph*, TUniquePtr<FReachContext>>& Pair : LiveRoots)
 	{
 		FLogicCounts Distinct;
-		TSet<const UEdGraph*> GraphsInProgress;
-		for (const UEdGraphNode* Node : LiveUnion)
-		{
-			AddNodeCounts(Node, GraphsInProgress, Distinct);
-		}
-		return Distinct.Functional;
-	}();
+		CountContext(*Pair.Value, Distinct);
+		TotalFunctional += Distinct.Functional;
+	}
 	int32 GhostCount = 0;
 	TArray<TSharedPtr<FJsonValue>> EntryArray;
 	TArray<TSharedPtr<FJsonValue>> GhostArray;

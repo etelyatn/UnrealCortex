@@ -20,15 +20,11 @@ namespace CortexBPGraphReachability
 	bool IsAnimationOrStateMachineGraph(const UEdGraph* Graph);
 
 	/**
-	 * Adds every node reachable by following exec output pins forward from the seed nodes (seeds included).
-	 * Seeds already present in OutReachable are still expanded.
-	 * With bEnabledOnly, a Disabled node is neither added nor traversed (the compiler prunes it).
+	 * Adds every node reachable by following exec output pins forward from the seed nodes (seeds included), ignoring enabled state.
+	 * Seeds already present in OutReachable are still expanded. Enabled-state-aware, pin-aware reach is FReachContext.
 	 */
-	void GatherExecForward(const TArray<UEdGraphNode*>& Seeds, TSet<UEdGraphNode*>& OutReachable, bool bEnabledOnly = false);
+	void GatherExecForward(const TArray<UEdGraphNode*>& Seeds, TSet<UEdGraphNode*>& OutReachable);
 
 	/** Expands the set with every node linked to a member through any pin, in either direction, until closed. */
 	void ExpandToLinkedDataDependencies(TSet<UEdGraphNode*>& InOutReachable);
-
-	/** Expands the set with the producers feeding the members' non-exec input pins, transitively. With bEnabledOnly, Disabled producers are not added. */
-	void ExpandBackwardDataClosure(TSet<UEdGraphNode*>& InOutReachable, bool bEnabledOnly = false);
 }
