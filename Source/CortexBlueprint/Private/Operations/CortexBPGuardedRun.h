@@ -71,5 +71,8 @@ public:
 
 	/** Test hook: skip the editor undo so the generic journal alone has to restore. */
 	static void SetSkipUndoForTest(bool bSkip);
+
+	/** Test hook: the save step answers SAVE_FAILED without touching the disk (the engine treats a real save failure as fatal). */
+	static void SetForceSaveFailureForTest(bool bForce);
 #endif
 };

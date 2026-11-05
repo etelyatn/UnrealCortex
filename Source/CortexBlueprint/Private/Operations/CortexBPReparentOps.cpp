@@ -13,6 +13,7 @@
 #include "Engine/SimpleConstructionScript.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/Kismet2NameValidators.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPMigrationGuard.h"
@@ -136,13 +137,51 @@ namespace
 		return Report;
 	}
 
-	void AddFailureContext(FCortexCommandResult& Result, const FCortexBPReparentOps::FReparentPlan& Plan)
+	TSharedRef<FJsonObject> BuildDelta(const FApplyState& State, const FCortexResolvedFilePath& ResolvedReport)
+	{
+		TSharedRef<FJsonObject> Delta = MakeShared<FJsonObject>();
+		Delta->SetBoolField(TEXT("compiled"), State.bCompiled);
+		if (State.Counts.IsValid())
+		{
+			Delta->SetObjectField(TEXT("counts"), State.Counts);
+		}
+		Delta->SetNumberField(TEXT("total_differences"), State.Differences.Num());
+		if (State.bReportWritten)
+		{
+			Delta->SetStringField(TEXT("report_path"), ResolvedReport.AbsolutePath);
+		}
+		else
+		{
+			TArray<TSharedPtr<FJsonValue>> Inline = State.Differences;
+			const bool bTruncated = Inline.Num() > MaxInlineDifferences;
+			if (bTruncated)
+			{
+				Inline.SetNum(MaxInlineDifferences);
+			}
+			Delta->SetArrayField(TEXT("differences"), Inline);
+			Delta->SetBoolField(TEXT("truncated"), bTruncated);
+		}
+		return Delta;
+	}
+
+	/** reparented is the readback fact: a failure after a matched readback (a failed save) leaves the Blueprint reparented. */
+	void AddFailureContext(
+		FCortexCommandResult& Result,
+		const FCortexBPReparentOps::FReparentPlan& Plan,
+		const FApplyState& State,
+		const FCortexResolvedFilePath& ResolvedReport)
 	{
 		if (!Result.ErrorDetails.IsValid())
 		{
 			Result.ErrorDetails = MakeShared<FJsonObject>();
 		}
-		Result.ErrorDetails->SetBoolField(TEXT("reparented"), false);
+		FString Readback;
+		const bool bReparented = Result.ErrorDetails->TryGetStringField(TEXT("readback_status"), Readback) && Readback == TEXT("matched");
+		Result.ErrorDetails->SetBoolField(TEXT("reparented"), bReparented);
+		if (bReparented)
+		{
+			Result.ErrorDetails->SetObjectField(TEXT("cdo_delta"), BuildDelta(State, ResolvedReport));
+		}
 		Plan.AppendTo(Result.ErrorDetails.ToSharedRef());
 	}
 }
@@ -207,6 +246,22 @@ FCortexBPReparentOps::FReparentPlan FCortexBPReparentOps::BuildPlan(UBlueprint* 
 	{
 		const FString VariableName = Variable.VarName.ToString();
 		const FFieldVariant Existing = FindUFieldOrFProperty(NewParent, *VariableName);
+
+		// A Blueprint parent is validated by name (graphs, macros, function locals, components), which sees names no
+		// field lookup does; the compiler renames the child's variable on any hit.
+		const UBlueprint* ParentBlueprint = Cast<UBlueprint>(NewParent->ClassGeneratedBy);
+		if (ParentBlueprint != nullptr && !Existing && FKismetNameValidator(ParentBlueprint).IsValid(VariableName) != EValidatorResult::Ok)
+		{
+			FCollision Collision;
+			Collision.Kind = KindVariable;
+			Collision.Name = VariableName;
+			Collision.Resolution = TEXT("engine_renames");
+			Collision.bBlocking = true;
+			Collision.Detail = FString::Printf(TEXT("'%s' is already used inside the Blueprint parent %s; the compiler renames the variable"),
+				*VariableName, *ParentBlueprint->GetName());
+			Plan.Collisions.Add(MoveTemp(Collision));
+			continue;
+		}
 		if (!Existing)
 		{
 			continue;
@@ -544,6 +599,11 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 			Details);
 	}
 
+	TArray<FString> KeptVariables;
+	for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
+	{
+		KeptVariables.Add(Variable.VarName.ToString());
+	}
 	TArray<FString> ReplacedVariables;
 	for (const FCollision& Collision : Plan.Collisions)
 	{
@@ -552,6 +612,8 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 			ReplacedVariables.Add(Collision.Name);
 		}
 	}
+
+	KeptVariables.RemoveAll([&ReplacedVariables](const FString& Name) { return ReplacedVariables.Contains(Name); });
 
 	const TSharedRef<FApplyState> State = MakeShared<FApplyState>();
 
@@ -574,7 +636,7 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 	// refresh the nodes, then mark the sparse class data for conforming. The variables the native parent replaces are
 	// removed from NewVariables first, as the compiler does (nodes keep resolving them by name; RemoveMemberVariable
 	// would destroy the nodes).
-	Spec.Apply = [NewParent, ReplacedVariables](UBlueprint* Target, FString& OutError)
+	Spec.Apply = [NewParent, ReplacedVariables, bCompile](UBlueprint* Target, FString& OutError)
 	{
 		Target->Modify();
 		if (USimpleConstructionScript* Scs = Target->SimpleConstructionScript)
@@ -600,7 +662,9 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 		Target->ParentClass = NewParent;
 		FBlueprintEditorUtils::RefreshAllNodes(Target);
 		FBlueprintEditorUtils::MarkBlueprintAsModified(Target);
-		if (UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Target->GeneratedClass))
+		// The editor conforms sparse data only because it compiles immediately; a pending conform that no compile consumes
+		// would assert on a second reparent (BlueprintGeneratedClass.cpp), so compile:false leaves it alone.
+		if (UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Target->GeneratedClass); GeneratedClass != nullptr && bCompile)
 		{
 			GeneratedClass->PrepareToConformSparseClassData(NewParent->GetSparseClassDataStruct());
 		}
@@ -614,7 +678,7 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 		return true;
 	};
 
-	Spec.Verify = [State, NewParent, ReplacedVariables, AssetPath, OldParentName, NewParentName, bHasReport, ResolvedReport]
+	Spec.Verify = [State, NewParent, ReplacedVariables, KeptVariables, AssetPath, OldParentName, NewParentName, bHasReport, ResolvedReport]
 		(UBlueprint* Target, bool bCompiled, FString& OutError)
 	{
 		if (Target->ParentClass != NewParent)
@@ -628,6 +692,15 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 			if (FBlueprintEditorUtils::FindNewVariableIndex(Target, FName(*Name)) != INDEX_NONE)
 			{
 				OutError = FString::Printf(TEXT("Variable '%s' is still declared by the Blueprint"), *Name);
+				return false;
+			}
+		}
+
+		for (const FString& Name : KeptVariables)
+		{
+			if (FBlueprintEditorUtils::FindNewVariableIndex(Target, FName(*Name)) == INDEX_NONE)
+			{
+				OutError = FString::Printf(TEXT("Variable '%s' was renamed or removed by the engine"), *Name);
 				return false;
 			}
 		}
@@ -710,7 +783,7 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 	FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
 	if (!Result.bSuccess)
 	{
-		AddFailureContext(Result, Plan);
+		AddFailureContext(Result, Plan, *State, ResolvedReport);
 		return Result;
 	}
 
@@ -719,28 +792,7 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 	Data->SetBoolField(TEXT("reparented"), true);
 	Data->SetBoolField(TEXT("compiled"), bCompile);
 
-	TSharedRef<FJsonObject> Delta = MakeShared<FJsonObject>();
-	Delta->SetBoolField(TEXT("compiled"), State->bCompiled);
-	if (State->Counts.IsValid())
-	{
-		Delta->SetObjectField(TEXT("counts"), State->Counts);
-	}
-	Delta->SetNumberField(TEXT("total_differences"), State->Differences.Num());
-	if (State->bReportWritten)
-	{
-		Delta->SetStringField(TEXT("report_path"), ResolvedReport.AbsolutePath);
-	}
-	else
-	{
-		TArray<TSharedPtr<FJsonValue>> Inline = State->Differences;
-		const bool bTruncated = Inline.Num() > MaxInlineDifferences;
-		if (bTruncated)
-		{
-			Inline.SetNum(MaxInlineDifferences);
-		}
-		Delta->SetArrayField(TEXT("differences"), Inline);
-		Delta->SetBoolField(TEXT("truncated"), bTruncated);
-	}
+	const TSharedRef<FJsonObject> Delta = BuildDelta(*State, ResolvedReport);
 	Data->SetObjectField(TEXT("cdo_delta"), Delta);
 
 	TArray<FString> Notes;

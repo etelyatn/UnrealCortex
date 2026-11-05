@@ -10,6 +10,8 @@
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPMigrationGuard.h"
 #include "Operations/CortexBPReparentOps.h"
 #include "Operations/CortexBPSnapshotOps.h"
@@ -248,6 +250,30 @@ bool FCortexBPReparentFailsClosedTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("The rolled-back CDO keeps the pre-call AActor default"), DefaultsAfter->InitialLifeSpan, LifeSpanBefore);
 	}
 
+	// A failed apply never saves, even with save:true.
+	TSharedPtr<FJsonObject> SaveParams = ReparentParams(Blueprint, Target);
+	SetStrings(SaveParams, TEXT("acknowledged_collisions"), AcknowledgmentFor(Blueprint, Target));
+	SaveParams->SetBoolField(TEXT("save"), true);
+	FCortexCommandResult SaveResult;
+	{
+		FPostApplyHookScope Hook([](UBlueprint* BlueprintToBreak)
+		{
+			UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(BlueprintToBreak);
+			for (int32 Index = 0; Index < 2; ++Index)
+			{
+				UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(EventGraph);
+				Event->CreateNewGuid();
+				Event->CustomFunctionName = FName(TEXT("ReparentDuplicateEvent"));
+				EventGraph->AddNode(Event, false, false);
+				Event->AllocateDefaultPins();
+			}
+		});
+		SaveResult = FCortexBPReparentOps::Execute(SaveParams);
+	}
+	TestFalse(TEXT("Failed apply with save:true fails"), SaveResult.bSuccess);
+	TestFalse(TEXT("Nothing was saved"), IFileManager::Get().FileExists(*PackageFile(Blueprint)));
+	TestTrue(TEXT("Parent restored again"), Blueprint->ParentClass == AActor::StaticClass());
+
 	Discard(Blueprint);
 	return true;
 }
@@ -358,5 +384,73 @@ bool FCortexBPReparentSaveAndReportTest::RunTest(const FString& Parameters)
 	Discard(Reported);
 	Discard(Unsaved);
 	Discard(Saved);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPReparentSaveFailureTest,
+	"Cortex.Blueprint.Reparent.SaveFailureKeepsReparentedFact",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPReparentSaveFailureTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexReparentTest;
+
+	const FString Target = ACortexBPAdoptParent::StaticClass()->GetPathName();
+	UBlueprint* Blueprint = MakeBlueprint(TEXT("ReparentSaveFails"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint))
+	{
+		return false;
+	}
+	AddVariable(Blueprint, TEXT("bPowerOn"), BoolPin(), TEXT("true"), /*bSaveGame=*/true);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	// A real save failure is fatal in an unattended editor, so the guarded run's save step is forced to fail.
+	FCortexBPGuardedRun::SetForceSaveFailureForTest(true);
+
+	TSharedPtr<FJsonObject> Params = ReparentParams(Blueprint, Target);
+	SetStrings(Params, TEXT("acknowledged_collisions"), AcknowledgmentFor(Blueprint, Target));
+	Params->SetBoolField(TEXT("save"), true);
+	const FCortexCommandResult Result = FCortexBPReparentOps::Execute(Params);
+	TestFalse(TEXT("The save failure is reported"), Result.bSuccess);
+	TestTrue(TEXT("The Blueprint stays reparented"), Blueprint->ParentClass == ACortexBPAdoptParent::StaticClass());
+	if (TestTrue(TEXT("Failure carries details"), Result.ErrorDetails.IsValid()))
+	{
+		TestTrue(TEXT("reparented is the readback fact"), Result.ErrorDetails->GetBoolField(TEXT("reparented")));
+		TestTrue(TEXT("cdo_delta is returned"), Result.ErrorDetails->HasTypedField<EJson::Object>(TEXT("cdo_delta")));
+		TestEqual(TEXT("Readback matched"), Result.ErrorDetails->GetStringField(TEXT("readback_status")), FString(TEXT("matched")));
+		TestFalse(TEXT("Not saved"), Result.ErrorDetails->GetBoolField(TEXT("saved")));
+	}
+
+	FCortexBPGuardedRun::SetForceSaveFailureForTest(false);
+	Discard(Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPReparentCompileFalseTwiceTest,
+	"Cortex.Blueprint.Reparent.CompileFalseTwice",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPReparentCompileFalseTwiceTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexReparentTest;
+
+	UBlueprint* Blueprint = MakeBlueprint(TEXT("ReparentTwice"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint))
+	{
+		return false;
+	}
+	for (UClass* Parent : {ACortexBPAdoptOtherActorParent::StaticClass(), ACortexBPAdoptParent::StaticClass()})
+	{
+		TSharedPtr<FJsonObject> Params = ReparentParams(Blueprint, Parent->GetPathName());
+		Params->SetBoolField(TEXT("compile"), false);
+		const FCortexCommandResult Result = FCortexBPReparentOps::Execute(Params);
+		TestTrue(*FString::Printf(TEXT("compile:false reparent to %s"), *Parent->GetName()), Result.bSuccess);
+		TestTrue(TEXT("Parent assigned"), Blueprint->ParentClass == Parent);
+	}
+	Discard(Blueprint);
 	return true;
 }

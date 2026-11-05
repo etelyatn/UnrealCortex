@@ -29,6 +29,7 @@ namespace
 	TFunction<void(UBlueprint*)> GPostRestoreHookForTest;
 	TFunction<void(UBlueprint*)> GPreRecoveryCompileHookForTest;
 	bool GSkipUndoForTest = false;
+	bool GForceSaveFailureForTest = false;
 }
 #endif
 
@@ -587,7 +588,19 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 	{
 		TSharedPtr<FJsonObject> SaveParams = MakeShared<FJsonObject>();
 		SaveParams->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
-		const FCortexCommandResult SaveResult = FCortexBPAssetOps::Save(SaveParams);
+		FCortexCommandResult SaveResult;
+		bool bForcedSaveFailure = false;
+#if WITH_DEV_AUTOMATION_TESTS
+		bForcedSaveFailure = GForceSaveFailureForTest;
+#endif
+		if (bForcedSaveFailure)
+		{
+			SaveResult = FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, TEXT("Forced save failure"));
+		}
+		else
+		{
+			SaveResult = FCortexBPAssetOps::Save(SaveParams);
+		}
 		State.SaveStatus = SaveResult.bSuccess ? TEXT("saved") : TEXT("failed");
 		State.bSaved = SaveResult.bSuccess;
 		State.FingerprintAfter = FCortexBPMigrationGuard::ComputeFingerprint(Blueprint);
@@ -629,5 +642,10 @@ void FCortexBPGuardedRun::ClearPreRecoveryCompileHookForTest()
 void FCortexBPGuardedRun::SetSkipUndoForTest(bool bSkip)
 {
 	GSkipUndoForTest = bSkip;
+}
+
+void FCortexBPGuardedRun::SetForceSaveFailureForTest(bool bForce)
+{
+	GForceSaveFailureForTest = bForce;
 }
 #endif

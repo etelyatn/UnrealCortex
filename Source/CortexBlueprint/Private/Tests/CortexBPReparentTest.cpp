@@ -279,3 +279,53 @@ bool FCortexBPReparentAcknowledgmentTest::RunTest(const FString& Parameters)
 	Discard(Scs);
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPReparentBlueprintParentNamesTest,
+	"Cortex.Blueprint.Reparent.BlueprintParentNames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPReparentBlueprintParentNamesTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexReparentTest;
+
+	// The parent Blueprint uses `ReparentIndex` only as a local variable of one of its functions: no field lookup finds
+	// it, but the compiler's name validator does and renames a child variable of that name.
+	UBlueprint* ParentBlueprint = MakeBlueprint(TEXT("ReparentNamesParent"), AActor::StaticClass());
+	UBlueprint* Child = MakeBlueprint(TEXT("ReparentNamesChild"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Parent Blueprint"), ParentBlueprint) || !TestNotNull(TEXT("Child Blueprint"), Child))
+	{
+		return false;
+	}
+	UEdGraph* Function = FBlueprintEditorUtils::CreateNewGraph(
+		ParentBlueprint, TEXT("ParentFunction"), UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(ParentBlueprint, Function, /*bIsUserCreated=*/true, nullptr);
+	TestTrue(TEXT("Local variable added"),
+		FBlueprintEditorUtils::AddLocalVariable(ParentBlueprint, Function, TEXT("ReparentIndex"), StringPin(), FString()));
+	FKismetEditorUtilities::CompileBlueprint(ParentBlueprint);
+
+	AddVariable(Child, TEXT("ReparentIndex"), StringPin(), TEXT("text"));
+	FKismetEditorUtilities::CompileBlueprint(Child);
+
+	TSharedPtr<FJsonObject> Params = ReparentParams(Child, ParentBlueprint->GetPathName());
+	Params->SetBoolField(TEXT("dry_run"), true);
+	const FCortexCommandResult Result = FCortexBPReparentOps::Execute(Params);
+	if (TestTrue(TEXT("Dry run answers"), Result.bSuccess))
+	{
+		const TSharedPtr<FJsonObject> Collision = FindByKey(Result.Data, TEXT("collisions"), TEXT("variable:ReparentIndex"));
+		if (TestNotNull(TEXT("Name collision with the parent's local variable"), Collision.Get()))
+		{
+			TestEqual(TEXT("Resolution"), Collision->GetStringField(TEXT("resolution")), FString(TEXT("engine_renames")));
+			TestTrue(TEXT("Blocking"), Collision->GetBoolField(TEXT("blocking")));
+		}
+	}
+	TSharedPtr<FJsonObject> Apply = ReparentParams(Child, ParentBlueprint->GetPathName());
+	const FCortexCommandResult Refused = FCortexBPReparentOps::Execute(Apply);
+	TestEqual(TEXT("Apply refuses"), Refused.ErrorCode, CortexErrorCodes::NameCollision);
+	TestTrue(TEXT("Parent unchanged"), Child->ParentClass == AActor::StaticClass());
+
+	Discard(Child);
+	Discard(ParentBlueprint);
+	return true;
+}
