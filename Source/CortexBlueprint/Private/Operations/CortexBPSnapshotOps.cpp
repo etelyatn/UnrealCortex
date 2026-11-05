@@ -594,11 +594,11 @@ namespace CortexBPSnapshotPrivate
 		return true;
 	}
 
-	bool ReadRecords(const FSnapshotFile& File, const TCHAR* Label, const FString& SectionName,
+	bool ReadRecords(const TSharedPtr<FJsonObject>& SectionsObject, const TCHAR* Label, const FString& SectionName,
 		TMap<FString, TSharedPtr<FJsonObject>>& OutRecords, FCortexCommandResult& OutError)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-		if (!File.Sections->TryGetArrayField(SectionName, Values))
+		if (!SectionsObject->TryGetArrayField(SectionName, Values))
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
 				FString::Printf(TEXT("%s snapshot section '%s' is malformed"), Label, *SectionName));
@@ -837,6 +837,128 @@ FCortexCommandResult FCortexBPSnapshotOps::ExportSnapshot(const TSharedPtr<FJson
 	return FCortexCommandRouter::Success(Data);
 }
 
+FCortexCommandResult FCortexBPSnapshotOps::DiffSnapshots(
+	const TSharedPtr<FJsonObject>& Before,
+	const TSharedPtr<FJsonObject>& After,
+	const TSet<FString>& Sections,
+	TArray<TSharedPtr<FJsonValue>>& OutDifferences,
+	TSharedPtr<FJsonObject>& OutCounts)
+{
+	using namespace CortexBPSnapshotPrivate;
+	OutDifferences.Reset();
+	OutCounts = MakeShared<FJsonObject>();
+
+	const TSharedPtr<FJsonObject>* BeforeSections = nullptr;
+	const TSharedPtr<FJsonObject>* AfterSections = nullptr;
+	if (!Before.IsValid() || !After.IsValid()
+		|| !Before->TryGetObjectField(TEXT("sections"), BeforeSections)
+		|| !After->TryGetObjectField(TEXT("sections"), AfterSections))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Snapshot documents need a sections object"));
+	}
+
+	FCortexCommandResult Error;
+	TSharedPtr<FJsonObject> SectionCounts = MakeShared<FJsonObject>();
+	int32 Totals[4] = {0, 0, 0, 0}; // added, removed, changed, moved
+	for (const FString& Name : AllSectionNames())
+	{
+		if (Sections.Num() > 0 && !Sections.Contains(Name))
+		{
+			continue;
+		}
+		if (!(*BeforeSections)->HasField(Name) || !(*AfterSections)->HasField(Name))
+		{
+			continue;
+		}
+		TMap<FString, TSharedPtr<FJsonObject>> BeforeRecords;
+		TMap<FString, TSharedPtr<FJsonObject>> AfterRecords;
+		if (!ReadRecords(*BeforeSections, TEXT("before"), Name, BeforeRecords, Error) || !ReadRecords(*AfterSections, TEXT("after"), Name, AfterRecords, Error))
+		{
+			return Error;
+		}
+		TSet<FString> KeySet;
+		for (const TPair<FString, TSharedPtr<FJsonObject>>& Pair : BeforeRecords) { KeySet.Add(Pair.Key); }
+		for (const TPair<FString, TSharedPtr<FJsonObject>>& Pair : AfterRecords) { KeySet.Add(Pair.Key); }
+		TArray<FString> Keys = KeySet.Array();
+		Algo::Sort(Keys, KeyLess);
+
+		int32 Counts[4] = {0, 0, 0, 0};
+		for (const FString& Key : Keys)
+		{
+			const TSharedPtr<FJsonObject>* Old = BeforeRecords.Find(Key);
+			const TSharedPtr<FJsonObject>* New = AfterRecords.Find(Key);
+			if (!Old)
+			{
+				OutDifferences.Add(MakeShared<FJsonValueObject>(MakeDifference(Name, Key, TEXT("added"), nullptr, *New)));
+				++Counts[0];
+			}
+			else if (!New)
+			{
+				OutDifferences.Add(MakeShared<FJsonValueObject>(MakeDifference(Name, Key, TEXT("removed"), *Old, nullptr)));
+				++Counts[1];
+			}
+			else if (!FieldsEqual(*Old, *New))
+			{
+				// A CDO property whose declaring class changed while its value stayed equal moved, it did not change.
+				// The type text may differ across the move (a Blueprint float is a double, a native bool is a bitfield), so
+				// the decision is made on the value alone; float/double pairs are compared at float precision.
+				bool bMoved = false;
+				TSharedPtr<FJsonObject> TypeChange;
+				if (Name == Section::Cdo && (*Old)->GetStringField(TEXT("declared_in")) != (*New)->GetStringField(TEXT("declared_in")))
+				{
+					const FString OldType = (*Old)->GetStringField(TEXT("type"));
+					const FString NewType = (*New)->GetStringField(TEXT("type"));
+					const bool bFloatPair = (OldType == TEXT("double") && NewType == TEXT("float"))
+						|| (OldType == TEXT("float") && NewType == TEXT("double"));
+					static const TSet<FString> MoveIgnored = {TEXT("declared_in"), TEXT("type"), TEXT("incomplete")};
+					bMoved = FieldsEqual(*Old, *New, MoveIgnored, bFloatPair);
+					if (bMoved && OldType != NewType)
+					{
+						TypeChange = MakeShared<FJsonObject>();
+						TypeChange->SetStringField(TEXT("before"), OldType);
+						TypeChange->SetStringField(TEXT("after"), NewType);
+					}
+				}
+				TSharedPtr<FJsonObject> Difference = MakeDifference(Name, Key, bMoved ? TEXT("moved") : TEXT("changed"), *Old, *New);
+				if (!bMoved)
+				{
+					Difference->SetArrayField(TEXT("fields"), ChangedFieldNames(*Old, *New));
+				}
+				if (TypeChange.IsValid())
+				{
+					Difference->SetObjectField(TEXT("type_change"), TypeChange);
+				}
+				if (bMoved && ((*Old)->HasField(TEXT("incomplete")) || (*New)->HasField(TEXT("incomplete"))))
+				{
+					Difference->SetBoolField(TEXT("incomplete"), true); // an unproven value comparison is flagged, never silent
+				}
+				OutDifferences.Add(MakeShared<FJsonValueObject>(Difference));
+				++Counts[bMoved ? 3 : 2];
+			}
+		}
+
+		TSharedPtr<FJsonObject> CountJson = MakeShared<FJsonObject>();
+		CountJson->SetNumberField(TEXT("added"), Counts[0]);
+		CountJson->SetNumberField(TEXT("removed"), Counts[1]);
+		CountJson->SetNumberField(TEXT("changed"), Counts[2]);
+		CountJson->SetNumberField(TEXT("moved"), Counts[3]);
+		SectionCounts->SetObjectField(Name, CountJson);
+		for (int32 Index = 0; Index < 4; ++Index)
+		{
+			Totals[Index] += Counts[Index];
+		}
+	}
+
+	TSharedPtr<FJsonObject> TotalsJson = MakeShared<FJsonObject>();
+	TotalsJson->SetNumberField(TEXT("added"), Totals[0]);
+	TotalsJson->SetNumberField(TEXT("removed"), Totals[1]);
+	TotalsJson->SetNumberField(TEXT("changed"), Totals[2]);
+	TotalsJson->SetNumberField(TEXT("moved"), Totals[3]);
+	OutCounts->SetObjectField(TEXT("sections"), SectionCounts);
+	OutCounts->SetObjectField(TEXT("totals"), TotalsJson);
+	return FCortexCommandRouter::Success(OutCounts);
+}
+
 FCortexCommandResult FCortexBPSnapshotOps::CompareSnapshots(const TSharedPtr<FJsonObject>& Params)
 {
 	using namespace CortexBPSnapshotPrivate;
@@ -914,94 +1036,15 @@ FCortexCommandResult FCortexBPSnapshotOps::CompareSnapshots(const TSharedPtr<FJs
 	}
 
 	TArray<TSharedPtr<FJsonValue>> Differences;
-	TSharedPtr<FJsonObject> SectionCounts = MakeShared<FJsonObject>();
-	int32 Totals[4] = {0, 0, 0, 0}; // added, removed, changed, moved
-	for (const FString& Name : Compared)
+	TSharedPtr<FJsonObject> DiffCounts;
+	const FCortexCommandResult DiffResult = DiffSnapshots(Before.Root, After.Root, TSet<FString>(Compared), Differences, DiffCounts);
+	if (!DiffResult.bSuccess)
 	{
-		TMap<FString, TSharedPtr<FJsonObject>> BeforeRecords;
-		TMap<FString, TSharedPtr<FJsonObject>> AfterRecords;
-		if (!ReadRecords(Before, TEXT("before"), Name, BeforeRecords, Error) || !ReadRecords(After, TEXT("after"), Name, AfterRecords, Error))
-		{
-			return Error;
-		}
-		TSet<FString> KeySet;
-		for (const TPair<FString, TSharedPtr<FJsonObject>>& Pair : BeforeRecords) { KeySet.Add(Pair.Key); }
-		for (const TPair<FString, TSharedPtr<FJsonObject>>& Pair : AfterRecords) { KeySet.Add(Pair.Key); }
-		TArray<FString> Keys = KeySet.Array();
-		Algo::Sort(Keys, KeyLess);
-
-		int32 Counts[4] = {0, 0, 0, 0};
-		for (const FString& Key : Keys)
-		{
-			const TSharedPtr<FJsonObject>* Old = BeforeRecords.Find(Key);
-			const TSharedPtr<FJsonObject>* New = AfterRecords.Find(Key);
-			if (!Old)
-			{
-				Differences.Add(MakeShared<FJsonValueObject>(MakeDifference(Name, Key, TEXT("added"), nullptr, *New)));
-				++Counts[0];
-			}
-			else if (!New)
-			{
-				Differences.Add(MakeShared<FJsonValueObject>(MakeDifference(Name, Key, TEXT("removed"), *Old, nullptr)));
-				++Counts[1];
-			}
-			else if (!FieldsEqual(*Old, *New))
-			{
-				// A CDO property whose declaring class changed while its value stayed equal moved, it did not change.
-				// The type text may differ across the move (a Blueprint float is a double, a native bool is a bitfield), so
-				// the decision is made on the value alone; float/double pairs are compared at float precision.
-				bool bMoved = false;
-				TSharedPtr<FJsonObject> TypeChange;
-				if (Name == Section::Cdo && (*Old)->GetStringField(TEXT("declared_in")) != (*New)->GetStringField(TEXT("declared_in")))
-				{
-					const FString OldType = (*Old)->GetStringField(TEXT("type"));
-					const FString NewType = (*New)->GetStringField(TEXT("type"));
-					const bool bFloatPair = (OldType == TEXT("double") && NewType == TEXT("float"))
-						|| (OldType == TEXT("float") && NewType == TEXT("double"));
-					static const TSet<FString> MoveIgnored = {TEXT("declared_in"), TEXT("type"), TEXT("incomplete")};
-					bMoved = FieldsEqual(*Old, *New, MoveIgnored, bFloatPair);
-					if (bMoved && OldType != NewType)
-					{
-						TypeChange = MakeShared<FJsonObject>();
-						TypeChange->SetStringField(TEXT("before"), OldType);
-						TypeChange->SetStringField(TEXT("after"), NewType);
-					}
-				}
-				TSharedPtr<FJsonObject> Difference = MakeDifference(Name, Key, bMoved ? TEXT("moved") : TEXT("changed"), *Old, *New);
-				if (!bMoved)
-				{
-					Difference->SetArrayField(TEXT("fields"), ChangedFieldNames(*Old, *New));
-				}
-				if (TypeChange.IsValid())
-				{
-					Difference->SetObjectField(TEXT("type_change"), TypeChange);
-				}
-				if (bMoved && ((*Old)->HasField(TEXT("incomplete")) || (*New)->HasField(TEXT("incomplete"))))
-				{
-					Difference->SetBoolField(TEXT("incomplete"), true); // an unproven value comparison is flagged, never silent
-				}
-				Differences.Add(MakeShared<FJsonValueObject>(Difference));
-				++Counts[bMoved ? 3 : 2];
-			}
-		}
-
-		TSharedPtr<FJsonObject> CountJson = MakeShared<FJsonObject>();
-		CountJson->SetNumberField(TEXT("added"), Counts[0]);
-		CountJson->SetNumberField(TEXT("removed"), Counts[1]);
-		CountJson->SetNumberField(TEXT("changed"), Counts[2]);
-		CountJson->SetNumberField(TEXT("moved"), Counts[3]);
-		SectionCounts->SetObjectField(Name, CountJson);
-		for (int32 Index = 0; Index < 4; ++Index)
-		{
-			Totals[Index] += Counts[Index];
-		}
+		return DiffResult;
 	}
+	const TSharedPtr<FJsonObject> SectionCounts = DiffCounts->GetObjectField(TEXT("sections"));
+	const TSharedPtr<FJsonObject> TotalsJson = DiffCounts->GetObjectField(TEXT("totals"));
 
-	TSharedPtr<FJsonObject> TotalsJson = MakeShared<FJsonObject>();
-	TotalsJson->SetNumberField(TEXT("added"), Totals[0]);
-	TotalsJson->SetNumberField(TEXT("removed"), Totals[1]);
-	TotalsJson->SetNumberField(TEXT("changed"), Totals[2]);
-	TotalsJson->SetNumberField(TEXT("moved"), Totals[3]);
 
 	TSharedPtr<FJsonObject> ParentClass = MakeShared<FJsonObject>();
 	ParentClass->SetStringField(TEXT("before"), Before.Root->GetStringField(TEXT("parent_class")));

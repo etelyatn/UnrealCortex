@@ -1,5 +1,6 @@
 #include "CortexBPAssetOps.h"
 #include "Operations/CortexBPTypeUtils.h"
+#include "Operations/CortexBPCompileSupport.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexBlueprintModule.h"
@@ -663,113 +664,6 @@ namespace
 		Input.ImmediateParent = Row.ParentClassPath.IsEmpty() ? nullptr : FindObject<UClass>(nullptr, *Row.ParentClassPath);
 		Row.Type = ClassifyBlueprint(Input);
 		return Row;
-	}
-
-	FString ToSeverity(const UEdGraphNode* Node)
-	{
-		if (!Node)
-		{
-			return TEXT("error");
-		}
-
-		return (Node->ErrorType <= EMessageSeverity::Error) ? TEXT("error") : TEXT("warning");
-	}
-
-	void AddReferencedMetadata(const UEdGraphNode* Node, const TSharedPtr<FJsonObject>& Diagnostic)
-	{
-		if (!Node || !Diagnostic.IsValid())
-		{
-			return;
-		}
-
-		const UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNode(Node);
-		UClass* SelfScope = nullptr;
-		if (Blueprint)
-		{
-			SelfScope = Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass;
-		}
-
-		if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
-		{
-			UClass* ParentClass = CallNode->FunctionReference.GetMemberParentClass(SelfScope);
-			if (!ParentClass)
-			{
-				ParentClass = CallNode->FunctionReference.GetMemberParentClass();
-			}
-			if (ParentClass)
-			{
-				Diagnostic->SetStringField(TEXT("referenced_class"), ParentClass->GetName());
-			}
-
-			const FName MemberName = CallNode->FunctionReference.GetMemberName();
-			if (!MemberName.IsNone())
-			{
-				Diagnostic->SetStringField(TEXT("referenced_member"), MemberName.ToString());
-			}
-			return;
-		}
-
-		if (const UK2Node_Variable* VariableNode = Cast<UK2Node_Variable>(Node))
-		{
-			UClass* ParentClass = VariableNode->VariableReference.GetMemberParentClass(SelfScope);
-			if (!ParentClass)
-			{
-				ParentClass = VariableNode->VariableReference.GetMemberParentClass();
-			}
-			if (ParentClass)
-			{
-				Diagnostic->SetStringField(TEXT("referenced_class"), ParentClass->GetName());
-			}
-
-			const FName MemberName = VariableNode->VariableReference.GetMemberName();
-			if (!MemberName.IsNone())
-			{
-				Diagnostic->SetStringField(TEXT("referenced_member"), MemberName.ToString());
-			}
-			return;
-		}
-
-		if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
-		{
-			UClass* ParentClass = EventNode->EventReference.GetMemberParentClass(SelfScope);
-			if (!ParentClass)
-			{
-				ParentClass = EventNode->EventReference.GetMemberParentClass();
-			}
-			if (ParentClass)
-			{
-				Diagnostic->SetStringField(TEXT("referenced_class"), ParentClass->GetName());
-			}
-
-			const FName MemberName = EventNode->EventReference.GetMemberName();
-			if (!MemberName.IsNone())
-			{
-				Diagnostic->SetStringField(TEXT("referenced_member"), MemberName.ToString());
-			}
-			return;
-		}
-
-		if (const UK2Node_DynamicCast* DynamicCastNode = Cast<UK2Node_DynamicCast>(Node))
-		{
-			if (const UClass* TargetClass = DynamicCastNode->TargetType)
-			{
-				Diagnostic->SetStringField(TEXT("referenced_class"), TargetClass->GetName());
-			}
-		}
-	}
-
-	TSharedPtr<FJsonObject> BuildDiagnosticObject(const UEdGraphNode* Node)
-	{
-		TSharedPtr<FJsonObject> Diagnostic = MakeShared<FJsonObject>();
-		Diagnostic->SetStringField(TEXT("graph"), Node && Node->GetGraph() ? Node->GetGraph()->GetName() : TEXT(""));
-		Diagnostic->SetStringField(TEXT("node_id"), Node ? Node->NodeGuid.ToString() : TEXT(""));
-		Diagnostic->SetStringField(TEXT("node_class"), Node ? Node->GetClass()->GetName() : TEXT(""));
-		Diagnostic->SetStringField(TEXT("node_name"),
-			Node ? Node->GetNodeTitle(ENodeTitleType::ListView).ToString() : TEXT(""));
-		Diagnostic->SetStringField(TEXT("severity"), ToSeverity(Node));
-		Diagnostic->SetStringField(TEXT("message"), Node ? Node->ErrorMsg : TEXT(""));
-		AddReferencedMetadata(Node, Diagnostic);
-		return Diagnostic;
 	}
 
 	TSharedPtr<FJsonObject> CopyBlueprintAssetBatchJsonObject(const TSharedPtr<FJsonObject>& Source)
@@ -1799,54 +1693,23 @@ FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& P
 		);
 	}
 
-	FCompilerResultsLog CompilerResults;
-	CompilerResults.bSilentMode = true;
-	CompilerResults.bAnnotateMentionedNodes = true;
 	const EBlueprintCompileOptions CompileOptions = (bSkipGarbageCollection || Blueprint->IsA<ULevelScriptBlueprint>())
 		? EBlueprintCompileOptions::SkipGarbageCollection
 		: EBlueprintCompileOptions::None;
-	FKismetEditorUtilities::CompileBlueprint(Blueprint, CompileOptions, &CompilerResults);
+	FCortexBPCompileOutcome Outcome;
+	FCortexBPCompileSupport::Compile(Blueprint, CompileOptions, Outcome);
 
-	const int32 ErrorCount = CompilerResults.NumErrors;
-	const int32 WarningCount = CompilerResults.NumWarnings;
-
-	TArray<TSharedPtr<FJsonValue>> DiagnosticsArray;
-	DiagnosticsArray.Reserve(CompilerResults.AnnotatedNodes.Num());
-	for (const TWeakObjectPtr<UEdGraphNode>& WeakNode : CompilerResults.AnnotatedNodes)
-	{
-		UEdGraphNode* Node = WeakNode.Get();
-		if (!Node || !Node->bHasCompilerMessage)
-		{
-			continue;
-		}
-
-		DiagnosticsArray.Add(MakeShared<FJsonValueObject>(BuildDiagnosticObject(Node)));
-	}
-
-	auto BuildCompilePayload = [&]()
-	{
-		TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
-		Payload->SetStringField(TEXT("asset_path"), AssetPath);
-		const FString StatusStr = ErrorCount > 0 ? TEXT("error") : (WarningCount > 0 ? TEXT("warning") : TEXT("success"));
-		Payload->SetStringField(TEXT("compile_status"), StatusStr);
-		Payload->SetStringField(TEXT("status"), StatusStr);
-		Payload->SetNumberField(TEXT("error_count"), ErrorCount);
-		Payload->SetNumberField(TEXT("warning_count"), WarningCount);
-		Payload->SetArrayField(TEXT("diagnostics"), DiagnosticsArray);
-		return Payload;
-	};
-
-	if (ErrorCount > 0)
+	if (Outcome.HasErrors())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::CompileFailed,
-			FString::Printf(TEXT("Blueprint compilation failed with %d errors"), ErrorCount),
-			BuildCompilePayload());
+			FString::Printf(TEXT("Blueprint compilation failed with %d errors"), Outcome.ErrorCount),
+			Outcome.ToPayload(AssetPath));
 	}
 
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Compiled Blueprint: %s"), *AssetPath);
 
-	return FCortexCommandRouter::Success(BuildCompilePayload());
+	return FCortexCommandRouter::Success(Outcome.ToPayload(AssetPath));
 }
 
 FCortexCommandResult FCortexBPAssetOps::Save(const TSharedPtr<FJsonObject>& Params)
