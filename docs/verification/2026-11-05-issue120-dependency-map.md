@@ -56,5 +56,23 @@ Runs were made at the stated revisions. Controller runs are listed separately fr
 
 - Duplicate similarity compares descriptor multisets per same-named graph; renamed functions are not paired, and collapsed graphs are not expanded.
 - `find_name_lookups` detects literal names only, not names passed through variables or constants.
-- `level_placement` for OFPA maps is unit-tested through path mapping. On Ripper, 127 placements were observed (map package plus external actors combined).
+- `level_placement` for OFPA maps is derived from each World's external actor packages and covered by a native fixture (see the follow-up section). On Ripper, 127 placements were observed (map package plus external actors combined) before that change.
 - Blueprints loaded by the whole-project scans stay resident until editor GC (`RF_Standalone`), the same as `compile_all`.
+
+## Slow-model review follow-up
+
+Source: independent post-merge review of PR #192 (merge `1e224991`), seven P2 findings, all confirmed against the source before fixing (design: `docs/plans/2026-11-05-issue120-dependency-map-design.md`, "Slow-model review follow-up"). The Limitations entry "level_placement for OFPA maps is unit-tested through path mapping" above is superseded by the native OFPA fixture below.
+
+| Finding | Test (RED before the fix, GREEN after) |
+|---|---|
+| I1 expired batch cursor advises re-sending | `pytest test_pagination_contract.py::TestBatchQueryPagination::test_expired_batch_cursor_never_advises_resending_the_batch` (RED: message was "Re-send the original command with 'limit'") |
+| I2 StrictParams not enforced for Blueprint commands | `Cortex.Blueprint.StrictParams.DeclaredContractEnforced` (RED: `type`/`section` accepted, export written; all five strict commands covered; declared params still accepted) |
+| I3 OFPA placement of out-of-prefix Blueprints | `Cortex.Reflect.DependencyGraph.ExternalActorOutsidePrefix` (saved OFPA map in the exported prefix, external actor of a Blueprint in another folder; RED: no edge, no node) |
+| I4 widget variables as members | `Cortex.Reflect.NameLookup.WidgetMembers` (RED: `HealthText` unmatched) |
+| I5 strict widget hash short class names | `Cortex.Reflect.DuplicateGraphs.StrictWidgetClassIdentity` (RED: H1, H2, H3 grouped; GREEN: H1 and H3) |
+| I6 export pair after index failure | `Cortex.Blueprint.MigrationExport.PairConsistency` (index held open so replacing it fails: RED left the new JSONL beside the old index, and a new JSONL beside a stale index when none existed before) |
+| I7 package folder characters | `Cortex.Reflect.Config.PackageFolderCharacters` (RED: `/Game/Folder`, `/Game/Set`, `/Game/Dir`, `/Game/Odd`, `/Game/Maps`) |
+
+RED ran against the pre-fix production code with the new tests in place (gated build `Result: Succeeded`): all six native tests failed 6/6, the Python test failed 1/1. GREEN: `Cortex.Blueprint.StrictParams` 1/1, `MigrationExport` 7/7, `Reflect.Config` 6/6, `NameLookup` 6/6, `DuplicateGraphs` 10/10, `DependencyGraph` 6/6 (the `ExternalActorWorld` path-mapping test was removed with `ResolveExternalActorWorld`). Final gate at the follow-up head: `Cortex.Blueprint` 319/319, `Cortex.Reflect` 91/91, `Cortex.Core` 207/207, Python non-e2e 1155 passed; capabilities fixture/fallback parity `--check` OK (no declaration changed).
+
+Notes: widget animations are indexed from the same `GeneratedVariables` source as variable widgets (`widget_animation` kind); the native test exercises the variable-widget path end to end, a bare `UWidgetAnimation` fixture was not constructed. The OFPA fixture needs the registry to scan the saved external actor package; it does so through `ScanModifiedAssetFiles`.
