@@ -778,6 +778,27 @@ class TestAnalyzeForMigrationResponsePolicy:
         assert payload["variables"] == [{"name": "A"}]
         assert "_error" not in payload
 
+    def test_graph_metrics_oversized_refuses_with_summary_suggestion(self):
+        data = {
+            "asset_path": "/Game/BP_HugeLogic",
+            "has_tick": False,
+            "totals": {"functional_nodes": 1500, "unreachable_nodes": 0, "ghost_entries": 0, "entries": 1500},
+            "entries": [
+                {"graph": "EventGraph", "name": f"Entry_{i}", "kind": "custom_event", "node_id": f"N_{i}",
+                 "live": True, "functional_nodes": 1, "conditionals": 0, "variable_gets": 0, "max_getter_fanout": 0}
+                for i in range(1500)
+            ],
+        }
+        router, _ = _router_with_mock("blueprint", data)
+        payload = json.loads(router("graph_metrics", {"asset_path": "/Game/BP_HugeLogic"}))
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert payload["reader_complete"] is False
+        assert "entries" not in payload
+        assert "_truncated" not in payload
+        assert "complexity_metrics" in payload["_suggestion"]
+        assert payload["asset_path"] == "/Game/BP_HugeLogic"
+        assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+
     def test_unfiltered_search_nodes_pages_completely_via_limit_and_cursor(self):
         results = [
             {"node_id": f"node_{i}", "graph_name": "EventGraph", "title": "T" * 120}

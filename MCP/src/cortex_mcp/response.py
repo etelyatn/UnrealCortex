@@ -81,6 +81,10 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
         "Request only the needed 'sections' (e.g. variables, functions, graphs, complexity_metrics) "
         "instead of the whole migration analysis."
     ),
+    "blueprint.graph_metrics": (
+        "graph_metrics has no row selector: use analyze_for_migration with "
+        "sections=['complexity_metrics'] for a bounded summary, or split the oversized Blueprint."
+    ),
     "get_capabilities": (
         "Request detail=names for the per-operation schema index, or inspect one operation schema."
     ),

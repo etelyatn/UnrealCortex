@@ -11,10 +11,10 @@
 
 namespace
 {
-	/** Loads a not-yet-loaded /Game struct by object path, skipping packages that do not exist. */
-	UScriptStruct* LoadGameStruct(const FString& StructPath)
+	/** Loads a not-yet-loaded struct by object path under any mounted package root, skipping packages that do not exist. */
+	UScriptStruct* LoadMountedStruct(const FString& StructPath)
 	{
-		if (!StructPath.StartsWith(TEXT("/Game/")))
+		if (!StructPath.StartsWith(TEXT("/")))
 		{
 			return nullptr;
 		}
@@ -27,7 +27,9 @@ namespace
 			ObjectPath = FString::Printf(TEXT("%s.%s"), *StructPath, *FPackageName::GetShortName(StructPath));
 		}
 
-		if (!FPackageName::IsValidLongPackageName(PackageName) || !FPackageName::DoesPackageExist(PackageName))
+		if (!FPackageName::IsValidLongPackageName(PackageName, /*bIncludeReadOnlyRoots=*/true)
+			|| FPackageName::GetPackageMountPoint(PackageName).IsNone()
+			|| !FPackageName::DoesPackageExist(PackageName))
 		{
 			return nullptr;
 		}
@@ -83,7 +85,7 @@ bool CortexDataStructResolver::ResolveStructByName(const FString& StructName, US
 
 	if (OutStruct == nullptr && StructName.StartsWith(TEXT("/")))
 	{
-		OutStruct = LoadGameStruct(StructName);
+		OutStruct = LoadMountedStruct(StructName);
 	}
 
 	if (OutStruct == nullptr)

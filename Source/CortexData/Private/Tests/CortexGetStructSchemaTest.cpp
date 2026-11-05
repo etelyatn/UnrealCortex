@@ -2,6 +2,10 @@
 #include "CortexCommandRouter.h"
 #include "CortexDataCommandHandler.h"
 #include "Misc/PackageName.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "StructUtils/UserDefinedStruct.h"
 #include "UObject/Package.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -113,5 +117,76 @@ bool FCortexGetStructSchemaNonStructAssetTest::RunTest(const FString& Parameters
 		TestTrue(TEXT("Refusing a non-struct asset does not load its package"), FindPackage(nullptr, PackageName) == nullptr);
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGetStructSchemaMountedRootTest,
+	"Cortex.Data.GetStructSchema.MountedRoot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGetStructSchemaMountedRootTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.1"), MakeShared<FCortexDataCommandHandler>());
+
+	// A user-defined struct under a mounted non-/Game root (engine or plugin content) resolves by object path.
+	IAssetRegistry& Registry = IAssetRegistry::GetChecked();
+	Registry.WaitForCompletion();
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UUserDefinedStruct::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	TArray<FAssetData> Structs;
+	Registry.GetAssets(Filter, Structs);
+
+	const FAssetData* Candidate = nullptr;
+	for (const FAssetData& Asset : Structs)
+	{
+		if (!Asset.PackageName.ToString().StartsWith(TEXT("/Game/")) && !Asset.IsAssetLoaded())
+		{
+			Candidate = &Asset;
+			break;
+		}
+	}
+	if (Candidate != nullptr)
+	{
+		const FCortexCommandResult R = GetStructSchema(Router, Candidate->GetObjectPathString());
+		TestTrue(TEXT("Unloaded struct under a mounted non-/Game root resolves"), R.bSuccess);
+	}
+	else
+	{
+		AddInfo(TEXT("No unloaded UserDefinedStruct exists under a mounted non-/Game root; only the refusal paths are exercised."));
+	}
+
+	// Mounted engine root, existing non-struct asset: refused from registry metadata without loading it.
+	const TCHAR* EnginePackage = TEXT("/Engine/BasicShapes/Cube");
+	if (FPackageName::DoesPackageExist(EnginePackage))
+	{
+		const bool bLoadedBefore = FindPackage(nullptr, EnginePackage) != nullptr;
+		const FCortexCommandResult R = GetStructSchema(Router, TEXT("/Engine/BasicShapes/Cube.Cube"));
+		TestFalse(TEXT("Non-struct engine asset is refused"), R.bSuccess);
+		TestEqual(TEXT("Non-struct engine asset error code"), R.ErrorCode, CortexErrorCodes::InvalidStructType);
+		if (!bLoadedBefore)
+		{
+			TestTrue(TEXT("Refusing a non-struct engine asset does not load its package"), FindPackage(nullptr, EnginePackage) == nullptr);
+		}
+	}
+	else
+	{
+		AddInfo(TEXT("/Engine/BasicShapes/Cube is unavailable; non-struct engine refusal not exercised."));
+	}
+
+	{
+		const FCortexCommandResult R = GetStructSchema(Router, TEXT("/Engine/DefinitelyMissing/S_Nope.S_Nope"));
+		TestFalse(TEXT("Unknown path under a mounted root is refused"), R.bSuccess);
+		TestEqual(TEXT("Unknown mounted-root path error code"), R.ErrorCode, CortexErrorCodes::InvalidStructType);
+	}
+
+	{
+		const FCortexCommandResult R = GetStructSchema(Router, TEXT("/NotMountedRoot/S_Nope.S_Nope"));
+		TestFalse(TEXT("Path under an unmounted root is refused"), R.bSuccess);
+		TestEqual(TEXT("Unmounted-root path error code"), R.ErrorCode, CortexErrorCodes::InvalidStructType);
+	}
 	return true;
 }
