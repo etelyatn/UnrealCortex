@@ -35,6 +35,15 @@ public:
 
 	static FPathResolution ResolvePath(const UBlueprint* Blueprint, const TArray<FString>& Path);
 
+	/**
+	 * The path segments that resolve to the Blueprint-declared function named FunctionName, split by ownership with the engine's own
+	 * rename predicate (AnimGraphNodeBinding_Base.cpp HandleFunctionRenamed: same name and a declaring class that is a child of the
+	 * Blueprint's skeleton class). OutOwned segments are the ones the engine hook rewrites; OutForeign segments carry the same name
+	 * on an unrelated class and are never rewritten. An unresolvable path reports neither.
+	 */
+	static void ResolveFunctionSegments(const UBlueprint* Blueprint, const TArray<FString>& Path, FName FunctionName,
+		TArray<int32>& OutOwned, TArray<int32>& OutForeign);
+
 	/** blueprint | native | struct for the struct that declares a member. */
 	static FString DeclaredIn(const UStruct* Owner);
 

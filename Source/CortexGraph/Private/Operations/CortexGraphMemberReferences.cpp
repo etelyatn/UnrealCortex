@@ -1,5 +1,6 @@
 #include "CortexGraphMemberReferences.h"
 
+#include "CortexGraphBindingStorage.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
@@ -99,71 +100,6 @@ namespace CortexGraphMemberReferencesPrivate
 		return true;
 	}
 
-	/**
-	 * The binding-map key (pin property) whose property path names Member, read through the anim node's `Binding` object and its
-	 * `PropertyBindings` map by reflection: CortexGraph never links AnimGraph. Empty when the node has no such binding.
-	 */
-	FString BindingSlot(const UK2Node* Node, FName Member)
-	{
-		const FObjectProperty* BindingProperty = FindFProperty<FObjectProperty>(Node->GetClass(), TEXT("Binding"));
-		UObject* Binding = BindingProperty != nullptr ? BindingProperty->GetObjectPropertyValue_InContainer(Node) : nullptr;
-		if (Binding == nullptr)
-		{
-			return FString();
-		}
-
-		const FMapProperty* Map = CastField<FMapProperty>(FindFProperty<FProperty>(Binding->GetClass(), TEXT("PropertyBindings")));
-		const FNameProperty* KeyProperty = Map != nullptr ? CastField<FNameProperty>(Map->KeyProp) : nullptr;
-		const FStructProperty* ValueStruct = Map != nullptr ? CastField<FStructProperty>(Map->ValueProp) : nullptr;
-		const FArrayProperty* PathProperty = ValueStruct != nullptr
-			? CastField<FArrayProperty>(ValueStruct->Struct->FindPropertyByName(TEXT("PropertyPath"))) : nullptr;
-		const FStrProperty* PathElement = PathProperty != nullptr ? CastField<FStrProperty>(PathProperty->Inner) : nullptr;
-		if (KeyProperty == nullptr || PathElement == nullptr)
-		{
-			return FString();
-		}
-
-		const FString MemberText = Member.ToString();
-		FScriptMapHelper Helper(Map, Map->ContainerPtrToValuePtr<void>(Binding));
-		for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
-		{
-			if (!Helper.IsValidIndex(Index))
-			{
-				continue;
-			}
-			FScriptArrayHelper Path(PathProperty, PathProperty->ContainerPtrToValuePtr<void>(Helper.GetValuePtr(Index)));
-			for (int32 Segment = 0; Segment < Path.Num(); ++Segment)
-			{
-				if (PathElement->GetPropertyValue(Path.GetRawPtr(Segment)) == MemberText)
-				{
-					return KeyProperty->GetPropertyValue(Helper.GetKeyPtr(Index)).ToString();
-				}
-			}
-		}
-		return FString();
-	}
-
-	/** The function slot (UPROPERTY name) of an anim node whose FMemberReference names Member; empty when none does. */
-	FString FunctionSlot(const UK2Node* Node, FName Member)
-	{
-		static const TCHAR* SlotNames[] = {
-			TEXT("InitialUpdateFunction"),
-			TEXT("BecomeRelevantFunction"),
-			TEXT("UpdateFunction"),
-		};
-		for (const TCHAR* SlotName : SlotNames)
-		{
-			const FStructProperty* Slot = FindFProperty<FStructProperty>(Node->GetClass(), SlotName);
-			const FNameProperty* MemberName = Slot != nullptr
-				? CastField<FNameProperty>(Slot->Struct->FindPropertyByName(TEXT("MemberName"))) : nullptr;
-			if (MemberName != nullptr && MemberName->GetPropertyValue_InContainer(Slot->ContainerPtrToValuePtr<void>(Node)) == Member)
-			{
-				return SlotName;
-			}
-		}
-		return FString();
-	}
-
 	void Collect(const UBlueprint* Blueprint, FName Member, EMemberQuery Query, TArray<FCortexMemberReference>& OutReferences,
 		const UClass* MemberOwnerClass)
 	{
@@ -254,7 +190,10 @@ namespace CortexGraphMemberReferencesPrivate
 				else if (bIsAnimNode)
 				{
 					Reference.Kind = Query == EMemberQuery::Function ? TEXT("anim_node_function") : TEXT("anim_node_binding");
-					Reference.Slot = Query == EMemberQuery::Function ? FunctionSlot(Node, Member) : BindingSlot(Node, Member);
+					// The engine-private binding storage and the function slots are read through the shared storage owner. A
+					// function hit names the slot that holds it, else the binding key whose path carries the function.
+					FString Slot = Query == EMemberQuery::Function ? FCortexGraphBindingStorage::FindFunctionSlotNaming(Node, Member) : FString();
+					Reference.Slot = !Slot.IsEmpty() ? Slot : FCortexGraphBindingStorage::FindBindingKeyNaming(Node, Member);
 				}
 				else if (bIsPropertyAccess)
 				{

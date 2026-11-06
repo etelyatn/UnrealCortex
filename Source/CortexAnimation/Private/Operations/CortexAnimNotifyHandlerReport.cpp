@@ -95,8 +95,33 @@ namespace CortexAnimNotifyHandlerReportPrivate
 		const FName NotifyName(FunctionName.ToString().RightChop(FCortexAnimNotifyHandlerReport::HandlerPrefix ? FCString::Strlen(FCortexAnimNotifyHandlerReport::HandlerPrefix) : 0));
 		const UFunction* BlueprintFunction = AnimBlueprint->SkeletonGeneratedClass != nullptr
 			? AnimBlueprint->SkeletonGeneratedClass->FindFunctionByName(FunctionName) : nullptr;
-		const UFunction* NativeFunction = AnimBlueprint->ParentClass != nullptr
-			? AnimBlueprint->ParentClass->FindFunctionByName(FunctionName) : nullptr;
+
+		// The parent chain can hold the handler twice over: as Blueprint logic an ancestor Anim Blueprint implements, and as a native UFUNCTION
+		// further up. Only a function declared by a native class is a native handler; a Blueprint-generated one is inherited Blueprint logic.
+		const UFunction* NativeFunction = nullptr;
+		const UFunction* InheritedBlueprintFunction = nullptr;
+		for (const UClass* Class = AnimBlueprint->ParentClass; Class != nullptr && NativeFunction == nullptr; Class = Class->GetSuperClass())
+		{
+			const UFunction* Declared = Class->FindFunctionByName(FunctionName, EIncludeSuperFlag::ExcludeSuper);
+			if (Declared == nullptr)
+			{
+				continue;
+			}
+			if (Class->HasAnyClassFlags(CLASS_CompiledFromBlueprint) || UBlueprint::GetBlueprintFromClass(Class) != nullptr)
+			{
+				if (InheritedBlueprintFunction == nullptr)
+				{
+					InheritedBlueprintFunction = Declared;
+				}
+			}
+			else
+			{
+				NativeFunction = Declared;
+			}
+		}
+
+		// A custom event's own pins are its signature; the skeleton function can be older than the last pin edit.
+		const bool bPinsAreSignature = Cast<UK2Node_CustomEvent>(Node) != nullptr;
 
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("notify_name"), NotifyName.ToString());
@@ -105,11 +130,14 @@ namespace CortexAnimNotifyHandlerReportPrivate
 		Entry->SetStringField(TEXT("graph_guid"), Graph != nullptr ? GuidText(Graph->GraphGuid) : FString());
 		Entry->SetStringField(TEXT("graph_name"), Graph != nullptr ? Graph->GetName() : FString());
 		Entry->SetStringField(TEXT("node_guid"), Node != nullptr ? GuidText(Node->NodeGuid) : FString());
-		Entry->SetNumberField(TEXT("parameter_count"), ParameterCount(BlueprintFunction, Node));
+		Entry->SetNumberField(TEXT("parameter_count"), ParameterCount(bPinsAreSignature ? nullptr : BlueprintFunction, Node));
 		Entry->SetBoolField(TEXT("native_declares"), NativeFunction != nullptr);
 		Entry->SetStringField(TEXT("native_declared_in"), NativeFunction != nullptr && NativeFunction->GetOwnerClass() != nullptr
 			? NativeFunction->GetOwnerClass()->GetPathName() : FString());
-		Entry->SetBoolField(TEXT("native_signature_compatible"), BlueprintFunction != nullptr ? IsSignatureCompatible(BlueprintFunction) : IsPinSignatureCompatible(Node));
+		Entry->SetBoolField(TEXT("native_signature_compatible"), !bPinsAreSignature && BlueprintFunction != nullptr ? IsSignatureCompatible(BlueprintFunction) : IsPinSignatureCompatible(Node));
+		Entry->SetBoolField(TEXT("inherited_blueprint_declares"), InheritedBlueprintFunction != nullptr);
+		Entry->SetStringField(TEXT("inherited_blueprint_declared_in"), InheritedBlueprintFunction != nullptr && InheritedBlueprintFunction->GetOwnerClass() != nullptr
+			? InheritedBlueprintFunction->GetOwnerClass()->GetPathName() : FString());
 		Entry->SetBoolField(TEXT("conflict"), NativeFunction != nullptr);
 		return Entry;
 	}

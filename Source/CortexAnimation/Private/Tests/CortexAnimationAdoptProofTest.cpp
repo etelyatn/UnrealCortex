@@ -87,6 +87,28 @@ TArray<FString> ReportedPath(const TSharedPtr<FJsonObject>& Data, const TCHAR* C
 	return {};
 }
 
+/** The first entry of a collection for one node (and, when given, one string field value). */
+TSharedPtr<FJsonObject> ReportEntry(const TSharedPtr<FJsonObject>& Data, const TCHAR* Collection, const FGuid& NodeGuid)
+{
+	for (const TSharedPtr<FJsonObject>& Entry : CollectionItems(Data, Collection))
+	{
+		FString NodeGuidText;
+		if (Entry->TryGetStringField(TEXT("node_guid"), NodeGuidText) && SameGuid(NodeGuidText, NodeGuid))
+		{
+			return Entry;
+		}
+	}
+	return nullptr;
+}
+
+int32 ReportCount(const TSharedPtr<FJsonObject>& Data, const TCHAR* Collection)
+{
+	const TSharedPtr<FJsonObject>* Items = nullptr;
+	double Count = -1.0;
+	return Data.IsValid() && Data->TryGetObjectField(Collection, Items) && Items != nullptr && (*Items)->TryGetNumberField(TEXT("count"), Count)
+		? static_cast<int32>(Count) : INDEX_NONE;
+}
+
 TSharedPtr<FJsonObject> AnimInfo(const UAnimBlueprint* AnimBlueprint)
 {
 	FCortexCommandRouter Router = MakeAnimGraphRouter();
@@ -129,6 +151,31 @@ bool FCortexAnimationAdoptNativeMemberAnimBindingsTest::RunTest(const FString& P
 	if (!TestTrue(TEXT("property access and get node"), Access != nullptr && Get != nullptr))
 	{
 		return false;
+	}
+
+	// The AnimBP report before the adoption: Blueprint-owned paths.
+	const TSharedPtr<FJsonObject> ReportBefore = AnimInfo(AnimBlueprint);
+	if (!TestTrue(TEXT("the AnimBP report is readable before the adoption"), ReportBefore.IsValid()))
+	{
+		return false;
+	}
+	const int32 BindingCountBefore = ReportCount(ReportBefore, TEXT("bindings"));
+	const int32 AccessCountBefore = ReportCount(ReportBefore, TEXT("property_access"));
+	TestEqual(TEXT("one binding before"), BindingCountBefore, 1);
+	TestEqual(TEXT("one property-access node before"), AccessCountBefore, 1);
+	TestTrue(TEXT("the binding path is Speed before"), ReportedPath(ReportBefore, TEXT("bindings"), Player->NodeGuid, TEXT("property_name"), TEXT("PlayRate")) == TArray<FString>{ TEXT("Speed") });
+	if (const TSharedPtr<FJsonObject> BindingBefore = ReportEntry(ReportBefore, TEXT("bindings"), Player->NodeGuid))
+	{
+		TestEqual(TEXT("the binding root is the Blueprint before"), BindingBefore->GetStringField(TEXT("root_declared_in")), FString(TEXT("blueprint")));
+	}
+	if (const TSharedPtr<FJsonObject> AccessBefore = ReportEntry(ReportBefore, TEXT("property_access"), Access->NodeGuid))
+	{
+		TestEqual(TEXT("the property-access root is the Blueprint before"), AccessBefore->GetStringField(TEXT("root_declared_in")), FString(TEXT("blueprint")));
+		TestTrue(TEXT("the property-access path is Speed before"), ReportedPath(ReportBefore, TEXT("property_access"), Access->NodeGuid, nullptr, nullptr) == TArray<FString>{ TEXT("Speed") });
+	}
+	else
+	{
+		AddError(TEXT("the property-access node is not in the report before the adoption"));
 	}
 
 	const TArray<FString> Before = VariableReferenceKinds(AnimBlueprint, TEXT("Speed"));
@@ -176,6 +223,17 @@ bool FCortexAnimationAdoptNativeMemberAnimBindingsTest::RunTest(const FString& P
 	{
 		TestTrue(TEXT("the anim binding follows to the native property"), ReportedPath(After, TEXT("bindings"), Player->NodeGuid, TEXT("property_name"), TEXT("PlayRate")) == TArray<FString>{ TEXT("NativeSpeed") });
 		TestTrue(TEXT("the property-access path follows"), ReportedPath(After, TEXT("property_access"), Access->NodeGuid, nullptr, nullptr) == TArray<FString>{ TEXT("NativeSpeed") });
+		TestEqual(TEXT("the binding count is unchanged"), ReportCount(After, TEXT("bindings")), BindingCountBefore);
+		TestEqual(TEXT("the property-access count is unchanged"), ReportCount(After, TEXT("property_access")), AccessCountBefore);
+		if (const TSharedPtr<FJsonObject> AccessAfter = ReportEntry(After, TEXT("property_access"), Access->NodeGuid))
+		{
+			TestEqual(TEXT("the property-access root is native after"), AccessAfter->GetStringField(TEXT("root_declared_in")), FString(TEXT("native")));
+			TestTrue(TEXT("the property-access node resolves"), AccessAfter->GetBoolField(TEXT("resolved")));
+		}
+		else
+		{
+			AddError(TEXT("the property-access node is not in the report after the adoption"));
+		}
 
 		bool bBindingResolvesNative = false;
 		for (const TSharedPtr<FJsonObject>& Entry : CollectionItems(After, TEXT("bindings")))
@@ -191,6 +249,87 @@ bool FCortexAnimationAdoptNativeMemberAnimBindingsTest::RunTest(const FString& P
 	}
 
 	TestTrue(TEXT("the retargeted references resolve"), VariableReferenceKinds(AnimBlueprint, TEXT("NativeSpeed")).Num() >= 2);
+	TestTrue(TEXT("the Anim Blueprint compiles"), AnimBlueprint->Status != BS_Error);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationAdoptNativeMemberSameNameTest,
+	"Cortex.Animation.AdoptNativeMember.SameName",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationAdoptNativeMemberSameNameTest::RunTest(const FString& Parameters)
+{
+	// The Blueprint declares NativeSpeed while its parent is still plain UAnimInstance; the parent is then switched to the native class that
+	// declares the same member (the #121 same-name fixture: no refresh in between, so the Blueprint variable is still declared).
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix());
+	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
+	{
+		return false;
+	}
+	FFixtureGuard Guard(AnimBlueprint);
+
+	TestTrue(TEXT("NativeSpeed Blueprint variable"), AddVariable(AnimBlueprint, TEXT("NativeSpeed"), FloatPinType(), TEXT("0.0")));
+	CompileAndAssertClean(*this, AnimBlueprint);
+	UAnimationGraph* AnimGraph = FindRootAnimGraph(AnimBlueprint);
+	UAnimGraphNode_SequencePlayer* Player = AddSequencePlayerNode(AnimBlueprint);
+	if (!TestTrue(TEXT("fixture nodes"), AnimGraph != nullptr && Player != nullptr))
+	{
+		return false;
+	}
+	TestTrue(TEXT("anim binding"), BindPropertyByReflection(Player, TEXT("PlayRate"), { TEXT("NativeSpeed") }));
+	UEdGraphNode* Access = AddPropertyAccessNode(AnimGraph, { TEXT("NativeSpeed") });
+	if (!TestNotNull(TEXT("property-access node"), Access))
+	{
+		return false;
+	}
+	AnimBlueprint->ParentClass = UCortexAnimTestNativeInstance::StaticClass();
+
+	const TSharedPtr<FJsonObject> ReportBefore = AnimInfo(AnimBlueprint);
+	if (!TestTrue(TEXT("the AnimBP report is readable before the adoption"), ReportBefore.IsValid()))
+	{
+		return false;
+	}
+	const int32 BindingCountBefore = ReportCount(ReportBefore, TEXT("bindings"));
+	const int32 AccessCountBefore = ReportCount(ReportBefore, TEXT("property_access"));
+
+	const TSharedRef<FJsonObject> Mapping = MakeShared<FJsonObject>();
+	Mapping->SetStringField(TEXT("bp_variable"), TEXT("NativeSpeed"));
+	Mapping->SetStringField(TEXT("native_property"), TEXT("NativeSpeed"));
+	TSharedPtr<FJsonObject> Params = MakeAssetParams(AnimBlueprint);
+	Params->SetArrayField(TEXT("mappings"), { MakeShared<FJsonValueObject>(Mapping) });
+	Params->SetBoolField(TEXT("retarget_nodes"), true);
+	const FCortexCommandResult Adopt = CoreCommand(TEXT("blueprint.adopt_native_member"), Params);
+	if (TestTrue(*FString::Printf(TEXT("the same-name adoption succeeds (%s: %s)"), *Adopt.ErrorCode, *Adopt.ErrorMessage), Adopt.bSuccess) && Adopt.Data.IsValid())
+	{
+		TestEqual(TEXT("readback matched"), Adopt.Data->GetStringField(TEXT("readback_status")), FString(TEXT("matched")));
+	}
+
+	TestTrue(TEXT("the Blueprint variable is gone"), FBlueprintEditorUtils::FindNewVariableIndex(AnimBlueprint, TEXT("NativeSpeed")) == INDEX_NONE);
+	const TSharedPtr<FJsonObject> After = AnimInfo(AnimBlueprint);
+	if (TestTrue(TEXT("the AnimBP report is readable after the adoption"), After.IsValid()))
+	{
+		TestTrue(TEXT("the binding is unchanged"), ReportedPath(After, TEXT("bindings"), Player->NodeGuid, TEXT("property_name"), TEXT("PlayRate")) == TArray<FString>{ TEXT("NativeSpeed") });
+		TestEqual(TEXT("the binding count is unchanged"), ReportCount(After, TEXT("bindings")), BindingCountBefore);
+		TestEqual(TEXT("the property-access count is unchanged"), ReportCount(After, TEXT("property_access")), AccessCountBefore);
+		if (const TSharedPtr<FJsonObject> BindingAfter = ReportEntry(After, TEXT("bindings"), Player->NodeGuid))
+		{
+			TestTrue(TEXT("the binding still resolves"), BindingAfter->GetBoolField(TEXT("resolved")));
+			TestEqual(TEXT("against the native parent"), BindingAfter->GetStringField(TEXT("root_declared_in")), FString(TEXT("native")));
+		}
+		if (const TSharedPtr<FJsonObject> AccessAfter = ReportEntry(After, TEXT("property_access"), Access->NodeGuid))
+		{
+			TestTrue(TEXT("the property-access node still resolves"), AccessAfter->GetBoolField(TEXT("resolved")));
+			TestEqual(TEXT("against the native parent"), AccessAfter->GetStringField(TEXT("root_declared_in")), FString(TEXT("native")));
+			TestTrue(TEXT("its path is unchanged"), ReportedPath(After, TEXT("property_access"), Access->NodeGuid, nullptr, nullptr) == TArray<FString>{ TEXT("NativeSpeed") });
+		}
+		else
+		{
+			AddError(TEXT("the property-access node is not in the report after the adoption"));
+		}
+	}
 	TestTrue(TEXT("the Anim Blueprint compiles"), AnimBlueprint->Status != BS_Error);
 
 	return true;

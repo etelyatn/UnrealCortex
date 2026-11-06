@@ -10,6 +10,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/MemberReference.h"
 #include "Features/IModularFeatures.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "IPropertyAccessEditor.h"
 #include "Operations/CortexAnimAssetUtils.h"
 #include "Operations/CortexAnimBindingReflection.h"
@@ -187,6 +188,32 @@ FCortexAnimBindingReport::FPathResolution FCortexAnimBindingReport::ResolvePath(
 		Resolution.LeafCppType = LeafProperty->GetCPPType();
 	}
 	return Resolution;
+}
+
+void FCortexAnimBindingReport::ResolveFunctionSegments(const UBlueprint* Blueprint, const TArray<FString>& Path, const FName FunctionName,
+	TArray<int32>& OutOwned, TArray<int32>& OutForeign)
+{
+	if (Blueprint == nullptr || Blueprint->SkeletonGeneratedClass == nullptr || Path.IsEmpty()
+		|| !IModularFeatures::Get().IsModularFeatureAvailable(TEXT("PropertyAccessEditor")))
+	{
+		return;
+	}
+
+	IPropertyAccessEditor& PropertyAccessEditor = IModularFeatures::Get().GetModularFeature<IPropertyAccessEditor>(TEXT("PropertyAccessEditor"));
+	const UClass* SkeletonClass = FBlueprintEditorUtils::GetMostUpToDateClass(Blueprint->SkeletonGeneratedClass);
+
+	IPropertyAccessEditor::FResolvePropertyAccessArgs Args;
+	Args.bUseMostUpToDateClasses = true;
+	Args.FunctionFunction = [&](int32 Segment, UFunction* Function, FProperty*)
+	{
+		if (Function->GetFName() != FunctionName)
+		{
+			return;
+		}
+		const UClass* Owner = FBlueprintEditorUtils::GetMostUpToDateClass(Function->GetOuterUClass());
+		(Owner != nullptr && Owner->IsChildOf(SkeletonClass) ? OutOwned : OutForeign).Add(Segment);
+	};
+	PropertyAccessEditor.ResolvePropertyAccess(Blueprint->SkeletonGeneratedClass, Path, Args);
 }
 
 TSharedRef<FJsonObject> FCortexAnimBindingReport::PinTypeToJson(const FEdGraphPinType& PinType)

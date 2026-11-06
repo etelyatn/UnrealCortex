@@ -2,8 +2,22 @@
 
 #include "CoreMinimal.h"
 
+#include "Animation/AnimExecutionContext.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimNodeReference.h"
+#include "UObject/Object.h"
 #include "CortexAnimationTestNativeInstance.generated.h"
+
+/** An unrelated class that declares a getter named like a Blueprint getter: a same-named function with a different owner. */
+UCLASS(Blueprintable)
+class UCortexAnimTestForeign : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintPure, Category = "Cortex")
+	float GetDir() const { return 0.0f; }
+};
 
 /** Native AnimInstance parent of the issue-125 AnimBP fixtures: variables and functions an Anim Blueprint can bind to. */
 UCLASS(Blueprintable)
@@ -24,9 +38,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Cortex")
 	float GetNativeDirection() const { return 0.0f; }
 
-	/** Void, parameterless hook: a slot-compatible retarget target for anim.rebind_function. */
-	UFUNCTION(BlueprintCallable, Category = "Cortex", meta = (BlueprintThreadSafe))
-	void NativeUpdateHook() {}
+	/** An object reference whose class declares its own GetDir, reachable by a binding path. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cortex")
+	TObjectPtr<UCortexAnimTestForeign> ForeignRef;
+
+	/** Thread-safe update hook with the engine's slot prototype signature (AnimExecutionContextLibrary.h Prototype_ThreadSafeAnimUpdateCall). */
+	UFUNCTION(BlueprintInternalUseOnly, meta = (BlueprintThreadSafe))
+	void NativeUpdateHook(const FAnimUpdateContext& Context, const FAnimNodeReference& Node) {}
 
 	/** A native AnimNotify handler: the engine finds it by name (AnimInstance.cpp:2073-2099). */
 	UFUNCTION()

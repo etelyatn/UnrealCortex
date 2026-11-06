@@ -8,6 +8,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "AnimGraphNode_Base.h"
+#include "AnimGraphNode_Root.h"
 #include "AnimGraphNode_SequencePlayer.h"
 #include "AnimGraphNode_StateMachine.h"
 #include "AnimStateConduitNode.h"
@@ -325,6 +326,71 @@ namespace CortexAnimTest
 		ValueStruct->Struct->CopyScriptStruct(Helper.GetValuePtr(Index), &Entry);
 		Helper.Rehash();
 		return true;
+	}
+
+	/**
+	 * A thread-safe Blueprint function with the engine's update-slot prototype signature
+	 * (AnimExecutionContextLibrary.h Prototype_ThreadSafeAnimUpdateCall), so an anim node's function slot can name it and compile.
+	 */
+	inline UEdGraph* AddBlueprintUpdateFunction(UAnimBlueprint* AnimBlueprint, const FName Name)
+	{
+		UFunction* Prototype = FindObject<UFunction>(nullptr, TEXT("/Script/AnimGraphRuntime.AnimExecutionContextLibrary.Prototype_ThreadSafeAnimUpdateCall"));
+		UEdGraph* Graph = Prototype != nullptr
+			? FBlueprintEditorUtils::CreateNewGraph(AnimBlueprint, Name, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass()) : nullptr;
+		if (Graph == nullptr)
+		{
+			return nullptr;
+		}
+		FBlueprintEditorUtils::AddFunctionGraph<UFunction>(AnimBlueprint, Graph, /*bIsUserCreated=*/true, Prototype);
+		TArray<UK2Node_FunctionEntry*> Entries;
+		Graph->GetNodesOfClass<UK2Node_FunctionEntry>(Entries);
+		if (Entries.Num() == 1)
+		{
+			Entries[0]->MetaData.bThreadSafe = true;
+		}
+		return Graph;
+	}
+
+	/** Links a node's pose output into the root AnimGraph result so the anim compiler consumes (allocates) it. */
+	inline bool ConnectToResult(UAnimBlueprint* AnimBlueprint, UAnimGraphNode_Base* Node)
+	{
+		UAnimationGraph* AnimGraph = FindRootAnimGraph(AnimBlueprint);
+		if (AnimGraph == nullptr || Node == nullptr)
+		{
+			return false;
+		}
+		for (UEdGraphNode* Candidate : AnimGraph->Nodes)
+		{
+			if (UAnimGraphNode_Root* Root = Cast<UAnimGraphNode_Root>(Candidate))
+			{
+				UEdGraphPin* Result = Root->FindPin(TEXT("Result"));
+				UEdGraphPin* Pose = Node->FindPin(TEXT("Pose"), EGPD_Output);
+				return Result != nullptr && Pose != nullptr && AnimGraph->GetSchema()->TryCreateConnection(Pose, Result);
+			}
+		}
+		return false;
+	}
+
+	/** Test-only fault helper: removes one entry of an anim node's binding map by reflection (a restore step that loses content). */
+	inline bool RemoveBindingByReflection(UAnimGraphNode_Base* Node, const FName PropertyName)
+	{
+		UObject* Binding = nullptr;
+		const FMapProperty* Map = FindBindingMap(Node, Binding);
+		const FNameProperty* KeyProperty = Map != nullptr ? CastField<FNameProperty>(Map->KeyProp) : nullptr;
+		if (KeyProperty == nullptr)
+		{
+			return false;
+		}
+		FScriptMapHelper Helper(Map, Map->ContainerPtrToValuePtr<void>(Binding));
+		for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
+		{
+			if (Helper.IsValidIndex(Index) && KeyProperty->GetPropertyValue(Helper.GetKeyPtr(Index)) == PropertyName)
+			{
+				Helper.RemoveAt(Index);
+				return true;
+			}
+		}
+		return false;
 	}
 
 	inline void CompileAndAssertClean(FAutomationTestBase& Test, UAnimBlueprint* AnimBlueprint)

@@ -2,88 +2,23 @@
 
 #include "Animation/AnimBlueprint.h"
 #include "AnimGraphNode_SequencePlayer.h"
+#include "CortexAnimationRebindTestSupport.h"
 #include "CortexAnimationTestAnimBlueprint.h"
-#include "CortexAssetFingerprint.h"
 #include "CortexAnimationTestNativeInstance.h"
-#include "CortexGraphMemberReferences.h"
+#include "CortexAssetMutationGuard.h"
+#include "CortexBatchMutation.h"
 #include "Editor.h"
 #include "Editor/Transactor.h"
-#include "Operations/CortexAnimBindingReflection.h"
+#include "K2Node_CallFunction.h"
 #include "Operations/CortexAnimRebindOps.h"
 
 namespace
 {
 using namespace CortexAnimTest;
 
-/** Exactly the fingerprint the command compares against (core.asset_fingerprint shape). */
-TSharedPtr<FJsonObject> Fingerprint(const UObject* Asset)
+const UFunction* SkeletonFunction(const UAnimBlueprint* AnimBlueprint, const TCHAR* Name)
 {
-	return MakeObjectAssetFingerprint(Asset).ToJson();
-}
-
-/** Params with a fingerprint read at call time (the fingerprint tracks the package's saved state). */
-TSharedPtr<FJsonObject> RebindParams(const UAnimBlueprint* AnimBlueprint, const TCHAR* From, const TCHAR* To, const bool bDryRun, const bool bCompile)
-{
-	TSharedPtr<FJsonObject> Params = MakeAssetParams(AnimBlueprint);
-	Params->SetStringField(TEXT("from"), From);
-	Params->SetStringField(TEXT("to"), To);
-	Params->SetObjectField(TEXT("expected_fingerprint"), Fingerprint(AnimBlueprint));
-	Params->SetBoolField(TEXT("dry_run"), bDryRun);
-	Params->SetBoolField(TEXT("compile"), bCompile);
-	return Params;
-}
-
-FCortexCommandResult Info(FCortexCommandRouter& Router, const UAnimBlueprint* AnimBlueprint)
-{
-	TSharedPtr<FJsonObject> Params = MakeAssetParams(AnimBlueprint);
-	Params->SetArrayField(TEXT("include"), { MakeShared<FJsonValueString>(TEXT("bindings")), MakeShared<FJsonValueString>(TEXT("node_functions")) });
-	return Router.Execute(TEXT("anim.get_animbp_info"), Params);
-}
-
-/** The reported path of a node's binding for one pin property. */
-TArray<FString> BindingPath(const TSharedPtr<FJsonObject>& Data, const FGuid& NodeGuid, const TCHAR* PropertyName)
-{
-	for (const TSharedPtr<FJsonObject>& Entry : CollectionItems(Data, TEXT("bindings")))
-	{
-		FString NodeGuidText;
-		FString Property;
-		if (Entry->TryGetStringField(TEXT("node_guid"), NodeGuidText) && SameGuid(NodeGuidText, NodeGuid)
-			&& Entry->TryGetStringField(TEXT("property_name"), Property) && Property == PropertyName)
-		{
-			TArray<FString> Path;
-			const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-			if (Entry->TryGetArrayField(TEXT("path"), Values) && Values != nullptr)
-			{
-				for (const TSharedPtr<FJsonValue>& Value : *Values)
-				{
-					FString Segment;
-					if (Value.IsValid() && Value->TryGetString(Segment))
-					{
-						Path.Add(Segment);
-					}
-				}
-			}
-			return Path;
-		}
-	}
-	return {};
-}
-
-TArray<FString> RetargetedForms(const UBlueprint* AnimBlueprint, const TCHAR* Function)
-{
-	TArray<FString> Forms;
-	TArray<FCortexMemberReference> References;
-	FCortexGraphMemberReferences::FindFunctionReferences(AnimBlueprint, Function, References);
-	for (const FCortexMemberReference& Reference : References)
-	{
-		// Retargetable kinds only: a K2 call node is a reference the command leaves alone (returned as unmodified).
-		if (Reference.Kind == TEXT("anim_node_binding") || Reference.Kind == TEXT("anim_node_function"))
-		{
-			Forms.Add(Reference.Kind + TEXT(":") + Reference.Slot);
-		}
-	}
-	Forms.Sort();
-	return Forms;
+	return AnimBlueprint->SkeletonGeneratedClass != nullptr ? AnimBlueprint->SkeletonGeneratedClass->FindFunctionByName(Name) : nullptr;
 }
 }
 
@@ -102,12 +37,7 @@ bool FCortexAnimationRebindFunctionTest::RunTest(const FString& Parameters)
 	}
 	FFixtureGuard Guard(AnimBlueprint);
 
-	// GetDir: a Blueprint getter (no parameters, float return) a function binding path can name; OnUpdate: a void Blueprint
-	// function for a function slot. The engine requires exactly one parameter (the return) for a function path
-	// (PropertyAccessEditor.cpp:169-181) and prototype compatibility for a slot (AnimGraphNode_Base.cpp:273-277), so the binding
-	// and the slot are retargeted with two separate pairs.
-	if (!TestTrue(TEXT("Blueprint getter"), AddBlueprintFloatGetter(AnimBlueprint, TEXT("GetDir")) != nullptr)
-		|| !TestTrue(TEXT("Blueprint slot function"), AddBlueprintFunction(AnimBlueprint, TEXT("OnUpdate")) != nullptr))
+	if (!TestTrue(TEXT("Blueprint getter"), AddBlueprintFloatGetter(AnimBlueprint, TEXT("GetDir")) != nullptr))
 	{
 		return false;
 	}
@@ -115,131 +45,340 @@ bool FCortexAnimationRebindFunctionTest::RunTest(const FString& Parameters)
 
 	UAnimationGraph* AnimGraph = FindRootAnimGraph(AnimBlueprint);
 	UAnimGraphNode_SequencePlayer* Player = AddSequencePlayerNode(AnimBlueprint);
-	const UFunction* GetDir = AnimBlueprint->SkeletonGeneratedClass->FindFunctionByName(TEXT("GetDir"));
-	UEdGraphNode* GetDirCall = AddCallNode(AnimGraph, GetDir);
-	if (!TestTrue(TEXT("fixture nodes"), AnimGraph != nullptr && Player != nullptr && GetDir != nullptr && GetDirCall != nullptr))
+	UEdGraphNode* GetDirCall = AddCallNode(AnimGraph, SkeletonFunction(AnimBlueprint, TEXT("GetDir")));
+	if (!TestTrue(TEXT("fixture nodes"), AnimGraph != nullptr && Player != nullptr && GetDirCall != nullptr))
 	{
 		return false;
 	}
+	UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(GetDirCall);
 	TestTrue(TEXT("function-typed binding"), BindPropertyByReflection(Player, TEXT("PlayRate"), { TEXT("GetDir") }, /*bFunction=*/true));
-	Player->UpdateFunction.SetSelfMember(TEXT("OnUpdate"));
-
-	FCortexCommandRouter Router = MakeAnimGraphRouter();
-	const FCortexCommandResult Before = Info(Router, AnimBlueprint);
-	if (!TestTrue(TEXT("baseline info"), Before.bSuccess) || !TestTrue(TEXT("baseline data"), Before.Data.IsValid()))
-	{
-		return false;
-	}
-	TestTrue(TEXT("baseline binding path"), BindingPath(Before.Data, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
-	const TArray<FString> BaselineToForms = RetargetedForms(AnimBlueprint, TEXT("GetNativeDirection"));
-	const int32 BaselineFromCount = RetargetedForms(AnimBlueprint, TEXT("GetDir")).Num();
-	TestEqual(TEXT("one retargetable reference to GetDir"), BaselineFromCount, 1);
-
 	AnimBlueprint->GetPackage()->SetDirtyFlag(false);
 
-	// ── Preconditions ──
+	FCortexCommandRouter Router = MakeAnimGraphRouter();
+	TestTrue(TEXT("baseline binding path"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
+
+	// ── A dry run is exact and clean ──
 	{
-		const FCortexCommandResult NoFingerprint = Router.Execute(TEXT("anim.rebind_function"),
-			[&] { TSharedPtr<FJsonObject> P = RebindParams(AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false, true); P->RemoveField(TEXT("expected_fingerprint")); return P; }());
-		TestFalse(TEXT("a missing fingerprint is refused"), NoFingerprint.bSuccess);
-		TestEqual(TEXT("STALE_PRECONDITION"), NoFingerprint.ErrorCode, CortexErrorCodes::StalePrecondition);
-
-		const FCortexCommandResult UnknownFrom = Router.Execute(TEXT("anim.rebind_function"),
-			RebindParams(AnimBlueprint, TEXT("NoSuchFunction"), TEXT("GetNativeDirection"), false, true));
-		TestFalse(TEXT("an unknown from is refused"), UnknownFrom.bSuccess);
-		TestEqual(TEXT("unknown from code"), UnknownFrom.ErrorCode, CortexErrorCodes::InvalidField);
-
-		const FCortexCommandResult UnknownTo = Router.Execute(TEXT("anim.rebind_function"),
-			RebindParams(AnimBlueprint, TEXT("GetDir"), TEXT("AlsoNoSuchFunction"), false, true));
-		TestFalse(TEXT("an unknown to is refused"), UnknownTo.bSuccess);
-
-		const FCortexCommandResult Mismatch = Router.Execute(TEXT("anim.rebind_function"),
-			RebindParams(AnimBlueprint, TEXT("GetDir"), TEXT("OnUpdate"), false, true));
-		TestFalse(TEXT("a signature mismatch is refused"), Mismatch.bSuccess);
-		TestEqual(TEXT("TYPE_MISMATCH"), Mismatch.ErrorCode, CortexErrorCodes::TypeMismatch);
-		TestFalse(TEXT("refusals never dirty the package"), AnimBlueprint->GetPackage()->IsDirty());
-	}
-
-	// ── Dry run ──
-	{
-		const FCortexCommandResult Dry = Router.Execute(TEXT("anim.rebind_function"),
-			RebindParams(AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), /*bDryRun=*/true, /*bCompile=*/true));
+		const FCortexCommandResult Dry = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), /*bDryRun=*/true);
 		if (TestTrue(*FString::Printf(TEXT("dry run succeeds (%s: %s)"), *Dry.ErrorCode, *Dry.ErrorMessage), Dry.bSuccess) && TestTrue(TEXT("dry run data"), Dry.Data.IsValid()))
 		{
-			TestEqual(TEXT("one node would be retargeted"), JsonObjectArray(Dry.Data, TEXT("would_retarget")).Num(), 1);
+			TestEqual(TEXT("one occurrence would be retargeted"), JsonObjectArray(Dry.Data, TEXT("would_retarget")).Num(), 1);
 			const TArray<TSharedPtr<FJsonObject>> Unmodified = JsonObjectArray(Dry.Data, TEXT("unmodified_references"));
-			TestEqual(TEXT("the call node is listed unmodified"), Unmodified.Num(), 1);
-			if (Unmodified.Num() == 1)
+			if (TestEqual(TEXT("the call node is listed unmodified"), Unmodified.Num(), 1) && Unmodified.Num() == 1)
 			{
 				TestTrue(TEXT("the unmodified node is the call node"), SameGuid(Unmodified[0]->GetStringField(TEXT("node_guid")), GetDirCall->NodeGuid));
 				TestEqual(TEXT("its kind"), Unmodified[0]->GetStringField(TEXT("kind")), FString(TEXT("other_k2_node")));
 			}
-			TestFalse(TEXT("dry run leaves the package clean"), AnimBlueprint->GetPackage()->IsDirty());
-			TestTrue(TEXT("dry run does not touch the binding"), BindingPath(Info(Router, AnimBlueprint).Data, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
 		}
+		TestFalse(TEXT("dry run leaves the package clean"), AnimBlueprint->GetPackage()->IsDirty());
+		TestTrue(TEXT("dry run does not touch the binding"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
 	}
 
-	// ── Injected compile failure restores the journal (content, not the fingerprint) ──
+	// ── Apply: one compile, engine virtual agrees, the unrelated K2 call is untouched ──
 	{
-		const TArray<FString> FromBefore = RetargetedForms(AnimBlueprint, TEXT("GetDir"));
-		AnimBlueprint->GetPackage()->SetDirtyFlag(false);
-		FCortexAnimRebindOps::SetCompileFailureHookForTest([](UAnimBlueprint*) { return true; });
-		const FCortexCommandResult Failed = Router.Execute(TEXT("anim.rebind_function"),
-			RebindParams(AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), /*bDryRun=*/false, /*bCompile=*/true));
-		FCortexAnimRebindOps::ClearCompileFailureHookForTest();
+		FCompileCounter Compiles(AnimBlueprint);
+		const FCortexCommandResult Apply = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), /*bDryRun=*/false);
+		if (TestTrue(*FString::Printf(TEXT("apply succeeds (%s: %s)"), *Apply.ErrorCode, *Apply.ErrorMessage), Apply.bSuccess) && TestTrue(TEXT("apply data"), Apply.Data.IsValid()))
+		{
+			TestEqual(TEXT("one occurrence retargeted"), JsonObjectArray(Apply.Data, TEXT("retargeted")).Num(), 1);
+			TestEqual(TEXT("compile_status"), Apply.Data->GetStringField(TEXT("compile_status")), FString(TEXT("success")));
+			TestEqual(TEXT("readback_status"), Apply.Data->GetStringField(TEXT("readback_status")), FString(TEXT("matched")));
+			TestTrue(TEXT("the destination is declared natively"), Apply.Data->GetBoolField(TEXT("declared_in_native")));
+			TestEqual(TEXT("the unrelated K2 call is listed unmodified"), JsonObjectArray(Apply.Data, TEXT("unmodified_references")).Num(), 1);
+		}
+		TestEqual(TEXT("exactly one compile ran"), Compiles.Count, 1);
+		TestTrue(TEXT("the binding path follows the native function"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetNativeDirection") });
+		TestTrue(TEXT("the engine virtual agrees"), Player->ReferencesFunction(TEXT("GetNativeDirection"), nullptr));
+		TestFalse(TEXT("no owned occurrence of the source remains"), Player->ReferencesFunction(TEXT("GetDir"), nullptr));
+		TestTrue(TEXT("the K2 call node still names GetDir"), CallNode != nullptr && CallNode->FunctionReference.GetMemberName() == FName(TEXT("GetDir")));
+		TestTrue(TEXT("the Anim Blueprint compiled"), AnimBlueprint->Status != BS_Error);
+	}
 
-		TestFalse(TEXT("an injected compile failure fails the call"), Failed.bSuccess);
-		TestEqual(TEXT("COMPILE_FAILED"), Failed.ErrorCode, CortexErrorCodes::CompileFailed);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationRebindRefusalsTest,
+	"Cortex.Animation.RebindMember.Refusals",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationRebindRefusalsTest::RunTest(const FString& Parameters)
+{
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
+	{
+		return false;
+	}
+	FFixtureGuard Guard(AnimBlueprint);
+
+	if (!TestTrue(TEXT("Blueprint getter and update function"), AddBlueprintFloatGetter(AnimBlueprint, TEXT("GetDir")) != nullptr && AddBlueprintUpdateFunction(AnimBlueprint, TEXT("OnUpdate")) != nullptr))
+	{
+		return false;
+	}
+	CompileAndAssertClean(*this, AnimBlueprint);
+	UAnimGraphNode_SequencePlayer* Player = AddSequencePlayerNode(AnimBlueprint);
+	if (!TestNotNull(TEXT("sequence player"), Player))
+	{
+		return false;
+	}
+	TestTrue(TEXT("function-typed binding"), BindPropertyByReflection(Player, TEXT("PlayRate"), { TEXT("GetDir") }, /*bFunction=*/true));
+	AnimBlueprint->GetPackage()->SetDirtyFlag(false);
+	FCortexCommandRouter Router = MakeAnimGraphRouter();
+
+	// A missing fingerprint.
+	{
+		TSharedPtr<FJsonObject> Params = RebindParams(AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
+		Params->RemoveField(TEXT("expected_fingerprint"));
+		const FCortexCommandResult Missing = Router.Execute(TEXT("anim.rebind_function"), Params);
+		TestFalse(TEXT("a missing fingerprint is refused"), Missing.bSuccess);
+		TestEqual(TEXT("STALE_PRECONDITION"), Missing.ErrorCode, CortexErrorCodes::StalePrecondition);
+	}
+
+	// A fingerprint that really is stale: read it, change the asset, then use it.
+	{
+		const TSharedPtr<FJsonObject> Old = MakeObjectAssetFingerprint(AnimBlueprint).ToJson();
+		TestTrue(TEXT("a later edit"), AddVariable(AnimBlueprint, TEXT("LateVariable"), FloatPinType(), TEXT("0.0")));
+		AnimBlueprint->GetPackage()->SetDirtyFlag(false);
+		TestFalse(TEXT("the fingerprint really changed"), FCortexBatchMutation::FingerprintsMatch(MakeObjectAssetFingerprint(AnimBlueprint).ToJson(), Old));
+		TSharedPtr<FJsonObject> Params = RebindParams(AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
+		Params->SetObjectField(TEXT("expected_fingerprint"), Old);
+		const FCortexCommandResult Stale = Router.Execute(TEXT("anim.rebind_function"), Params);
+		TestFalse(TEXT("a stale fingerprint is refused"), Stale.bSuccess);
+		TestEqual(TEXT("STALE_PRECONDITION"), Stale.ErrorCode, CortexErrorCodes::StalePrecondition);
+		TestTrue(TEXT("the refusal returns the current fingerprint"), Stale.ErrorDetails.IsValid() && Stale.ErrorDetails->HasTypedField<EJson::Object>(TEXT("current_fingerprint")));
+	}
+
+	// Unknown names and a mismatched signature.
+	{
+		TestEqual(TEXT("an unknown from is INVALID_FIELD"), Rebind(Router, AnimBlueprint, TEXT("NoSuchFunction"), TEXT("GetNativeDirection"), false).ErrorCode, CortexErrorCodes::InvalidField);
+		TestEqual(TEXT("an unknown to is INVALID_FIELD"), Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("AlsoNoSuchFunction"), false).ErrorCode, CortexErrorCodes::InvalidField);
+		TestEqual(TEXT("a mismatched signature is TYPE_MISMATCH"), Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("OnUpdate"), false).ErrorCode, CortexErrorCodes::TypeMismatch);
+		TestFalse(TEXT("refusals never dirty the package"), AnimBlueprint->GetPackage()->IsDirty());
+		TestTrue(TEXT("refusals never change the binding"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
+	}
+
+	// A blocked asset path is refused before anything is read or changed.
+	{
+		FCortexAssetMutationGuard::Block(AnimBlueprint, TEXT("Cortex.Animation.RebindMember.Refusals fixture"));
+		FCompileCounter Compiles(AnimBlueprint);
+		const FCortexCommandResult Blocked = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
+		TestFalse(TEXT("a blocked path is refused"), Blocked.bSuccess);
+		TestEqual(TEXT("INVALID_OPERATION"), Blocked.ErrorCode, CortexErrorCodes::InvalidOperation);
+		TestTrue(TEXT("the refusal says the path is blocked"), Blocked.ErrorMessage.Contains(TEXT("blocked")));
+		TestEqual(TEXT("no compile ran"), Compiles.Count, 0);
+		TestFalse(TEXT("nothing was dirtied"), AnimBlueprint->GetPackage()->IsDirty());
+		TestTrue(TEXT("nothing was changed"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationRebindRecoveryTest,
+	"Cortex.Animation.RebindMember.Recovery",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationRebindRecoveryTest::RunTest(const FString& Parameters)
+{
+	using EPhase = FCortexAnimRebindOps::EPhase;
+
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
+	{
+		return false;
+	}
+	FFixtureGuard Guard(AnimBlueprint);
+
+	TestTrue(TEXT("Speed variable"), AddVariable(AnimBlueprint, TEXT("Speed"), FloatPinType(), TEXT("0.0")));
+	if (!TestTrue(TEXT("Blueprint getter and update function"), AddBlueprintFloatGetter(AnimBlueprint, TEXT("GetDir")) != nullptr && AddBlueprintUpdateFunction(AnimBlueprint, TEXT("OnUpdate")) != nullptr))
+	{
+		return false;
+	}
+	CompileAndAssertClean(*this, AnimBlueprint);
+
+	// One node holds a function binding (the source), an unrelated variable binding and a function slot; a K2 call names the source too.
+	UAnimationGraph* AnimGraph = FindRootAnimGraph(AnimBlueprint);
+	UAnimGraphNode_SequencePlayer* Player = AddSequencePlayerNode(AnimBlueprint);
+	UEdGraphNode* CallNode = AddCallNode(AnimGraph, SkeletonFunction(AnimBlueprint, TEXT("GetDir")));
+	if (!TestTrue(TEXT("fixture nodes"), Player != nullptr && CallNode != nullptr))
+	{
+		return false;
+	}
+	TestTrue(TEXT("source binding"), BindPropertyByReflection(Player, TEXT("PlayRate"), { TEXT("GetDir") }, /*bFunction=*/true));
+	TestTrue(TEXT("unrelated variable binding"), BindPropertyByReflection(Player, TEXT("StartPosition"), { TEXT("Speed") }));
+	Player->UpdateFunction.SetSelfMember(TEXT("OnUpdate"));
+	AnimBlueprint->GetPackage()->SetDirtyFlag(false);
+
+	FCortexCommandRouter Router = MakeAnimGraphRouter();
+	auto ExpectRestored = [&](const TCHAR* Label)
+	{
+		const FString Prefix(Label);
+		TestTrue(Prefix + TEXT(": the source binding is back"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
+		TestTrue(Prefix + TEXT(": the unrelated binding is intact"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("StartPosition")) == TArray<FString>{ TEXT("Speed") });
+		FString Function;
+		FString DeclaredIn;
+		TestTrue(Prefix + TEXT(": the slot is reported"), ReportedSlot(Router, AnimBlueprint, Player->NodeGuid, TEXT("update"), Function, DeclaredIn));
+		TestEqual(Prefix + TEXT(": the slot is back"), Function, FString(TEXT("OnUpdate")));
+		TestTrue(Prefix + TEXT(": the K2 call is intact"), Cast<UK2Node_CallFunction>(CallNode)->FunctionReference.GetMemberName() == FName(TEXT("GetDir")));
+		TestFalse(Prefix + TEXT(": the dirty flag is restored"), AnimBlueprint->GetPackage()->IsDirty());
+	};
+
+	struct FCase
+	{
+		const TCHAR* Label;
+		EPhase Phase;
+		bool bCompile;
+		bool bSave;
+		FString ExpectedCode;
+		int32 ExpectedCompiles;
+	};
+	const FCase Cases[] = {
+		{ TEXT("after the edits"), EPhase::AfterMutation, true, false, CortexErrorCodes::VerificationFailed, 1 },
+		{ TEXT("compile"), EPhase::Compile, true, false, CortexErrorCodes::CompileFailed, 1 },
+		{ TEXT("readback"), EPhase::Readback, true, false, CortexErrorCodes::VerificationFailed, 2 },
+		{ TEXT("readback without compile"), EPhase::Readback, false, false, CortexErrorCodes::VerificationFailed, 1 },
+		{ TEXT("save"), EPhase::Save, true, true, CortexErrorCodes::SaveFailed, 2 },
+	};
+	for (const FCase& Case : Cases)
+	{
+		FCortexAnimRebindOps::SetFaultHookForTest([Phase = Case.Phase](EPhase Called, UAnimBlueprint*) { return Called == Phase; });
+		FCompileCounter Compiles(AnimBlueprint);
+		const FCortexCommandResult Failed = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false, Case.bCompile, Case.bSave);
+		FCortexAnimRebindOps::ClearFaultHookForTest();
+
+		TestFalse(FString(Case.Label) + TEXT(": the call fails"), Failed.bSuccess);
+		TestEqual(FString(Case.Label) + TEXT(": the error code"), Failed.ErrorCode, Case.ExpectedCode);
+		FString RollbackStatus;
+		FString RecoveryCompile;
+		if (Failed.ErrorDetails.IsValid())
+		{
+			Failed.ErrorDetails->TryGetStringField(TEXT("rollback_status"), RollbackStatus);
+			Failed.ErrorDetails->TryGetStringField(TEXT("recovery_compile"), RecoveryCompile);
+		}
+		TestEqual(FString(Case.Label) + TEXT(": rollback_status"), RollbackStatus, FString(TEXT("restored")));
+		TestEqual(FString(Case.Label) + TEXT(": a recovery compile ran"), RecoveryCompile, FString(TEXT("run")));
+		TestEqual(FString(Case.Label) + TEXT(": compile count (normal compile plus exactly one recovery compile)"), Compiles.Count, Case.ExpectedCompiles);
+		ExpectRestored(Case.Label);
+		TestTrue(FString(Case.Label) + TEXT(": the asset is not blocked"), Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), true).bSuccess);
+	}
+
+	// A restore step that loses content: the slot comes back, but a binding the journal captured is gone. The verification must catch it,
+	// keep the package dirty and block the asset.
+	{
+		FCortexAnimRebindOps::SetFaultHookForTest([Player](EPhase Called, UAnimBlueprint*)
+		{
+			if (Called == EPhase::Readback)
+			{
+				return true;
+			}
+			if (Called == EPhase::AfterRestore)
+			{
+				RemoveBindingByReflection(Player, TEXT("StartPosition"));
+			}
+			return false;
+		});
+		const FCortexCommandResult Failed = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
+		FCortexAnimRebindOps::ClearFaultHookForTest();
+
+		TestFalse(TEXT("lost content: the call fails"), Failed.bSuccess);
+		TestEqual(TEXT("lost content: VERIFICATION_FAILED"), Failed.ErrorCode, CortexErrorCodes::VerificationFailed);
 		FString RollbackStatus;
 		if (Failed.ErrorDetails.IsValid())
 		{
 			Failed.ErrorDetails->TryGetStringField(TEXT("rollback_status"), RollbackStatus);
 		}
-		TestEqual(TEXT("rollback_status"), RollbackStatus, FString(TEXT("restored")));
-		TestTrue(TEXT("the binding path is restored by content"), BindingPath(Info(Router, AnimBlueprint).Data, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
-		TestTrue(TEXT("the reference set is restored"), RetargetedForms(AnimBlueprint, TEXT("GetDir")) == FromBefore);
-		TestFalse(TEXT("the dirty flag is restored"), AnimBlueprint->GetPackage()->IsDirty());
+		TestEqual(TEXT("lost content: rollback_status"), RollbackStatus, FString(TEXT("verification_failed")));
+		TestTrue(TEXT("lost content: the package stays dirty (no unproven clean flag)"), AnimBlueprint->GetPackage()->IsDirty());
+		const FCortexCommandResult Blocked = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), true);
+		TestFalse(TEXT("lost content: the asset path is blocked"), Blocked.bSuccess);
+		TestEqual(TEXT("lost content: INVALID_OPERATION"), Blocked.ErrorCode, CortexErrorCodes::InvalidOperation);
 	}
 
-	// ── Apply (compile once) ──
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationRebindSlotTest,
+	"Cortex.Animation.RebindMember.Slot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationRebindSlotTest::RunTest(const FString& Parameters)
+{
+	using EPhase = FCortexAnimRebindOps::EPhase;
+
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
 	{
-		const FCortexCommandResult Apply = Router.Execute(TEXT("anim.rebind_function"),
-			RebindParams(AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), /*bDryRun=*/false, /*bCompile=*/true));
-		if (TestTrue(*FString::Printf(TEXT("apply succeeds (%s: %s)"), *Apply.ErrorCode, *Apply.ErrorMessage), Apply.bSuccess) && TestTrue(TEXT("apply data"), Apply.Data.IsValid()))
+		return false;
+	}
+	FFixtureGuard Guard(AnimBlueprint);
+
+	TestTrue(TEXT("Speed variable"), AddVariable(AnimBlueprint, TEXT("Speed"), FloatPinType(), TEXT("0.0")));
+	if (!TestNotNull(TEXT("thread-safe update function with the slot prototype signature"), AddBlueprintUpdateFunction(AnimBlueprint, TEXT("OnUpdate"))))
+	{
+		return false;
+	}
+	UAnimGraphNode_SequencePlayer* Player = AddSequencePlayerNode(AnimBlueprint);
+	if (!TestTrue(TEXT("a sequence player the compiler consumes"), Player != nullptr && ConnectToResult(AnimBlueprint, Player)))
+	{
+		return false;
+	}
+	TestTrue(TEXT("variable binding"), BindPropertyByReflection(Player, TEXT("PlayRate"), { TEXT("Speed") }));
+	Player->UpdateFunction.SetSelfMember(TEXT("OnUpdate"));
+	CompileAndAssertClean(*this, AnimBlueprint);
+	AnimBlueprint->GetPackage()->SetDirtyFlag(false);
+
+	const UFunction* Hook = UCortexAnimTestNativeInstance::StaticClass()->FindFunctionByName(TEXT("NativeUpdateHook"));
+	const UFunction* Update = SkeletonFunction(AnimBlueprint, TEXT("OnUpdate"));
+	if (!TestTrue(TEXT("both slot functions exist"), Hook != nullptr && Update != nullptr))
+	{
+		return false;
+	}
+	TestTrue(TEXT("the Blueprint function and the native hook are signature-compatible"), Update->IsSignatureCompatibleWith(Hook));
+
+	FCortexCommandRouter Router = MakeAnimGraphRouter();
+
+	// ── The slot rolls back to a compile-valid state ──
+	{
+		FCortexAnimRebindOps::SetFaultHookForTest([](EPhase Called, UAnimBlueprint*) { return Called == EPhase::Readback; });
+		const FCortexCommandResult Failed = Rebind(Router, AnimBlueprint, TEXT("OnUpdate"), TEXT("NativeUpdateHook"), false);
+		FCortexAnimRebindOps::ClearFaultHookForTest();
+		TestFalse(TEXT("the injected readback failure fails the call"), Failed.bSuccess);
+		FString Function;
+		FString DeclaredIn;
+		TestTrue(TEXT("the slot is reported after the rollback"), ReportedSlot(Router, AnimBlueprint, Player->NodeGuid, TEXT("update"), Function, DeclaredIn));
+		TestEqual(TEXT("the slot is back on the Blueprint function"), Function, FString(TEXT("OnUpdate")));
+		TestEqual(TEXT("declared_in blueprint"), DeclaredIn, FString(TEXT("blueprint")));
+		TestTrue(TEXT("the variable binding is untouched"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("Speed") });
+		TestTrue(TEXT("the recovered Anim Blueprint compiles clean"), AnimBlueprint->Status == BS_UpToDate);
+	}
+
+	// ── The slot migrates to the native hook and the compiler accepts it on the consumed node ──
+	{
+		const FCortexCommandResult Apply = Rebind(Router, AnimBlueprint, TEXT("OnUpdate"), TEXT("NativeUpdateHook"), false);
+		if (TestTrue(*FString::Printf(TEXT("the slot retarget succeeds (%s: %s)"), *Apply.ErrorCode, *Apply.ErrorMessage), Apply.bSuccess) && Apply.Data.IsValid())
 		{
-			TestEqual(TEXT("one node retargeted"), JsonObjectArray(Apply.Data, TEXT("retargeted")).Num(), 1);
+			TestEqual(TEXT("one slot occurrence retargeted"), JsonObjectArray(Apply.Data, TEXT("retargeted")).Num(), 1);
 			TestEqual(TEXT("compile_status"), Apply.Data->GetStringField(TEXT("compile_status")), FString(TEXT("success")));
-			TestEqual(TEXT("readback_status"), Apply.Data->GetStringField(TEXT("readback_status")), FString(TEXT("matched")));
 		}
-		const FCortexCommandResult After = Info(Router, AnimBlueprint);
-		TestTrue(TEXT("the binding path follows the native function"), BindingPath(After.Data, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetNativeDirection") });
-		TestEqual(TEXT("no retargetable reference to GetDir remains"), RetargetedForms(AnimBlueprint, TEXT("GetDir")).Num(), 0);
-		TestEqual(TEXT("the retargeted reference now names GetNativeDirection"), RetargetedForms(AnimBlueprint, TEXT("GetNativeDirection")).Num(), BaselineToForms.Num() + 1);
-		TestTrue(TEXT("the engine virtual agrees"), Player->ReferencesFunction(TEXT("GetNativeDirection"), nullptr));
-		TestTrue(TEXT("the Anim Blueprint compiled"), AnimBlueprint->Status != BS_Error);
+		FString Function;
+		FString DeclaredIn;
+		TestTrue(TEXT("the slot is reported"), ReportedSlot(Router, AnimBlueprint, Player->NodeGuid, TEXT("update"), Function, DeclaredIn));
+		TestEqual(TEXT("the slot names the native hook"), Function, FString(TEXT("NativeUpdateHook")));
+		TestEqual(TEXT("declared_in native"), DeclaredIn, FString(TEXT("native")));
+		TestTrue(TEXT("the compiled class resolves the slot natively"), Player->UpdateFunction.ResolveMember<UFunction>(AnimBlueprint->GeneratedClass) != nullptr);
+		TestTrue(TEXT("the Anim Blueprint compiles clean with the consumed node"), AnimBlueprint->Status == BS_UpToDate);
 	}
 
-	// ── Slot retarget (compile disabled: the fixture slot function is not prototype-compatible) ──
+	// ── One editor undo restores the slot ──
 	{
-		const FCortexCommandResult Slot = Router.Execute(TEXT("anim.rebind_function"),
-			RebindParams(AnimBlueprint, TEXT("OnUpdate"), TEXT("NativeUpdateHook"), /*bDryRun=*/false, /*bCompile=*/false));
-		if (TestTrue(TEXT("slot retarget succeeds"), Slot.bSuccess) && TestTrue(TEXT("slot data"), Slot.Data.IsValid()))
-		{
-			TestEqual(TEXT("compile not run"), Slot.Data->GetStringField(TEXT("compile_status")), FString(TEXT("not_run")));
-		}
-		const TSharedPtr<FJsonObject> After = Info(Router, AnimBlueprint).Data;
-		bool bSlotFollows = false;
-		for (const TSharedPtr<FJsonObject>& Entry : CollectionItems(After, TEXT("node_functions")))
-		{
-			FString NodeGuidText;
-			if (Entry->TryGetStringField(TEXT("node_guid"), NodeGuidText) && SameGuid(NodeGuidText, Player->NodeGuid)
-				&& Entry->GetStringField(TEXT("slot")) == TEXT("update"))
-			{
-				bSlotFollows = Entry->GetStringField(TEXT("function_name")) == TEXT("NativeUpdateHook");
-			}
-		}
-		TestTrue(TEXT("the slot names the native function"), bSlotFollows);
-		TestEqual(TEXT("the slot reference is retargeted"), RetargetedForms(AnimBlueprint, TEXT("OnUpdate")).Num(), 0);
+		const bool bUndone = GEditor != nullptr && GEditor->UndoTransaction();
+		TestTrue(TEXT("the editor undo runs"), bUndone);
+		TestTrue(TEXT("the slot is back after the undo"), Player->UpdateFunction.GetMemberName() == FName(TEXT("OnUpdate")));
+		TestTrue(TEXT("the variable binding survived the undo"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("Speed") });
 	}
 
 	return true;
