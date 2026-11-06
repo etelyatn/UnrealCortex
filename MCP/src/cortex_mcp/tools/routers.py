@@ -109,6 +109,9 @@ NATIVE_LIMIT_COMMANDS = frozenset({
     ("reflect", "get_referencers"),
     ("reflect", "search"),
     ("statetree", "list_assets"),
+    # get_node_bindings pages its own `nodes` (total/offset/limit/returned_count/has_more) and refuses a limit above 200 with
+    # LIMIT_EXCEEDED; a shortened page would keep those native fields while omitting rows.
+    ("statetree", "get_node_bindings"),
     ("editor", "list_cvars"),
     ("editor", "get_recent_logs"),
     ("anim", "list_assets"),

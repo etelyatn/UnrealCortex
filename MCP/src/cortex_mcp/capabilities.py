@@ -133,8 +133,9 @@ def _build_animation_hint(command_names: set[str]) -> str:
         if "function rebind" in complete_families:
             lines.append(
                 "rebind_function retargets AnimBP function bindings and slots (dry_run defaults to true; pass the "
-                "fingerprint from get_animbp_info; rebind while the old member still exists, then remove it with "
-                "blueprint remove_variable)."
+                "fingerprint from get_animbp_info; rebind while the old function still exists, then retire it with "
+                "blueprint remove_graph, previewing with dry_run=true first). "
+                "Variables are separate: move them with blueprint adopt_native_member."
             )
     lines.append(
         "Use precise canonical selectors for updates/removes, including montage selector { index, name, start_time } "

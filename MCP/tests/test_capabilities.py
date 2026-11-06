@@ -572,6 +572,13 @@ def test_anim_docstrings_advertise_the_function_rebind_family():
     assert "rebind_function" in docstring
     assert "function rebind" in docstring
     assert "dry_run defaults to true" in docstring
+    # The old FUNCTION is retired with the guarded function-graph removal, never with remove_variable (variables only).
+    assert "remove_graph" in docstring
+    assert "dry_run=true" in docstring
+    function_sentence = docstring[docstring.index("rebind_function retargets") :]
+    function_sentence = function_sentence[: function_sentence.index(".") + 1] if "." in function_sentence else function_sentence
+    assert "remove_variable" not in function_sentence
+    assert "adopt_native_member" in docstring
     assert "add_notify" not in docstring
 
 
