@@ -64,9 +64,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	bool bPowerOn = false;
 
-	/** Deliberately differs from the adopted Blueprint default so a moved instance value is observable. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	bool bIsOpen = true;
+	bool bIsOpen = false;
 };
 
 /** Component with an instanced subobject. */

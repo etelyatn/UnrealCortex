@@ -420,8 +420,8 @@ bool FCortexBPAdoptMemberInstancesSurviveTest::RunTest(const FString& Parameters
 		Discard(Blueprint);
 	}
 
-	// Renamed: bOpen (Blueprint default false) -> native bIsOpen (default true). The overriding instance is true, which
-	// differs from both the old default and the native default, so only an explicit move can produce it after the rename.
+	// Renamed: bOpen (Blueprint default false) -> native bIsOpen (default false). The overriding instance is true, so it
+	// differs from the old default, the native default and the new CDO: only an explicit move can produce it after the rename.
 	const auto RunRenamedCase = [this](const TCHAR* AssetName, const bool bRedirect, const bool bAcknowledge)
 	{
 		UBlueprint* Blueprint = MakeObjectStateA(AssetName, TEXT("bOpen"), TEXT("false"));
@@ -464,7 +464,7 @@ bool FCortexBPAdoptMemberInstancesSurviveTest::RunTest(const FString& Parameters
 			UObject* Cdo = Blueprint->GeneratedClass->GetDefaultObject();
 			if (TestNotNull(TEXT("Overriding instance found"), After) && TestNotNull(TEXT("Following instance found"), FollowAfter))
 			{
-				TestTrue(TEXT("The override value moved to the new property (true, not the native default)"), ReadBool(After, TEXT("bIsOpen")));
+				TestTrue(TEXT("The override value moved to the new property (true, neither the native default nor the new CDO)"), ReadBool(After, TEXT("bIsOpen")));
 				TestFalse(TEXT("The following instance equals the CDO (the old default, false)"), ReadBool(FollowAfter, TEXT("bIsOpen")));
 				const FProperty* Property = FindFProperty<FProperty>(FollowAfter->GetClass(), TEXT("bIsOpen"));
 				TestTrue(TEXT("It is not an override"), Property != nullptr && Property->Identical_InContainer(FollowAfter, Cdo));
