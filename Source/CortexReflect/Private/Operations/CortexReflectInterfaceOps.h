@@ -17,6 +17,8 @@ struct FCortexInterfaceFunctionImplementation
 	FString Implementation = TEXT("none");
 	FString GraphName;
 	FGuid GraphGuid;
+	/** event only: composite subgraph path below the event graph when the event was collapsed. */
+	FString SubgraphPath;
 	FGuid EntryNodeGuid;
 	/** function_graph only. */
 	int32 NodeCount = 0;

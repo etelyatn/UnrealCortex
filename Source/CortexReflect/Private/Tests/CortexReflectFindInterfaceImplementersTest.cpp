@@ -402,3 +402,55 @@ bool FCortexReflectFindOverridesInterfaceTest::RunTest(const FString& Parameters
 	}
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectFindInterfaceImplementersCollapsedEventTest,
+	"Cortex.Reflect.FindInterfaceImplementersCollapsedEvent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectFindInterfaceImplementersCollapsedEventTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexIssue122ImplementersTest;
+	FFixture Fixture;
+
+	UBlueprint* Interface = MakeInterface(Fixture, TEXT("BPI_Ping"));
+	UBlueprint* Implementer = Fixture.MakeBlueprint(TEXT("BP_Collapsed"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Interface"), Interface) || !TestNotNull(TEXT("Interface class"), Interface->GeneratedClass.Get()) || !TestNotNull(TEXT("Implementer"), Implementer))
+	{
+		return false;
+	}
+	UClass* InterfaceClass = Interface->GeneratedClass;
+	TestTrue(TEXT("Implements"), FBlueprintEditorUtils::ImplementNewInterface(Implementer, FTopLevelAssetPath(InterfaceClass)));
+	// The interface event was collapsed: it lives in a composite subgraph of the event graph.
+	UK2Node_Composite* Composite = FFixture::AddComposite(FFixture::EventGraph(Implementer));
+	if (!TestNotNull(TEXT("Composite subgraph"), Composite->BoundGraph.Get()))
+	{
+		return false;
+	}
+	UK2Node_Event* Event = FFixture::AddInterfaceEvent(Composite->BoundGraph, TEXT("Notify"), InterfaceClass, true);
+	TestTrue(TEXT("Implementer saved"), Fixture.SaveAsset(Implementer));
+	TestTrue(TEXT("Interface saved"), Fixture.SaveAsset(Interface));
+	Fixture.RegisterSavedFiles();
+
+	const FCortexCommandResult Result = Run(TEXT("find_interface_implementers"), Params(Interface->GetPathName(), Fixture.Dir));
+	if (!TestTrue(TEXT("find_interface_implementers succeeds"), Result.bSuccess))
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Record = FindImplementer(Result.Data, Implementer->GetPathName());
+	if (!TestNotNull(TEXT("Implementer reported"), Record.Get()))
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Notify = FindFunction(Record, TEXT("Notify"));
+	if (TestNotNull(TEXT("Notify"), Notify.Get()))
+	{
+		TestEqual(TEXT("A collapsed interface event is an event, not none"), Notify->GetStringField(TEXT("implementation")), FString(TEXT("event")));
+		TestEqual(TEXT("... entry node"), Notify->GetStringField(TEXT("entry_node_guid")), Event->NodeGuid.ToString());
+		TestEqual(TEXT("... top-level graph"), Notify->GetStringField(TEXT("graph_guid")), FFixture::EventGraph(Implementer)->GraphGuid.ToString());
+		TestEqual(TEXT("... subgraph_path"), Notify->GetStringField(TEXT("subgraph_path")), Composite->BoundGraph->GetName());
+		TestTrue(TEXT("... with its body"), Notify->GetBoolField(TEXT("has_body")));
+	}
+	return true;
+}

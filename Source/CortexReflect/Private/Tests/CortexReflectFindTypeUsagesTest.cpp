@@ -14,6 +14,8 @@
 #include "K2Node_MakeStruct.h"
 #include "K2Node_SetFieldsInStruct.h"
 #include "K2Node_SwitchEnum.h"
+#include "K2Node_Tunnel.h"
+#include "K2Node_Tunnel.h"
 #include "Kismet2/EnumEditorUtils.h"
 #include "Kismet2/StructureEditorUtils.h"
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
@@ -449,6 +451,104 @@ bool FCortexReflectFindTypeUsagesNativeTest::RunTest(const FString& Parameters)
 		{
 			TestEqual(TEXT("enum variable name"), Variables[0]->GetStringField(TEXT("variable")), FString(TEXT("Mode")));
 		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectFindTypeUsagesNodeKindsTest,
+	"Cortex.Reflect.FindTypeUsagesNodeKinds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectFindTypeUsagesNodeKindsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexIssue122TypeUsagesTest;
+	FFixture Fixture;
+
+	FEdGraphPinType IntPin;
+	IntPin.PinCategory = UEdGraphSchema_K2::PC_Int;
+	UUserDefinedStruct* Hit = MakeStruct(Fixture, TEXT("UDS_Hit"), IntPin);
+	UBlueprint* Interface = Fixture.MakeBlueprint(TEXT("BPI_Typed"), UInterface::StaticClass(), BPTYPE_Interface);
+	UBlueprint* Implementer = Fixture.MakeBlueprint(TEXT("BP_Implementer"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("UDS"), Hit) || !TestNotNull(TEXT("Interface"), Interface) || !TestNotNull(TEXT("Implementer"), Implementer))
+	{
+		return false;
+	}
+	TestTrue(TEXT("UDS saved"), Fixture.SaveAsset(Hit));
+
+	// An interface function whose parameter is the UDS; an event node on it takes its pins from that signature.
+	UEdGraph* NotifyGraph = FFixture::AddFunctionGraphTo(Interface, TEXT("Notify"), false);
+	UK2Node_FunctionEntry* NotifyEntry = nullptr;
+	for (UEdGraphNode* Node : NotifyGraph->Nodes)
+	{
+		if (!NotifyEntry)
+		{
+			NotifyEntry = Cast<UK2Node_FunctionEntry>(Node);
+		}
+	}
+	if (!TestNotNull(TEXT("Interface function entry"), NotifyEntry))
+	{
+		return false;
+	}
+	NotifyEntry->CreateUserDefinedPin(TEXT("InHit"), StructPin(Hit), EGPD_Output, false);
+	FKismetEditorUtilities::CompileBlueprint(Interface);
+	if (!TestNotNull(TEXT("Interface class"), Interface->GeneratedClass.Get()))
+	{
+		return false;
+	}
+	UK2Node_Event* Event = FFixture::AddInterfaceEvent(FFixture::EventGraph(Implementer), TEXT("Notify"), Interface->GeneratedClass, false);
+
+	// A collapsed node whose boundary tunnel carries the UDS.
+	UK2Node_Composite* Composite = FFixture::AddComposite(FFixture::EventGraph(Implementer));
+	if (!TestNotNull(TEXT("Composite"), Composite->BoundGraph.Get()) || !TestNotNull(TEXT("Composite entry tunnel"), Composite->InputSinkNode.Get()))
+	{
+		return false;
+	}
+	Composite->InputSinkNode->CreateUserDefinedPin(TEXT("Carried"), StructPin(Hit), EGPD_Output, false);
+
+	// A subgraph that lives only in SubGraphs holding a make-struct of the UDS.
+	UEdGraph* State = FFixture::AddSubGraph(FFixture::EventGraph(Implementer), TEXT("State"));
+	if (!TestNotNull(TEXT("State graph"), State))
+	{
+		return false;
+	}
+	FGraphNodeCreator<UK2Node_MakeStruct> MakeCreator(*State);
+	UK2Node_MakeStruct* InState = MakeCreator.CreateNode();
+	InState->StructType = Hit;
+	MakeCreator.Finalize();
+
+	TestTrue(TEXT("Interface saved"), Fixture.SaveAsset(Interface));
+	TestTrue(TEXT("Implementer saved"), Fixture.SaveAsset(Implementer));
+	Fixture.RegisterSavedFiles();
+
+	const FCortexCommandResult Result = Run(TEXT("find_type_usages"), RequestParams(Hit->GetPathName(), Fixture.Dir));
+	if (!TestTrue(TEXT("find_type_usages succeeds"), Result.bSuccess))
+	{
+		return false;
+	}
+	const TArray<TSharedPtr<FJsonObject>> Pins = InCategory(Result.Data, TEXT("pin"));
+	const TArray<TSharedPtr<FJsonObject>> EventPins = Pins.FilterByPredicate(
+		[&Event](const TSharedPtr<FJsonObject>& Usage) { return Usage->GetStringField(TEXT("node_guid")) == Event->NodeGuid.ToString(); });
+	if (TestEqual(TEXT("The event node's UDS pin is reported"), EventPins.Num(), 1))
+	{
+		TestEqual(TEXT("... as the signature pin"), EventPins[0]->GetStringField(TEXT("pin")), FString(TEXT("InHit")));
+		TestEqual(TEXT("... of class UK2Node_Event"), EventPins[0]->GetStringField(TEXT("node_class")), FString(TEXT("UK2Node_Event")));
+	}
+	TestTrue(TEXT("The collapsed graph's boundary pin is a pin entry"),
+		Pins.ContainsByPredicate([](const TSharedPtr<FJsonObject>& Usage)
+			{ return Usage->GetStringField(TEXT("node_class")) == TEXT("UK2Node_Tunnel") && Usage->GetStringField(TEXT("pin")) == TEXT("Carried"); }));
+	TestTrue(TEXT("... and the collapsed node's own pin is reported too"),
+		Pins.ContainsByPredicate([&Composite](const TSharedPtr<FJsonObject>& Usage) { return Usage->GetStringField(TEXT("node_guid")) == Composite->NodeGuid.ToString(); }));
+	for (const TSharedPtr<FJsonObject>& Parameter : InCategory(Result.Data, TEXT("function_parameter")))
+	{
+		TestNotEqual(TEXT("Boundary pins are not labelled function_parameter"), Parameter->GetStringField(TEXT("pin")), FString(TEXT("Carried")));
+	}
+	const TArray<TSharedPtr<FJsonObject>> Makes = InCategory(Result.Data, TEXT("make_struct"));
+	if (TestEqual(TEXT("The make_struct in the SubGraphs-only graph is found"), Makes.Num(), 1))
+	{
+		TestEqual(TEXT("... in its subgraph"), Makes[0]->GetStringField(TEXT("subgraph_path")), FString(TEXT("State")));
+		TestEqual(TEXT("... node"), Makes[0]->GetStringField(TEXT("node_guid")), InState->NodeGuid.ToString());
 	}
 	return true;
 }

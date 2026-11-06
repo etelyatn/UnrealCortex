@@ -33,10 +33,28 @@ void VisitGraph(
 			continue;
 		}
 		Visitor(TopGraph, SubgraphPath, Node);
+	}
+
+	// Child graphs: composite (collapsed) graphs and the graphs the animation editor keeps in SubGraphs (state machines, states,
+	// transitions, blend spaces). A composite's bound graph is normally also in SubGraphs, so it is visited once.
+	TArray<const UEdGraph*> Children;
+	for (const UEdGraph* Child : Graph->SubGraphs)
+	{
+		Children.AddUnique(Child);
+	}
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
 		if (const UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
 		{
-			const FString Name = Composite->BoundGraph ? Composite->BoundGraph->GetName() : FString();
-			VisitGraph(TopGraph, Composite->BoundGraph, SubgraphPath.IsEmpty() ? Name : FString::Printf(TEXT("%s.%s"), *SubgraphPath, *Name), Depth + 1, Visitor);
+			Children.AddUnique(Composite->BoundGraph);
+		}
+	}
+	for (const UEdGraph* Child : Children)
+	{
+		if (Child && Child != Graph)
+		{
+			const FString Name = Child->GetName();
+			VisitGraph(TopGraph, Child, SubgraphPath.IsEmpty() ? Name : FString::Printf(TEXT("%s.%s"), *SubgraphPath, *Name), Depth + 1, Visitor);
 		}
 	}
 }

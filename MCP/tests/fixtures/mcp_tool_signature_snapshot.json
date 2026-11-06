@@ -1704,7 +1704,8 @@
       "params": [
         "class_name",
         "depth",
-        "limit"
+        "limit",
+        "path_prefixes"
       ]
     },
     "query_usages": {

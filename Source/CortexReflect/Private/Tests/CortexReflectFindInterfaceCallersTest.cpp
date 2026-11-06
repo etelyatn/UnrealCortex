@@ -305,3 +305,55 @@ bool FCortexReflectFindInterfaceCallersNativeTest::RunTest(const FString& Parame
 	}
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectFindInterfaceCallersSubGraphsTest,
+	"Cortex.Reflect.FindInterfaceCallersSubGraphs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReflectFindInterfaceCallersSubGraphsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexIssue122CallersTest;
+	FFixture Fixture;
+
+	UBlueprint* Interface = MakeInterface(Fixture, TEXT("BPI_Ping"));
+	UBlueprint* Holder = Fixture.MakeBlueprint(TEXT("BP_SubGraphs"), AActor::StaticClass());
+	if (!TestNotNull(TEXT("Interface"), Interface) || !TestNotNull(TEXT("Interface class"), Interface->GeneratedClass.Get()) || !TestNotNull(TEXT("Holder"), Holder))
+	{
+		return false;
+	}
+	UClass* InterfaceClass = Interface->GeneratedClass;
+	// Graphs that live only in SubGraphs (animation state, transition and blend-space graphs are kept like this).
+	UEdGraph* State = FFixture::AddSubGraph(FFixture::EventGraph(Holder), TEXT("State"));
+	UEdGraph* Rule = State ? FFixture::AddSubGraph(State, TEXT("Rule")) : nullptr;
+	if (!TestNotNull(TEXT("State graph"), State) || !TestNotNull(TEXT("Nested rule graph"), Rule))
+	{
+		return false;
+	}
+	UK2Node_Message* InState = FFixture::AddMessage(State, TEXT("GetValue"), InterfaceClass);
+	UK2Node_DynamicCast* InRule = FFixture::AddCast(Rule, InterfaceClass);
+	TestTrue(TEXT("Interface saved"), Fixture.SaveAsset(Interface));
+	TestTrue(TEXT("Holder saved"), Fixture.SaveAsset(Holder));
+	Fixture.RegisterSavedFiles();
+
+	const FCortexCommandResult Result = Run(TEXT("find_interface_implementers"), RequestParams(Interface->GetPathName(), Fixture.Dir));
+	if (!TestTrue(TEXT("find_interface_implementers succeeds"), Result.bSuccess))
+	{
+		return false;
+	}
+	const TArray<TSharedPtr<FJsonObject>> Sites = Objects(Result.Data, TEXT("callers"));
+	TestEqual(TEXT("Both nested sites are found"), Sites.Num(), 2);
+	const TSharedPtr<FJsonObject> StateSite = SiteOfNode(Sites, InState->NodeGuid);
+	if (TestNotNull(TEXT("The message in the State subgraph"), StateSite.Get()))
+	{
+		TestEqual(TEXT("... top-level graph"), StateSite->GetStringField(TEXT("graph_guid")), FFixture::EventGraph(Holder)->GraphGuid.ToString());
+		TestEqual(TEXT("... subgraph_path"), StateSite->GetStringField(TEXT("subgraph_path")), FString(TEXT("State")));
+	}
+	const TSharedPtr<FJsonObject> RuleSite = SiteOfNode(Sites, InRule->NodeGuid);
+	if (TestNotNull(TEXT("The cast in the nested Rule subgraph"), RuleSite.Get()))
+	{
+		TestEqual(TEXT("... subgraph_path"), RuleSite->GetStringField(TEXT("subgraph_path")), FString(TEXT("State.Rule")));
+	}
+	return true;
+}

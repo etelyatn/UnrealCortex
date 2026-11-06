@@ -15,7 +15,9 @@
 #include "Engine/UserDefinedEnum.h"
 #include "GameFramework/SaveGame.h"
 #include "K2Node_BreakStruct.h"
+#include "K2Node_CustomEvent.h"
 #include "K2Node_EditablePinBase.h"
+#include "K2Node_FunctionTerminator.h"
 #include "K2Node_EnumLiteral.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_MakeStruct.h"
@@ -290,8 +292,11 @@ namespace CortexReflectTypeUsagePrivate
 						}
 					}
 				}
-				// Function entry/result and custom event pins are the function's parameters; their node pins mirror them.
-				if (const UK2Node_EditablePinBase* Editable = Cast<UK2Node_EditablePinBase>(Node))
+				// Only function entry/result and custom event user pins are a function's parameters; their node pins mirror them.
+				// Event, tunnel (collapsed/macro boundary) and macro instance pins are ordinary pins and fall through below.
+				TSet<FName> ReportedParameters;
+				if (const UK2Node_EditablePinBase* Editable = Cast<UK2Node_EditablePinBase>(Node);
+					Editable && (Editable->IsA<UK2Node_FunctionTerminator>() || Editable->IsA<UK2Node_CustomEvent>()))
 				{
 					for (const TSharedPtr<FUserPinInfo>& Info : Editable->UserDefinedPins)
 					{
@@ -304,15 +309,15 @@ namespace CortexReflectTypeUsagePrivate
 							Usage.Container = ContainerName(Info->PinType);
 							Usage.Role = Role;
 							OutUsages.Add(Usage);
+							ReportedParameters.Add(Info->PinName);
 						}
 					}
-					return;
 				}
 
 				for (const UEdGraphPin* Pin : Node->Pins)
 				{
 					FString Role;
-					if (Pin && RefsType(Pin->PinType, Target.Type, Role))
+					if (Pin && !ReportedParameters.Contains(Pin->PinName) && RefsType(Pin->PinType, Target.Type, Role))
 					{
 						FUsage Usage = Make(TEXT("pin"));
 						Usage.Pin = Pin->PinName.ToString();

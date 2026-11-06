@@ -304,6 +304,17 @@ namespace CortexIssue122ReflectTest
 			SetMemberParentRaw(Event->EventReference, Parent);
 		}
 
+		/** A child graph registered in the parent's SubGraphs only (as animation state/transition graphs are), not bound to a composite node. */
+		static UEdGraph* AddSubGraph(UEdGraph* Parent, const FName Name)
+		{
+			UEdGraph* Sub = FBlueprintEditorUtils::CreateNewGraph(Parent, Name, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+			if (Sub)
+			{
+				Parent->SubGraphs.Add(Sub);
+			}
+			return Sub;
+		}
+
 		/** A composite (collapsed) node holding an empty subgraph; its BoundGraph is where nested nodes go. */
 		static UK2Node_Composite* AddComposite(UEdGraph* Graph)
 		{

@@ -87,29 +87,26 @@ namespace CortexReflectInterfacePrivate
 		}
 
 		// Event-style: an event node whose parent resolves (in the Blueprint's class context, as the engine does) to the interface.
-		for (const UEdGraph* Graph : Blueprint->UbergraphPages)
-		{
-			if (!Graph)
-			{
-				continue;
-			}
-			for (const UEdGraphNode* Node : Graph->Nodes)
+		// It may sit below the top level of an event graph (collapsed into a composite graph), so every nested graph is searched.
+		bool bFound = false;
+		CortexReflectNodeRefs::ForEachNode(Blueprint,
+			[&](const UEdGraph* TopGraph, const FString& SubgraphPath, const UEdGraphNode* Node)
 			{
 				const UK2Node_Event* Event = Cast<UK2Node_Event>(Node);
-				if (!Event || Event->EventReference.GetMemberName() != Function->GetFName()
+				if (bFound || !Event || !Blueprint->UbergraphPages.Contains(TopGraph) || Event->EventReference.GetMemberName() != Function->GetFName()
 					|| !IsInterfaceClass(Event->EventReference.GetMemberParentClass(Blueprint->GeneratedClass), InterfaceAuthority))
 				{
-					continue;
+					return;
 				}
 				const UEdGraphPin* Then = Event->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
+				bFound = true;
 				Result.Implementation = TEXT("event");
-				Result.GraphName = Graph->GetName();
-				Result.GraphGuid = Graph->GraphGuid;
+				Result.GraphName = TopGraph->GetName();
+				Result.GraphGuid = TopGraph->GraphGuid;
+				Result.SubgraphPath = SubgraphPath;
 				Result.EntryNodeGuid = Event->NodeGuid;
 				Result.bHasBody = Then && Then->LinkedTo.Num() > 0;
-				return Result;
-			}
-		}
+			});
 		return Result;
 	}
 }
@@ -239,6 +236,10 @@ TSharedRef<FJsonObject> FCortexInterfaceFunctionImplementation::ToJson() const
 	}
 	else if (Implementation == TEXT("event"))
 	{
+		if (!SubgraphPath.IsEmpty())
+		{
+			Json->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+		}
 		Json->SetBoolField(TEXT("has_body"), bHasBody);
 	}
 	return Json;
