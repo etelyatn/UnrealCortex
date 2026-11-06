@@ -593,6 +593,19 @@ inline bool SetEditorNodeName(FStateTreeEditorNode& Node, const FName NewName)
 #endif
 }
 
+/** The execution-runtime data members (type and stored object) of a live editor node and its copy; the members exist from 5.7, older engines have nothing to compare. */
+inline bool EditorNodeRuntimeDataMatches(const FStateTreeEditorNode& Live, const FStateTreeEditorNode& Copy)
+{
+#if UE_VERSION_OLDER_THAN(5, 7, 0)
+	(void)Live;
+	(void)Copy;
+	return true;
+#else
+	return Live.ExecutionRuntimeData.GetScriptStruct() == Copy.ExecutionRuntimeData.GetScriptStruct()
+		&& Live.ExecutionRuntimeDataObject == Copy.ExecutionRuntimeDataObject;
+#endif
+}
+
 /**
  * Recursive editor-content hash of the authoring data (states, nodes, instance values, bindings). The object fingerprint
  * (package name, dirty flag, depth-1 properties) does not change for a state rename, a task value or a binding edit, so every
@@ -606,6 +619,18 @@ inline uint32 GetEditorContentHash(const UStateTree* StateTree)
 	return 0;
 #else
 	return StateTree != nullptr ? UStateTreeEditingSubsystem::CalculateStateTreeHash(StateTree) : 0;
+#endif
+}
+
+/** The stable property GUID of a named member, or an invalid GUID when unavailable: UStruct::FindPropertyGuidFromName is protected through UE 5.7 (Class.h:970-979 in 5.7, :997 in 5.8 public). Informational in the plan only. */
+inline FGuid FindStructPropertyGuid(const UStruct* Struct, const FName PropertyName)
+{
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+	(void)Struct;
+	(void)PropertyName;
+	return FGuid();
+#else
+	return Struct != nullptr && Struct->ArePropertyGuidsAvailable() ? Struct->FindPropertyGuidFromName(PropertyName) : FGuid();
 #endif
 }
 

@@ -415,13 +415,22 @@ bool CheckExpectedFingerprint(UObject* Asset, const TSharedPtr<FJsonObject>& Par
 	Params->TryGetObjectField(TEXT("expected_fingerprint"), Expected);
 
 	const TSharedPtr<FJsonObject> Current = MakeFingerprint(Asset);
-	if (!Expected || !(*Expected).IsValid() || !FCortexBatchMutation::FingerprintsMatch(Current, *Expected))
+	// FingerprintsMatch compares only the fields the expected token carries, so a token issued before the editor-content signal
+	// existed (or a hand-built partial one) would pass without ever seeing a nested edit: it has to carry the signal itself.
+	const bool bContentSignalRequired = Current->HasTypedField<EJson::Number>(TEXT("editor_content_hash"));
+	const bool bContentSignalPresent = Expected && (*Expected).IsValid()
+		&& (*Expected)->HasTypedField<EJson::Number>(TEXT("editor_content_hash"));
+	if (!Expected || !(*Expected).IsValid()
+		|| (bContentSignalRequired && !bContentSignalPresent)
+		|| !FCortexBatchMutation::FingerprintsMatch(Current, *Expected))
 	{
 		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
 		Details->SetObjectField(TEXT("current_fingerprint"), Current);
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::StalePrecondition,
-			TEXT("Expected fingerprint does not match current StateTree fingerprint"),
+			bContentSignalRequired && !bContentSignalPresent
+				? TEXT("Expected fingerprint lacks editor_content_hash; read a fresh fingerprint from a StateTree command")
+				: TEXT("Expected fingerprint does not match current StateTree fingerprint"),
 			Details);
 		return false;
 	}

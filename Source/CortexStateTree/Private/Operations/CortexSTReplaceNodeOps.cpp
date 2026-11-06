@@ -478,7 +478,15 @@ bool RepNodeBuildNodePlan(
 				: ECortexSTReplacePropertyStatus::Copied;
 		}
 
-		if (NewProperty != nullptr && Kind == ECortexSTReplacePropertyKind::Instance
+		// An explicit stored binding on the old property keeps its own source through the planned rewrite; the compiler resolves
+		// the schema context only for a property that has no binding (StateTreeCompiler.cpp:3162-3173).
+		const bool bOldPropertyBound = Bindings.ContainsByPredicate([&](const CortexSTCompat::FBindingInfo& Binding)
+		{
+			return Binding.Target.StructID == Node.ID
+				&& Binding.Target.Segments.Num() > 0
+				&& Binding.Target.Segments[0].Name == OldName;
+		});
+		if (NewProperty != nullptr && Kind == ECortexSTReplacePropertyKind::Instance && !bOldPropertyBound
 			&& CortexSTCompat::GetPropertyUsage(OldProperty) == CortexSTCompat::EPropertyUsage::Context
 			&& CortexSTCompat::GetPropertyUsage(NewProperty) == CortexSTCompat::EPropertyUsage::Context)
 		{
@@ -596,7 +604,7 @@ bool RepNodeBuildNodePlan(
 		Rewrite.OldPath = Side.Path;
 		Rewrite.NewPath = Side.Path.StartsWith(OldFirst.ToString()) ? NewFirst.ToString() + Side.Path.RightChop(OldFirst.ToString().Len()) : Side.Path;
 		Rewrite.OldPropertyGuid = Side.Segments[0].PropertyGuid;
-		Rewrite.NewPropertyGuid = NewBase->ArePropertyGuidsAvailable() ? NewBase->FindPropertyGuidFromName(NewFirst) : FGuid();
+		Rewrite.NewPropertyGuid = CortexSTCompat::FindStructPropertyGuid(NewBase, NewFirst);
 		Rewrite.NewFirstSegment = NewFirst;
 		Rewrite.FirstSegmentArrayIndex = Side.Segments[0].ArrayIndex;
 		Rewrite.bRenamed = NewFirst != OldFirst;
@@ -808,9 +816,8 @@ bool RepNodeContentMatches(const FRepNodeJournalEntry& Entry)
 	}
 	if (Live.Node.GetScriptStruct() != Copy.Node.GetScriptStruct()
 		|| Live.Instance.GetScriptStruct() != Copy.Instance.GetScriptStruct()
-		|| Live.ExecutionRuntimeData.GetScriptStruct() != Copy.ExecutionRuntimeData.GetScriptStruct()
+		|| !CortexSTCompat::EditorNodeRuntimeDataMatches(Live, Copy)
 		|| Live.InstanceObject != Copy.InstanceObject
-		|| Live.ExecutionRuntimeDataObject != Copy.ExecutionRuntimeDataObject
 		|| Live.GetName() != Copy.GetName())
 	{
 		return false;
@@ -1339,6 +1346,14 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 
 		// F3: editor-owned controls live on the node struct (bTaskEnabled, bConsideredForCompletion, TransitionHandlingPriority),
 		// not on the instance object the property plan enumerates; carry every member the two node types share.
+		TSet<FName> PlannedFlagNames;
+		for (const FCortexSTReplaceProperty& Planned : NodePlan.Properties)
+		{
+			if (Planned.Kind == ECortexSTReplacePropertyKind::NodeFlag)
+			{
+				PlannedFlagNames.Add(Planned.OldName);
+			}
+		}
 		if (Entry.Copy.Node.GetScriptStruct() != Node.Node.GetScriptStruct())
 		{
 			const UScriptStruct* OldNodeStruct = Entry.Copy.Node.GetScriptStruct();
@@ -1354,8 +1369,11 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 						// Wrapper-only members (TaskClass, TaskFlags) are not shared by the replacement type.
 						continue;
 					}
-					if (OldControl->GetFName() == TEXT("Name") || RepNodeIsNodeBookkeeping(OldControl->GetFName()))
+					if (OldControl->GetFName() == TEXT("Name") || RepNodeIsNodeBookkeeping(OldControl->GetFName())
+						|| PlannedFlagNames.Contains(OldControl->GetFName()))
 					{
+						// The property plan decides every flag it lists (copied, default-equal, mapped or acknowledged); the shared
+						// copy only carries members the plan never saw, so the two can never disagree about one value.
 						continue;
 					}
 					const FProperty* NewControl = NewNodeStruct->FindPropertyByName(OldControl->GetFName());
