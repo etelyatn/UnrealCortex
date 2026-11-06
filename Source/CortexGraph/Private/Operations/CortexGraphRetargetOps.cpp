@@ -309,6 +309,10 @@ TSharedPtr<FJsonObject> FCortexGraphRetargetSite::ToJson() const
 	{
 		TSharedPtr<FJsonObject> PinJson = MakeShared<FJsonObject>();
 		PinJson->SetStringField(TEXT("name"), Pin.Name);
+		if (!Pin.Parent.IsEmpty())
+		{
+			PinJson->SetStringField(TEXT("parent"), Pin.Parent);
+		}
 		PinJson->SetStringField(TEXT("direction"), DirectionName(Pin.Direction));
 		PinJson->SetStringField(TEXT("signature"), Pin.Signature);
 		if (!Pin.MapsTo.IsEmpty())
@@ -372,7 +376,7 @@ bool FCortexGraphRetargetSite::FromJson(const TSharedPtr<FJsonObject>& Source, F
 		const TSharedPtr<FJsonObject> PinJson = PinValue.IsValid() ? PinValue->AsObject() : nullptr;
 		if (!PinJson.IsValid()
 			|| !FCortexGraphPatchOps::HasOnlyFields(PinJson,
-				{ TEXT("name"), TEXT("direction"), TEXT("signature"), TEXT("maps_to"), TEXT("links") }, OutError, TEXT("migration.sites pin")))
+				{ TEXT("name"), TEXT("parent"), TEXT("direction"), TEXT("signature"), TEXT("maps_to"), TEXT("links") }, OutError, TEXT("migration.sites pin")))
 		{
 			if (OutError.ErrorCode.IsEmpty())
 			{
@@ -393,6 +397,7 @@ bool FCortexGraphRetargetSite::FromJson(const TSharedPtr<FJsonObject>& Source, F
 			return false;
 		}
 		PinJson->TryGetStringField(TEXT("maps_to"), Pin.MapsTo);
+		PinJson->TryGetStringField(TEXT("parent"), Pin.Parent);
 		for (const TSharedPtr<FJsonValue>& LinkValue : *LinkValues)
 		{
 			const TSharedPtr<FJsonObject> LinkJson = LinkValue.IsValid() ? LinkValue->AsObject() : nullptr;
@@ -424,7 +429,7 @@ FString FCortexGraphRetargetSite::Key() const
 	for (FCortexGraphRetargetPin& Pin : Sorted.Pins)
 	{
 		Pin.Links.Sort(LinkLess);
-		Out += FString::Printf(TEXT("\n pin %s|dir=%d|%s|maps=%s"), *Pin.Name, Pin.Direction, *Pin.Signature, *Pin.MapsTo);
+		Out += FString::Printf(TEXT("\n pin %s|parent=%s|dir=%d|%s|maps=%s"), *Pin.Name, *Pin.Parent, Pin.Direction, *Pin.Signature, *Pin.MapsTo);
 		for (const FCortexGraphRetargetLink& Link : Pin.Links)
 		{
 			Out += FString::Printf(TEXT("\n  link %s.%s"), *Link.NodeGuid, *Link.Pin);
@@ -683,7 +688,7 @@ static TArray<FCortexGraphRetargetDefault> CaptureDefaults(const UEdGraphNode& N
 	TArray<FCortexGraphRetargetDefault> Captured;
 	for (const UEdGraphPin* Pin : Node.Pins)
 	{
-		if (!Pin || Pin->ParentPin != nullptr || !HasUserDefault(*Pin)) continue;
+		if (!Pin || !HasUserDefault(*Pin)) continue;
 		const FCortexGraphRetargetPin* Reviewed = FindPin(Site, Pin->PinName.ToString(), static_cast<int32>(Pin->Direction));
 		if (!Reviewed || Reviewed->MapsTo.IsEmpty() || !Reviewed->Links.IsEmpty()) continue;
 		FCortexGraphRetargetDefault Default;
@@ -743,6 +748,38 @@ static bool ApplyDefaults(UEdGraphNode& Node, const TArray<FCortexGraphRetargetD
 	return true;
 }
 
+/**
+ * Splits, on the final node, every replacement pin whose source pin was split (a struct pin shown as its members), so the member pins
+ * the reviewed links name exist. A pin the reconstruction already re-split (same name) is left alone. Parents are visited before their
+ * own children because the site's pins are sorted by name.
+ */
+static bool SplitMappedParents(UEdGraphNode& Node, const FCortexGraphRetargetSite& Site, FString& OutFailure)
+{
+	const UEdGraphSchema_K2* const Schema = GetDefault<UEdGraphSchema_K2>();
+	for (const FCortexGraphRetargetPin& Reviewed : Site.Pins)
+	{
+		const bool bIsSplitParent = Site.Pins.ContainsByPredicate(
+			[&Reviewed](const FCortexGraphRetargetPin& Child) { return Child.Parent == Reviewed.Name && Child.Direction == Reviewed.Direction; });
+		if (!bIsSplitParent) continue;
+		UEdGraphPin* const Parent = Reviewed.MapsTo.IsEmpty() ? nullptr : Node.FindPin(FName(*Reviewed.MapsTo), static_cast<EEdGraphPinDirection>(Reviewed.Direction));
+		if (!Parent)
+		{
+			OutFailure = FString::Printf(TEXT("the replacement pin of the split pin '%s' does not exist"), *Reviewed.Name);
+			return false;
+		}
+		if (Parent->SubPins.IsEmpty())
+		{
+			Schema->SplitPin(Parent, false);
+		}
+		if (Parent->SubPins.IsEmpty())
+		{
+			OutFailure = FString::Printf(TEXT("the replacement pin '%s' could not be split like '%s'"), *Reviewed.MapsTo, *Reviewed.Name);
+			return false;
+		}
+	}
+	return true;
+}
+
 bool FCortexGraphRetargetOps::ApplyNodeRetarget(
 	UEdGraphNode* Node,
 	const FCortexGraphRetargetSite& Site,
@@ -777,7 +814,7 @@ bool FCortexGraphRetargetOps::ApplyNodeRetarget(
 	if (bApplied)
 	{
 		Node->ReconstructNode();
-		bCarried = ApplyDefaults(*Node, Defaults, OutFailure);
+		bCarried = SplitMappedParents(*Node, Site, OutFailure) && ApplyDefaults(*Node, Defaults, OutFailure);
 	}
 	Node->bDisableOrphanPinSaving = bPreviousOrphanSaving;
 	if (!bApplied)
@@ -814,7 +851,7 @@ UK2Node_CallFunction* FCortexGraphRetargetOps::CreateCallReplacement(
 	Call->SetForceDisplayAsDisabled(Old->IsDisplayAsDisabledForced());
 	Graph->AddNode(Call, false, false);
 	Call->AllocateDefaultPins();
-	if (!ApplyDefaults(*Call, CaptureDefaults(*Old, Site), OutFailure))
+	if (!SplitMappedParents(*Call, Site, OutFailure) || !ApplyDefaults(*Call, CaptureDefaults(*Old, Site), OutFailure))
 	{
 		// The node is not journaled yet: it leaves the graph here so a failed apply never leaves it behind.
 		Call->DestroyNode();
@@ -1086,15 +1123,11 @@ bool FCortexGraphRetargetOps::PlanRetarget(
 		for (UEdGraphPin* Pin : Entry.Node->Pins)
 		{
 			if (!Pin) continue;
-			if (Pin->ParentPin != nullptr) continue;
 			FCortexGraphRetargetPin Reviewed;
 			Reviewed.Name = Pin->PinName.ToString();
+			Reviewed.Parent = Pin->ParentPin ? Pin->ParentPin->PinName.ToString() : FString();
 			Reviewed.Direction = static_cast<int32>(Pin->Direction);
 			Reviewed.Signature = PinSignature(*Pin);
-			if (Pin->SubPins.Num() > 0)
-			{
-				Reasons.Add(FString::Printf(TEXT("split_pin: the pin '%s' is split, which this operation does not retarget"), *Reviewed.Name));
-			}
 			for (const UEdGraphPin* Linked : Pin->LinkedTo)
 			{
 				const UEdGraphNode* const FarNode = Linked ? Linked->GetOwningNode() : nullptr;
@@ -1102,13 +1135,61 @@ bool FCortexGraphRetargetOps::PlanRetarget(
 				Reviewed.Links.Add({ NodeGuidText(*FarNode), Linked->PinName.ToString() });
 			}
 			Reviewed.Links.Sort(LinkLess);
-			if (ModelNode)
+			if (ModelNode && Pin->ParentPin == nullptr)
 			{
 				Reviewed.MapsTo = CounterpartName(OutPlan, Site.Kind, *Pin, *ModelNode, FromOwner);
 			}
 			Site.Pins.Add(MoveTemp(Reviewed));
 		}
 		Site.Pins.Sort(PinLess);
+
+		// Split pins: a pin split into its members is retargeted when the replacement pin carries the same type, by splitting the
+		// replacement and mapping every member by name (a member is named `<parent>_<member>`, so it keeps its member name under the
+		// replacement pin's name). The replacement is split on the model so the members it will really have are the ones compared.
+		if (ModelNode)
+		{
+			const UEdGraphSchema_K2* const SplitSchema = GetDefault<UEdGraphSchema_K2>();
+			for (FCortexGraphRetargetPin& Reviewed : Site.Pins)
+			{
+				UEdGraphPin* const OldPin = Entry.Node->FindPin(FName(*Reviewed.Name), static_cast<EEdGraphPinDirection>(Reviewed.Direction));
+				if (!Reviewed.Parent.IsEmpty())
+				{
+					// A member: it maps under its parent's replacement pin, with the same member name and the same type.
+					const FCortexGraphRetargetPin* Parent = FindPin(Site, Reviewed.Parent, Reviewed.Direction);
+					const FString Prefix = Reviewed.Parent + TEXT("_");
+					if (Parent && !Parent->MapsTo.IsEmpty() && Reviewed.Name.StartsWith(Prefix))
+					{
+						const FString Candidate = Parent->MapsTo + TEXT("_") + Reviewed.Name.RightChop(Prefix.Len());
+						UEdGraphPin* const NewMember = ModelNode->FindPin(FName(*Candidate), static_cast<EEdGraphPinDirection>(Reviewed.Direction));
+						if (NewMember && OldPin && PinTypeSignature(*OldPin) == PinTypeSignature(*NewMember))
+						{
+							Reviewed.MapsTo = Candidate;
+						}
+					}
+					if (Reviewed.MapsTo.IsEmpty())
+					{
+						Reasons.Add(FString::Printf(TEXT("split_pin: the member '%s' of the split pin '%s' has no member of the same name and type on the replacement"), *Reviewed.Name, *Reviewed.Parent));
+					}
+				}
+				const bool bIsSplitParent = Site.Pins.ContainsByPredicate(
+					[&Reviewed](const FCortexGraphRetargetPin& Child) { return Child.Parent == Reviewed.Name && Child.Direction == Reviewed.Direction; });
+				if (!bIsSplitParent) continue;
+				UEdGraphPin* const NewParent = Reviewed.MapsTo.IsEmpty() ? nullptr : ModelNode->FindPin(FName(*Reviewed.MapsTo), static_cast<EEdGraphPinDirection>(Reviewed.Direction));
+				if (!NewParent || !OldPin || PinTypeSignature(*OldPin) != PinTypeSignature(*NewParent))
+				{
+					Reasons.Add(FString::Printf(TEXT("split_pin: the split pin '%s' has no replacement pin of the same type to split"), *Reviewed.Name));
+					continue;
+				}
+				if (NewParent->SubPins.IsEmpty())
+				{
+					SplitSchema->SplitPin(NewParent, false);
+				}
+				if (NewParent->SubPins.IsEmpty())
+				{
+					Reasons.Add(FString::Printf(TEXT("split_pin: the replacement pin '%s' cannot be split"), *Reviewed.MapsTo));
+				}
+			}
+		}
 	}
 	for (FFound& Entry : Found)
 	{
@@ -1137,7 +1218,7 @@ bool FCortexGraphRetargetOps::PlanRetarget(
 			TSet<FString> Counterparts;
 			for (UEdGraphPin* Pin : Entry.Node->Pins)
 			{
-				if (!Pin || Pin->ParentPin != nullptr) continue;
+				if (!Pin) continue;
 				const FCortexGraphRetargetPin* Reviewed = FindPin(Site, Pin->PinName.ToString(), static_cast<int32>(Pin->Direction));
 				if (!Reviewed) continue;
 				if (Reviewed->MapsTo.IsEmpty())
@@ -1491,7 +1572,7 @@ bool FCortexGraphRetargetOps::VerifyRetargetAgainstNative(
 		}
 		for (const UEdGraphPin* Pin : Node->Pins)
 		{
-			if (!Pin || Pin->ParentPin != nullptr) continue;
+			if (!Pin) continue;
 			TSet<FString> Actual;
 			for (const UEdGraphPin* Linked : Pin->LinkedTo)
 			{

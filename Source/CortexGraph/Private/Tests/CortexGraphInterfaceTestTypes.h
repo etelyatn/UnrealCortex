@@ -87,3 +87,25 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, BlueprintCallable, Category = "CortexIssue122")
 	void Take(const FString& Name = TEXT("new default"));
 };
+
+/**
+ * Test-only interface for the retarget split-pin coverage: `GetState` returns a struct (shown split into X/Y/Z by a caller), `GetRotation`
+ * returns a different struct whose members do not match.
+ */
+UINTERFACE(Blueprintable, MinimalAPI)
+class UCortexIssue122SplitInterface : public UInterface
+{
+	GENERATED_BODY()
+};
+
+class ICortexIssue122SplitInterface
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintImplementableEvent, BlueprintCallable, Category = "CortexIssue122")
+	FVector GetState();
+
+	UFUNCTION(BlueprintImplementableEvent, BlueprintCallable, Category = "CortexIssue122")
+	FRotator GetRotation();
+};

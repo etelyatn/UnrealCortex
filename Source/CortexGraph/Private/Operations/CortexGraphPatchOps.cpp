@@ -1307,7 +1307,9 @@ bool FCortexGraphPatchOps::Preflight(
 	}
 	if (!HasOnlyFields(Params, { TEXT("asset_path"), TEXT("target"), TEXT("patch_id"), TEXT("expected_fingerprint"), TEXT("nodes"), TEXT("connections"), TEXT("pin_updates"), TEXT("dry_run"), TEXT("compile"), TEXT("save"), TEXT("allow_noop"), TEXT("expected_validation_hash"), TEXT("migration") }, OutError, TEXT("patch request"))) return false;
 	FString AssetPath;
-	if (!ReadRequiredString(Params, TEXT("asset_path"), AssetPath, OutError) || AssetPath != Blueprint->GetPathName())
+	// Both spellings every Blueprint command accepts name the asset: the package path (/Game/X/BP_A) and the object path (/Game/X/BP_A.BP_A).
+	if (!ReadRequiredString(Params, TEXT("asset_path"), AssetPath, OutError)
+		|| (AssetPath != Blueprint->GetPathName() && AssetPath != Blueprint->GetOutermost()->GetName()))
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("asset_path does not identify the supplied Blueprint"));
 		return false;
@@ -2800,6 +2802,8 @@ struct FGraphPatchJournal
 		bool bIsCast = false;
 		FMemberReference FunctionReference;
 		TWeakObjectPtr<UClass> CastTargetType;
+		/** Pins that were split (struct pins shown as members) before the retarget, parents before their members; recovery splits them again. */
+		TArray<TPair<FName, EEdGraphPinDirection>> SplitPins;
 	};
 	TArray<FRetargetNodeState> RetargetStates;
 	/** The replacement nodes a `retarget_calls` apply created (message -> call), by graph and identity. */
@@ -3467,6 +3471,17 @@ bool RestoreRetargetNodes(UBlueprint* Blueprint, const FGraphPatchJournal& Journ
 		Node->bDisableOrphanPinSaving = true;
 		Node->ReconstructNode();
 		Node->bDisableOrphanPinSaving = bPreviousOrphanSaving;
+		// The reconstruction allocates the unsplit pins; the member pins the snapshots name come back by splitting again.
+		for (const TPair<FName, EEdGraphPinDirection>& Split : State.SplitPins)
+		{
+			UEdGraphPin* const Parent = Node->FindPin(Split.Key, Split.Value);
+			if (!Parent) return false;
+			if (Parent->SubPins.IsEmpty())
+			{
+				GetDefault<UEdGraphSchema_K2>()->SplitPin(Parent, false);
+			}
+			if (Parent->SubPins.IsEmpty()) return false;
+		}
 	}
 	for (int32 Index = Journal.RetargetCreated.Num() - 1; Index >= 0; --Index)
 	{
@@ -5428,6 +5443,18 @@ bool ApplyPrepared(
 				{
 					State.FunctionReference = Call->FunctionReference;
 				}
+				for (const UEdGraphPin* Pin : Step.Node->Pins)
+				{
+					if (Pin && !Pin->SubPins.IsEmpty())
+					{
+						State.SplitPins.Add({ Pin->PinName, Pin->Direction });
+					}
+				}
+				// Parents are named as a prefix of their members, so ordering by name length splits a parent first.
+				State.SplitPins.Sort([](const TPair<FName, EEdGraphPinDirection>& A, const TPair<FName, EEdGraphPinDirection>& B)
+				{
+					return A.Key.ToString().Len() < B.Key.ToString().Len();
+				});
 				Journal.RetargetStates.Add(MoveTemp(State));
 			}
 			JournalRemovalLinkOrders(Step.Node, Journal);

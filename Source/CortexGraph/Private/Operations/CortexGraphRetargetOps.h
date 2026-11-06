@@ -23,6 +23,8 @@ struct FCortexGraphRetargetLink
 struct FCortexGraphRetargetPin
 {
 	FString Name;
+	/** Name of the split pin this pin is a child of (children are named `<parent>_<member>`); empty for a top-level pin. */
+	FString Parent;
 	/** EEdGraphPinDirection value (0 input, 1 output). */
 	int32 Direction = 0;
 	FString Signature;

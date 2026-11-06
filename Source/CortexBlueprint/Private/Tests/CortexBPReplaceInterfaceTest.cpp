@@ -111,9 +111,20 @@ namespace CortexIssue122ReplaceInterfaceEntryTest
 		FGuid EventSecond;
 	};
 
-	bool MakeImplementer(FScope& Scope, UBlueprint* Interface, const TCHAR* Name, const FName FunctionName, const FName EventName, FImplementer& Out)
+	/** `bAssetNamedAsPackage`: the object is named like its package (as every real asset is), so a package path also names the object. */
+	bool MakeImplementer(FScope& Scope, UBlueprint* Interface, const TCHAR* Name, const FName FunctionName, const FName EventName, FImplementer& Out,
+		const bool bAssetNamedAsPackage = false)
 	{
-		Out.Blueprint = CortexAdoptTest::MakeBlueprint(Name, AActor::StaticClass());
+		if (bAssetNamedAsPackage)
+		{
+			const FString Short = FString::Printf(TEXT("%s_%s"), Name, *FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8));
+			Out.Blueprint = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), CreatePackage(*(FString(TEXT("/Game/Temp/")) + Short)), FName(*Short),
+				BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+		}
+		else
+		{
+			Out.Blueprint = CortexAdoptTest::MakeBlueprint(Name, AActor::StaticClass());
+		}
 		if (Out.Blueprint == nullptr)
 		{
 			return false;
@@ -588,6 +599,52 @@ bool FCortexBPReplaceInterfaceLoadFailureTest::RunTest(const FString& Parameters
 			TestEqual(TEXT("The patch identity is the requested one"), ViaEntry.ErrorDetails->GetStringField(TEXT("patch_id")).Len() > 0, true);
 		}
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPReplaceInterfacePackagePathTest,
+	"Cortex.Blueprint.ReplaceInterface.PackagePath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPReplaceInterfacePackagePathTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexIssue122ReplaceInterfaceEntryTest;
+
+	FScope Scope;
+	UBlueprint* const Old = MakeInterface(Scope, TEXT("BPI_Issue122PkgOld"), TEXT("GetValue"), TEXT("Notify"));
+	UBlueprint* const New = MakeInterface(Scope, TEXT("BPI_Issue122PkgNew"), TEXT("FetchValue"), TEXT("Alert"));
+	FImplementer Impl;
+	if (!TestNotNull(TEXT("Old BPI"), Old) || !TestNotNull(TEXT("New BPI"), New)
+		|| !TestTrue(TEXT("Implementer"), MakeImplementer(Scope, Old, TEXT("BP_Issue122Pkg"), TEXT("GetValue"), TEXT("Notify"), Impl, /*bAssetNamedAsPackage=*/true)))
+	{
+		return false;
+	}
+	FCortexBPCommandHandler Handler;
+	const FString PackagePath = Impl.Blueprint->GetOutermost()->GetName();
+	TestNotEqual(TEXT("The package path is not the object path"), PackagePath, Impl.Blueprint->GetPathName());
+
+	// Both spellings of the asset path preview, and derive the same patch id and validation hash.
+	const FCortexCommandResult ObjectPreview = Handler.Execute(TEXT("replace_interface"), EntryParams(Impl.Blueprint, Old, New, false, true));
+	TSharedPtr<FJsonObject> PackageParams = EntryParams(Impl.Blueprint, Old, New, false, true);
+	PackageParams->SetStringField(TEXT("asset_path"), PackagePath);
+	const FCortexCommandResult PackagePreview = Handler.Execute(TEXT("replace_interface"), PackageParams);
+	TestTrue(FString::Printf(TEXT("The object path previews: %s"), *ObjectPreview.ErrorMessage), ObjectPreview.bSuccess);
+	if (!TestTrue(FString::Printf(TEXT("The package path previews: [%s] %s"), *PackagePreview.ErrorCode, *PackagePreview.ErrorMessage), PackagePreview.bSuccess))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Both spellings derive the same patch_id"), StringField(PackagePreview.Data, TEXT("patch_id")), StringField(ObjectPreview.Data, TEXT("patch_id")));
+	TestEqual(TEXT("... and bind the same validation_hash"), StringField(PackagePreview.Data, TEXT("validation_hash")), StringField(ObjectPreview.Data, TEXT("validation_hash")));
+
+	// The apply by package path succeeds.
+	TSharedPtr<FJsonObject> Apply = ApplyParams(Impl.Blueprint, Old, New, PackagePreview.Data);
+	Apply->SetStringField(TEXT("asset_path"), PackagePath);
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("replace_interface"), Apply);
+	TestTrue(FString::Printf(TEXT("The apply by package path succeeds: [%s] %s"), *Applied.ErrorCode, *Applied.ErrorMessage), Applied.bSuccess);
+	TestEqual(TEXT("... and applied"), StringField(Applied.Data, TEXT("apply_status")), FString(TEXT("applied")));
+	TestEqual(TEXT("The new interface is implemented"), InterfaceCount(Impl.Blueprint, New->GeneratedClass), 1);
 	return true;
 }
 

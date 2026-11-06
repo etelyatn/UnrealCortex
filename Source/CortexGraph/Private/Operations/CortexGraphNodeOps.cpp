@@ -369,7 +369,9 @@ UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortex
 		return nullptr;
 	}
 
-	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *NormalizedPath);
+	// A package path (/Game/X/BP_A) names the asset like every other Blueprint command accepts it: its object is the package's short name.
+	const FString ObjectPath = NormalizedPath.Contains(TEXT(".")) ? NormalizedPath : NormalizedPath + TEXT(".") + FPackageName::GetShortName(NormalizedPath);
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *ObjectPath);
 	if (Blueprint == nullptr)
 	{
 		OutError = FCortexCommandRouter::Error(

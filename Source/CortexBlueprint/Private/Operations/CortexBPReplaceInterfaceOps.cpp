@@ -5,6 +5,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "IO/IoHash.h"
+#include "Misc/PackageName.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -97,7 +98,8 @@ FCortexCommandResult FCortexBPReplaceInterfaceOps::Execute(const TSharedPtr<FJso
 	else
 	{
 		TSharedPtr<FJsonObject> Seed = MakeShared<FJsonObject>();
-		Seed->SetStringField(TEXT("asset_path"), AssetPath);
+		// Both asset path spellings name one asset, so they derive one patch id.
+		Seed->SetStringField(TEXT("asset_path"), FPackageName::ObjectPathToPackageName(AssetPath));
 		Seed->SetStringField(TEXT("old_interface"), OldInterface);
 		Seed->SetStringField(TEXT("new_interface"), NewInterface);
 		Seed->SetArrayField(TEXT("function_map"), *FunctionMap);
