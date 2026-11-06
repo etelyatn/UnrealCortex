@@ -5,6 +5,7 @@
 
 class UBlueprint;
 class FJsonObject;
+class FJsonValue;
 
 /**
  * Migration verification snapshots. export_snapshot writes a deterministic, sorted description of a Blueprint
@@ -28,6 +29,18 @@ public:
 	 * An empty Sections set selects every section. Returns nullptr and sets OutError for an unknown section name.
 	 */
 	static TSharedPtr<FJsonObject> BuildSnapshot(UBlueprint* Blueprint, const TSet<FString>& Sections, FString& OutError);
+
+	/**
+	 * Diff two in-memory snapshot documents by section and record key. An empty Sections set compares every section present in
+	 * both documents. OutCounts is {sections: {name: {added, removed, changed, moved}}, totals: {...}}. Fails with INVALID_FIELD on
+	 * a malformed document.
+	 */
+	static FCortexCommandResult DiffSnapshots(
+		const TSharedPtr<FJsonObject>& Before,
+		const TSharedPtr<FJsonObject>& After,
+		const TSet<FString>& Sections,
+		TArray<TSharedPtr<FJsonValue>>& OutDifferences,
+		TSharedPtr<FJsonObject>& OutCounts);
 
 	/** Every section name, in snapshot order. */
 	static const TArray<FString>& AllSectionNames();

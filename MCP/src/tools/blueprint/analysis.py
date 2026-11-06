@@ -80,6 +80,11 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
         migrated_overrides: list[str] | None = None,
         compile: bool = True,
         save: bool = True,
+        dry_run: bool = False,
+        expected_fingerprint: dict | None = None,
+        remove_referencing_nodes: bool = False,
+        acknowledged_collisions: list[str] | None = None,
+        acknowledged_losses: list[str] | None = None,
     ) -> str:
         """Clean up a Blueprint after C++ migration.
 
@@ -103,10 +108,22 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
             compile: Whether to compile the Blueprint after cleanup (default: True)
             save: Persist the whole package, including pre-existing dirty edits (default: True).
                 False stages cleanup in memory without writing the package. Failed compilation
-                never saves; staged edits remain dirty for inspection or repair.
+                never saves; staged edits remain dirty for inspection or repair. Requires compile.
+            dry_run: Report only (referencing nodes, SaveGame findings, reparent collisions,
+                cdo_readback, cdo_expectations) and mutate nothing. Requires save=False; never prunes.
+            expected_fingerprint: Optional stale-write guard returned by a dry run
+                ({graph_authoring_version, graph_authoring_hash, migration_state_hash}).
+            remove_referencing_nodes: Remove the graph nodes that name a variable removed explicitly
+                (default False refuses with MEMBER_REFERENCED, listing them).
+            acknowledged_collisions: The reparent plan's non-blocking keys (variable:<n>, scs:<n>).
+            acknowledged_losses: The SaveGame finding keys (save_game:<variable>).
 
         Returns:
-            JSON includes saved, is_dirty, compiled, compile_status from final cleanup,
+            JSON includes saved, is_dirty, compiled, compile_status from final cleanup, plus
+            reparented, adopted_by_engine, engine_renamed, removed_variables, removed_functions,
+            removed_nodes, referencing_nodes, save_game_findings, required_acknowledgment,
+            cdo_readback ({member: {before, after, preserved}}), cdo_expectations (pass it back as
+            expected_cdo_values in the finalize call) and reparent_plan,
             plus (when migrated_overrides provided):
             - pruned_event_nodes: count of EventGraph entry nodes removed
             - pruned_event_node_names: list of display names of removed nodes
@@ -123,15 +140,19 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
             # Event ActorBeginOverlap entry nodes, deletes orphaned downstream chains,
             # then compiles.
         """
-        if not isinstance(compile, bool) or not isinstance(save, bool):
-            return json.dumps({"error": "compile and save must be booleans"})
+        if not isinstance(compile, bool) or not isinstance(save, bool) or not isinstance(dry_run, bool) \
+                or not isinstance(remove_referencing_nodes, bool):
+            return json.dumps(
+                {"error": "compile, save, dry_run and remove_referencing_nodes must be booleans"})
+        if dry_run and save:
+            return json.dumps({"error": "dry_run requires save=False"})
 
         # Stage the first step: override pruning must finish before compilation or persistence.
         effective_compile = False if migrated_overrides else compile
         params: dict = {
             "asset_path": asset_path,
             "compile": effective_compile,
-            "save": False if migrated_overrides else save,
+            "save": False if (migrated_overrides or dry_run) else save,
         }
         if new_parent_class:
             params["new_parent_class"] = new_parent_class
@@ -139,11 +160,22 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
             params["remove_variables"] = remove_variables
         if remove_functions:
             params["remove_functions"] = remove_functions
+        if dry_run:
+            params["dry_run"] = True
+        if remove_referencing_nodes:
+            params["remove_referencing_nodes"] = True
+        if expected_fingerprint is not None:
+            params["expected_fingerprint"] = expected_fingerprint
+        if acknowledged_collisions:
+            params["acknowledged_collisions"] = list(acknowledged_collisions)
+        if acknowledged_losses:
+            params["acknowledged_losses"] = list(acknowledged_losses)
         try:
             response = connection.send_command("blueprint.cleanup_migration", params)
             cleanup_data = response.get("data", {})
 
-            if not migrated_overrides:
+            # A dry run never prunes: pruning mutates the Blueprint, and the report is the whole point.
+            if not migrated_overrides or dry_run:
                 return format_response(cleanup_data, "cleanup_blueprint_migration")
 
             # Separate known mappings from unrecognized names.
@@ -193,16 +225,22 @@ def register_blueprint_analysis_tools(mcp, connection: UEConnection):
                     "compile": False,
                 })
 
-            final_response = connection.send_command("blueprint.cleanup_migration", {
+            final_params: dict = {
                 "asset_path": asset_path,
                 "compile": compile,
                 "save": save,
-            })
+            }
+            # The stage's CDO expectations are the values the one finalize compile has to preserve.
+            cdo_expectations = cleanup_data.get("cdo_expectations")
+            if isinstance(cdo_expectations, dict) and cdo_expectations:
+                final_params["expected_cdo_values"] = cdo_expectations
+            final_response = connection.send_command("blueprint.cleanup_migration", final_params)
 
             result = dict(cleanup_data)
             result.update(final_response.get("data", {}))
             # The first step's mutation inventory must survive the finalize-only response.
-            for key in ("reparented", "new_parent", "removed_variables", "removed_functions", "warnings"):
+            for key in ("reparented", "new_parent", "removed_variables", "removed_functions", "warnings",
+                        "adopted_by_engine", "engine_renamed", "required_acknowledgment", "cdo_expectations"):
                 if key in cleanup_data:
                     result[key] = cleanup_data[key]
             result["pruned_event_nodes"] = len(pruned_names)

@@ -89,6 +89,12 @@ namespace CortexErrorCodes
 	// Blueprint SCS migration safety
 	static const FString PotentialDataLoss = TEXT("POTENTIAL_DATA_LOSS");
 	static const FString AmbiguousComponentReference = TEXT("AMBIGUOUS_COMPONENT_REFERENCE");
+	// Native member adoption and safe reparent
+	static const FString AmbiguousClass = TEXT("AMBIGUOUS_CLASS");
+	static const FString NameCollision = TEXT("NAME_COLLISION");
+	static const FString MemberReferenced = TEXT("MEMBER_REFERENCED");
+	static const FString MissingPropertyRedirect = TEXT("MISSING_PROPERTY_REDIRECT");
+	static const FString ReadbackMismatch = TEXT("READBACK_MISMATCH");
 	// Level errors
 	static const FString ActorNotFound = TEXT("ACTOR_NOT_FOUND");
 	static const FString AmbiguousActor = TEXT("AMBIGUOUS_ACTOR");
