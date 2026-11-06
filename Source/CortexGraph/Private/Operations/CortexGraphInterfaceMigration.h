@@ -11,6 +11,15 @@ class UEdGraph;
 class UFunction;
 class FJsonObject;
 
+/** One authored default of a mapped, unlinked result input (replacement pin name; value, object path and text buffer). */
+struct FCortexGraphInterfaceResultDefault
+{
+	FString ToPin;
+	FString Value;
+	FString ObjectPath;
+	FString Text;
+};
+
 /**
  * One mapped function of a `replace_interface` request: the implementation of an old interface function that moves to a
  * function of the new interface. Every field is a durable name or GUID, so apply, readback and recovery rebuild every
@@ -38,6 +47,8 @@ struct FCortexGraphInterfaceFunctionPlan
 	FString ResultIdentity;
 	/** The reviewed pin_map, canonical request entries {entry, from_pin, to_pin}. */
 	TArray<TSharedPtr<FJsonValue>> PinMap;
+	/** The typed default state of the mapped, unlinked result inputs, applied to the replacement and read back. */
+	TArray<FCortexGraphInterfaceResultDefault> ResultDefaults;
 
 	TSharedPtr<FJsonObject> ToJson() const;
 	static bool FromJson(const TSharedPtr<FJsonObject>& Source, FCortexGraphInterfaceFunctionPlan& OutPlan, FCortexCommandResult& OutError);
@@ -161,6 +172,9 @@ public:
 
 	/** Removes the (now graph-free) old interface description. */
 	static bool RemoveOldInterface(UBlueprint* Blueprint, UClass* OldInterface, FString& OutFailure);
+
+	/** Applies the planned authored result-input defaults of a mapped function to its (just registered) replacement result. */
+	static bool ApplyResultDefaults(UBlueprint* Blueprint, const FCortexGraphInterfaceFunctionPlan& Function, FString& OutFailure);
 
 	/**
 	 * Native readback of the swap: new interface present exactly once, old absent, every adopted graph owned by the new

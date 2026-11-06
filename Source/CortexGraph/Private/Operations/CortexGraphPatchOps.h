@@ -295,7 +295,7 @@ public:
 		const FGuid& GraphGuid,
 		FString& OutKind,
 		FCortexCommandResult& OutError);
-	/** Every graph the patch route may address, in discovery order: the user graphs followed by their composite children. */
+	/** Every graph of the asset, user graphs and every composite child at any depth (each once), depth-first. Exhaustive, unlike the depth-bounded `graph_ref` addressing. */
 	static void CollectAddressableGraphs(UBlueprint* Blueprint, TArray<FCortexGraphPatchGraphRef>& OutGraphs);
 	/**
 	 * Deterministic node identity of one planned identity seed: a stable hash of the canonical patch
@@ -303,6 +303,8 @@ public:
 	 * derive through this one function, so no second identity scheme can appear.
 	 */
 	static FGuid DeriveNodeGuid(const FString& PatchId, const FString& ClientId);
+	/** The canonical (sorted-key, order-preserving arrays) serialization the patch shell hashes requests with. */
+	static FString CanonicalJson(const TSharedPtr<FJsonObject>& Object);
 	/** Canonical planned signature descriptor of one native pin. */
 	static TSharedPtr<FJsonObject> MakePinSignatureDescriptor(const UEdGraphPin& Pin);
 	/**

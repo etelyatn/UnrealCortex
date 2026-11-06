@@ -462,4 +462,133 @@ bool FCortexBPReplaceInterfaceTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+namespace CortexIssue122ReplaceInterfaceEntryTest
+{
+	/** The same JSON value with every object's keys inserted in the opposite order; arrays keep their order. */
+	TSharedPtr<FJsonValue> Reordered(const TSharedPtr<FJsonValue>& Value)
+	{
+		if (Value->Type == EJson::Object)
+		{
+			TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+			TArray<TPair<FString, TSharedPtr<FJsonValue>>> Pairs;
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Value->AsObject()->Values) { Pairs.Add(Pair); }
+			for (int32 Index = Pairs.Num() - 1; Index >= 0; --Index) { Out->SetField(Pairs[Index].Key, Reordered(Pairs[Index].Value)); }
+			return MakeShared<FJsonValueObject>(Out);
+		}
+		if (Value->Type == EJson::Array)
+		{
+			TArray<TSharedPtr<FJsonValue>> Items;
+			for (const TSharedPtr<FJsonValue>& Item : Value->AsArray()) { Items.Add(Reordered(Item)); }
+			return MakeShared<FJsonValueArray>(Items);
+		}
+		return Value;
+	}
+
+	TSharedPtr<FJsonObject> ReorderedParams(UBlueprint* Blueprint, UBlueprint* Old, UBlueprint* New, const bool bDryRun)
+	{
+		TSharedPtr<FJsonObject> Params = EntryParams(Blueprint, Old, New, false, bDryRun);
+		TArray<TSharedPtr<FJsonValue>> Map;
+		for (const TSharedPtr<FJsonValue>& Entry : FunctionMap(false)) { Map.Add(Reordered(Entry)); }
+		Params->SetArrayField(TEXT("function_map"), Map);
+		return Params;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPReplaceInterfaceCanonicalIdTest,
+	"Cortex.Blueprint.ReplaceInterface.CanonicalId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPReplaceInterfaceCanonicalIdTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexIssue122ReplaceInterfaceEntryTest;
+
+	FScope Scope;
+	UBlueprint* const Old = MakeInterface(Scope, TEXT("BPI_Issue122IdOld"), TEXT("GetValue"), TEXT("Notify"));
+	UBlueprint* const New = MakeInterface(Scope, TEXT("BPI_Issue122IdNew"), TEXT("FetchValue"), TEXT("Alert"));
+	FImplementer Impl;
+	if (!TestNotNull(TEXT("Old BPI"), Old) || !TestNotNull(TEXT("New BPI"), New)
+		|| !TestTrue(TEXT("Implementer"), MakeImplementer(Scope, Old, TEXT("BP_Issue122Id"), TEXT("GetValue"), TEXT("Notify"), Impl)))
+	{
+		return false;
+	}
+	FCortexBPCommandHandler Handler;
+	const FCortexCommandResult Plain = Handler.Execute(TEXT("replace_interface"), EntryParams(Impl.Blueprint, Old, New, false, true));
+	const FCortexCommandResult Shuffled = Handler.Execute(TEXT("replace_interface"), ReorderedParams(Impl.Blueprint, Old, New, true));
+	if (!TestTrue(TEXT("Both previews succeed"), Plain.bSuccess && Shuffled.bSuccess))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Reordered object keys derive the same patch_id"), StringField(Shuffled.Data, TEXT("patch_id")), StringField(Plain.Data, TEXT("patch_id")));
+	TestEqual(TEXT("... and bind the same validation_hash"), StringField(Shuffled.Data, TEXT("validation_hash")), StringField(Plain.Data, TEXT("validation_hash")));
+
+	// Apply the reordered request, then replay the plain one: an unchanged no-op.
+	TSharedPtr<FJsonObject> Apply = ReorderedParams(Impl.Blueprint, Old, New, false);
+	const TSharedPtr<FJsonObject>* Fingerprint = nullptr;
+	if (Plain.Data->TryGetObjectField(TEXT("fingerprint_before"), Fingerprint)) { Apply->SetObjectField(TEXT("expected_fingerprint"), *Fingerprint); }
+	Apply->SetStringField(TEXT("expected_validation_hash"), StringField(Plain.Data, TEXT("validation_hash")));
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("replace_interface"), Apply);
+	TestTrue(FString::Printf(TEXT("The reordered apply succeeds: %s"), *Applied.ErrorMessage), Applied.bSuccess);
+	const FCortexCommandResult ReplayPreview = Handler.Execute(TEXT("replace_interface"), EntryParams(Impl.Blueprint, Old, New, false, true));
+	if (TestTrue(FString::Printf(TEXT("The replay previews: %s"), *ReplayPreview.ErrorMessage), ReplayPreview.bSuccess))
+	{
+		const FCortexCommandResult Replay = Handler.Execute(TEXT("replace_interface"), ApplyParams(Impl.Blueprint, Old, New, ReplayPreview.Data));
+		TestTrue(TEXT("The replay succeeds"), Replay.bSuccess);
+		TestEqual(TEXT("... unchanged"), StringField(Replay.Data, TEXT("apply_status")), FString(TEXT("unchanged")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPReplaceInterfaceLoadFailureTest,
+	"Cortex.Blueprint.ReplaceInterface.LoadFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPReplaceInterfaceLoadFailureTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexBPCommandHandler Handler;
+	FCortexGraphCommandHandler GraphHandler;
+	const TCHAR* const Assets[] = { TEXT("/Game/Temp/Issue122DoesNotExist.Issue122DoesNotExist"), TEXT("NotAnAssetPath") };
+	for (const TCHAR* Asset : Assets)
+	{
+		const FString PatchId = TEXT("00000000-0000-0000-0000-000000122601");
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("asset_path"), Asset);
+		Entry->SetStringField(TEXT("old_interface"), TEXT("/Game/Temp/Old.Old"));
+		Entry->SetStringField(TEXT("new_interface"), TEXT("/Script/CortexGraph.CortexIssue122GraphInterface"));
+		Entry->SetArrayField(TEXT("function_map"), TArray<TSharedPtr<FJsonValue>>());
+		Entry->SetBoolField(TEXT("dry_run"), true);
+		Entry->SetStringField(TEXT("patch_id"), PatchId);
+		TSharedPtr<FJsonObject> Patch = MakeShared<FJsonObject>();
+		Patch->SetStringField(TEXT("asset_path"), Asset);
+		Patch->SetStringField(TEXT("patch_id"), PatchId);
+		Patch->SetBoolField(TEXT("dry_run"), true);
+		TSharedPtr<FJsonObject> Migration = MakeShared<FJsonObject>();
+		Migration->SetStringField(TEXT("op"), TEXT("replace_interface"));
+		Migration->SetStringField(TEXT("old_interface"), TEXT("/Game/Temp/Old.Old"));
+		Migration->SetStringField(TEXT("new_interface"), TEXT("/Script/CortexGraph.CortexIssue122GraphInterface"));
+		Migration->SetArrayField(TEXT("function_map"), TArray<TSharedPtr<FJsonValue>>());
+		Patch->SetObjectField(TEXT("migration"), Migration);
+		const FCortexCommandResult ViaEntry = Handler.Execute(TEXT("replace_interface"), Entry);
+		const FCortexCommandResult Direct = GraphHandler.Execute(TEXT("apply_patch"), Patch);
+		TestFalse(FString::Printf(TEXT("%s: the entry fails"), Asset), ViaEntry.bSuccess);
+		TestFalse(FString::Printf(TEXT("%s: the direct patch fails"), Asset), Direct.bSuccess);
+		TestEqual(FString::Printf(TEXT("%s: same error code"), Asset), ViaEntry.ErrorCode, Direct.ErrorCode);
+		if (TestTrue(FString::Printf(TEXT("%s: the entry carries the compact outcome envelope"), Asset), ViaEntry.ErrorDetails.IsValid() && Direct.ErrorDetails.IsValid()))
+		{
+			for (const TCHAR* Field : { TEXT("patch_id"), TEXT("apply_status"), TEXT("compile_status"), TEXT("readback_status"), TEXT("rollback_status"), TEXT("save_status"), TEXT("post_save_status") })
+			{
+				FString A, B;
+				ViaEntry.ErrorDetails->TryGetStringField(Field, A);
+				Direct.ErrorDetails->TryGetStringField(Field, B);
+				TestEqual(FString::Printf(TEXT("%s: %s matches"), Asset, Field), A, B);
+			}
+			TestEqual(TEXT("The patch identity is the requested one"), ViaEntry.ErrorDetails->GetStringField(TEXT("patch_id")).Len() > 0, true);
+		}
+	}
+	return true;
+}
+
 #endif // WITH_EDITOR && WITH_AUTOMATION_TESTS

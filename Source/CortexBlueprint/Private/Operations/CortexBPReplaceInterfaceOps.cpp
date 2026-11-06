@@ -43,21 +43,7 @@ bool ReadStrictBool(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, c
 	return true;
 }
 
-/** The deterministic patch id of one request: a hash of the canonical request, so an identical request replays idempotently. */
-FString DerivePatchId(const FString& AssetPath, const FString& OldInterface, const FString& NewInterface, const TArray<TSharedPtr<FJsonValue>>& FunctionMap)
-{
-	FString Canonical = FString::Printf(TEXT("cortex.blueprint.replace_interface|%s|%s|%s|"), *AssetPath, *OldInterface, *NewInterface);
-	FString MapText;
-	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&MapText);
-	FJsonSerializer::Serialize(FunctionMap, Writer);
-	Writer->Close();
-	Canonical += MapText;
-	FTCHARToUTF8 Utf8(*Canonical);
-	const FIoHash Hash = FIoHash::HashBuffer(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
-	uint32 Words[4] = {};
-	FMemory::Memcpy(Words, Hash.GetBytes(), sizeof(Words));
-	return FGuid(Words[0], Words[1], Words[2], Words[3]).ToString(EGuidFormats::DigitsWithHyphens);
-}
+
 }
 
 FCortexCommandResult FCortexBPReplaceInterfaceOps::Execute(const TSharedPtr<FJsonObject>& Params)
@@ -118,7 +104,12 @@ FCortexCommandResult FCortexBPReplaceInterfaceOps::Execute(const TSharedPtr<FJso
 	}
 	else
 	{
-		PatchId = DerivePatchId(AssetPath, OldInterface, NewInterface, *FunctionMap);
+		TSharedPtr<FJsonObject> Seed = MakeShared<FJsonObject>();
+		Seed->SetStringField(TEXT("asset_path"), AssetPath);
+		Seed->SetStringField(TEXT("old_interface"), OldInterface);
+		Seed->SetStringField(TEXT("new_interface"), NewInterface);
+		Seed->SetArrayField(TEXT("function_map"), *FunctionMap);
+		PatchId = FCortexGraphReplaceInterface::DeriveRequestId(Seed);
 	}
 
 	TSharedPtr<FJsonObject> Migration = MakeShared<FJsonObject>();

@@ -1191,16 +1191,35 @@ void FCortexGraphPatchOps::CollectAddressableGraphs(UBlueprint* Blueprint, TArra
 	{
 		return;
 	}
-	TArray<FCortexGraphChoice> Choices;
-	CollectAllGraphChoices(Blueprint, Choices);
-	for (const FCortexGraphChoice& Choice : Choices)
+	// Exhaustive: unlike the addressing helper behind `graph_ref`, which publishes composite paths only to a fixed depth, a
+	// whole-asset consumer must not miss a graph. Each graph is visited once, at any nesting depth.
+	TArray<FCortexGraphEntry> Entries;
+	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
+	TSet<const UEdGraph*> Visited;
+	TFunction<void(UEdGraph*, const FString&, const ECortexGraphKind)> Walk;
+	Walk = [&](UEdGraph* Graph, const FString& Path, const ECortexGraphKind Kind)
 	{
+		if (!Graph || Visited.Contains(Graph)) return;
+		Visited.Add(Graph);
 		FCortexGraphPatchGraphRef Ref;
-		Ref.Graph = Choice.Graph;
-		Ref.SubgraphPath = Choice.RootRelativePath;
-		Ref.Kind = FCortexGraphNodeOps::GraphKindToString(Choice.Kind);
-		Ref.bMutable = FCortexGraphNodeOps::IsMutableGraphKind(Choice.Kind);
+		Ref.Graph = Graph;
+		Ref.SubgraphPath = Path;
+		Ref.Kind = FCortexGraphNodeOps::GraphKindToString(Kind);
+		Ref.bMutable = FCortexGraphNodeOps::IsMutableGraphKind(Kind);
 		OutGraphs.Add(MoveTemp(Ref));
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			const UK2Node_Composite* const Composite = IsValid(Node) ? Cast<UK2Node_Composite>(Node) : nullptr;
+			if (Composite && IsValid(Composite->BoundGraph))
+			{
+				const FString ChildPath = Path.IsEmpty() ? Composite->BoundGraph->GetName() : FString::Printf(TEXT("%s.%s"), *Path, *Composite->BoundGraph->GetName());
+				Walk(Composite->BoundGraph, ChildPath, Kind);
+			}
+		}
+	};
+	for (const FCortexGraphEntry& Entry : Entries)
+	{
+		Walk(Entry.Graph, FString(), Entry.Kind);
 	}
 }
 
@@ -5623,6 +5642,13 @@ bool ApplyPrepared(
 			{
 				return Fail(EntryFailure);
 			}
+			// The replacement result is created with the declaration's plain defaults: the authored literals of the mapped result inputs
+			// are applied to it here and read back by the interface readback.
+			FString DefaultsFailure;
+			if (!FCortexGraphInterfaceMigration::ApplyResultDefaults(Blueprint, Function, DefaultsFailure))
+			{
+				return Fail(DefaultsFailure);
+			}
 			Journal.InterfaceEntryPlans.Add(MoveTemp(EntryPlan));
 		}
 		if (ShouldInjectApplyFault(TEXT("migration_interface_after_entries")))
@@ -6400,4 +6426,9 @@ void FCortexGraphPatchOps::SetPostSaveVerificationFaultForTesting(const FName Ch
 FGuid FCortexGraphPatchOps::DeriveNodeGuid(const FString& PatchId, const FString& ClientId)
 {
 	return DerivePlannedNodeGuid(PatchId, ClientId);
+}
+
+FString FCortexGraphPatchOps::CanonicalJson(const TSharedPtr<FJsonObject>& Object)
+{
+	return CanonicalObject(Object);
 }

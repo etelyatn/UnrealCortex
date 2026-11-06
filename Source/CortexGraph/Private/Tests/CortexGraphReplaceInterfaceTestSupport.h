@@ -88,7 +88,7 @@ namespace CortexGraphReplaceInterfaceTest
 		return FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	}
 
-	inline UEdGraph* AddInterfaceFunction(UBlueprint* Interface, const FName Name, const bool bWithOutput, const bool bWithAmount = false)
+	inline UEdGraph* AddInterfaceFunction(UBlueprint* Interface, const FName Name, const bool bWithOutput, const bool bWithAmount = false, const bool bWithInput = false)
 	{
 		UEdGraph* Graph = FBlueprintEditorUtils::CreateNewGraph(Interface, Name, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
 		if (Graph == nullptr)
@@ -104,6 +104,13 @@ namespace CortexGraphReplaceInterfaceTest
 		if (Entry == nullptr)
 		{
 			return nullptr;
+		}
+		if (bWithInput)
+		{
+			FEdGraphPinType InType;
+			InType.PinCategory = UEdGraphSchema_K2::PC_Real;
+			InType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+			Entry->CreateUserDefinedPin(TEXT("In"), InType, EGPD_Output, false);
 		}
 		if (bWithAmount)
 		{
@@ -128,7 +135,7 @@ namespace CortexGraphReplaceInterfaceTest
 
 	/** A compiled BPI: GetValue (double output, function-style), Notify(Amount) (void, event-style) and an optional extra function-style function. */
 	inline UBlueprint* MakeInterface(FScope& Scope, const TCHAR* Name, const TCHAR* FunctionStyle = TEXT("GetValue"), const TCHAR* EventStyle = TEXT("Notify"),
-		const TCHAR* ExtraFunctionStyle = nullptr)
+		const TCHAR* ExtraFunctionStyle = nullptr, const bool bFunctionInput = false)
 	{
 		UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Game/Temp/%s_%s"), Name, *UniqueSuffix()));
 		UBlueprint* Interface = FKismetEditorUtilities::CreateBlueprint(
@@ -138,7 +145,7 @@ namespace CortexGraphReplaceInterfaceTest
 			return nullptr;
 		}
 		Scope.Blueprints.Add(Interface);
-		if (AddInterfaceFunction(Interface, FName(FunctionStyle), true) == nullptr
+		if (AddInterfaceFunction(Interface, FName(FunctionStyle), true, false, bFunctionInput) == nullptr
 			|| AddInterfaceFunction(Interface, FName(EventStyle), false, true) == nullptr
 			|| (ExtraFunctionStyle != nullptr && AddInterfaceFunction(Interface, FName(ExtraFunctionStyle), true) == nullptr))
 		{

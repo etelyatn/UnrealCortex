@@ -15,6 +15,7 @@
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
+#include "IO/IoHash.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
 #include "Operations/CortexGraphMigrationOps.h"
@@ -120,14 +121,70 @@ bool ReadStrings(const TSharedPtr<FJsonObject>& Source, const TCHAR* Field, TArr
 	return true;
 }
 
-/** A function graph carries an implementation when it owns a node besides its entry and result terminators. */
+/** A pin value that is the type's plain default: nothing an author set. */
+bool IsPlainDefault(const UEdGraphPin* Pin)
+{
+	if (Pin->DefaultObject != nullptr || !Pin->DefaultTextValue.IsEmpty())
+	{
+		return false;
+	}
+	const FString& Value = Pin->DefaultValue;
+	if (Value.IsEmpty() || Value == TEXT("false") || Value == TEXT("None"))
+	{
+		return true;
+	}
+	for (const TCHAR Char : Value)
+	{
+		if (!FChar::IsWhitespace(Char) && Char != TEXT('0') && Char != TEXT('.') && Char != TEXT(',') && Char != TEXT('(') && Char != TEXT(')') && Char != TEXT('+') && Char != TEXT('-'))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+/** True when the function declares an output, so its graph owns a result terminator. */
+bool FunctionHasResult(const UFunction* Function)
+{
+	for (TFieldIterator<FProperty> It(Function); It && (It->PropertyFlags & CPF_Parm); ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_OutParm))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * A function graph carries an implementation when it owns a node besides its terminators, or when the terminators themselves
+ * carry authored behavior: a data link on either of them (a parameter passthrough) or a non-default result literal. An engine-made
+ * empty stub has none of these and stays droppable.
+ */
 bool GraphHasBody(const UEdGraph* Graph)
 {
 	for (const UEdGraphNode* Node : Graph->Nodes)
 	{
-		if (Node && !Cast<UK2Node_FunctionEntry>(Node) && !Cast<UK2Node_FunctionResult>(Node))
+		if (!Node)
+		{
+			continue;
+		}
+		const bool bEntry = Cast<UK2Node_FunctionEntry>(Node) != nullptr;
+		const bool bResult = Cast<UK2Node_FunctionResult>(Node) != nullptr;
+		if (!bEntry && !bResult)
 		{
 			return true;
+		}
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->bHidden || Pin->ParentPin != nullptr || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+			{
+				continue;
+			}
+			if (Pin->LinkedTo.Num() > 0 || (bResult && Pin->Direction == EGPD_Input && !IsPlainDefault(Pin)))
+			{
+				return true;
+			}
 		}
 	}
 	return false;
@@ -339,6 +396,17 @@ TSharedPtr<FJsonObject> FCortexGraphInterfaceFunctionPlan::ToJson() const
 	Json->SetStringField(TEXT("entry_identity"), EntryIdentity);
 	Json->SetStringField(TEXT("result_identity"), ResultIdentity);
 	Json->SetArrayField(TEXT("pin_map"), PinMap);
+	TArray<TSharedPtr<FJsonValue>> DefaultValues;
+	for (const FCortexGraphInterfaceResultDefault& Default : ResultDefaults)
+	{
+		TSharedPtr<FJsonObject> DefaultJson = MakeShared<FJsonObject>();
+		DefaultJson->SetStringField(TEXT("to_pin"), Default.ToPin);
+		DefaultJson->SetStringField(TEXT("value"), Default.Value);
+		DefaultJson->SetStringField(TEXT("object"), Default.ObjectPath);
+		DefaultJson->SetStringField(TEXT("text"), Default.Text);
+		DefaultValues.Add(MakeShared<FJsonValueObject>(DefaultJson));
+	}
+	Json->SetArrayField(TEXT("result_defaults"), DefaultValues);
 	return Json;
 }
 
@@ -368,6 +436,24 @@ bool FCortexGraphInterfaceFunctionPlan::FromJson(
 	}
 	OutPlan.NodeCount = static_cast<int32>(NodeCountValue);
 	OutPlan.PinMap = *PinMapValues;
+	const TArray<TSharedPtr<FJsonValue>>* DefaultValues = nullptr;
+	if (Source->TryGetArrayField(TEXT("result_defaults"), DefaultValues) && DefaultValues)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *DefaultValues)
+		{
+			const TSharedPtr<FJsonObject> Json = Value.IsValid() ? Value->AsObject() : nullptr;
+			FCortexGraphInterfaceResultDefault Default;
+			if (!Json.IsValid() || !Json->TryGetStringField(TEXT("to_pin"), Default.ToPin))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("prepared replace_interface function plan has an invalid result default"));
+				return false;
+			}
+			Json->TryGetStringField(TEXT("value"), Default.Value);
+			Json->TryGetStringField(TEXT("object"), Default.ObjectPath);
+			Json->TryGetStringField(TEXT("text"), Default.Text);
+			OutPlan.ResultDefaults.Add(MoveTemp(Default));
+		}
+	}
 	return true;
 }
 
@@ -824,6 +910,7 @@ bool FCortexGraphInterfaceMigration::PlanInterfaceReplacement(
 			Function.From = Entry.From.ToString();
 			Function.To = Entry.To.ToString();
 			Function.bToIsEvent = UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(NewFunction);
+			Function.bToHasResult = !Function.bToIsEvent && FunctionHasResult(NewFunction);
 			Function.Implementation = Function.bToIsEvent ? EventKind : FunctionGraphKind;
 			Function.EntryIdentity = Guid(FCortexGraphPatchOps::DeriveNodeGuid(PatchId, TEXT("entry:") + Function.To));
 			Function.ResultIdentity = Guid(FCortexGraphPatchOps::DeriveNodeGuid(PatchId, TEXT("result:") + Function.To));
@@ -1052,15 +1139,7 @@ bool FCortexGraphInterfaceMigration::PlanInterfaceReplacement(
 		Function.To = Entry.To.ToString();
 		Function.Implementation = Old->bEventStyle ? EventKind : FunctionGraphKind;
 		Function.bToIsEvent = bToEvent;
-		Function.bToHasResult = !bToEvent && !!NewFunction->GetReturnProperty();
-		for (TFieldIterator<FProperty> It(NewFunction); It && (It->PropertyFlags & CPF_Parm); ++It)
-		{
-			if (It->HasAnyPropertyFlags(CPF_OutParm))
-			{
-				Function.bToHasResult = !bToEvent;
-				break;
-			}
-		}
+		Function.bToHasResult = !bToEvent && FunctionHasResult(NewFunction);
 		Function.SourceGraphGuid = Guid(SourceGraph->GraphGuid);
 		Function.SourceGraphName = SourceGraph->GetName();
 		Function.SourceEntryGuid = Guid(StaleEntry->NodeGuid);
@@ -1077,6 +1156,28 @@ bool FCortexGraphInterfaceMigration::PlanInterfaceReplacement(
 			OutError = PinMapError;
 			OutError.ErrorMessage = FString::Printf(TEXT("function_map '%s' -> '%s': %s"), *Function.From, *Function.To, *PinMapError.ErrorMessage);
 			return false;
+		}
+		if (StaleResult)
+		{
+			// A mapped, unlinked result input keeps the typed default state its author set; the replacement is created with the
+			// declaration's plain defaults, so the planned state is applied to it and read back.
+			for (const FCortexGraphMigrationPinMapping& Mapping : PinMap)
+			{
+				const UEdGraphPin* const Stale = Mapping.TargetRole == TEXT("result") ? StaleResult->FindPin(FName(*Mapping.FromPin)) : nullptr;
+				if (!Stale || Stale->Direction != EGPD_Input || Stale->LinkedTo.Num() > 0 || Stale->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+				{
+					continue;
+				}
+				FCortexGraphInterfaceResultDefault Default;
+				Default.ToPin = Mapping.ToPin;
+				Default.Value = Stale->DefaultValue;
+				Default.ObjectPath = Stale->DefaultObject ? Stale->DefaultObject->GetPathName() : FString();
+				if (!Stale->DefaultTextValue.IsEmpty())
+				{
+					FTextStringHelper::WriteToBuffer(Default.Text, Stale->DefaultTextValue);
+				}
+				Function.ResultDefaults.Add(MoveTemp(Default));
+			}
 		}
 
 		TArray<FGuid>& Excluded = ExcludedByGraph.FindOrAdd(SourceGraph);
@@ -1370,6 +1471,153 @@ bool FCortexGraphInterfaceMigration::RemoveOldInterface(UBlueprint* Blueprint, U
 	return true;
 }
 
+namespace
+{
+/** The planned result-literal state of one mapped function against its replacement result terminator. */
+bool VerifyResultDefaults(UBlueprint* Blueprint, const FCortexGraphInterfaceFunctionPlan& Function, FString& OutFailure)
+{
+	if (Function.ResultDefaults.Num() == 0)
+	{
+		return true;
+	}
+	FGuid ResultGuid;
+	FGuid::Parse(Function.ResultIdentity, ResultGuid);
+	UEdGraphNode* const Result = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, ResultGuid);
+	for (const FCortexGraphInterfaceResultDefault& Default : Function.ResultDefaults)
+	{
+		const UEdGraphPin* const Pin = Result ? Result->FindPin(FName(*Default.ToPin), EGPD_Input) : nullptr;
+		FString LiveText;
+		if (Pin && !Pin->DefaultTextValue.IsEmpty())
+		{
+			FTextStringHelper::WriteToBuffer(LiveText, Pin->DefaultTextValue);
+		}
+		if (!Pin || Pin->DefaultValue != Default.Value || LiveText != Default.Text
+			|| (Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : FString()) != Default.ObjectPath)
+		{
+			OutFailure = FString::Printf(TEXT("the replacement result input '%s' of '%s' lost its authored default (expected '%s')"),
+				*Default.ToPin, *Function.To, *Default.Value);
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * The complete boundary of the replacement terminators: the live endpoint pairs of every visible replacement pin against the
+ * planned per-function edge set. A missing, an extra and a non-reciprocal or dangling link are all refused.
+ */
+bool VerifyBoundaryEdges(UBlueprint* Blueprint, const TArray<FCortexGraphMigrationPlan>& EntryPlans, FString& OutFailure)
+{
+	for (const FCortexGraphMigrationPlan& Plan : EntryPlans)
+	{
+		FGuid GraphGuid;
+		FGuid::Parse(Plan.GraphGuid, GraphGuid);
+		UEdGraph* const Graph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, GraphGuid);
+		UEdGraphNode* const Entry = FCortexGraphMigrationOps::FindNodeByGuidInGraph(Graph, Plan.Identity.EntryGuid);
+		UEdGraphNode* const Result = Plan.HasResultTerminator() ? FCortexGraphMigrationOps::FindNodeByGuidInGraph(Graph, Plan.Identity.ResultGuid) : nullptr;
+		if (!Graph || !Entry)
+		{
+			OutFailure = FString::Printf(TEXT("'%s': the replacement terminators did not re-resolve for the boundary comparison"), *Plan.FunctionName);
+			return false;
+		}
+		TMap<FString, TSet<FString>> Planned;
+		for (const FCortexGraphMigrationEdge& Edge : Plan.Edges)
+		{
+			const FString Near = Edge.ReplacementRole + TEXT(".") + Edge.ReplacementPin;
+			if (Edge.FarRole.IsEmpty())
+			{
+				Planned.FindOrAdd(Near).Add(FString::Printf(TEXT("node:%s.%s"), *Edge.FarGuid, *Edge.FarPin));
+			}
+			else
+			{
+				const FString Far = Edge.FarRole + TEXT(".") + Edge.FarPin;
+				Planned.FindOrAdd(Near).Add(Far);
+				Planned.FindOrAdd(Far).Add(Near);
+			}
+		}
+		TMap<FString, TSet<FString>> Live;
+		const TArray<TPair<UEdGraphNode*, const TCHAR*>> Terminators = { { Entry, TEXT("entry") }, { Result, TEXT("result") } };
+		for (const TPair<UEdGraphNode*, const TCHAR*>& Terminator : Terminators)
+		{
+			if (!Terminator.Key) continue;
+			for (const UEdGraphPin* Pin : Terminator.Key->Pins)
+			{
+				if (!Pin || Pin->bHidden || Pin->ParentPin != nullptr) continue;
+				for (const UEdGraphPin* Linked : Pin->LinkedTo)
+				{
+					const UEdGraphNode* const Far = Linked ? Linked->GetOwningNode() : nullptr;
+					if (!Far || Far->GetGraph() != Graph || !Linked->LinkedTo.Contains(Pin))
+					{
+						OutFailure = FString::Printf(TEXT("'%s': the %s pin '%s' carries a dangling or non-reciprocal link"), *Plan.FunctionName, Terminator.Value, *Pin->PinName.ToString());
+						return false;
+					}
+					const FString FarKey = Far == Entry ? TEXT("entry.") + Linked->PinName.ToString()
+						: (Far == Result ? TEXT("result.") + Linked->PinName.ToString()
+							: FString::Printf(TEXT("node:%s.%s"), *Far->NodeGuid.ToString(), *Linked->PinName.ToString()));
+					Live.FindOrAdd(FString(Terminator.Value) + TEXT(".") + Pin->PinName.ToString()).Add(FarKey);
+				}
+			}
+		}
+		TSet<FString> Keys;
+		for (const TPair<FString, TSet<FString>>& Pair : Planned) { Keys.Add(Pair.Key); }
+		for (const TPair<FString, TSet<FString>>& Pair : Live) { Keys.Add(Pair.Key); }
+		for (const FString& Key : Keys)
+		{
+			const TSet<FString>* const P = Planned.Find(Key);
+			const TSet<FString>* const L = Live.Find(Key);
+			const bool bSame = (P ? P->Num() : 0) == (L ? L->Num() : 0) && (!P || (L && P->Difference(*L).Num() == 0));
+			if (!bSame)
+			{
+				OutFailure = FString::Printf(TEXT("'%s': the links of the replacement pin '%s' are not exactly the planned boundary (planned %d, live %d)"),
+					*Plan.FunctionName, *Key, P ? P->Num() : 0, L ? L->Num() : 0);
+				return false;
+			}
+		}
+	}
+	return true;
+}
+}
+
+bool FCortexGraphInterfaceMigration::ApplyResultDefaults(UBlueprint* Blueprint, const FCortexGraphInterfaceFunctionPlan& Function, FString& OutFailure)
+{
+	if (Function.ResultDefaults.Num() == 0)
+	{
+		return true;
+	}
+	FGuid ResultGuid;
+	FGuid::Parse(Function.ResultIdentity, ResultGuid);
+	UEdGraphNode* const Result = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, ResultGuid);
+	if (!Result)
+	{
+		OutFailure = FString::Printf(TEXT("the replacement result of '%s' did not re-resolve"), *Function.To);
+		return false;
+	}
+	for (const FCortexGraphInterfaceResultDefault& Default : Function.ResultDefaults)
+	{
+		UEdGraphPin* const Pin = Result->FindPin(FName(*Default.ToPin), EGPD_Input);
+		UObject* Object = nullptr;
+		if (!Default.ObjectPath.IsEmpty())
+		{
+			Object = FindObject<UObject>(nullptr, *Default.ObjectPath);
+		}
+		if (!Pin || (!Default.ObjectPath.IsEmpty() && !Object))
+		{
+			OutFailure = FString::Printf(TEXT("the replacement result input '%s' of '%s' cannot take its authored default"), *Default.ToPin, *Function.To);
+			return false;
+		}
+		Result->Modify();
+		Pin->DefaultValue = Default.Value;
+		Pin->DefaultObject = Object;
+		if (!Default.Text.IsEmpty())
+		{
+			FText Text;
+			FTextStringHelper::ReadFromBuffer(*Default.Text, Text);
+			Pin->DefaultTextValue = Text;
+		}
+	}
+	return true;
+}
+
 bool FCortexGraphInterfaceMigration::VerifyAgainstNative(
 	UBlueprint* Blueprint,
 	const FCortexGraphMigrationInterfacePlan& Plan,
@@ -1491,6 +1739,17 @@ bool FCortexGraphInterfaceMigration::VerifyAgainstNative(
 			return false;
 		}
 	}
+	for (const FCortexGraphInterfaceFunctionPlan& Function : Plan.Functions)
+	{
+		if (!VerifyResultDefaults(Blueprint, Function, OutFailure))
+		{
+			return false;
+		}
+	}
+	if (!VerifyBoundaryEdges(Blueprint, EntryPlans, OutFailure))
+	{
+		return false;
+	}
 	return FCortexGraphMigrationOps::VerifyPreservationContracts(Blueprint, Plan.Preservations, OutFailure);
 }
 
@@ -1537,5 +1796,27 @@ TSharedPtr<FJsonObject> FCortexGraphInterfaceMigration::MakeInventory(const TSha
 	Inventory->SetArrayField(TEXT("in_asset_callers"), TArray<TSharedPtr<FJsonValue>>());
 	Inventory->SetArrayField(TEXT("derived_overrides"), TArray<TSharedPtr<FJsonValue>>());
 	Inventory->SetNumberField(TEXT("preserved_graphs"), Plan.Preservations.Num());
+	TArray<TSharedPtr<FJsonValue>> Preservation;
+	for (const FCortexGraphTransferPreservation& Contract : Plan.Preservations)
+	{
+		TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
+		Json->SetStringField(TEXT("label"), Contract.Label);
+		Json->SetStringField(TEXT("graph_guid"), Contract.GraphGuid);
+		Json->SetArrayField(TEXT("excluded_guids"), StringValues(Contract.ExcludedGuids));
+		// The capture itself is a bulky canonical dump: the review surface is the surviving node count (every node of the graph
+		// outside the replaced and dropped set, which must come back byte-identical) bound to its digest.
+		int32 Surviving = 0;
+		const int32 Header = Contract.Capture.Find(TEXT("Nodes: "));
+		if (Header != INDEX_NONE)
+		{
+			Surviving = FCString::Atoi(*Contract.Capture.Mid(Header + 7, 12));
+		}
+		FTCHARToUTF8 Utf8(*Contract.Capture);
+		Json->SetNumberField(TEXT("surviving_nodes"), Surviving);
+		Json->SetNumberField(TEXT("capture_chars"), Contract.Capture.Len());
+		Json->SetStringField(TEXT("capture_digest"), LexToString(FIoHash::HashBuffer(Utf8.Get(), Utf8.Length())));
+		Preservation.Add(MakeShared<FJsonValueObject>(Json));
+	}
+	Inventory->SetArrayField(TEXT("preservation"), Preservation);
 	return Inventory;
 }

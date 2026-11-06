@@ -17,5 +17,8 @@ class FJsonObject;
 class CORTEXGRAPH_API FCortexGraphReplaceInterface
 {
 public:
+
+	/** The deterministic patch id of a canonical request object (sorted object keys, ordered arrays): identical requests share it. */
+	static FString DeriveRequestId(const TSharedPtr<FJsonObject>& CanonicalRequest);
 	static FCortexCommandResult Execute(const TSharedPtr<FJsonObject>& PatchRequest);
 };
