@@ -13,6 +13,7 @@
 #include "CortexStateTreeModule.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/PackageName.h"
 #include "Operations/CortexSTAssetOps.h"
 #include "Operations/CortexSTBindingOps.h"
@@ -608,6 +609,17 @@ TSharedPtr<FJsonObject> RepNodePlanJson(const FCortexSTReplacePlan& Plan)
 	TSharedPtr<FJsonObject> BindingsJson = MakeShared<FJsonObject>();
 	BindingsJson->SetNumberField(TEXT("before_count"), Plan.BindingsBefore);
 	BindingsJson->SetArrayField(TEXT("remapped"), RemappedValues);
+	// Tree-wide drops have no owning node of the replacement.
+	for (const FCortexSTReplaceUnresolved& Drop : Plan.ValidationDrops)
+	{
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetField(TEXT("node_id"), MakeShared<FJsonValueNull>());
+		Entry->SetNumberField(TEXT("binding_index"), Drop.BindingIndex);
+		Entry->SetStringField(TEXT("side"), RepNodeSideName(Drop.Side));
+		Entry->SetStringField(TEXT("path"), Drop.Path);
+		Entry->SetStringField(TEXT("reason"), Drop.Reason);
+		UnresolvedValues.Add(MakeShared<FJsonValueObject>(Entry));
+	}
 	BindingsJson->SetArrayField(TEXT("unresolved"), UnresolvedValues);
 
 	Json->SetNumberField(TEXT("schema_version"), RepNodeSchemaVersion);
@@ -689,15 +701,15 @@ struct FRepNodeJournal
 	TSharedPtr<FJsonObject> TreeReport;
 };
 
-TOptional<FCortexSTReplaceNodeOps::EFaultPoint>& RepNodeFaultStorage()
+TSet<FCortexSTReplaceNodeOps::EFaultPoint>& RepNodeFaultStorage()
 {
-	static TOptional<FCortexSTReplaceNodeOps::EFaultPoint> Point;
-	return Point;
+	static TSet<FCortexSTReplaceNodeOps::EFaultPoint> Points;
+	return Points;
 }
 
 bool RepNodeFault(const FCortexSTReplaceNodeOps::EFaultPoint Point)
 {
-	return RepNodeFaultStorage().IsSet() && RepNodeFaultStorage().GetValue() == Point;
+	return RepNodeFaultStorage().Contains(Point);
 }
 
 void* RepNodeInstanceContainer(FStateTreeEditorNode& Node)
@@ -762,6 +774,10 @@ bool FCortexSTReplacePlan::HasMismatches() const
 
 bool FCortexSTReplacePlan::HasUnresolved() const
 {
+	if (!ValidationDrops.IsEmpty())
+	{
+		return true;
+	}
 	for (const FCortexSTNodeReplacePlan& Node : Nodes)
 	{
 		if (!Node.Unresolved.IsEmpty())
@@ -814,6 +830,45 @@ bool FCortexSTReplaceNodeOps::BuildPlan(
 	}
 
 	const FRepNodeTargetTypes Target = RepNodeResolveTargetTypes(Request.Target);
+
+	// The compile validates first and RemoveInvalidBindings() deletes: a missing target struct, an empty target path, an unresolved
+	// target path, and an unresolved source path only when StateTree.Editor.AutoRemoveSourcePathInvalidEditorBindings is on
+	// (StateTreeEditorData.cpp:1230-1245, PropertyBindingBindingCollection.cpp:198-257). Refuse them now so the readback can never
+	// discover a count that shrank.
+	{
+		const IConsoleVariable* AutoRemoveSourcePath =
+			IConsoleManager::Get().FindConsoleVariable(TEXT("StateTree.Editor.AutoRemoveSourcePathInvalidEditorBindings"));
+		const bool bRemoveUnresolvedSourcePath = AutoRemoveSourcePath != nullptr && AutoRemoveSourcePath->GetBool();
+		for (const CortexSTCompat::FBindingInfo& Binding : Bindings)
+		{
+			FString Reason;
+			if (!Binding.Target.bStructFound)
+			{
+				Reason = TEXT("the target struct is not part of this StateTree");
+			}
+			else if (Binding.Target.Segments.IsEmpty())
+			{
+				Reason = TEXT("the target path is empty");
+			}
+			else if (!Binding.Target.bResolved)
+			{
+				Reason = FString::Printf(TEXT("the target path does not resolve: %s"), *Binding.Target.ResolveError);
+			}
+			else if (bRemoveUnresolvedSourcePath && !Binding.Source.bResolved)
+			{
+				Reason = FString::Printf(TEXT("the source path does not resolve and validation removes those bindings: %s"), *Binding.Source.ResolveError);
+			}
+			if (!Reason.IsEmpty())
+			{
+				FCortexSTReplaceUnresolved& Drop = OutPlan.ValidationDrops.AddDefaulted_GetRef();
+				Drop.BindingIndex = Binding.Index;
+				Drop.Side = CortexSTCompat::EBindingSide::Target;
+				Drop.Path = Binding.Target.Path;
+				Drop.Reason = FString::Printf(TEXT("validation would remove this binding: %s"), *Reason);
+			}
+		}
+	}
+
 	for (const FCortexSTNodeLocation& Location : Locations)
 	{
 		FCortexSTNodeReplacePlan& NodePlan = OutPlan.Nodes.AddDefaulted_GetRef();
@@ -1434,7 +1489,7 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 #if WITH_AUTOMATION_TESTS
 void FCortexSTReplaceNodeOps::SetFaultPointForTesting(const EFaultPoint Point)
 {
-	RepNodeFaultStorage() = Point;
+	RepNodeFaultStorage().Add(Point);
 }
 
 void FCortexSTReplaceNodeOps::ClearFaultPointForTesting()

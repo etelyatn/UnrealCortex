@@ -115,6 +115,12 @@ struct FCortexSTReplaceRequest
 struct FCortexSTReplacePlan
 {
 	TArray<FCortexSTNodeReplacePlan> Nodes;
+	/**
+	 * Stored bindings elsewhere in the tree that the validation before the compile would remove (RemoveInvalidBindings: missing
+	 * target struct, empty or unresolved target path, and an unresolved source path only when the editor CVar asks for it). They are
+	 * refused at plan time so the binding count can never shrink behind the caller's back.
+	 */
+	TArray<FCortexSTReplaceUnresolved> ValidationDrops;
 	/** Whole-tree stored binding count before the call. */
 	int32 BindingsBefore = 0;
 
@@ -164,6 +170,7 @@ public:
 	};
 
 #if WITH_AUTOMATION_TESTS
+	/** Test hook: adds a fault point (several may be active, e.g. a compile failure plus a skipped journal restore). */
 	static void SetFaultPointForTesting(EFaultPoint Point);
 	static void ClearFaultPointForTesting();
 #endif

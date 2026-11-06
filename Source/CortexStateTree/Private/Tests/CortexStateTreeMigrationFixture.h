@@ -162,10 +162,15 @@ struct FMigrationFixture
 	FGuid StateAId;
 	FGuid StateBId;
 	TArray<FString> ExtraAssets;
+	/** Set when the test removed the asset itself (a saved package must not be deleted through the asset registry again). */
+	bool bAssetRetiredByTest = false;
 
 	~FMigrationFixture()
 	{
-		CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+		if (!bAssetRetiredByTest)
+		{
+			CortexStateTreeTest::DeleteIfLoaded(AssetPath);
+		}
 		for (const FString& Extra : ExtraAssets)
 		{
 			CortexStateTreeTest::DeleteIfLoaded(Extra);
@@ -212,12 +217,16 @@ struct FMigrationFixture
 	}
 
 	/** Creates the asset, the Blueprint task class and the three tasks; extra Blueprint variables are appended to the defaults. */
-	bool Build(FAutomationTestBase& Test, const bool bCompile, const TArray<FBlueprintVariable>& ExtraVariables = {}, const bool bCreateBindings = true)
+	bool Build(FAutomationTestBase& Test, const bool bCompile, const TArray<FBlueprintVariable>& ExtraVariables = {}, const bool bCreateBindings = true, const bool bSaveAtCreate = false)
 	{
 		TSharedPtr<FJsonObject> Create = CortexStateTreeTest::Params();
 		Create->SetStringField(TEXT("asset_path"), AssetPath);
 		Create->SetStringField(TEXT("schema_class"), SchemaPath);
 		Create->SetStringField(TEXT("root_name"), TEXT("A"));
+		if (bSaveAtCreate)
+		{
+			Create->SetBoolField(TEXT("save"), true);
+		}
 		const FCortexCommandResult Created = Handler.Execute(TEXT("create_asset"), Create);
 		if (!Test.TestTrue(TEXT("fixture asset is created"), Created.bSuccess))
 		{
