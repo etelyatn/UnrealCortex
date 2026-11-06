@@ -23,6 +23,7 @@
 #include "Operations/CortexBPTextInventoryOps.h"
 #include "Operations/CortexBPTimelineOps.h"
 #include "Operations/CortexBPClassSettingsOps.h"
+#include "Operations/CortexBPReplaceInterfaceOps.h"
 #include "CortexAssetMutationGuard.h"
 #include "Engine/Blueprint.h"
 
@@ -285,6 +286,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("remove_interface"))
 	{
 		return FCortexBPClassSettingsOps::RemoveInterface(Params);
+	}
+
+	if (Command == TEXT("replace_interface"))
+	{
+		return FCortexBPReplaceInterfaceOps::Execute(Params);
 	}
 
 	if (Command == TEXT("set_tick_settings"))
@@ -583,6 +589,18 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removing (default: true)"))
 		.OptionalExpectedFingerprint(TEXT("Apply-required stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}: the dry run's fingerprint_before"))
 		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash returned by the dry run"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("replace_interface"), TEXT("Move a Blueprint from an old interface to a new one in one guarded transaction (the issue-named thin entry over the graph.apply_patch replace_interface migration; both produce the same outcome for the same request). The graphs of the mapped function-style functions are adopted by a new description of the new interface so every body node keeps its GUID, each stale entry/terminator is replaced through the replace_entry path (pin_map is fail-closed, exactly as replace_entry), the old description and its unimplemented stubs are removed, and the Blueprint is compiled once with journaled recovery. It refuses an old interface that is not implemented, a new interface that is already implemented, an implemented old function missing from function_map, a to that is not a function of the new interface, an incomplete pin_map, an in-asset caller of the old interface (retarget it first) and a derived Blueprint that overrides a mapped function. dry_run is required: true returns the plan (functions, dropped_stubs, new_stubs), validation_hash and fingerprint_before and changes nothing; apply (false) requires expected_fingerprint (= fingerprint_before) and expected_validation_hash. An omitted patch_id is derived from the canonical request, so replaying an identical request is an unchanged no-op. Mutating: refused for an asset blocked after a failed recovery.")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("old_interface"), TEXT("string"), TEXT("The implemented interface to leave: Blueprint interface asset path or class path"))
+		.Required(TEXT("new_interface"), TEXT("string"), TEXT("The interface to implement instead: class path (native /Script/Module.Name or Blueprint interface class)"))
+		.Required(TEXT("function_map"), TEXT("array"), TEXT("One entry per implemented old function: {from, to (default = from), pin_map: [{entry: input|output, from_pin, to_pin}]}; every replacement pin is mapped exactly once"))
+		.Required(TEXT("dry_run"), TEXT("boolean"), TEXT("true=preview only; false=apply (needs expected_fingerprint and expected_validation_hash)"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile once after the swap (default: true; required for save)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default: false; requires compile and a clean starting package)"))
+		.OptionalExpectedFingerprint(TEXT("Apply-required stale-write guard: the dry run's fingerprint_before"))
+		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash returned by the dry run"))
+		.Optional(TEXT("patch_id"), TEXT("string"), TEXT("Optional UUID; derived from the canonical request when omitted"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("set_tick_settings"), TEXT("Set Actor tick settings on a Blueprint CDO")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
