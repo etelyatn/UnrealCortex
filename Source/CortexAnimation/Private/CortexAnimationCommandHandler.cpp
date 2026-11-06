@@ -157,7 +157,7 @@ TArray<FCortexCommandInfo> FCortexAnimationCommandHandler::GetSupportedCommands(
 			.Optional(TEXT("state_limit"), TEXT("number"), TEXT("Maximum states per state machine returned; default 100, max 200"))
 			.Optional(TEXT("conduit_limit"), TEXT("number"), TEXT("Maximum conduits per state machine returned; default 100, max 200"))
 			.Optional(TEXT("transition_limit"), TEXT("number"), TEXT("Maximum transitions per state machine returned; default 100, max 200"))
-			.Optional(TEXT("include"), TEXT("array"), TEXT("Opt-in sections: bindings (anim-node pin bindings with resolved paths and root_declared_in), node_functions (initial_update/become_relevant/update function slots), property_access (property-access nodes). Unknown entries are INVALID_FIELD; absent returns the default payload"))
+			.Optional(TEXT("include"), TEXT("array"), TEXT("Opt-in sections: bindings (anim-node pin bindings with resolved paths and root_declared_in), node_functions (initial_update/become_relevant/update function slots), property_access (property-access nodes), lifecycle (implemented update hooks with thread safety, native equivalent and non-thread-safe calls; adds uses_multithreaded_update). Unknown entries are INVALID_FIELD; absent returns the default payload"))
 			.Optional(TEXT("binding_limit"), TEXT("number"), TEXT("Maximum entries per opted-in section; default 200, max 1000"))
 	);
 	Commands.Add(

@@ -19,6 +19,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "Operations/CortexAnimBindingReport.h"
+#include "Operations/CortexAnimLifecycleReport.h"
 #include "Operations/CortexAnimAssetUtils.h"
 
 namespace
@@ -86,11 +87,12 @@ struct FAnimBlueprintInfoIncludes
 	bool bBindings = false;
 	bool bNodeFunctions = false;
 	bool bPropertyAccess = false;
+	bool bLifecycle = false;
 };
 
 bool TryReadAnimBlueprintInfoIncludes(const TSharedPtr<FJsonObject>& Params, FAnimBlueprintInfoIncludes& OutIncludes, FCortexCommandResult& OutError)
 {
-	static const TCHAR* Allowed = TEXT("bindings, node_functions, property_access");
+	static const TCHAR* Allowed = TEXT("bindings, node_functions, property_access, lifecycle");
 	if (!Params.IsValid() || !Params->HasField(TEXT("include")))
 	{
 		return true;
@@ -129,6 +131,10 @@ bool TryReadAnimBlueprintInfoIncludes(const TSharedPtr<FJsonObject>& Params, FAn
 		else if (Entry == TEXT("property_access"))
 		{
 			OutIncludes.bPropertyAccess = true;
+		}
+		else if (Entry == TEXT("lifecycle"))
+		{
+			OutIncludes.bLifecycle = true;
 		}
 		else
 		{
@@ -627,6 +633,10 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 		return Error;
 	}
 	if (Includes.bPropertyAccess && !FCortexAnimBindingReport::AppendPropertyAccess(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
+	if (Includes.bLifecycle && !FCortexAnimLifecycleReport::AppendLifecycle(AnimBlueprint, BindingLimit, Data, Error))
 	{
 		return Error;
 	}
