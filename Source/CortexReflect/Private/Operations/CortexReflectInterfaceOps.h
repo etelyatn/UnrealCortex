@@ -41,6 +41,26 @@ struct FCortexInterfaceImplementer
 	TSharedRef<FJsonObject> ToJson() const;
 };
 
+/** One site that calls or casts to an interface. */
+struct FCortexInterfaceCaller
+{
+	FString AssetPath;
+	/** The top-level graph that holds the node (a composite subgraph is addressed by SubgraphPath inside it). */
+	FString GraphName;
+	FGuid GraphGuid;
+	/** Dot-separated composite subgraph names below the top-level graph; empty at the top level. */
+	FString SubgraphPath;
+	FGuid NodeGuid;
+	/** `GetPrefixCPP() + GetName()` of the node class, e.g. `UK2Node_Message`. */
+	FString NodeClass;
+	/** `message`, `typed_call` or `interface_cast`. */
+	FString Kind;
+	/** The member name; empty for a cast. */
+	FString Function;
+
+	TSharedRef<FJsonObject> ToJson() const;
+};
+
 /** Interface discovery: the Blueprints that implement an interface and the sites that call it. */
 class FCortexReflectInterfaceOps
 {
@@ -71,6 +91,24 @@ public:
 		UClass* Interface,
 		const TArray<FAssetData>& Candidates,
 		TArray<FCortexInterfaceImplementer>& OutImplementers,
+		TArray<FString>& OutLoadFailures);
+
+	/**
+	 * The call and cast sites of Interface in Candidates, matched by the resolved owner of the member (never by name): a
+	 * UK2Node_Message, a UK2Node_CallFunction whose member parent is the interface, a UK2Node_DynamicCast to the interface
+	 * (a node is classified once, a message before the call node it derives from). A message/call whose owner cannot be
+	 * resolved but whose member name is an interface function is listed in OutUnresolved, never dropped. FunctionFilter, when
+	 * non-empty, keeps only message and call sites of that function (cast sites are not function-specific and stay).
+	 * Candidates are narrowed first: for a content interface to the hard referencers of its package, for a native interface
+	 * (no package) every candidate is loaded.
+	 */
+	static void CollectCallers(
+		UClass* Interface,
+		const TArray<FAssetData>& Candidates,
+		const FString& FunctionFilter,
+		TArray<FCortexInterfaceCaller>& OutCallers,
+		TArray<FCortexInterfaceCaller>& OutUnresolved,
+		int32& OutScannedAssets,
 		TArray<FString>& OutLoadFailures);
 
 	/** Resolves a BPI asset path, a /Script/ class path or a class name (U or I spelling); a class that is no interface is INVALID_OPERATION. */

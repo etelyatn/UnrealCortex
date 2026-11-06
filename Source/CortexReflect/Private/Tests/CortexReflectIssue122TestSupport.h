@@ -27,6 +27,7 @@
 #include "HAL/PlatformProcess.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_DynamicCast.h"
+#include "K2Node_Composite.h"
 #include "K2Node_Event.h"
 #include "K2Node_ExecutionSequence.h"
 #include "K2Node_FunctionEntry.h"
@@ -285,17 +286,31 @@ namespace CortexIssue122ReflectTest
 		}
 
 		/**
-		 * Points an event's parent at Parent exactly as given. SetExternalMember normalises a skeleton class to its authoritative
-		 * class, but a loaded Blueprint can hold the skeleton class in memory (the engine resolves with the Blueprint's own class for
-		 * that reason), so the fixture writes the raw reference.
+		 * Sets a member reference's parent exactly as given. SetExternalMember normalises a skeleton class to its authoritative
+		 * class, but a loaded Blueprint can hold the skeleton class in memory (the engine resolves with the Blueprint's own class
+		 * for that reason), and a node whose class was deleted holds none, so the fixture writes the raw reference.
 		 */
-		static void SetEventParentRaw(UK2Node_Event* Event, UClass* Parent)
+		static void SetMemberParentRaw(FMemberReference& Reference, UClass* Parent)
 		{
 			const FObjectProperty* Property = CastField<FObjectProperty>(FMemberReference::StaticStruct()->FindPropertyByName(TEXT("MemberParent")));
 			if (Property)
 			{
-				Property->SetObjectPropertyValue_InContainer(&Event->EventReference, Parent);
+				Property->SetObjectPropertyValue_InContainer(&Reference, Parent);
 			}
+		}
+
+		static void SetEventParentRaw(UK2Node_Event* Event, UClass* Parent)
+		{
+			SetMemberParentRaw(Event->EventReference, Parent);
+		}
+
+		/** A composite (collapsed) node holding an empty subgraph; its BoundGraph is where nested nodes go. */
+		static UK2Node_Composite* AddComposite(UEdGraph* Graph)
+		{
+			FGraphNodeCreator<UK2Node_Composite> Creator(*Graph);
+			UK2Node_Composite* Node = Creator.CreateNode();
+			Creator.Finalize();
+			return Node;
 		}
 
 		/** Unloads the packages of Assets (which must be saved and clean) so a command meets them as not loaded. */

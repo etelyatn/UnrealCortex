@@ -11,11 +11,16 @@
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_Composite.h"
+#include "K2Node_DynamicCast.h"
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
+#include "K2Node_Message.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
 #include "Operations/CortexReflectAssetEnumeration.h"
+#include "Operations/CortexReflectNodeRefs.h"
 #include "Operations/CortexReflectOps.h"
 #include "UObject/Class.h"
 #include "UObject/Interface.h"
@@ -360,6 +365,203 @@ void FCortexReflectInterfaceOps::CollectImplementers(
 		[](const FString& A, const FString& B) { return A.Compare(B, ESearchCase::CaseSensitive) < 0; });
 }
 
+TSharedRef<FJsonObject> FCortexInterfaceCaller::ToJson() const
+{
+	TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+	Json->SetStringField(TEXT("asset_path"), AssetPath);
+	Json->SetStringField(TEXT("graph_name"), GraphName);
+	Json->SetStringField(TEXT("graph_guid"), GraphGuid.ToString());
+	Json->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+	Json->SetStringField(TEXT("node_guid"), NodeGuid.ToString());
+	Json->SetStringField(TEXT("node_class"), NodeClass);
+	Json->SetStringField(TEXT("kind"), Kind);
+	if (!Function.IsEmpty())
+	{
+		Json->SetStringField(TEXT("function"), Function);
+	}
+	return Json;
+}
+
+namespace CortexReflectInterfacePrivate
+{
+	constexpr int32 MaxSubgraphDepth = 16;
+
+	struct FCallerScan
+	{
+		const UClass* InterfaceAuthority = nullptr;
+		TSet<FName> InterfaceFunctions;
+		FString FunctionFilter;
+		TArray<FCortexInterfaceCaller>* Callers = nullptr;
+		TArray<FCortexInterfaceCaller>* Unresolved = nullptr;
+
+		void VisitGraph(const UBlueprint* Blueprint, const FString& AssetPath, const UEdGraph* TopGraph, const UEdGraph* Graph, const FString& SubgraphPath, int32 Depth) const
+		{
+			if (!Graph || Depth > MaxSubgraphDepth)
+			{
+				return;
+			}
+			const UClass* Context = Blueprint->GeneratedClass ? Blueprint->GeneratedClass.Get() : Blueprint->SkeletonGeneratedClass.Get();
+			for (const UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (!Node)
+				{
+					continue;
+				}
+
+				FCortexInterfaceCaller Site;
+				Site.AssetPath = AssetPath;
+				Site.GraphName = TopGraph->GetName();
+				Site.GraphGuid = TopGraph->GraphGuid;
+				Site.SubgraphPath = SubgraphPath;
+				Site.NodeGuid = Node->NodeGuid;
+				Site.NodeClass = CortexReflectNodeRefs::GetNodeClassLabel(Node);
+
+				// Classified once: a message node derives from the call node, so it is tested first.
+				if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
+				{
+					const bool bMessage = Call->IsA<UK2Node_Message>();
+					const FName FunctionName = Call->FunctionReference.GetMemberName();
+					Site.Kind = bMessage ? TEXT("message") : TEXT("typed_call");
+					Site.Function = FunctionName.ToString();
+					const UClass* Owner = CortexReflectNodeRefs::GetCallMemberOwner(Call, Context);
+					if (Owner)
+					{
+						if (Owner->IsChildOf(InterfaceAuthority) && (FunctionFilter.IsEmpty() || Site.Function == FunctionFilter))
+						{
+							Callers->Add(MoveTemp(Site));
+						}
+					}
+					else if (InterfaceFunctions.Contains(FunctionName) && (FunctionFilter.IsEmpty() || Site.Function == FunctionFilter))
+					{
+						Unresolved->Add(MoveTemp(Site));
+					}
+				}
+				else if (const UClass* CastTarget = CortexReflectNodeRefs::GetCastTargetClass(Node))
+				{
+					if (CastTarget->GetAuthoritativeClass()->IsChildOf(InterfaceAuthority))
+					{
+						Site.Kind = TEXT("interface_cast");
+						Callers->Add(MoveTemp(Site));
+					}
+				}
+
+				if (const UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
+				{
+					const FString Name = Composite->BoundGraph ? Composite->BoundGraph->GetName() : FString();
+					VisitGraph(Blueprint, AssetPath, TopGraph, Composite->BoundGraph,
+						SubgraphPath.IsEmpty() ? Name : FString::Printf(TEXT("%s.%s"), *SubgraphPath, *Name), Depth + 1);
+				}
+			}
+		}
+
+		void ScanBlueprint(const UBlueprint* Blueprint, const FString& AssetPath) const
+		{
+			TArray<const UEdGraph*> TopGraphs;
+			for (const TArray<TObjectPtr<UEdGraph>>* List : {&Blueprint->UbergraphPages, &Blueprint->FunctionGraphs, &Blueprint->MacroGraphs, &Blueprint->DelegateSignatureGraphs})
+			{
+				for (const UEdGraph* Graph : *List)
+				{
+					TopGraphs.Add(Graph);
+				}
+			}
+			for (const FBPInterfaceDescription& Description : Blueprint->ImplementedInterfaces)
+			{
+				for (const UEdGraph* Graph : Description.Graphs)
+				{
+					TopGraphs.Add(Graph);
+				}
+			}
+			for (const UEdGraph* Graph : TopGraphs)
+			{
+				VisitGraph(Blueprint, AssetPath, Graph, Graph, FString(), 0);
+			}
+		}
+	};
+
+	bool CallerLess(const FCortexInterfaceCaller& A, const FCortexInterfaceCaller& B)
+	{
+		const int32 Asset = A.AssetPath.Compare(B.AssetPath, ESearchCase::CaseSensitive);
+		if (Asset != 0)
+		{
+			return Asset < 0;
+		}
+		const int32 Graph = A.GraphName.Compare(B.GraphName, ESearchCase::CaseSensitive);
+		if (Graph != 0)
+		{
+			return Graph < 0;
+		}
+		const int32 Sub = A.SubgraphPath.Compare(B.SubgraphPath, ESearchCase::CaseSensitive);
+		if (Sub != 0)
+		{
+			return Sub < 0;
+		}
+		return A.NodeGuid.ToString().Compare(B.NodeGuid.ToString(), ESearchCase::CaseSensitive) < 0;
+	}
+}
+
+void FCortexReflectInterfaceOps::CollectCallers(
+	UClass* Interface,
+	const TArray<FAssetData>& Candidates,
+	const FString& FunctionFilter,
+	TArray<FCortexInterfaceCaller>& OutCallers,
+	TArray<FCortexInterfaceCaller>& OutUnresolved,
+	int32& OutScannedAssets,
+	TArray<FString>& OutLoadFailures)
+{
+	using namespace CortexReflectInterfacePrivate;
+
+	OutCallers.Reset();
+	OutUnresolved.Reset();
+	OutScannedAssets = 0;
+	if (!Interface)
+	{
+		return;
+	}
+
+	FCallerScan Scan;
+	Scan.InterfaceAuthority = Interface->GetAuthoritativeClass();
+	for (const UFunction* Function : GetInterfaceFunctions(Scan.InterfaceAuthority))
+	{
+		Scan.InterfaceFunctions.Add(Function->GetFName());
+	}
+	Scan.FunctionFilter = FunctionFilter;
+	Scan.Callers = &OutCallers;
+	Scan.Unresolved = &OutUnresolved;
+
+	// A content interface is referenced (hard) by every Blueprint that holds a node on it; a native interface has no
+	// content package, so every candidate has to be loaded.
+	TSet<FName> Referencers;
+	const bool bNarrow = Scan.InterfaceAuthority->ClassGeneratedBy != nullptr;
+	if (bNarrow)
+	{
+		IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+		TArray<FName> ReferencerNames;
+		Registry.GetReferencers(Scan.InterfaceAuthority->GetOutermost()->GetFName(), ReferencerNames,
+			UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::FDependencyQuery(UE::AssetRegistry::EDependencyQuery::Hard));
+		Referencers.Append(ReferencerNames);
+	}
+
+	for (const FAssetData& Asset : Candidates)
+	{
+		if (bNarrow && !Referencers.Contains(Asset.PackageName))
+		{
+			continue;
+		}
+		FString LoadError;
+		const UBlueprint* Blueprint = LoadBlueprint(Asset, LoadError);
+		if (!Blueprint)
+		{
+			OutLoadFailures.Add(LoadError);
+			continue;
+		}
+		++OutScannedAssets;
+		Scan.ScanBlueprint(Blueprint, Asset.GetObjectPathString());
+	}
+
+	OutCallers.Sort(CallerLess);
+	OutUnresolved.Sort(CallerLess);
+}
+
 namespace CortexReflectInterfacePrivate
 {
 	TSharedRef<FJsonObject> InterfaceDescriptionJson(UClass* Interface)
@@ -440,6 +642,11 @@ FCortexCommandResult FCortexReflectInterfaceOps::FindInterfaceImplementers(const
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("function must be a non-empty string"));
 	}
+	bool bIncludeCallers = true;
+	if (Params->HasField(TEXT("include_callers")) && !Params->TryGetBoolField(TEXT("include_callers"), bIncludeCallers))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("include_callers must be a boolean"));
+	}
 	bool bHasOutPath = false;
 	FCortexResolvedFilePath OutPath;
 	if (!CortexReflectAssetEnumeration::ParseOptionalOutPath(Params, bHasOutPath, OutPath, RequestError))
@@ -471,12 +678,32 @@ FCortexCommandResult FCortexReflectInterfaceOps::FindInterfaceImplementers(const
 	Result->SetStringField(TEXT("interface"), InterfaceName);
 	Result->SetArrayField(TEXT("implementers"), ImplementerValues(Implementers, FunctionFilter));
 	Result->SetNumberField(TEXT("implementer_count"), Implementers.Num());
+	if (bIncludeCallers)
+	{
+		TArray<FCortexInterfaceCaller> Callers;
+		TArray<FCortexInterfaceCaller> Unresolved;
+		int32 ScannedAssets = 0;
+		CollectCallers(Interface, Enumeration.Assets, FunctionFilter, Callers, Unresolved, ScannedAssets, LoadFailures);
+		const auto ToValues = [](const TArray<FCortexInterfaceCaller>& Sites)
+		{
+			TArray<TSharedPtr<FJsonValue>> Values;
+			for (const FCortexInterfaceCaller& Site : Sites)
+			{
+				Values.Add(MakeShared<FJsonValueObject>(Site.ToJson()));
+			}
+			return Values;
+		};
+		Result->SetArrayField(TEXT("callers"), ToValues(Callers));
+		Result->SetNumberField(TEXT("caller_count"), Callers.Num());
+		Result->SetArrayField(TEXT("unresolved_callers"), ToValues(Unresolved));
+		Result->SetNumberField(TEXT("caller_assets_scanned"), ScannedAssets);
+	}
 	CortexReflectAssetEnumeration::WriteMatchedFields(Enumeration, *Result);
 	CortexReflectAssetEnumeration::WriteLoadFailures(LoadFailures, *Result);
 
 	if (bHasOutPath)
 	{
-		return CortexReflectAssetEnumeration::WriteReportWithSummary(OutPath, Result, {TEXT("implementers")});
+		return CortexReflectAssetEnumeration::WriteReportWithSummary(OutPath, Result, {TEXT("implementers"), TEXT("callers"), TEXT("unresolved_callers")});
 	}
 	return FCortexCommandRouter::Success(Result);
 }
