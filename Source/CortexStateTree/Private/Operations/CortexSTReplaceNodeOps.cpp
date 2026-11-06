@@ -120,6 +120,45 @@ bool RepNodeIsBlueprintBaseClass(const UClass* Class)
 		|| Class == UStateTreeConsiderationBlueprintBase::StaticClass();
 }
 
+/** Copies one property value between two different containers, reading booleans with the old descriptor and writing them with the new one. */
+void RepNodeCopyValue(const FProperty* OldProperty, const void* OldContainer, const FProperty* NewProperty, void* NewContainer)
+{
+	if (OldProperty == nullptr || NewProperty == nullptr || OldContainer == nullptr || NewContainer == nullptr)
+	{
+		return;
+	}
+	if (const FBoolProperty* OldBool = CastField<FBoolProperty>(OldProperty))
+	{
+		if (const FBoolProperty* NewBool = CastField<FBoolProperty>(NewProperty))
+		{
+			// Packed bitfields have different offsets and masks on the two types: CopyCompleteValue would write the old byte/mask.
+			const int32 Count = FMath::Min(OldBool->ArrayDim, NewBool->ArrayDim);
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				NewBool->SetPropertyValue_InContainer(NewContainer, OldBool->GetPropertyValue_InContainer(OldContainer, Index), Index);
+			}
+			return;
+		}
+	}
+	OldProperty->CopyCompleteValue(
+		NewProperty->ContainerPtrToValuePtr<void>(NewContainer),
+		OldProperty->ContainerPtrToValuePtr<void>(const_cast<void*>(OldContainer)));
+}
+
+/** Build-time and runtime bookkeeping on the node struct: never carried over from one node type to another. */
+bool RepNodeIsNodeBookkeeping(const FName Name)
+{
+	static const TSet<FName> Names = {
+		FName(TEXT("BindingsBatch")),
+		FName(TEXT("OutputBindingsBatch")),
+		FName(TEXT("InstanceTemplateIndex")),
+		FName(TEXT("ExecutionRuntimeTemplateIndex")),
+		FName(TEXT("InstanceDataHandle")),
+		FName(TEXT("bHasTaskCompletionDelegateDispatcher")),
+	};
+	return Names.Contains(Name);
+}
+
 /** Value assignability: SameType, or an object property whose old class is the new property's class or a subclass of it. */
 bool RepNodeArePropertiesCompatible(const FProperty* Old, const FProperty* New, FString& OutReason)
 {
@@ -180,6 +219,10 @@ struct FRepNodeTargetTypes
 	const UStruct* InstanceType = nullptr;
 	/** Where node-level flags are looked up by name. */
 	const UStruct* FlagType = nullptr;
+	/** Default values of the destination's node-level flags (a default node struct, or the class CDO). */
+	const void* FlagDefaults = nullptr;
+	/** Owns the default node struct memory for a struct destination. */
+	FInstancedStruct NodeStructDefaults;
 };
 
 FRepNodeTargetTypes RepNodeResolveTargetTypes(const FCortexSTReplaceTarget& Target)
@@ -189,18 +232,19 @@ FRepNodeTargetTypes RepNodeResolveTargetTypes(const FCortexSTReplaceTarget& Targ
 	Types.NodeClass = Target.NodeClass;
 	if (Target.NodeStruct != nullptr)
 	{
-		FInstancedStruct Probe;
-		Probe.InitializeAs(Target.NodeStruct);
-		if (const FStateTreeNodeBase* NodeBase = Probe.GetPtr<FStateTreeNodeBase>())
+		Types.NodeStructDefaults.InitializeAs(Target.NodeStruct);
+		if (const FStateTreeNodeBase* NodeBase = Types.NodeStructDefaults.GetPtr<FStateTreeNodeBase>())
 		{
 			Types.InstanceType = NodeBase->GetInstanceDataType();
 		}
 		Types.FlagType = Target.NodeStruct;
+		Types.FlagDefaults = Types.NodeStructDefaults.GetMemory();
 	}
 	else
 	{
 		Types.InstanceType = Target.NodeClass;
 		Types.FlagType = Target.NodeClass;
+		Types.FlagDefaults = Target.NodeClass != nullptr ? Target.NodeClass->GetDefaultObject() : nullptr;
 	}
 	return Types;
 }
@@ -413,6 +457,49 @@ bool RepNodeBuildNodePlan(
 			}
 		}
 
+		if (NewProperty != nullptr && Kind == ECortexSTReplacePropertyKind::NodeFlag)
+		{
+			// F2: a flag may only be skipped when it already holds the destination default - the Blueprint CDO is not the destination.
+			const FBoolProperty* OldBool = CastField<FBoolProperty>(OldProperty);
+			const FBoolProperty* NewBool = CastField<FBoolProperty>(NewProperty);
+			bool bEqualsDestinationDefault = false;
+			if (Target.FlagDefaults != nullptr)
+			{
+				// Packed booleans must be read through their own descriptors: one descriptor's mask is meaningless in the other layout.
+				bEqualsDestinationDefault = OldBool != nullptr && NewBool != nullptr
+					? OldBool->GetPropertyValue_InContainer(OldObject) == NewBool->GetPropertyValue_InContainer(Target.FlagDefaults)
+					: OldProperty->Identical(
+						OldProperty->ContainerPtrToValuePtr<void>(OldObject),
+						NewProperty->ContainerPtrToValuePtr<void>(Target.FlagDefaults),
+						PPF_None);
+			}
+			Entry.Status = bEqualsDestinationDefault
+				? ECortexSTReplacePropertyStatus::DefaultEqual
+				: ECortexSTReplacePropertyStatus::Copied;
+		}
+
+		if (NewProperty != nullptr && Kind == ECortexSTReplacePropertyKind::Instance
+			&& CortexSTCompat::GetPropertyUsage(OldProperty) == CortexSTCompat::EPropertyUsage::Context
+			&& CortexSTCompat::GetPropertyUsage(NewProperty) == CortexSTCompat::EPropertyUsage::Context)
+		{
+			// F9: an unbound Context property is bound by the compiler through the schema by type AND name; with two same-type
+			// candidates (an AI schema supplies the pawn and the controller) a same-usage rename changes the runtime source silently.
+			FGuid OldContextId;
+			FGuid NewContextId;
+			const CortexSTCompat::FBindableStructInfo OldContext = CortexSTCompat::FindContextStructFor(*Context.EditorData, OldProperty, OldContextId);
+			const CortexSTCompat::FBindableStructInfo NewContext = CortexSTCompat::FindContextStructFor(*Context.EditorData, NewProperty, NewContextId);
+			if (OldContextId.IsValid() && NewContextId.IsValid() && OldContextId != NewContextId)
+			{
+				FCortexSTReplaceMismatch& Mismatch = Plan.Mismatches.AddDefaulted_GetRef();
+				Mismatch.OldName = OldName;
+				Mismatch.NewName = WantedName;
+				Mismatch.Reason = FString::Printf(
+					TEXT("the implicit Context source changes from '%s' to '%s' (same usage, different schema context)"),
+					*OldContext.Name.ToString(), *NewContext.Name.ToString());
+				NewProperty = nullptr;
+			}
+		}
+
 		if (NewProperty != nullptr)
 		{
 			FName OtherOld;
@@ -428,9 +515,10 @@ bool RepNodeBuildNodePlan(
 			}
 			Entry.NewName = WantedName;
 			Entry.NewProperty = NewProperty;
-			Entry.Status = (Kind == ECortexSTReplacePropertyKind::NodeFlag && !Entry.bNonDefault)
-				? ECortexSTReplacePropertyStatus::DefaultEqual
-				: ECortexSTReplacePropertyStatus::Copied;
+			if (Kind != ECortexSTReplacePropertyKind::NodeFlag)
+			{
+				Entry.Status = ECortexSTReplacePropertyStatus::Copied;
+			}
 		}
 		else if (!Entry.bNonDefault)
 		{
@@ -510,6 +598,7 @@ bool RepNodeBuildNodePlan(
 		Rewrite.OldPropertyGuid = Side.Segments[0].PropertyGuid;
 		Rewrite.NewPropertyGuid = NewBase->ArePropertyGuidsAvailable() ? NewBase->FindPropertyGuidFromName(NewFirst) : FGuid();
 		Rewrite.NewFirstSegment = NewFirst;
+		Rewrite.FirstSegmentArrayIndex = Side.Segments[0].ArrayIndex;
 		Rewrite.bRenamed = NewFirst != OldFirst;
 	};
 
@@ -583,6 +672,7 @@ TSharedPtr<FJsonObject> RepNodePlanJson(const FCortexSTReplacePlan& Plan)
 			Entry->SetField(TEXT("old_property_guid"), RepNodeGuidValue(Rewrite.OldPropertyGuid));
 			Entry->SetField(TEXT("new_property_guid"), RepNodeGuidValue(Rewrite.NewPropertyGuid));
 			Entry->SetBoolField(TEXT("renamed"), Rewrite.bRenamed);
+			Entry->SetNumberField(TEXT("first_segment_array_index"), Rewrite.FirstSegmentArrayIndex);
 			RemappedValues.Add(MakeShared<FJsonValueObject>(Entry));
 		}
 		for (const FCortexSTReplaceUnresolved& Unresolved : NodePlan.Unresolved)
@@ -707,9 +797,74 @@ TSet<FCortexSTReplaceNodeOps::EFaultPoint>& RepNodeFaultStorage()
 	return Points;
 }
 
+/** Full content equality between a live editor node and its journal copy: structs, values, flags and expression fields. */
+bool RepNodeContentMatches(const FRepNodeJournalEntry& Entry)
+{
+	const FStateTreeEditorNode& Live = *Entry.Location.Node;
+	const FStateTreeEditorNode& Copy = Entry.Copy;
+	if (Live.ID != Copy.ID || Live.ExpressionIndent != Copy.ExpressionIndent || Live.ExpressionOperand != Copy.ExpressionOperand)
+	{
+		return false;
+	}
+	if (Live.Node.GetScriptStruct() != Copy.Node.GetScriptStruct()
+		|| Live.Instance.GetScriptStruct() != Copy.Instance.GetScriptStruct()
+		|| Live.ExecutionRuntimeData.GetScriptStruct() != Copy.ExecutionRuntimeData.GetScriptStruct()
+		|| Live.InstanceObject != Copy.InstanceObject
+		|| Live.ExecutionRuntimeDataObject != Copy.ExecutionRuntimeDataObject
+		|| Live.GetName() != Copy.GetName())
+	{
+		return false;
+	}
+
+	const auto ContentsMatch = [](const UStruct* Struct, const void* LiveMemory, const void* CopyMemory)
+	{
+		if (Struct == nullptr)
+		{
+			return true;
+		}
+		if (LiveMemory == nullptr || CopyMemory == nullptr)
+		{
+			return LiveMemory == CopyMemory;
+		}
+		for (const FProperty* Property : TFieldRange<FProperty>(Struct, EFieldIteratorFlags::IncludeSuper))
+		{
+			if (Property->HasAnyPropertyFlags(CPF_Transient))
+			{
+				continue;
+			}
+			if (!Property->Identical(
+				Property->ContainerPtrToValuePtr<void>(LiveMemory),
+				Property->ContainerPtrToValuePtr<void>(const_cast<void*>(CopyMemory)),
+				PPF_None))
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+
+	return ContentsMatch(Copy.Node.GetScriptStruct(), Live.Node.GetMemory(), Copy.Node.GetMemory())
+		&& ContentsMatch(Copy.Instance.GetScriptStruct(), Live.Instance.GetMemory(), Copy.Instance.GetMemory())
+		&& (Copy.InstanceObject == nullptr
+			|| ContentsMatch(Copy.InstanceObject->GetClass(), Live.InstanceObject, Copy.InstanceObject));
+}
+
 bool RepNodeFault(const FCortexSTReplaceNodeOps::EFaultPoint Point)
 {
 	return RepNodeFaultStorage().Contains(Point);
+}
+
+int32& RepNodeCompileCount()
+{
+	static int32 Count = 0;
+	return Count;
+}
+
+/** Every compile this command issues, so the recovery compile is counted too. */
+bool RepNodeCompile(UStateTree* StateTree, FStateTreeCompilerLog& Log)
+{
+	++RepNodeCompileCount();
+	return CortexSTCompat::CompileStateTree(StateTree, Log);
 }
 
 void* RepNodeInstanceContainer(FStateTreeEditorNode& Node)
@@ -1091,6 +1246,8 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 	TSharedPtr<FJsonObject> PlanJson = RepNodePlanJson(Plan);
 	PlanJson->SetStringField(TEXT("asset_path"), Context.AssetPath);
 	PlanJson->SetObjectField(TEXT("fingerprint"), CortexST::MakeFingerprint(Context.StateTree));
+	// Every refusal carries the same unresolved list, so a caller always sees which binding blocked the call.
+	PlanJson->SetArrayField(TEXT("unresolved_bindings"), PlanJson->GetObjectField(TEXT("bindings"))->GetArrayField(TEXT("unresolved")));
 
 	if (Plan.HasMismatches())
 	{
@@ -1108,7 +1265,6 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 	}
 	if (Plan.HasUnresolved())
 	{
-		PlanJson->SetArrayField(TEXT("unresolved_bindings"), PlanJson->GetObjectField(TEXT("bindings"))->GetArrayField(TEXT("unresolved")));
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::VerificationFailed,
 			TEXT("A binding would not resolve on the new type; replace_node never drops a binding, nothing was changed"),
@@ -1181,6 +1337,39 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 		// The owning state for state slots, the editor data for global tasks and evaluators (StateTreeState.cpp, FixObjectNodes).
 		CortexSTCompat::ReallocInstanceDataKeepingId(Node, Entry.Location.InstanceOuter);
 
+		// F3: editor-owned controls live on the node struct (bTaskEnabled, bConsideredForCompletion, TransitionHandlingPriority),
+		// not on the instance object the property plan enumerates; carry every member the two node types share.
+		if (Entry.Copy.Node.GetScriptStruct() != Node.Node.GetScriptStruct())
+		{
+			const UScriptStruct* OldNodeStruct = Entry.Copy.Node.GetScriptStruct();
+			const UScriptStruct* NewNodeStruct = Node.Node.GetScriptStruct();
+			if (OldNodeStruct != nullptr && NewNodeStruct != nullptr)
+			{
+				for (TFieldIterator<FProperty> It(OldNodeStruct, EFieldIteratorFlags::IncludeSuper); It; ++It)
+				{
+					const FProperty* OldControl = *It;
+					const UStruct* Declaring = OldControl->GetOwnerStruct();
+					if (Declaring == nullptr || !NewNodeStruct->IsChildOf(Declaring))
+					{
+						// Wrapper-only members (TaskClass, TaskFlags) are not shared by the replacement type.
+						continue;
+					}
+					if (OldControl->GetFName() == TEXT("Name") || RepNodeIsNodeBookkeeping(OldControl->GetFName()))
+					{
+						continue;
+					}
+					const FProperty* NewControl = NewNodeStruct->FindPropertyByName(OldControl->GetFName());
+					FString Reason;
+					if (NewControl == nullptr || !RepNodeArePropertiesCompatible(OldControl, NewControl, Reason))
+					{
+						continue;
+					}
+					RepNodeCopyValue(OldControl, Entry.Copy.Node.GetMemory(), NewControl, Node.Node.GetMutableMemory());
+				}
+			}
+		}
+
+
 		// Values come from the journal copy, which still holds the old instance data and object.
 		for (const FCortexSTReplaceProperty& Property : NodePlan.Properties)
 		{
@@ -1188,21 +1377,16 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 			{
 				continue;
 			}
-			const bool bNodeStructTarget = Property.Kind == ECortexSTReplacePropertyKind::NodeFlag && Request.Target.NodeStruct != nullptr;
-			void* NewContainer = bNodeStructTarget ? Node.Node.GetMutableMemory() : RepNodeInstanceContainer(Node);
-			void* OldContainer = bNodeStructTarget
-				? const_cast<void*>(static_cast<const void*>(Entry.Copy.Node.GetMemory()))
-				: const_cast<void*>(RepNodeInstanceContainer(Entry.Copy));
-			if (NewContainer == nullptr || OldContainer == nullptr)
-			{
-				continue;
-			}
-			Property.OldProperty->CopyCompleteValue(
-				Property.NewProperty->ContainerPtrToValuePtr<void>(NewContainer),
-				Property.OldProperty->ContainerPtrToValuePtr<void>(OldContainer));
+			// F1: the old property is declared by the Blueprint instance class, so its container is always the journaled instance
+			// object, never the wrapper struct memory its offset knows nothing about.
+			void* NewContainer = Property.Kind == ECortexSTReplacePropertyKind::NodeFlag && Request.Target.NodeStruct != nullptr
+				? Node.Node.GetMutableMemory()
+				: RepNodeInstanceContainer(Node);
+			const void* OldContainer = RepNodeInstanceContainer(Entry.Copy);
+			RepNodeCopyValue(Property.OldProperty, OldContainer, Property.NewProperty, NewContainer);
 		}
 		// Keeps the node's own name (a Blueprint node is named after its class until the user renames it).
-		Node.SetNodeName(Entry.Copy.GetName());
+		CortexSTCompat::SetEditorNodeName(Node, Entry.Copy.GetName());
 	}
 
 	for (const FCortexSTNodeReplacePlan& NodePlan : Plan.Nodes)
@@ -1257,7 +1441,7 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 		if (bTouchedCompile)
 		{
 			FStateTreeCompilerLog RecoveryLog;
-			bRecoveryCompiled = CortexSTCompat::CompileStateTree(Context.StateTree, RecoveryLog);
+			bRecoveryCompiled = RepNodeCompile(Context.StateTree, RecoveryLog);
 		}
 		if (Package != nullptr)
 		{
@@ -1265,15 +1449,34 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 		}
 
 		const TSharedPtr<FJsonObject> After = FCortexSTBindingOps::BuildTreeReport(Context);
-		const bool bContentEqual = Journal.TreeReport.IsValid() && After.IsValid()
+		const bool bReportEqual = Journal.TreeReport.IsValid() && After.IsValid()
 			&& FJsonValue::CompareEqual(
 				*MakeShared<FJsonValueObject>(Journal.TreeReport),
 				*MakeShared<FJsonValueObject>(After));
-		if (!bContentEqual)
+		if (!bReportEqual)
 		{
 			Problems.Add(TEXT("the whole-tree binding report differs from the pre-call report"));
 		}
-		const bool bRestored = bRestoreOk && bContentEqual;
+		// The report carries node types and bindings, not values or flags: compare the journaled nodes by content too.
+		bool bNodesEqual = true;
+		for (const FRepNodeJournalEntry& Entry : Journal.Entries)
+		{
+			if (Entry.Location.Node != nullptr && !RepNodeContentMatches(Entry))
+			{
+				bNodesEqual = false;
+				Problems.Add(FString::Printf(TEXT("node %s differs from its journal copy"), *RepNodeGuidText(Entry.Copy.ID)));
+			}
+		}
+		const bool bContentEqual = bReportEqual && bNodesEqual;
+		// F6: restoring the data does not restore a runnable tree. When the apply compiled, the recovery compile has to succeed and
+		// the tree has to be ready again, otherwise recovery is unverified (the engine cleared the compiled data on failure,
+		// StateTreeCompiler.cpp:454-462).
+		const bool bRecoveryVerified = !bTouchedCompile || (bRecoveryCompiled && Context.StateTree->IsReadyToRun());
+		if (!bRecoveryVerified)
+		{
+			Problems.Add(TEXT("the recovery compile did not restore a runnable tree"));
+		}
+		const bool bRestored = bRestoreOk && bContentEqual && bRecoveryVerified;
 		if (!bRestored)
 		{
 			FCortexAssetMutationGuard::Block(Context.StateTree, FString::Printf(
@@ -1306,7 +1509,7 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 			return Recover(TEXT("compile"), TEXT("injected compile failure"), CortexErrorCodes::CompileFailed);
 		}
 		FStateTreeCompilerLog CompileLog;
-		const bool bCompiled = CortexSTCompat::CompileStateTree(Context.StateTree, CompileLog);
+		const bool bCompiled = RepNodeCompile(Context.StateTree, CompileLog);
 		CompilePayload = FCortexSTValidationOps::MakeCompilePayload(Context.AssetPath, Context.StateTree, CompileLog, bCompiled);
 		const int32 ErrorCount = static_cast<int32>(CompilePayload->GetNumberField(TEXT("error_count")));
 		if (!bCompiled || ErrorCount > 0 || !Context.StateTree->IsReadyToRun())
@@ -1394,10 +1597,24 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 						}
 						const TSharedPtr<FJsonObject> SideObject = Entry->GetObjectField(SideObjectField);
 						const bool bResolved = SideObject->GetBoolField(TEXT("resolved"));
-						const FString Path = SideObject->GetStringField(TEXT("path"));
-						bFound = bResolved && (Rewrite.NewFirstSegment.IsNone()
-							? true
-							: Path == Rewrite.NewFirstSegment.ToString() || Path.StartsWith(Rewrite.NewFirstSegment.ToString() + TEXT(".")));
+						// F10: compare the resolved first segment structurally (name and array index), not a dot-prefixed string:
+						// an indexed root such as Values[0] is neither equal to "Values" nor prefixed with "Values.".
+						bool bSegmentMatches = Rewrite.NewFirstSegment.IsNone();
+						const TArray<TSharedPtr<FJsonValue>>* SideSegments = nullptr;
+						if (!bSegmentMatches && SideObject->TryGetArrayField(TEXT("segments"), SideSegments) && SideSegments != nullptr && SideSegments->Num() > 0)
+						{
+							const TSharedPtr<FJsonObject> FirstSegment = (*SideSegments)[0]->AsObject();
+							FString SegmentName;
+							double SegmentIndex = INDEX_NONE;
+							const bool bHasIndex = FirstSegment.IsValid() && FirstSegment->TryGetNumberField(TEXT("array_index"), SegmentIndex);
+							bSegmentMatches = FirstSegment.IsValid()
+								&& FirstSegment->TryGetStringField(TEXT("name"), SegmentName)
+								&& SegmentName == Rewrite.NewFirstSegment.ToString()
+								&& (Rewrite.FirstSegmentArrayIndex == INDEX_NONE
+									? !bHasIndex
+									: (bHasIndex && static_cast<int32>(SegmentIndex) == Rewrite.FirstSegmentArrayIndex));
+						}
+						bFound = bResolved && bSegmentMatches;
 						if (bFound)
 						{
 							break;
@@ -1427,6 +1644,10 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 	TSharedPtr<FJsonObject> SavedFingerprint;
 	if (bSave)
 	{
+		if (RepNodeFault(EFaultPoint::Save))
+		{
+			return Recover(TEXT("save"), TEXT("injected save failure"), CortexErrorCodes::SaveFailed);
+		}
 		const FCortexCommandResult SaveResult = FCortexSTAssetOps::SaveAsset(Context.AssetPath);
 		if (!SaveResult.bSuccess)
 		{
@@ -1490,6 +1711,16 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 void FCortexSTReplaceNodeOps::SetFaultPointForTesting(const EFaultPoint Point)
 {
 	RepNodeFaultStorage().Add(Point);
+}
+
+int32 FCortexSTReplaceNodeOps::GetCompileCountForTesting()
+{
+	return RepNodeCompileCount();
+}
+
+void FCortexSTReplaceNodeOps::ResetCompileCountForTesting()
+{
+	RepNodeCompileCount() = 0;
 }
 
 void FCortexSTReplaceNodeOps::ClearFaultPointForTesting()

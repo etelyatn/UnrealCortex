@@ -60,6 +60,8 @@ struct FCortexSTReplaceRewrite
 	FGuid OldPropertyGuid;
 	FGuid NewPropertyGuid;
 	FName NewFirstSegment;
+	/** Array index of the first segment (INDEX_NONE when the segment is not indexed); the readback compares it, not only the name. */
+	int32 FirstSegmentArrayIndex = INDEX_NONE;
 	bool bRenamed = false;
 };
 
@@ -167,11 +169,16 @@ public:
 		SkipJournalRestore,
 		/** After the journal restore, before its verification: true marks the restore step as failed. */
 		AfterRestore,
+		/** In place of the save: true simulates a failed save after a verified readback. */
+		Save,
 	};
 
 #if WITH_AUTOMATION_TESTS
 	/** Test hook: adds a fault point (several may be active, e.g. a compile failure plus a skipped journal restore). */
 	static void SetFaultPointForTesting(EFaultPoint Point);
 	static void ClearFaultPointForTesting();
+	/** How many CompileStateTree calls this command made (apply compile + recovery compile), so a bulk call can prove one compile. */
+	static int32 GetCompileCountForTesting();
+	static void ResetCompileCountForTesting();
 #endif
 };

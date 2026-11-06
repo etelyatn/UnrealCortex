@@ -299,6 +299,9 @@ TSharedPtr<FJsonObject> BindingReportNodeJson(
 			: static_cast<const UStruct*>(Node.Instance.GetScriptStruct());
 		BindingReportAppendImplicitContext(State, Node.ID, InstanceStruct, AsTarget);
 		BindingReportAppendImplicitContext(State, CortexSTCompat::GetNodeDefinitionId(Node), Node.Node.GetScriptStruct(), AsTarget);
+		// An implicit context entry is reported content of the node even though no stored binding backs it, so the default
+		// all-nodes page must include a node that only has one (the compiler binds it at build time).
+		bOutHasBindings = bOutHasBindings || !AsTarget.IsEmpty();
 	}
 
 	TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();

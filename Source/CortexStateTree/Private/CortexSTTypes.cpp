@@ -1,6 +1,7 @@
 #include "CortexSTTypes.h"
 
 #include "CortexAssetFingerprint.h"
+#include "CortexAssetMutationGuard.h"
 #include "CortexBatchMutation.h"
 #include "CortexCommandRouter.h"
 #include "CortexEditorUtils.h"
@@ -363,7 +364,41 @@ bool LoadAssetContext(const FString& AssetPath, FCortexSTAssetContext& OutContex
 
 TSharedPtr<FJsonObject> MakeFingerprint(UObject* Asset)
 {
-	return MakeObjectAssetFingerprint(Asset).ToJson();
+	TSharedPtr<FJsonObject> Payload = MakeObjectAssetFingerprint(Asset).ToJson();
+	// The object fingerprint hashes the asset object's own properties, so a state rename, a task value or a binding edit made
+	// while the asset is already dirty leaves it unchanged. The engine's recursive editor-data hash is the content signal every
+	// StateTree reader and mutator shares (StateTreeEditingSubsystem.h:63).
+	if (const UStateTree* StateTree = Cast<UStateTree>(Asset))
+	{
+		Payload->SetNumberField(TEXT("editor_content_hash"), static_cast<double>(CortexSTCompat::GetEditorContentHash(StateTree)));
+	}
+	return Payload;
+}
+
+bool CheckMutationBlocked(const FString& AssetPath, FCortexCommandResult& OutError)
+{
+	FString BlockedReason;
+	if (!FCortexAssetMutationGuard::IsPathBlocked(AssetPath, BlockedReason))
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+	Details->SetStringField(TEXT("asset_path"), AssetPath);
+	Details->SetStringField(TEXT("blocked_reason"), BlockedReason);
+	OutError = FCortexCommandRouter::Error(
+		CortexErrorCodes::InvalidOperation,
+		FString::Printf(TEXT("Asset path is blocked by a previous failed operation: %s (%s)"), *AssetPath, *BlockedReason),
+		Details);
+	return true;
+}
+
+bool CheckMutationBlockedField(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, FCortexCommandResult& OutError)
+{
+	FString AssetPath;
+	return Params.IsValid()
+		&& Params->TryGetStringField(FieldName, AssetPath)
+		&& !AssetPath.IsEmpty()
+		&& CheckMutationBlocked(AssetPath, OutError);
 }
 
 bool CheckExpectedFingerprint(UObject* Asset, const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)

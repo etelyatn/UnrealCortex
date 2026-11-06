@@ -5,6 +5,7 @@
 #include "StateTree.h"
 #include "StateTreeCompilerLog.h"
 #include "StateTreeState.h"
+#include "UObject/UnrealType.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeEditorNode.h"
 #if !UE_VERSION_OLDER_THAN(5, 7, 0)
@@ -550,15 +551,61 @@ inline bool RestoreEditorBindings(UStateTreeEditorData& EditorData, const FEdito
 	return false;
 #else
 	TArrayView<FStateTreePropertyPathBinding> Mutable = EditorData.EditorBindings.GetMutableBindings();
-	if (Mutable.Num() != Journal.Bindings.Num())
+	if (Mutable.Num() == Journal.Bindings.Num())
+	{
+		for (int32 Index = 0; Index < Mutable.Num(); ++Index)
+		{
+			Mutable[Index] = Journal.Bindings[Index];
+		}
+		return true;
+	}
+
+	// The compiler's RemoveInvalidBindings() can delete entries while the tree is mutated, so a same-size write is not a restore.
+	// Rebuild the collection's stored array in place through its reflected member: the collection's add/remove paths are virtual
+	// overrides that this module cannot link against (they are not exported).
+	FArrayProperty* ArrayProperty = FindFProperty<FArrayProperty>(
+		FStateTreeEditorPropertyBindings::StaticStruct(), TEXT("PropertyBindings"));
+	if (ArrayProperty == nullptr || ArrayProperty->Inner == nullptr)
 	{
 		return false;
 	}
-	for (int32 Index = 0; Index < Mutable.Num(); ++Index)
+	FScriptArrayHelper Helper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(&EditorData.EditorBindings));
+	Helper.EmptyValues();
+	for (const FStateTreePropertyPathBinding& Binding : Journal.Bindings)
 	{
-		Mutable[Index] = Journal.Bindings[Index];
+		const int32 Index = Helper.AddValue();
+		ArrayProperty->Inner->CopyCompleteValue(Helper.GetRawPtr(Index), &Binding);
 	}
 	return true;
+#endif
+}
+
+/** The name an editor node reports; SetNodeName is missing before 5.7 (the older-engine branch never reaches apply). */
+inline bool SetEditorNodeName(FStateTreeEditorNode& Node, const FName NewName)
+{
+#if UE_VERSION_OLDER_THAN(5, 7, 0)
+	(void)Node;
+	(void)NewName;
+	return false;
+#else
+	Node.SetNodeName(NewName);
+	return true;
+#endif
+}
+
+/**
+ * Recursive editor-content hash of the authoring data (states, nodes, instance values, bindings). The object fingerprint
+ * (package name, dirty flag, depth-1 properties) does not change for a state rename, a task value or a binding edit, so every
+ * StateTree reader and mutator needs this to detect content that changed while the asset was already dirty. Calculated by the
+ * engine's own canonical helper (StateTreeEditingSubsystem.h:63; implementation StateTreeEditingSubsystem.cpp:386-396).
+ */
+inline uint32 GetEditorContentHash(const UStateTree* StateTree)
+{
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+	(void)StateTree;
+	return 0;
+#else
+	return StateTree != nullptr ? UStateTreeEditingSubsystem::CalculateStateTreeHash(StateTree) : 0;
 #endif
 }
 

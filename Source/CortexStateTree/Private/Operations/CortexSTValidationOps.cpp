@@ -185,6 +185,10 @@ FCortexCommandResult FCortexSTValidationOps::ValidateAsset(const TSharedPtr<FJso
 	{
 		return Error;
 	}
+	if (CortexST::CheckMutationBlocked(Asset.AssetPath, Error))
+	{
+		return Error;
+	}
 
 	if (!CortexST::CheckExpectedFingerprint(Asset.StateTree, Params, Error))
 	{
@@ -231,6 +235,10 @@ FCortexCommandResult FCortexSTValidationOps::Compile(const TSharedPtr<FJsonObjec
 	FCortexSTLoadedAsset Asset;
 	FCortexCommandResult Error;
 	if (!LoadStateTree(Params, Asset, Error))
+	{
+		return Error;
+	}
+	if (CortexST::CheckMutationBlocked(Asset.AssetPath, Error))
 	{
 		return Error;
 	}
