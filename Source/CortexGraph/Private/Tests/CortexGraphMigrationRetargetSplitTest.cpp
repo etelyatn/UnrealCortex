@@ -210,7 +210,9 @@ bool FCortexGraphMigrationRetargetSplitPinsTest::RunTest(const FString& Paramete
 		const TSharedPtr<FJsonObject> Site = SiteByNode(Preview1, SourceGuid);
 		if (TestTrue(*FString::Printf(TEXT("[%s] the site is published"), *Label), Site.IsValid()))
 		{
-			TestFalse(*FString::Printf(TEXT("[%s] the split site is not blocked [%s]"), *Label, *Site->GetStringField(TEXT("blocked"))), Site->HasField(TEXT("blocked")));
+			FString BlockedReason;
+			Site->TryGetStringField(TEXT("blocked"), BlockedReason);
+			TestFalse(*FString::Printf(TEXT("[%s] the split site is not blocked [%s]"), *Label, *BlockedReason), Site->HasField(TEXT("blocked")));
 			const TSharedPtr<FJsonObject> Member = PinOfSite(Site, TEXT("State_X"), TEXT("output"));
 			if (TestTrue(*FString::Printf(TEXT("[%s] the member pin is published"), *Label), Member.IsValid()))
 			{
