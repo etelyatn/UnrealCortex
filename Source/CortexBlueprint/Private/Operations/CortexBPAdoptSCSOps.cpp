@@ -19,6 +19,7 @@
 #include "K2Node_Variable.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPCommandParams.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPMigrationGuard.h"
 #include "Operations/CortexBPSCSDiagnostics.h"
@@ -41,18 +42,18 @@ namespace CortexAdoptSCSPrivate
 		return Sections;
 	}
 
-	using CortexBPSCSSupport::CheckAcknowledged;
+	using CortexBPParams::CheckAcknowledged;
+	using CortexBPParams::ReadExpectedFingerprint;
+	using CortexBPParams::ReadOptionalBool;
+	using CortexBPParams::ReadRequiredString;
+	using CortexBPParams::ReadStringArray;
+	using CortexBPParams::ToJsonStrings;
 	using CortexBPSCSSupport::AllNodeGuids;
 	using CortexBPSCSSupport::CollectBoundEventNames;
 	using CortexBPSCSSupport::CollectBoundEvents;
 	using CortexBPSCSSupport::FindChildOverrides;
 	using CortexBPSCSSupport::FindNodeByGuid;
 	using CortexBPSCSSupport::IsUpToDate;
-	using CortexBPSCSSupport::ReadExpectedFingerprint;
-	using CortexBPSCSSupport::ReadOptionalBool;
-	using CortexBPSCSSupport::ReadRequiredString;
-	using CortexBPSCSSupport::ReadStringArray;
-	using CortexBPSCSSupport::ToJsonStrings;
 
 	//////////////////////////////////////////////////////////////////////////
 	// Target resolution

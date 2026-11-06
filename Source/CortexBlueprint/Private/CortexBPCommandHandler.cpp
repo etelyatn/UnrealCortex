@@ -23,6 +23,7 @@
 #include "Operations/CortexBPTextInventoryOps.h"
 #include "Operations/CortexBPTimelineOps.h"
 #include "Operations/CortexBPClassSettingsOps.h"
+#include "Operations/CortexBPReplaceInterfaceOps.h"
 #include "CortexAssetMutationGuard.h"
 #include "Engine/Blueprint.h"
 
@@ -285,6 +286,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("remove_interface"))
 	{
 		return FCortexBPClassSettingsOps::RemoveInterface(Params);
+	}
+
+	if (Command == TEXT("replace_interface"))
+	{
+		return FCortexBPReplaceInterfaceOps::Execute(Params);
 	}
 
 	if (Command == TEXT("set_tick_settings"))
@@ -575,10 +581,27 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding (default: true)")));
-	Commands.Add(FCortexCommandInfo{TEXT("remove_interface"), TEXT("Remove an interface implementation from a Blueprint")}
+	Commands.Add(FCortexCommandInfo{TEXT("remove_interface"), TEXT("Preview or remove an interface implementation from a Blueprint. preserve_implementations is required and states whether loss is accepted: true keeps interface function graphs as ordinary function graphs and turns interface events into same-named custom events with their pin links (engine bPreserveFunctions); false deletes the graphs and leaves event bodies orphaned. dry_run:true changes nothing and returns per function {implementation, node_count, disposition (promoted_to_function|converted_to_custom_event|deleted|orphaned_nodes), in_asset_callers}, validation_hash and fingerprint_before; apply (dry_run false) requires expected_fingerprint (= fingerprint_before) and expected_validation_hash from the dry run (STALE_PRECONDITION otherwise), verifies the predicted disposition on the live graphs before compiling and restores the verified pre-state on a mismatch (READBACK_MISMATCH). A compile error also restores (COMPILE_FAILED).")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
-		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removing (default: true)")));
+		.Required(TEXT("preserve_implementations"), TEXT("boolean"), TEXT("true=keep implementations as functions/custom events, false=delete them (event bodies are orphaned)"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true=preview only (default false)"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removing (default: true)"))
+		.OptionalExpectedFingerprint(TEXT("Apply-required stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}: the dry run's fingerprint_before"))
+		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash returned by the dry run"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("replace_interface"), TEXT("Move a Blueprint from an old interface to a new one in one guarded transaction (the issue-named thin entry over the graph.apply_patch replace_interface migration; both produce the same outcome for the same request). The graphs of the mapped function-style functions are adopted by a new description of the new interface so every body node keeps its GUID, each stale entry/terminator is replaced through the replace_entry path (pin_map is fail-closed, exactly as replace_entry), the old description and its unimplemented stubs are removed, and the Blueprint is compiled once with journaled recovery. It refuses an old interface that is not implemented, a new interface that is already implemented, an implemented old function missing from function_map, a to that is not a function of the new interface, an incomplete pin_map, an in-asset caller of the old interface (retarget it first) and a derived Blueprint that overrides a mapped function. dry_run is required: true returns the plan (functions, dropped_stubs, new_stubs), validation_hash and fingerprint_before and changes nothing; apply (false) requires expected_fingerprint (= fingerprint_before) and expected_validation_hash. An omitted patch_id is derived from the canonical request, so replaying an identical request is an unchanged no-op. Mutating: refused for an asset blocked after a failed recovery.")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path: the package path (/Game/X/BP_A) or the object path (/Game/X/BP_A.BP_A)"))
+		.Required(TEXT("old_interface"), TEXT("string"), TEXT("The implemented interface to leave: Blueprint interface asset path or class path"))
+		.Required(TEXT("new_interface"), TEXT("string"), TEXT("The interface to implement instead: class path (native /Script/Module.Name or Blueprint interface class)"))
+		.Required(TEXT("function_map"), TEXT("array"), TEXT("One entry per implemented old function: {from, to (default = from), pin_map: [{entry: input|output, from_pin, to_pin}]}; every replacement pin is mapped exactly once. pin_map must cover every mappable pin of both replacement terminators, exec pins included: the entry's then (entry output, from_pin then, to_pin then) and the result's execute (entry input, from_pin execute, to_pin execute); a result value maps with entry \"input\", from_pin the old result parameter and to_pin \"ReturnValue\", so a one-value function needs three entries."))
+		.Required(TEXT("dry_run"), TEXT("boolean"), TEXT("true=preview only; false=apply (needs expected_fingerprint and expected_validation_hash)"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile once after the swap (default: true; required for save)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default: false; requires compile and a clean starting package)"))
+		.OptionalExpectedFingerprint(TEXT("Apply-required stale-write guard: the dry run's fingerprint_before"))
+		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash returned by the dry run"))
+		.Optional(TEXT("patch_id"), TEXT("string"), TEXT("Optional UUID; derived from the canonical request when omitted"))
+		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("set_tick_settings"), TEXT("Set Actor tick settings on a Blueprint CDO")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("start_with_tick_enabled"), TEXT("boolean"), TEXT("Enable tick at start (also forces bCanEverTick=true when enabling)"))

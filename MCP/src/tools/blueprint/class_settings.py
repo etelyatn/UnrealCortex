@@ -51,32 +51,57 @@ def register_blueprint_class_settings_tools(mcp, connection: UEConnection):
     def remove_blueprint_interface(
         asset_path: str,
         interface_path: str,
+        preserve_implementations: bool,
+        dry_run: bool = False,
         compile: bool = True,
+        expected_fingerprint: dict | None = None,
+        expected_validation_hash: str | None = None,
     ) -> str:
-        """Remove an interface implementation from a Blueprint.
+        """Preview or remove an interface implementation from a Blueprint.
 
-        Removes the interface from the Implemented Interfaces list and
-        cleans up associated stub function graphs.
+        preserve_implementations is required and states whether loss is accepted:
+        true keeps interface function graphs as ordinary function graphs and turns
+        interface events into same-named custom events with their pin links; false
+        deletes the graphs and leaves event bodies orphaned (explicit loss).
+
+        Always run dry_run=true first. Apply (dry_run=false) requires
+        expected_fingerprint (the dry run's fingerprint_before) and
+        expected_validation_hash (the dry run's validation_hash); a stale value is
+        refused with STALE_PRECONDITION. Apply verifies the predicted disposition on
+        the live graphs before compiling and restores the verified pre-state on a
+        mismatch (READBACK_MISMATCH) or a compile error (COMPILE_FAILED).
 
         Args:
             asset_path: Full path to the Blueprint
             interface_path: Interface class name or path (same formats as add_blueprint_interface)
+            preserve_implementations: true=keep implementations as functions/custom events, false=delete them
+            dry_run: true=preview only (default false)
             compile: Recompile after removing (default: true)
+            expected_fingerprint: Apply-required; fingerprint_before from the dry run
+            expected_validation_hash: Apply-required; validation_hash from the dry run
 
         Returns:
             JSON with:
-            - asset_path: Blueprint path
-            - interface_name: Removed interface class name
-            - interface_path: Full interface class path
-            - compiled: Whether compilation succeeded
-            - removed_graphs: Array of removed stub function graph names
+            - asset_path, interface_name, interface_path, preserve_implementations
+            - functions: per interface function {function, implementation
+              (function_graph|event|none), node_count, disposition
+              (promoted_to_function|converted_to_custom_event|deleted|orphaned_nodes),
+              in_asset_callers}
+            - validation_hash and fingerprint_before (dry run), compiled and
+              removed_graphs/preserved_graphs (apply)
         """
         try:
-            params = {
+            params: dict[str, object] = {
                 "asset_path": asset_path,
                 "interface_path": interface_path,
+                "preserve_implementations": preserve_implementations,
+                "dry_run": dry_run,
                 "compile": compile,
             }
+            if expected_fingerprint is not None:
+                params["expected_fingerprint"] = expected_fingerprint
+            if expected_validation_hash is not None:
+                params["expected_validation_hash"] = expected_validation_hash
             response = connection.send_command("blueprint.remove_interface", params)
             return format_response(response.get("data", {}), "remove_blueprint_interface")
         except ConnectionError as e:

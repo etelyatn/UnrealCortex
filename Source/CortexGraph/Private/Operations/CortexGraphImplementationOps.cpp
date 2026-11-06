@@ -11,11 +11,27 @@
 #include "K2Node_FunctionResult.h"
 #include "K2Node_CallParentFunction.h"
 
+namespace
+{
+	bool SameInterface(const UClass* Candidate, const UClass* Interface)
+	{
+		return Candidate != nullptr && Interface != nullptr
+			&& (Candidate == Interface || Candidate->GetAuthoritativeClass() == Interface->GetAuthoritativeClass());
+	}
+
+	const FBPInterfaceDescription* FindImplementedInterface(const UBlueprint* Blueprint, const UClass* Interface)
+	{
+		return Blueprint->ImplementedInterfaces.FindByPredicate(
+			[Interface](const FBPInterfaceDescription& Description) { return SameInterface(Description.Interface, Interface); });
+	}
+}
+
 bool FCortexGraphImplementationOps::ValidateEligibility(
 	UBlueprint* Blueprint,
 	const TSharedPtr<FJsonObject>& Selector,
 	FCortexGraphImplementationPlan& OutPlan,
-	FCortexCommandResult& OutError)
+	FCortexCommandResult& OutError,
+	const bool bAllowInterfaceImplementation)
 {
 	OutPlan = FCortexGraphImplementationPlan();
 	if (!Blueprint)
@@ -38,7 +54,25 @@ bool FCortexGraphImplementationOps::ValidateEligibility(
 		return false;
 	}
 	UClass* SelfClass = Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass;
-	if (!SelfClass || !FunctionClass || SelfClass == FunctionClass || !SelfClass->IsChildOf(FunctionClass))
+	const bool bInterfaceFunction = FunctionClass && FunctionClass->HasAnyClassFlags(CLASS_Interface);
+	if (bInterfaceFunction)
+	{
+		if (!bAllowInterfaceImplementation)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Function '%s' is declared by the interface '%s'; an interface implementation is not authored through target.implementation. Move an implementation to another interface with replace_interface (blueprint.replace_interface or the replace_interface migration op), or retarget it with a replace_entry migration."),
+					*Function->GetName(), *FunctionClass->GetName()));
+			return false;
+		}
+		if (FindImplementedInterface(Blueprint, FunctionClass) == nullptr)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Blueprint does not implement the interface '%s' that declares '%s'."),
+					*FunctionClass->GetName(), *Function->GetName()));
+			return false;
+		}
+	}
+	else if (!SelfClass || !FunctionClass || SelfClass == FunctionClass || !SelfClass->IsChildOf(FunctionClass))
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Function is not an inherited override."));
 		return false;
@@ -67,6 +101,7 @@ bool FCortexGraphImplementationOps::ValidateEligibility(
 	OutPlan.FunctionClass = FunctionClass;
 	OutPlan.bCanBePlacedAsEvent = UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function);
 	OutPlan.bWouldCreate = true;
+	OutPlan.bInterfaceImplementation = bInterfaceFunction;
 	OutPlan.bParentCall = Symbol.CallKind == ECortexCallKind::Parent;
 	if (OutPlan.bCanBePlacedAsEvent)
 	{
@@ -77,7 +112,9 @@ bool FCortexGraphImplementationOps::ValidateEligibility(
 			{
 				UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
 				if (EventNode && EventNode->EventReference.GetMemberName() == Function->GetFName()
-					&& EventNode->EventReference.GetMemberParentClass() == FunctionClass)
+					&& (bInterfaceFunction
+						? SameInterface(EventNode->EventReference.GetMemberParentClass(EventNode->GetBlueprintClassFromNode()), FunctionClass)
+						: EventNode->EventReference.GetMemberParentClass() == FunctionClass))
 				{
 					OutPlan.bWouldCreate = false;
 					OutPlan.ExistingGraph = UberGraph;
@@ -88,29 +125,48 @@ bool FCortexGraphImplementationOps::ValidateEligibility(
 	}
 	else
 	{
+		const auto AdoptGraph = [&OutPlan, &OutError](UEdGraph* FunctionGraph) -> bool
+		{
+			OutPlan.bWouldCreate = false;
+			OutPlan.ExistingGraph = FunctionGraph;
+			for (UEdGraphNode* Node : FunctionGraph->Nodes)
+			{
+				if (Cast<UK2Node_FunctionEntry>(Node))
+				{
+					OutPlan.ExistingEntryNode = Node;
+					break;
+				}
+			}
+			if (!OutPlan.ExistingEntryNode)
+			{
+				// A function graph without an entry cannot be re-entered by a patch: apply would
+				// mutate it and report success with no entry at all (readback skips the entry
+				// comparison when nothing was applied), so the target is refused before mutation.
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("Function graph '%s' has no FunctionEntry node; the target graph is malformed and cannot be patched"),
+						*FunctionGraph->GetName()));
+				return false;
+			}
+			return true;
+		};
 		for (UEdGraph* FunctionGraph : Blueprint->FunctionGraphs)
 		{
-			if (FunctionGraph && FunctionGraph->GetFName() == Function->GetFName())
+			if (FunctionGraph && FunctionGraph->GetFName() == Function->GetFName() && !AdoptGraph(FunctionGraph))
 			{
-				OutPlan.bWouldCreate = false;
-				OutPlan.ExistingGraph = FunctionGraph;
-				for (UEdGraphNode* Node : FunctionGraph->Nodes)
+				return false;
+			}
+		}
+		if (bInterfaceFunction)
+		{
+			// An interface's function-style implementation lives in its FBPInterfaceDescription, not in FunctionGraphs.
+			if (const FBPInterfaceDescription* Description = FindImplementedInterface(Blueprint, FunctionClass))
+			{
+				for (UEdGraph* InterfaceGraph : Description->Graphs)
 				{
-					if (Cast<UK2Node_FunctionEntry>(Node))
+					if (InterfaceGraph && InterfaceGraph->GetFName() == Function->GetFName() && !AdoptGraph(InterfaceGraph))
 					{
-						OutPlan.ExistingEntryNode = Node;
-						break;
+						return false;
 					}
-				}
-				if (!OutPlan.ExistingEntryNode)
-				{
-					// A function graph without an entry cannot be re-entered by a patch: apply would
-					// mutate it and report success with no entry at all (readback skips the entry
-					// comparison when nothing was applied), so the target is refused before mutation.
-					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-						FString::Printf(TEXT("Function graph '%s' has no FunctionEntry node; the target graph is malformed and cannot be patched"),
-							*FunctionGraph->GetName()));
-					return false;
 				}
 			}
 		}

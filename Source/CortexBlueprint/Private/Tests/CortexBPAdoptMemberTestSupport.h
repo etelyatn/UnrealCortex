@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 
 #include "CortexBPReparentTestSupport.h"
+#include "CortexTypes.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_VariableSet.h"
 #include "Operations/CortexBPAdoptMemberOps.h"

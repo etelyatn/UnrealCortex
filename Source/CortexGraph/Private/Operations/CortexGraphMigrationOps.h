@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
 
+class UClass;
+class UFunction;
 class UBlueprint;
 class UEdGraph;
 class UEdGraphNode;
@@ -460,6 +462,20 @@ struct FCortexGraphMigrationPlan
 		FCortexCommandResult& OutError);
 };
 
+/**
+ * Adjustments of a `replace_entry` plan that only the `replace_interface` shell requests. The default is the plain
+ * replace_entry contract.
+ */
+struct FCortexGraphMigrationPlanOptions
+{
+	/** Skip the loaded-package declaration inventory: replace_interface relies on its in-asset caller refusal and retarget_calls. */
+	bool bSkipLoadedPackageInventory = false;
+	/** The stale entry belongs to this declaration of the interface being left (empty: the target declaration). */
+	FName SourceDeclarationName = NAME_None;
+	/** The class that declares the stale entry (null: the target declaration's class). */
+	const UClass* SourceDeclarationOwner = nullptr;
+};
+
 class FCortexGraphMigrationOps
 {
 public:
@@ -475,6 +491,23 @@ public:
 		const FCortexGraphMigrationIdentity& Identity,
 		FCortexGraphMigrationPlan& OutPlan,
 		bool& bOutReused,
+		FCortexCommandResult& OutError,
+		const FCortexGraphMigrationPlanOptions* Options = nullptr);
+
+	/**
+	 * Fail-closed pin_map coverage of one replacement declaration against a stale entry (and optional result) terminator,
+	 * without needing the replacement declaration to be implemented by the Blueprint: every entry names an existing
+	 * replacement pin of the declared direction and a type-compatible stale pin, no replacement pin is mapped twice, every
+	 * visible replacement pin is mapped and every linked stale pin is mapped. Shared by the replace_interface preview.
+	 */
+	static bool ValidateReplacementPinMap(
+		UBlueprint* Blueprint,
+		UFunction* Function,
+		UClass* FunctionClass,
+		UEdGraphNode* StaleEntry,
+		UEdGraphNode* StaleResult,
+		const TArray<TSharedPtr<FJsonValue>>& PinMapValues,
+		TArray<FCortexGraphMigrationPinMapping>& OutPinMap,
 		FCortexCommandResult& OutError);
 
 	/**

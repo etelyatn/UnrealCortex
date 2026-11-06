@@ -15,6 +15,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/Kismet2NameValidators.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPCommandParams.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPMigrationGuard.h"
 #include "Operations/CortexBPParentRules.h"
@@ -23,7 +24,7 @@
 #include "UObject/UnrealType.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
-namespace
+namespace CortexBPReparentPrivate
 {
 	TFunction<void(UBlueprint*)> GPostApplyHookForTest;
 }
@@ -38,15 +39,9 @@ namespace
 	/** Largest inline difference list; the full list goes to report_path. */
 	constexpr int32 MaxInlineDifferences = 100;
 
-	TArray<TSharedPtr<FJsonValue>> ToJsonStrings(const TArray<FString>& Values)
-	{
-		TArray<TSharedPtr<FJsonValue>> Array;
-		for (const FString& Value : Values)
-		{
-			Array.Add(MakeShared<FJsonValueString>(Value));
-		}
-		return Array;
-	}
+	using CortexBPParams::ReadOptionalBool;
+	using CortexBPParams::ReadRequiredString;
+	using CortexBPParams::ToJsonStrings;
 
 	TArray<FString> SortedUnique(const TArray<FString>& Values)
 	{
@@ -61,35 +56,8 @@ namespace
 			|| (Own->IsA<FFloatProperty>() && Native->IsA<FDoubleProperty>());
 	}
 
-	bool ReadOptionalBool(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, bool Default, bool& OutValue, FCortexCommandResult& OutError)
-	{
-		OutValue = Default;
-		if (!Params->HasField(Field))
-		{
-			return true;
-		}
-		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-		if (!Value.IsValid() || Value->Type != EJson::Boolean || !Params->TryGetBoolField(Field, OutValue))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s must be a boolean"), Field));
-			return false;
-		}
-		return true;
-	}
-
-	bool ReadRequiredString(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, FString& OutValue, FCortexCommandResult& OutError)
-	{
-		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-		if (!Value.IsValid() || Value->Type != EJson::String || !Params->TryGetStringField(Field, OutValue) || OutValue.IsEmpty())
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Missing required param: %s (a non-empty string)"), Field));
-			return false;
-		}
-		return true;
-	}
-
 	/** State the capture, apply and verify callbacks share. */
-	struct FApplyState
+	struct FReparentApplyState
 	{
 		TSharedPtr<FJsonObject> SnapshotBefore;
 		TArray<TSharedPtr<FJsonValue>> Differences;
@@ -97,12 +65,6 @@ namespace
 		bool bCompiled = false;
 		bool bReportWritten = false;
 	};
-
-	const TSet<FString>& DeltaSections()
-	{
-		static const TSet<FString> Sections = {TEXT("variables"), TEXT("cdo")};
-		return Sections;
-	}
 
 	/** Difference of Section/Key in Differences, or null. */
 	TSharedPtr<FJsonObject> FindDifference(const TArray<TSharedPtr<FJsonValue>>& Differences, const TCHAR* Section, const FString& Key)
@@ -123,7 +85,7 @@ namespace
 	}
 
 	TSharedRef<FJsonObject> BuildReportDocument(
-		const FString& AssetPath, const FString& OldParent, const FString& NewParent, const FApplyState& State)
+		const FString& AssetPath, const FString& OldParent, const FString& NewParent, const FReparentApplyState& State)
 	{
 		TSharedRef<FJsonObject> Report = MakeShared<FJsonObject>();
 		Report->SetStringField(TEXT("asset_path"), AssetPath);
@@ -137,7 +99,7 @@ namespace
 		return Report;
 	}
 
-	TSharedRef<FJsonObject> BuildDelta(const FApplyState& State, const FCortexResolvedFilePath& ResolvedReport)
+	TSharedRef<FJsonObject> BuildDelta(const FReparentApplyState& State, const FCortexResolvedFilePath& ResolvedReport)
 	{
 		TSharedRef<FJsonObject> Delta = MakeShared<FJsonObject>();
 		Delta->SetBoolField(TEXT("compiled"), State.bCompiled);
@@ -168,7 +130,7 @@ namespace
 	void AddFailureContext(
 		FCortexCommandResult& Result,
 		const FCortexBPReparentOps::FReparentPlan& Plan,
-		const FApplyState& State,
+		const FReparentApplyState& State,
 		const FCortexResolvedFilePath& ResolvedReport)
 	{
 		if (!Result.ErrorDetails.IsValid())
@@ -615,7 +577,7 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 
 	KeptVariables.RemoveAll([&ReplacedVariables](const FString& Name) { return ReplacedVariables.Contains(Name); });
 
-	const TSharedRef<FApplyState> State = MakeShared<FApplyState>();
+	const TSharedRef<FReparentApplyState> State = MakeShared<FReparentApplyState>();
 
 	FCortexBPGuardedRun::FSpec Spec;
 	Spec.OpName = TEXT("reparent");
@@ -628,7 +590,7 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 
 	Spec.Capture = [State](UBlueprint* Target, FString& OutError)
 	{
-		State->SnapshotBefore = FCortexBPSnapshotOps::BuildSnapshot(Target, DeltaSections(), OutError);
+		State->SnapshotBefore = FCortexBPSnapshotOps::BuildSnapshot(Target, FCortexBPSnapshotOps::MemberDeltaSections(), OutError);
 		return State->SnapshotBefore.IsValid();
 	};
 
@@ -670,9 +632,9 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 		}
 
 #if WITH_DEV_AUTOMATION_TESTS
-		if (GPostApplyHookForTest)
+		if (CortexBPReparentPrivate::GPostApplyHookForTest)
 		{
-			GPostApplyHookForTest(Target);
+			CortexBPReparentPrivate::GPostApplyHookForTest(Target);
 		}
 #endif
 		return true;
@@ -730,7 +692,7 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 		}
 
 		FString SnapshotError;
-		const TSharedPtr<FJsonObject> SnapshotAfter = FCortexBPSnapshotOps::BuildSnapshot(Target, DeltaSections(), SnapshotError);
+		const TSharedPtr<FJsonObject> SnapshotAfter = FCortexBPSnapshotOps::BuildSnapshot(Target, FCortexBPSnapshotOps::MemberDeltaSections(), SnapshotError);
 		if (!SnapshotAfter.IsValid())
 		{
 			OutError = FString::Printf(TEXT("Could not record the post-call snapshot: %s"), *SnapshotError);
@@ -738,7 +700,7 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 		}
 		State->Differences.Reset();
 		const FCortexCommandResult Diff = FCortexBPSnapshotOps::DiffSnapshots(
-			State->SnapshotBefore, SnapshotAfter, DeltaSections(), State->Differences, State->Counts);
+			State->SnapshotBefore, SnapshotAfter, FCortexBPSnapshotOps::MemberDeltaSections(), State->Differences, State->Counts);
 		if (!Diff.bSuccess)
 		{
 			OutError = Diff.ErrorMessage;
@@ -806,11 +768,11 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 #if WITH_DEV_AUTOMATION_TESTS
 void FCortexBPReparentOps::SetPostApplyHookForTest(TFunction<void(UBlueprint*)> Hook)
 {
-	GPostApplyHookForTest = MoveTemp(Hook);
+	CortexBPReparentPrivate::GPostApplyHookForTest = MoveTemp(Hook);
 }
 
 void FCortexBPReparentOps::ClearPostApplyHookForTest()
 {
-	GPostApplyHookForTest = nullptr;
+	CortexBPReparentPrivate::GPostApplyHookForTest = nullptr;
 }
 #endif

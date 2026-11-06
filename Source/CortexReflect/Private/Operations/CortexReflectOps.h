@@ -52,6 +52,7 @@ public:
 
 private:
 	friend class FCortexReflectProjectPluginBlueprintClassificationTest;
+	friend class FCortexReflectInterfaceOps;
 	static UClass* FindClassByName(const FString& ClassName, FCortexCommandResult& OutError);
 	static bool IsProjectClass(const UClass* Class);
 	static FString GetCppClassName(const UClass* Class);

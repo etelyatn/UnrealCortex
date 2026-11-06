@@ -22,6 +22,7 @@
 #include "Kismet2/Kismet2NameValidators.h"
 #include "Misc/SecureHash.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPCommandParams.h"
 #include "Operations/CortexBPDependentScan.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPMigrationGuard.h"
@@ -129,42 +130,9 @@ namespace CortexBPRenameMemberPrivate
 		}
 	};
 
-	TArray<TSharedPtr<FJsonValue>> ToJsonStrings(const TArray<FString>& Values)
-	{
-		TArray<TSharedPtr<FJsonValue>> Array;
-		for (const FString& Value : Values)
-		{
-			Array.Add(MakeShared<FJsonValueString>(Value));
-		}
-		return Array;
-	}
-
-	bool ReadOptionalBool(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, bool Default, bool& OutValue, FCortexCommandResult& OutError)
-	{
-		OutValue = Default;
-		if (!Params->HasField(Field))
-		{
-			return true;
-		}
-		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-		if (!Value.IsValid() || Value->Type != EJson::Boolean || !Params->TryGetBoolField(Field, OutValue))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s must be a boolean"), Field));
-			return false;
-		}
-		return true;
-	}
-
-	bool ReadRequiredString(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, FString& OutValue, FCortexCommandResult& OutError)
-	{
-		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-		if (!Value.IsValid() || Value->Type != EJson::String || !Params->TryGetStringField(Field, OutValue) || OutValue.IsEmpty())
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Missing required param: %s (a non-empty string)"), Field));
-			return false;
-		}
-		return true;
-	}
+	using CortexBPParams::ReadOptionalBool;
+	using CortexBPParams::ReadRequiredString;
+	using CortexBPParams::ToJsonStrings;
 
 	void CollectGraphTree(UEdGraph* Graph, TArray<UEdGraph*>& OutGraphs)
 	{

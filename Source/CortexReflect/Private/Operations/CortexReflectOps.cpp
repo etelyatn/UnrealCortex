@@ -21,6 +21,9 @@
 #include "UObject/SoftObjectPath.h"
 #include "UObject/CoreRedirects.h"
 #include "Modules/ModuleManager.h"
+#include "K2Node_Message.h"
+#include "Engine/LevelScriptBlueprint.h"
+#include "Operations/CortexReflectInterfaceOps.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -116,6 +119,20 @@ UClass* FCortexReflectOps::FindClassByName(const FString& ClassName, FCortexComm
 		return nullptr;
 	}
 
+	// A /Script/Module.Class path names a native class directly.
+	if (ClassName.StartsWith(TEXT("/Script/")))
+	{
+		if (UClass* NativeClass = FindObject<UClass>(nullptr, *ClassName))
+		{
+			return NativeClass;
+		}
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::ClassNotFound,
+			FString::Printf(TEXT("Native class not found: %s"), *ClassName)
+		);
+		return nullptr;
+	}
+
 	// 1. Try asset path (starts with /)
 	if (ClassName.StartsWith(TEXT("/")))
 	{
@@ -204,6 +221,20 @@ UClass* FCortexReflectOps::FindClassByName(const FString& ClassName, FCortexComm
 		if (UClass** Result = Found.Find(Name))
 		{
 			return *Result;
+		}
+	}
+
+	// The C++ spelling of an interface (IRipX) names the native interface class URipX; only an interface class matches it.
+	if (ClassName.Len() > 1 && ClassName.StartsWith(TEXT("I")))
+	{
+		const FString InterfaceName = ClassName.Mid(1);
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* Candidate = *It;
+			if (IsValid(Candidate) && Candidate->HasAnyClassFlags(CLASS_Interface) && Candidate->GetName() == InterfaceName)
+			{
+				return Candidate;
+			}
 		}
 	}
 
@@ -1323,6 +1354,12 @@ FCortexCommandResult FCortexReflectOps::FindOverrides(const TSharedPtr<FJsonObje
 		return FindError;
 	}
 
+	// An interface has no derived classes; its implementing Blueprints are what a caller means by overrides.
+	if (ParentClass->HasAnyClassFlags(CLASS_Interface))
+	{
+		return FCortexReflectInterfaceOps::FindOverridesOfInterface(Params, ParentClass);
+	}
+
 	int32 Depth = 2;
 	Params->TryGetNumberField(TEXT("depth"), Depth);
 
@@ -1500,6 +1537,7 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 
 	// Verify symbol exists on the class
 	FName SymbolFName(*SymbolName);
+	const UClass* AuthoritativeOwner = OwnerClass->GetAuthoritativeClass();
 	bool bIsProperty = OwnerClass->FindPropertyByName(SymbolFName) != nullptr;
 	bool bIsFunction = OwnerClass->FindFunctionByName(SymbolFName) != nullptr;
 
@@ -1557,10 +1595,18 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 		LoadedBlueprintsByPath.FindOrAdd(AssetPath, Blueprint);
 	};
 
+	// Widget, Anim and every other Blueprint subclass carry the same graphs; an exact UBlueprint class match silently
+	// dropped them (they were not even counted as not scanned). Level script Blueprints stay out of scope.
+	TSet<FTopLevelAssetPath> BlueprintClassPaths;
+	AssetRegistry.GetDerivedClassNames({UBlueprint::StaticClass()->GetClassPathName()}, {}, BlueprintClassPaths);
+	BlueprintClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	BlueprintClassPaths.Remove(ULevelScriptBlueprint::StaticClass()->GetClassPathName());
+
 	auto AddBlueprintAsset = [
 		&LoadedBlueprintsByPath,
 		&UnloadedBlueprintObjectPaths,
-		&PathFilter
+		&PathFilter,
+		&BlueprintClassPaths
 	](const FAssetData& Asset)
 	{
 		if (!Asset.IsValid())
@@ -1568,7 +1614,7 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 			return;
 		}
 
-		if (Asset.AssetClassPath != UBlueprint::StaticClass()->GetClassPathName())
+		if (!BlueprintClassPaths.Contains(Asset.AssetClassPath))
 		{
 			return;
 		}
@@ -1589,6 +1635,8 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 
 		UnloadedBlueprintObjectPaths.FindOrAdd(PackagePath, ObjectPath);
 	};
+
+	const bool bOwnerIsInterface = OwnerClass->HasAnyClassFlags(CLASS_Interface);
 
 	if (Scope == TEXT("derived"))
 	{
@@ -1616,6 +1664,13 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 		AssetRegistry.GetAssets(Filter, Assets);
 		for (const FAssetData& Asset : Assets)
 		{
+			// An interface has no Blueprint subclasses: its "derived" Blueprints are the ones that implement it.
+			if (bOwnerIsInterface && FCortexReflectInterfaceOps::TagImplementsInterface(Asset, OwnerClass))
+			{
+				AddBlueprintAsset(Asset);
+				continue;
+			}
+
 			const FAssetTagValueRef ParentTag = Asset.TagsAndValues.FindTag("NativeParentClass");
 			if (!ParentTag.IsSet())
 			{
@@ -1684,6 +1739,7 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 
 	auto ScanBlueprintForUsages = [
 		OwnerClass,
+		AuthoritativeOwner,
 		bIsProperty,
 		bIsFunction,
 		SymbolFName
@@ -1737,13 +1793,17 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 
 				if (bIsFunction)
 				{
-					UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
-					if (CallNode && CallNode->FunctionReference.GetMemberName() == SymbolFName)
+					const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+					// Matched by the member's resolved owner, never by name alone: a same-named function on an unrelated class is not a usage.
+					const UClass* MemberOwner = (CallNode && CallNode->FunctionReference.GetMemberName() == SymbolFName)
+						? CortexReflectNodeRefs::GetCallMemberOwner(CallNode, Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass)
+						: nullptr;
+					if (MemberOwner && (MemberOwner->IsChildOf(AuthoritativeOwner) || AuthoritativeOwner->IsChildOf(MemberOwner)))
 					{
 						TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
 						RefObj->SetStringField(TEXT("context"), Graph->GetName());
-						RefObj->SetStringField(TEXT("type"), TEXT("call"));
-						RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+						RefObj->SetStringField(TEXT("type"), CallNode->IsA<UK2Node_Message>() ? TEXT("message") : TEXT("call"));
+						RefObj->SetStringField(TEXT("node_class"), CortexReflectNodeRefs::GetNodeClassLabel(CallNode));
 						ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
 					}
 				}
@@ -1909,6 +1969,11 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 	Result->SetArrayField(TEXT("usages"), UsagesArray);
 	Result->SetNumberField(TEXT("total_usages"), TotalUsages);
 	Result->SetNumberField(TEXT("total_classes"), UsagesArray.Num());
+	if (bOwnerIsInterface)
+	{
+		Result->SetStringField(TEXT("interface_hint"),
+			TEXT("An interface has no Blueprint subclasses; reflect.find_interface_implementers lists its implementing Blueprints and the callers of its functions by resolved owner."));
+	}
 
 	return FCortexCommandRouter::Success(Result);
 }

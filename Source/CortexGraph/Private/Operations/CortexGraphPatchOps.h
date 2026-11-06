@@ -4,6 +4,7 @@
 #include "CortexCommandRouter.h"
 
 class UBlueprint;
+class UEdGraph;
 class FJsonObject;
 class FCompilerResultsLog;
 
@@ -64,6 +65,16 @@ struct FCortexGraphPreparedPatch
 	 */
 	TSharedPtr<FJsonObject> RewirePlan;
 	/**
+	 * Durable `replace_interface` plan when the request selected the interface swap shell: both interfaces, the per-function
+	 * mapping, the dropped and new stubs and the preservation contracts of every touched graph.
+	 */
+	TSharedPtr<FJsonObject> InterfacePlan;
+	/**
+	 * Durable `retarget_calls` plan when the request selected the call-retargeting shell: the endpoints, the pin map, the
+	 * reviewed site set with its per-pin link inventory and the preservation contract of every touched graph.
+	 */
+	TSharedPtr<FJsonObject> RetargetPlan;
+	/**
 	 * True when an accepted replay named a source locator that no longer exists. The apply consumed
 	 * the stale entry and that provenance is not inventoried, so it is reported instead of inferred.
 	 */
@@ -73,6 +84,8 @@ struct FCortexGraphPreparedPatch
 	bool bIsPrune() const { return PrunePlan.IsValid(); }
 	bool bIsRetirement() const { return RetirementPlan.IsValid(); }
 	bool bIsRewire() const { return RewirePlan.IsValid(); }
+	bool bIsInterfaceReplacement() const { return InterfacePlan.IsValid(); }
+	bool bIsRetarget() const { return RetargetPlan.IsValid(); }
 
 	/** Prepared state never owns transient UObject pointers. */
 	bool HasTransientObjects() const { return false; }
@@ -149,8 +162,30 @@ struct FCortexGraphPatchOutcome
 	 * the exact rewired edges instead of reading the durable plan.
 	 */
 	TSharedPtr<FJsonObject> RewireInventory;
+	/**
+	 * Bounded inventory of a `replace_interface` request (the per-function plan, dropped and new stubs, the
+	 * in-asset caller and derived-override lists), published with preview and apply results.
+	 */
+	TSharedPtr<FJsonObject> InterfaceInventory;
+	/**
+	 * Bounded inventory of a `retarget_calls` request (the endpoints, the per-site pin and link inventory the caller echoes
+	 * to approve the apply), published with preview and apply results.
+	 */
+	TSharedPtr<FJsonObject> RetargetInventory;
 	TArray<FString> Diagnostics;
 	FCortexGraphPatchLocators Locators;
+};
+
+/** One graph of the asset's addressable graph tree: a root user graph or a composite child, with its root-relative path. */
+struct FCortexGraphPatchGraphRef
+{
+	UEdGraph* Graph = nullptr;
+	/** Empty for a root graph; otherwise the dot-separated composite path discovery publishes. */
+	FString SubgraphPath;
+	/** Published graph kind string (ubergraph, function, macro, delegate, interface_impl). */
+	FString Kind;
+	/** True when the graph kind accepts migration mutation. */
+	bool bMutable = false;
 };
 
 class FCortexGraphPatchOps
@@ -260,12 +295,16 @@ public:
 		const FGuid& GraphGuid,
 		FString& OutKind,
 		FCortexCommandResult& OutError);
+	/** Every graph of the asset, user graphs and every composite child at any depth (each once), depth-first. Exhaustive, unlike the depth-bounded `graph_ref` addressing. */
+	static void CollectAddressableGraphs(UBlueprint* Blueprint, TArray<FCortexGraphPatchGraphRef>& OutGraphs);
 	/**
 	 * Deterministic node identity of one planned identity seed: a stable hash of the canonical patch
 	 * GUID and the seed. Authoring client ids, replacement terminators and transfer destinations all
 	 * derive through this one function, so no second identity scheme can appear.
 	 */
 	static FGuid DeriveNodeGuid(const FString& PatchId, const FString& ClientId);
+	/** The canonical (sorted-key, order-preserving arrays) serialization the patch shell hashes requests with. */
+	static FString CanonicalJson(const TSharedPtr<FJsonObject>& Object);
 	/** Canonical planned signature descriptor of one native pin. */
 	static TSharedPtr<FJsonObject> MakePinSignatureDescriptor(const UEdGraphPin& Pin);
 	/**

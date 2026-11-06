@@ -15,6 +15,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/SecureHash.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPCommandParams.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPMigrationGuard.h"
 #include "Operations/CortexBPParentRules.h"
@@ -28,17 +29,17 @@ namespace CortexSwapSCSPrivate
 {
 	using FOps = FCortexBPSwapSCSClassOps;
 
+	using CortexBPParams::CheckAcknowledged;
+	using CortexBPParams::ReadExpectedFingerprint;
+	using CortexBPParams::ReadOptionalBool;
+	using CortexBPParams::ReadRequiredString;
+	using CortexBPParams::ReadStringArray;
+	using CortexBPParams::ToJsonStrings;
 	using CortexBPSCSSupport::AllNodeGuids;
-	using CortexBPSCSSupport::CheckAcknowledged;
 	using CortexBPSCSSupport::CollectBoundEvents;
 	using CortexBPSCSSupport::FindChildOverrides;
 	using CortexBPSCSSupport::FindNodeByGuid;
 	using CortexBPSCSSupport::IsUpToDate;
-	using CortexBPSCSSupport::ReadExpectedFingerprint;
-	using CortexBPSCSSupport::ReadOptionalBool;
-	using CortexBPSCSSupport::ReadRequiredString;
-	using CortexBPSCSSupport::ReadStringArray;
-	using CortexBPSCSSupport::ToJsonStrings;
 
 	const TSet<FString>& ComponentSections()
 	{
@@ -206,7 +207,7 @@ namespace CortexSwapSCSPrivate
 
 void FCortexBPSwapSCSClassOps::FSwapPlan::AppendTo(const TSharedRef<FJsonObject>& Target) const
 {
-	using CortexBPSCSSupport::ToJsonStrings;
+	using CortexBPParams::ToJsonStrings;
 	Target->SetStringField(TEXT("component_name"), ComponentName);
 	Target->SetStringField(TEXT("old_class"), OldClass);
 	Target->SetStringField(TEXT("new_class"), NewClass);

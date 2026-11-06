@@ -11,7 +11,7 @@ struct FCortexCommandResult;
  * Shared skeleton for guarded Blueprint migration commands.
  *
  * Sequence: refuse blocked assets, check expected_fingerprint, snapshot, then (unless dry_run) one transaction,
- * journal, Capture, Apply, at most one compile, Verify (readback). Any failure restores the Blueprint: an explicit undo of
+ * journal, Capture, Apply, optional VerifyBeforeCompile, at most one compile, Verify (readback). Any failure restores the Blueprint: an explicit undo of
  * the guarded transaction, then a reconcile from the generic journal (parent, NewVariables, interfaces, a DuplicateObject
  * copy of every graph and the SCS/ICH template properties), then the caller's Restore for operation-owned state, then
  * exactly one recovery compile (same options as the failed compile when the parent changed in the run).
@@ -48,6 +48,12 @@ public:
 		/** Mutates the Blueprint. Returns false with OutError to fail the run. Not called on dry_run. */
 		TFunction<bool(UBlueprint* Blueprint, FString& OutError)> Apply;
 
+		/**
+		 * Optional: reads the mutation back from the live objects before the compile (compile can rebuild or discard what the
+		 * prediction was made on). A failure is a readback mismatch (READBACK_MISMATCH) and restores like any other failure.
+		 */
+		TFunction<bool(UBlueprint* Blueprint, FString& OutError)> VerifyBeforeCompile;
+
 		/** Reads the result back; bCompiled tells whether the compiled state may be inspected. Not called on dry_run. */
 		TFunction<bool(UBlueprint* Blueprint, bool bCompiled, FString& OutError)> Verify;
 
@@ -60,6 +66,14 @@ public:
 		 * skeleton rebuild logs an internal compiler error) restores from the generic journal alone and discards the record.
 		 */
 		bool bUndoOnFailure = true;
+
+		/**
+		 * With bUndoOnFailure=false: still record the guarded transaction, so a successful run is one editor undo step, and drop
+		 * the record on failure (Cancel() restores nothing; the generic journal does the restoring). For a mutation the engine
+		 * itself performs in nested transactions whose undo can leave a half-restored pin graph (MovePinLinks onto a node the
+		 * mutation created): the failure path must not run that undo, but a success is a normal undoable step.
+		 */
+		bool bRecordUndoStep = false;
 
 		/**
 		 * Optional: puts back state that only exists once the recovery compile has rebuilt the class (CDO defaults and loaded

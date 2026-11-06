@@ -1,3 +1,4 @@
+#include "CortexAdoptTestHelpers.h"
 #include "Misc/AutomationTest.h"
 #include "Operations/CortexBPClassSettingsOps.h"
 #include "CortexCommandRouter.h"
@@ -194,11 +195,31 @@ bool FCortexBPRemoveInterfaceBasicTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Add succeeded"), AddResult.bSuccess);
 	TestEqual(TEXT("Interface count is 1"), TestBP->ImplementedInterfaces.Num(), 1);
 
-	// Now remove it
+	// Preview first: apply is bound to the dry run's fingerprint and validation hash.
 	TSharedPtr<FJsonObject> RemoveParams = MakeShared<FJsonObject>();
 	RemoveParams->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
 	RemoveParams->SetStringField(TEXT("interface_path"), TEXT("BlendableInterface"));
+	RemoveParams->SetBoolField(TEXT("preserve_implementations"), false);
 	RemoveParams->SetBoolField(TEXT("compile"), true);
+
+	TSharedPtr<FJsonObject> PreviewParams = MakeShared<FJsonObject>();
+	PreviewParams->Values = RemoveParams->Values;
+	PreviewParams->SetBoolField(TEXT("dry_run"), true);
+	const FCortexCommandResult Preview = FCortexBPClassSettingsOps::RemoveInterface(PreviewParams);
+	TestTrue(TEXT("Preview succeeded"), Preview.bSuccess);
+	TestEqual(TEXT("Preview leaves the interface in place"), TestBP->ImplementedInterfaces.Num(), 1);
+	if (!Preview.bSuccess || !Preview.Data.IsValid())
+	{
+		CortexAdoptTest::Discard(TestBP);
+		return false;
+	}
+	const TSharedPtr<FJsonObject>* Fingerprint = nullptr;
+	TestTrue(TEXT("Preview publishes fingerprint_before"), Preview.Data->TryGetObjectField(TEXT("fingerprint_before"), Fingerprint));
+	if (Fingerprint != nullptr)
+	{
+		RemoveParams->SetObjectField(TEXT("expected_fingerprint"), *Fingerprint);
+	}
+	RemoveParams->SetStringField(TEXT("expected_validation_hash"), Preview.Data->GetStringField(TEXT("validation_hash")));
 
 	FCortexCommandResult RemoveResult = FCortexBPClassSettingsOps::RemoveInterface(RemoveParams);
 	TestTrue(TEXT("RemoveInterface succeeded"), RemoveResult.bSuccess);
@@ -215,7 +236,7 @@ bool FCortexBPRemoveInterfaceBasicTest::RunTest(const FString& Parameters)
 			RemoveResult.Data->TryGetBoolField(TEXT("compiled"), bCompiled));
 	}
 
-	TestBP->MarkAsGarbage();
+	CortexAdoptTest::Discard(TestBP);
 	return true;
 }
 
@@ -239,12 +260,13 @@ bool FCortexBPRemoveInterfaceNotImplementedTest::RunTest(const FString& Paramete
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
 	Params->SetStringField(TEXT("interface_path"), TEXT("BlendableInterface"));
+	Params->SetBoolField(TEXT("preserve_implementations"), false);
 	Params->SetBoolField(TEXT("compile"), false);
 
 	FCortexCommandResult Result = FCortexBPClassSettingsOps::RemoveInterface(Params);
 	TestFalse(TEXT("Returns failure when interface not implemented"), Result.bSuccess);
 	TestEqual(TEXT("Error code is InvalidOperation"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
 
-	TestBP->MarkAsGarbage();
+	CortexAdoptTest::Discard(TestBP);
 	return true;
 }

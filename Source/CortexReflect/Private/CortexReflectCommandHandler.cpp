@@ -5,6 +5,8 @@
 #include "Operations/CortexReflectDependencyGraphOps.h"
 #include "Operations/CortexReflectNameLookupOps.h"
 #include "Operations/CortexReflectDuplicateGraphOps.h"
+#include "Operations/CortexReflectInterfaceOps.h"
+#include "Operations/CortexReflectTypeUsageOps.h"
 
 namespace
 {
@@ -85,6 +87,16 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 		return FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(Params);
 	}
 
+	if (Command == TEXT("find_type_usages"))
+	{
+		return FCortexReflectTypeUsageOps::FindTypeUsages(Params);
+	}
+
+	if (Command == TEXT("find_interface_implementers"))
+	{
+		return FCortexReflectInterfaceOps::FindInterfaceImplementers(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown reflect command: %s"), *Command)
@@ -117,7 +129,8 @@ TArray<FCortexCommandInfo> ReflectCommandInfos()
 		FCortexCommandInfo{ TEXT("find_overrides"), TEXT("Find Blueprint overrides of a class") }
 			.Required(TEXT("class_name"), TEXT("string"), TEXT("Base class to inspect for overrides"))
 			.Optional(TEXT("depth"), TEXT("number"), TEXT("Inheritance depth to search"))
-			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum overrides to return")),
+			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum overrides to return"))
+			.Optional(TEXT("path_prefixes"), TEXT("array"), TEXT("Interface classes only: mounted content folders searched for implementing Blueprints (default /Game)")),
 		FCortexCommandInfo{ TEXT("find_usages"), TEXT("Find cross-references to a symbol") }
 			.Required(TEXT("symbol"), TEXT("string"), TEXT("Symbol name to search for"))
 			.Optional(TEXT("class_name"), TEXT("string"), TEXT("Restrict search to a class context"))
@@ -156,6 +169,18 @@ TArray<FCortexCommandInfo> ReflectCommandInfos()
 			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose Blueprints are compared (e.g. /Game/MyFeature)"))
 			.Optional(TEXT("min_nodes"), TEXT("number"), TEXT("Smallest graph (or widget tree) size considered, integer greater than 0 (default 5)"))
 			.Optional(TEXT("similarity"), TEXT("number"), TEXT("Jaccard threshold for similar groups, greater than 0 and at most 1 (default 0.9)"))
+			.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full result to this file (under Project Saved, Content or Config) and return only a compact summary; use it when the inline result would be too large"))
+			.StrictParams(),
+		FCortexCommandInfo{ TEXT("find_interface_implementers"), TEXT("List the Blueprints that implement an interface (a Blueprint Interface asset, a /Script/ class path, or a U/I class name). Implementers come from the Asset Registry ImplementedInterfaces tag, so only candidates are loaded; a Blueprint that inherits the interface from a parent Blueprint is listed with direct=false and via naming the declaring ancestor. Per interface function the implementation is function_graph (a graph of the interface description: graph_name, graph_guid, entry_node_guid, node_count), event (an event node: graph_guid, entry_node_guid, has_body) or none. With include_callers (default true) it also lists the call sites: callers are matched by the resolved owner of the member, never by name: UK2Node_Message (kind message), a UK2Node_CallFunction whose member parent is the interface (typed_call) and a UK2Node_DynamicCast to the interface (interface_cast); each site carries asset_path, graph_name, graph_guid, subgraph_path (dot-separated composite subgraphs), node_guid, node_class and function. Sites whose owner cannot be resolved but whose member name is an interface function are listed under unresolved_callers. A content interface narrows callers to the hard referencers of its package; a native interface has no content package, so every Blueprint under path_prefixes is loaded") }
+			.Required(TEXT("interface"), TEXT("string"), TEXT("Blueprint Interface asset path, /Script/Module.Name, or interface class name (URipX or RipX; the C++ spelling IRipX is accepted)"))
+			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose Blueprints are searched (e.g. /Game/MyFeature)"))
+			.Optional(TEXT("include_callers"), TEXT("boolean"), TEXT("Also list the call and cast sites of the interface (default true)"))
+			.Optional(TEXT("function"), TEXT("string"), TEXT("Restrict the reported functions, and the message and typed-call sites, to one interface function (cast sites are not function-specific and stay)"))
+			.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full result to this file (under Project Saved, Content or Config) and return only a compact summary; use it when the inline result would be too large"))
+			.StrictParams(),
+		FCortexCommandInfo{ TEXT("find_type_usages"), TEXT("Inventory where a user-defined struct (UDS) or enum (UDE) is used, classified, for a replacement by a native type; run against the native type afterwards it proves no residual use. The hard referencers of the type's package under path_prefixes are loaded (Blueprints, user-defined structs) or classified from the Asset Registry. Each usage has a category: variable (Blueprint member variable incl. array/set/map, with role type/map_key/map_value), local_variable and function_parameter (function entry/result and custom event user pins), pin (any other node pin of the type, incl. enum equality, for-each-enum and enumerator-name nodes; node_class, graph_guid, node_guid, pin), make_struct, break_struct, set_fields, struct_member (UK2Node_MakeStruct, BreakStruct, SetFieldsInStruct, StructMemberGet/Set), switch_enum, enum_literal, datatable_row_struct (from the RowStructure registry tag, the table is not loaded), data_asset (a UDataAsset instance that hard-references the type, or an instance of a Blueprint DataAsset class whose variables use it, with via_class), save_game (a Blueprint deriving from USaveGame that declares the type; .sav slot files are not scanned) and nested_struct (another user-defined struct with a member of the type). Assets that cannot be loaded are listed under load_failures and assets beyond the node budget under skipped_assets, never counted as free of the type; referencing assets of other classes are listed under other_referencers") }
+			.Required(TEXT("user_type"), TEXT("string"), TEXT("User-defined struct or enum asset path, a /Script/Module.Name path, or a struct or enum name (F/E prefix optional)"))
+			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose assets are inventoried (e.g. /Game/MyFeature)"))
 			.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full result to this file (under Project Saved, Content or Config) and return only a compact summary; use it when the inline result would be too large"))
 			.StrictParams(),
 	};

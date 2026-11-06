@@ -9,6 +9,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "CortexBPReparentTestSupport.h"
 #include "CortexBPTestLiftActor.h"
+#include "CortexTypes.h"
 #include "K2Node_ComponentBoundEvent.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/InheritableComponentHandler.h"

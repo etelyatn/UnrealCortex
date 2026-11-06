@@ -44,4 +44,7 @@ public:
 
 	/** Every section name, in snapshot order. */
 	static const TArray<FString>& AllSectionNames();
+
+	/** The sections (variables, cdo) the adopt-member and reparent operations snapshot and diff around their change. */
+	static const TSet<FString>& MemberDeltaSections();
 };

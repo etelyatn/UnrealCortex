@@ -717,6 +717,13 @@ const TArray<FString>& FCortexBPSnapshotOps::AllSectionNames()
 	return Names;
 }
 
+const TSet<FString>& FCortexBPSnapshotOps::MemberDeltaSections()
+{
+	using namespace CortexBPSnapshotPrivate;
+	static const TSet<FString> Sections = {Section::Variables, Section::Cdo};
+	return Sections;
+}
+
 TSharedPtr<FJsonObject> FCortexBPSnapshotOps::BuildSnapshot(UBlueprint* Blueprint, const TSet<FString>& Sections, FString& OutError)
 {
 	using namespace CortexBPSnapshotPrivate;
