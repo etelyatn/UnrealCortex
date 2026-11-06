@@ -1,5 +1,7 @@
 #include "Misc/AutomationTest.h"
 
+#include "Editor.h"
+#include "Editor/Transactor.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "AnimGraphNode_SequencePlayer.h"
@@ -309,6 +311,11 @@ bool FCortexAnimationAdoptMemberBindingsTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("The Anim Blueprint compiled without errors"), AnimBlueprint->Status != BS_Error);
 	}
 
+	// Invariant: editor undo records that name the fixture are dropped before it is retired, or a later GC scans freed objects.
+	if (GEditor != nullptr && GEditor->Trans != nullptr)
+	{
+		GEditor->Trans->Reset(FText::FromString(TEXT("Retire anim adopt fixture")));
+	}
 	if (AnimBlueprint->GeneratedClass != nullptr)
 	{
 		AnimBlueprint->GeneratedClass->MarkAsGarbage();

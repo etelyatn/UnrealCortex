@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 
+#include "Editor.h"
+#include "Editor/Transactor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -38,11 +40,25 @@ namespace CortexAdoptTest
 		return Blueprint;
 	}
 
+	/**
+	 * GC-safety invariant for every migration fixture: the guarded runs, undo and rollback leave editor transaction records that
+	 * name the fixture's classes, graphs and reinstanced instances. Retiring (MarkAsGarbage) those objects while the records are
+	 * alive lets a later garbage collection scan freed objects and crash a random test, so the undo/redo history is emptied FIRST.
+	 */
+	inline void ResetUndoHistory()
+	{
+		if (GEditor != nullptr && GEditor->Trans != nullptr)
+		{
+			GEditor->Trans->Reset(FText::FromString(TEXT("Retire migration test fixture")));
+		}
+	}
+
 	/** Marks the Blueprint and its generated classes garbage so short-name class lookups never see them again. */
 	inline void Discard(UBlueprint* Blueprint)
 	{
 		if (Blueprint != nullptr)
 		{
+			ResetUndoHistory();
 			if (Blueprint->GeneratedClass != nullptr)
 			{
 				Blueprint->GeneratedClass->MarkAsGarbage();

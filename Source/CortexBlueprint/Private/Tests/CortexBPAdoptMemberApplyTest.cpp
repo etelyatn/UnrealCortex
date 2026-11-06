@@ -269,6 +269,7 @@ bool FCortexBPAdoptMemberTransferDefaultFalseTest::RunTest(const FString& Parame
 		TestTrue(TEXT("It is not an override (identical to the CDO)"), Property != nullptr && Property->Identical_InContainer(FollowingAfter, CdoObject));
 	}
 	TestFalse(TEXT("The variable is gone"), HasVariable(Blueprint, TEXT("bPowerOn")));
+	CortexAdoptTest::ResetUndoHistory();
 	if (OverridingAfter != nullptr) { OverridingAfter->MarkAsGarbage(); }
 	if (FollowingAfter != nullptr) { FollowingAfter->MarkAsGarbage(); }
 	Discard(Blueprint);
@@ -414,6 +415,7 @@ bool FCortexBPAdoptMemberInstancesSurviveTest::RunTest(const FString& Parameters
 				TestTrue(TEXT("The child Blueprint CDO equalled the old default and gets the transferred default"), ReadBool(ChildCdo, TEXT("bPowerOn")));
 			}
 		}
+		CortexAdoptTest::ResetUndoHistory();
 		if (UObject* Found = FindObject<UObject>(nullptr, *OverridingPath)) { Found->MarkAsGarbage(); }
 		if (UObject* Found = FindObject<UObject>(nullptr, *FollowingPath)) { Found->MarkAsGarbage(); }
 		Discard(Child);
@@ -472,6 +474,7 @@ bool FCortexBPAdoptMemberInstancesSurviveTest::RunTest(const FString& Parameters
 			TestFalse(TEXT("The CDO carries the old default on the new property"), ReadBool(Cdo, TEXT("bIsOpen")));
 			TestTrue(TEXT("The old property is gone from the class"), Blueprint->GeneratedClass->FindPropertyByName(TEXT("bOpen")) == nullptr);
 		}
+		CortexAdoptTest::ResetUndoHistory();
 		if (UObject* Found = FindObject<UObject>(nullptr, *OverridingPath)) { Found->MarkAsGarbage(); }
 		if (UObject* Found = FindObject<UObject>(nullptr, *FollowingPath)) { Found->MarkAsGarbage(); }
 		Discard(Blueprint);
@@ -591,6 +594,7 @@ bool FCortexBPAdoptMemberNumericAndRollbackTest::RunTest(const FString& Paramete
 			TestFalse(TEXT("The override value is kept under the old name"), ReadBool(After, TEXT("bOpen")));
 			TestTrue(TEXT("The default instance keeps the old default"), ReadBool(FollowAfter, TEXT("bOpen")));
 		}
+		CortexAdoptTest::ResetUndoHistory();
 		if (After != nullptr) { After->MarkAsGarbage(); }
 		if (FollowAfter != nullptr) { FollowAfter->MarkAsGarbage(); }
 		Discard(Blueprint);

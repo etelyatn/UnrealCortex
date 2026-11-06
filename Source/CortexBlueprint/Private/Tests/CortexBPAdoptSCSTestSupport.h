@@ -23,11 +23,8 @@ namespace CortexAdoptSCSTest
 	/** Releases every object of the Blueprint's package together, so a later GC never scans a class whose Blueprint was retired alone. */
 	inline void ScsRetire(UBlueprint* Blueprint, UBlueprint* Related = nullptr, UBlueprint* Third = nullptr, UBlueprint* Fourth = nullptr)
 	{
-		// The guarded runs leave undo records that name these objects; a GC scanning them after the package is retired crashes.
-		if (GEditor != nullptr && GEditor->Trans != nullptr)
-		{
-			GEditor->Trans->Reset(FText::FromString(TEXT("Retire SCS test fixture")));
-		}
+		// Invariant: undo history is emptied before retiring (see CortexAdoptTest::ResetUndoHistory), then parent and child go together.
+		CortexAdoptTest::ResetUndoHistory();
 		// A child and its parent are released together, then collected, so no class outlives the one it derives from.
 		for (const UBlueprint* Retired : {Blueprint, Related, Third, Fourth})
 		{

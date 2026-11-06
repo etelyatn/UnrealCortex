@@ -105,6 +105,8 @@ namespace CortexRenameTest
 		{
 			return;
 		}
+		// Invariant: the undo history that names this package's objects is emptied before they are retired (see ResetUndoHistory).
+		CortexAdoptTest::ResetUndoHistory();
 		UPackage* Package = Blueprint->GetOutermost();
 		ForEachObjectWithOuter(Package, [](UObject* Object)
 		{

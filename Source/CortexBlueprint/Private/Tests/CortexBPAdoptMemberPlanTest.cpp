@@ -236,6 +236,7 @@ bool FCortexBPAdoptMemberPlacedInstancesTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Overriding instance untouched"), OwnProperty->GetPropertyValue_InContainer(Overriding), bOverridingBefore);
 	TestEqual(TEXT("Following instance untouched"), OwnProperty->GetPropertyValue_InContainer(Following), bFollowingBefore);
 
+	CortexAdoptTest::ResetUndoHistory();
 	Overriding->MarkAsGarbage();
 	Following->MarkAsGarbage();
 	Discard(Fixture.Blueprint);
