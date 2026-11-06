@@ -2653,6 +2653,11 @@ struct FGraphPatchJournal
 
 	FCortexGraphPatchLocators Locators;
 	bool bCompileAttempted = false;
+	/** Pre-state of the interface list of a `replace_interface` apply, restored and verified by recovery. */
+	FCortexGraphInterfaceStateCapture InterfaceCapture;
+	FString InterfaceDiagnostic;
+	/** The per-function replace_entry plans a `replace_interface` apply computed after its interface swap, for the readback. */
+	TArray<FCortexGraphMigrationPlan> InterfaceEntryPlans;
 
 	bool WasNodeCreated(const FGuid& NodeGuid) const
 	{
@@ -3370,6 +3375,8 @@ bool RestoreJournal(UBlueprint* Blueprint, FGraphPatchJournal& Journal)
 
 	// Detached nodes are re-registered only after everything this patch created is gone, so the
 	// preserved downstream pins are free again and the journaled links can be re-created exactly.
+	// The interface list returns before the detached nodes are re-registered: their graphs are found through it.
+	if (!Journal.InterfaceCapture.Restore(Blueprint, Journal.InterfaceDiagnostic)) return false;
 	if (!RestoreRemovedNodes(Blueprint, Journal)) return false;
 	if (!RestoreRemovedMember(Blueprint, Journal)) return false;
 	if (!RestoreRemovalLinkOrders(Blueprint, Journal)) return false;
@@ -4388,6 +4395,27 @@ bool VerifyAppliedState(
 		}
 		return FCortexGraphMigrationOps::VerifyCallOutputAgainstNative(Blueprint, Plan, OutFailure);
 	}
+	if (Prepared.InterfacePlan.IsValid())
+	{
+		FCortexGraphMigrationInterfacePlan Plan;
+		FCortexCommandResult PlanError;
+		if (!FCortexGraphMigrationInterfacePlan::FromJson(Prepared.InterfacePlan, Plan, PlanError))
+		{
+			OutFailure = PlanError.ErrorMessage;
+			return false;
+		}
+		UClass* OldInterface = nullptr;
+		UClass* NewInterface = nullptr;
+		if (!FCortexGraphInterfaceMigration::ResolveInterfaceClass(Plan.OldInterface, OldInterface, PlanError)
+			|| !FCortexGraphInterfaceMigration::ResolveInterfaceClass(Plan.NewInterface, NewInterface, PlanError))
+		{
+			OutFailure = PlanError.ErrorMessage;
+			return false;
+		}
+		return FCortexGraphInterfaceMigration::VerifyAgainstNative(Blueprint, Plan, OldInterface, NewInterface,
+			Journal.InterfaceEntryPlans, bCompiled,
+			[](const TCHAR* Field) { return ShouldInjectReadbackFault(FName(Field)); }, OutFailure);
+	}
 	return true;
 }
 
@@ -4461,7 +4489,9 @@ bool HandleApplyFailure(
 	FString PreservationContractFailure;
 	const bool bContractsRestored = FCortexGraphMigrationOps::VerifyPreservationContracts(
 		Blueprint, Journal.PreservationContracts, PreservationContractFailure);
-	const bool bVerified = (bInjectedFailure == false) && bAuthoringRestored && bGeneratedRestored && bPreservationRestored && bContractsRestored;
+	FString InterfaceFailure;
+	const bool bInterfaceRestored = Journal.InterfaceCapture.Matches(Blueprint, InterfaceFailure);
+	const bool bVerified = (bInjectedFailure == false) && bAuthoringRestored && bGeneratedRestored && bPreservationRestored && bContractsRestored && bInterfaceRestored;
 
 	if (!bVerified)
 	{
@@ -4495,6 +4525,11 @@ bool HandleApplyFailure(
 					? TEXT("rollback: a graph preservation contract was not restored")
 					: FString::Printf(TEXT("rollback: %s"), *PreservationContractFailure));
 			}
+			if (!bInterfaceRestored)
+			{
+				OutOutcome->Diagnostics.Add(FString::Printf(TEXT("rollback: the interface state was not restored: %s"),
+					*(InterfaceFailure.IsEmpty() ? Journal.InterfaceDiagnostic : InterfaceFailure)));
+			}
 			if (!Journal.Member.Diagnostic.IsEmpty())
 			{
 				OutOutcome->Diagnostics.Add(FString::Printf(TEXT("rollback: %s"), *Journal.Member.Diagnostic));
@@ -4523,6 +4558,91 @@ bool HandleApplyFailure(
 	}
 	OutError = FCortexCommandRouter::Error(ErrorCode, Message);
 	return false;
+}
+
+/**
+ * Detaches the stale entry (and result) terminator of one planned replace_entry, registers its replacement under the
+ * deterministic identities and re-wires the preserved body through the planned boundary, journaling every change by durable
+ * identity. The replace_entry shell and the replace_interface shell share this one path; an empty fault name injects nothing.
+ */
+bool ApplyEntryReplacement(
+	UBlueprint* Blueprint,
+	UEdGraph* Graph,
+	const FCortexGraphMigrationPlan& Plan,
+	FGraphPatchJournal& Journal,
+	const FName AfterRemovalFault,
+	const FName AfterRegistrationFault,
+	FString& OutFailure)
+{
+	FGuid SourceEntryGuid;
+	UEdGraphNode* SourceEntry = nullptr;
+	if (FGuid::Parse(Plan.SourceEntryGuid, SourceEntryGuid))
+	{
+		SourceEntry = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, SourceEntryGuid);
+	}
+	if (!SourceEntry || SourceEntry->GetGraph() != Graph)
+	{
+		OutFailure = TEXT("the stale implementation entry no longer resolves in the target graph");
+		return false;
+	}
+	JournalNodeRemoved(SourceEntry, Journal);
+	Graph->Modify();
+	Graph->RemoveNode(SourceEntry);
+	if (!Plan.SourceResultGuid.IsEmpty())
+	{
+		FGuid SourceResultGuid;
+		FGuid::Parse(Plan.SourceResultGuid, SourceResultGuid);
+		UEdGraphNode* SourceResult = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, SourceResultGuid);
+		if (!SourceResult || SourceResult->GetGraph() != Graph)
+		{
+			OutFailure = TEXT("the stale result terminator no longer resolves in the target graph");
+			return false;
+		}
+		JournalNodeRemoved(SourceResult, Journal);
+		Graph->RemoveNode(SourceResult);
+	}
+	if (!AfterRemovalFault.IsNone() && ShouldInjectApplyFault(AfterRemovalFault))
+	{
+		OutFailure = TEXT("Test fault injected after entry removal");
+		return false;
+	}
+	// The replacement detaches the stale entry and the destroyed member-reference nodes, so a retained
+	// create-delegate producer is repaired here and refused when only this removal linked it.
+	if (!ReapplyPreRemovalState(Blueprint, Journal, /*bRefuseUnlinkedProducer=*/true))
+	{
+		OutFailure = TEXT("the replacement would leave a create-delegate node without a resolvable delegate link");
+		return false;
+	}
+
+	UEdGraphNode* ReplacementEntry = nullptr;
+	UEdGraphNode* ReplacementResult = nullptr;
+	FCortexCommandResult RegisterError;
+	if (!FCortexGraphMigrationOps::RegisterReplacement(Blueprint, Graph, Plan, ReplacementEntry, ReplacementResult, RegisterError))
+	{
+		OutFailure = RegisterError.ErrorMessage;
+		return false;
+	}
+	if (ReplacementEntry) Journal.AddedNodeGuids.Add(ReplacementEntry->NodeGuid);
+	if (ReplacementResult) Journal.AddedNodeGuids.Add(ReplacementResult->NodeGuid);
+	if (!AfterRegistrationFault.IsNone() && ShouldInjectApplyFault(AfterRegistrationFault))
+	{
+		OutFailure = TEXT("Test fault injected after graph registration");
+		return false;
+	}
+
+	TArray<FCortexGraphMigrationLink> CreatedLinks;
+	FCortexCommandResult RemapError;
+	if (!FCortexGraphMigrationOps::RemapBoundary(Blueprint, Graph, Plan, ReplacementEntry, ReplacementResult, CreatedLinks, RemapError))
+	{
+		OutFailure = RemapError.ErrorMessage;
+		return false;
+	}
+	for (const FCortexGraphMigrationLink& Link : CreatedLinks)
+	{
+		Journal.Links.Add({ Link.FromNodeGuid, Link.FromPin, Link.ToNodeGuid, Link.ToPin });
+	}
+	Graph->NotifyGraphChanged();
+	return true;
 }
 
 bool ApplyPrepared(
@@ -4972,6 +5092,132 @@ bool ApplyPrepared(
 		return true;
 	}
 
+	if (Prepared.InterfacePlan.IsValid())
+	{
+		// The interface swap: the graphs of the mapped functions are adopted by a new description of the new interface (every
+		// body node keeps its identity), each stale entry/terminator is replaced through the replace_entry path, then the old
+		// description and the stubs it owned are removed - all inside this one transaction, with one caller compile.
+		FCortexGraphMigrationInterfacePlan Plan;
+		if (!FCortexGraphMigrationInterfacePlan::FromJson(Prepared.InterfacePlan, Plan, OutError))
+		{
+			return false;
+		}
+		UClass* OldInterface = nullptr;
+		UClass* NewInterface = nullptr;
+		if (!FCortexGraphInterfaceMigration::ResolveInterfaceClass(Plan.OldInterface, OldInterface, OutError)
+			|| !FCortexGraphInterfaceMigration::ResolveInterfaceClass(Plan.NewInterface, NewInterface, OutError))
+		{
+			return false;
+		}
+		for (const FCortexGraphInterfaceFunctionPlan& Function : Plan.Functions)
+		{
+			FGuid EntryIdentity;
+			FGuid ResultIdentity;
+			FGuid::Parse(Function.EntryIdentity, EntryIdentity);
+			FGuid::Parse(Function.ResultIdentity, ResultIdentity);
+			Journal.Locators.NodeGuidByClientId.Add(TEXT("entry:") + Function.To, EntryIdentity);
+			if (!Function.bToIsEvent && Function.bToHasResult)
+			{
+				Journal.Locators.NodeGuidByClientId.Add(TEXT("result:") + Function.To, ResultIdentity);
+			}
+		}
+		if (Plan.Functions.Num() > 0)
+		{
+			FGuid::Parse(Plan.Functions[0].SourceGraphGuid, Journal.Locators.GraphGuid);
+		}
+		// Every touched graph carries a preservation contract, proven by the readback and again by recovery.
+		Journal.PreservationContracts = Plan.Preservations;
+		Journal.InterfaceCapture.Capture(Blueprint);
+		// The swap rewrites the interface list the generated class is built from: a failed apply rebuilds the class through
+		// its one recovery compile.
+		Journal.bCompileAttempted = true;
+
+		FString SwapFailure;
+		if (!FCortexGraphInterfaceMigration::SwapInterfaces(Blueprint, Plan, OldInterface, NewInterface, Journal.InterfaceCapture, SwapFailure))
+		{
+			return Fail(SwapFailure);
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_interface_after_swap")))
+		{
+			return Fail(TEXT("Test fault injected after the interface swap"));
+		}
+
+		for (const FCortexGraphInterfaceFunctionPlan& Function : Plan.Functions)
+		{
+			TSharedPtr<FJsonObject> EntryMigration;
+			TSharedPtr<FJsonObject> Selector;
+			FCortexGraphInterfaceMigration::BuildEntryMigration(Function, Plan, EntryMigration, Selector);
+			FCortexGraphMigrationIdentity Identity;
+			FGuid::Parse(Function.EntryIdentity, Identity.EntryGuid);
+			FGuid::Parse(Function.ResultIdentity, Identity.ResultGuid);
+			FCortexGraphMigrationPlanOptions Options;
+			Options.bSkipLoadedPackageInventory = true;
+			Options.SourceDeclarationName = FName(*Function.From);
+			Options.SourceDeclarationOwner = OldInterface;
+			FCortexGraphMigrationPlan EntryPlan;
+			bool bEntryReused = false;
+			FCortexCommandResult PlanError;
+			if (!FCortexGraphMigrationOps::Plan(Blueprint, EntryMigration, Selector, Identity, EntryPlan, bEntryReused, PlanError, &Options))
+			{
+				return Fail(FString::Printf(TEXT("the entry replacement of '%s' no longer plans after the interface swap: %s"), *Function.To, *PlanError.ErrorMessage));
+			}
+			if (bEntryReused)
+			{
+				return Fail(FString::Printf(TEXT("the deterministic replacement of '%s' already exists before its replacement"), *Function.To));
+			}
+			FGuid EntryGraphGuid;
+			FGuid::Parse(EntryPlan.GraphGuid, EntryGraphGuid);
+			UEdGraph* const EntryGraph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, EntryGraphGuid);
+			if (!EntryGraph)
+			{
+				return Fail(FString::Printf(TEXT("the graph of '%s' did not re-resolve after the interface swap"), *Function.To));
+			}
+			FString EntryFailure;
+			if (!ApplyEntryReplacement(Blueprint, EntryGraph, EntryPlan, Journal, NAME_None, NAME_None, EntryFailure))
+			{
+				return Fail(EntryFailure);
+			}
+			Journal.InterfaceEntryPlans.Add(MoveTemp(EntryPlan));
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_interface_after_entries")))
+		{
+			return Fail(TEXT("Test fault injected after the entry replacements"));
+		}
+
+		// Event stubs of dropped functions are removed explicitly (journaled, restored by identity on recovery).
+		for (const FCortexGraphInterfaceDroppedStub& Stub : Plan.DroppedStubs)
+		{
+			if (Stub.Kind != TEXT("event"))
+			{
+				continue;
+			}
+			FGuid StubGraphGuid;
+			FGuid StubNodeGuid;
+			FGuid::Parse(Stub.GraphGuid, StubGraphGuid);
+			FGuid::Parse(Stub.NodeGuid, StubNodeGuid);
+			UEdGraph* const StubGraph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, StubGraphGuid);
+			UEdGraphNode* const StubNode = FCortexGraphMigrationOps::FindNodeByGuidInGraph(StubGraph, StubNodeGuid);
+			if (!StubNode)
+			{
+				return Fail(FString::Printf(TEXT("the dropped event stub '%s' no longer resolves"), *Stub.Function));
+			}
+			JournalNodeRemoved(StubNode, Journal);
+			StubGraph->Modify();
+			StubGraph->RemoveNode(StubNode);
+		}
+		FString RemovalFailure;
+		if (!FCortexGraphInterfaceMigration::RemoveOldInterface(Blueprint, OldInterface, RemovalFailure))
+		{
+			return Fail(RemovalFailure);
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_interface_after_removal")))
+		{
+			return Fail(TEXT("Test fault injected after the old interface removal"));
+		}
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		return true;
+	}
+
 	if (Prepared.MigrationPlan.IsValid())
 	{
 		// The migration shell: one journaled entry/terminator replacement (plus an optional member
@@ -5061,64 +5307,12 @@ bool ApplyPrepared(
 			}
 		}
 
-		UEdGraphNode* SourceEntry = nullptr;
-		if (FGuid::Parse(Plan.SourceEntryGuid, SourceEntryGuid))
+		FString EntryFailure;
+		if (!ApplyEntryReplacement(Blueprint, MigrationGraph, Plan, Journal,
+				TEXT("migration_entry_removed"), TEXT("migration_after_registration"), EntryFailure))
 		{
-			SourceEntry = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, SourceEntryGuid);
+			return Fail(EntryFailure);
 		}
-		if (!SourceEntry || SourceEntry->GetGraph() != MigrationGraph)
-		{
-			return Fail(TEXT("the stale implementation entry no longer resolves in the target graph"));
-		}
-		JournalNodeRemoved(SourceEntry, Journal);
-		MigrationGraph->Modify();
-		MigrationGraph->RemoveNode(SourceEntry);
-		if (!Plan.SourceResultGuid.IsEmpty())
-		{
-			UEdGraphNode* SourceResult = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, SourceResultGuid);
-			if (!SourceResult || SourceResult->GetGraph() != MigrationGraph)
-			{
-				return Fail(TEXT("the stale result terminator no longer resolves in the target graph"));
-			}
-			JournalNodeRemoved(SourceResult, Journal);
-			MigrationGraph->RemoveNode(SourceResult);
-		}
-		if (ShouldInjectApplyFault(TEXT("migration_entry_removed")))
-		{
-			return Fail(TEXT("Test fault injected after entry removal"));
-		}
-		// The replacement detaches the stale entry and the destroyed member-reference nodes, so a retained
-		// create-delegate producer is repaired here and refused when only this removal linked it.
-		if (!ReapplyPreRemovalState(Blueprint, Journal, /*bRefuseUnlinkedProducer=*/true))
-		{
-			return Fail(TEXT("the replacement would leave a create-delegate node without a resolvable delegate link"));
-		}
-
-		UEdGraphNode* ReplacementEntry = nullptr;
-		UEdGraphNode* ReplacementResult = nullptr;
-		if (!FCortexGraphMigrationOps::RegisterReplacement(Blueprint, MigrationGraph, Plan, ReplacementEntry, ReplacementResult, OutError))
-		{
-			return Fail(OutError.ErrorMessage);
-		}
-		if (ReplacementEntry) Journal.AddedNodeGuids.Add(ReplacementEntry->NodeGuid);
-		if (ReplacementResult) Journal.AddedNodeGuids.Add(ReplacementResult->NodeGuid);
-		if (ShouldInjectApplyFault(TEXT("migration_after_registration")))
-		{
-			return Fail(TEXT("Test fault injected after graph registration"));
-		}
-
-		TArray<FCortexGraphMigrationLink> CreatedLinks;
-		FCortexCommandResult RemapError;
-		if (!FCortexGraphMigrationOps::RemapBoundary(
-			Blueprint, MigrationGraph, Plan, ReplacementEntry, ReplacementResult, CreatedLinks, RemapError))
-		{
-			return Fail(RemapError.ErrorMessage);
-		}
-		for (const FCortexGraphMigrationLink& Link : CreatedLinks)
-		{
-			Journal.Links.Add({ Link.FromNodeGuid, Link.FromPin, Link.ToNodeGuid, Link.ToPin });
-		}
-		MigrationGraph->NotifyGraphChanged();
 		return true;
 	}
 
