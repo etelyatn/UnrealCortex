@@ -12,17 +12,6 @@ namespace
 {
 using namespace CortexAnimTest;
 
-void AddCallNode(UEdGraph* Graph, const UFunction* Function)
-{
-	FGraphNodeCreator<UK2Node_CallFunction> Creator(*Graph);
-	UK2Node_CallFunction* Node = Creator.CreateNode();
-	if (Function != nullptr)
-	{
-		Node->SetFromFunction(const_cast<UFunction*>(Function));
-	}
-	Creator.Finalize();
-}
-
 /** The engine's event-node spawner shape: a UK2Node_Event bound to the parent's implemented event (AnimNotifyEventNodeSpawner.cpp:17-30). */
 UEdGraphNode* AddEventNode(UEdGraph* Graph, const FName FunctionName, const UClass* EventOwner)
 {

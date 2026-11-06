@@ -24,6 +24,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Cortex")
 	float GetNativeDirection() const { return 0.0f; }
 
+	/** Void, parameterless hook: a slot-compatible retarget target for anim.rebind_function. */
+	UFUNCTION(BlueprintCallable, Category = "Cortex", meta = (BlueprintThreadSafe))
+	void NativeUpdateHook() {}
+
 	/** A native AnimNotify handler: the engine finds it by name (AnimInstance.cpp:2073-2099). */
 	UFUNCTION()
 	void AnimNotify_NativeOnly() {}

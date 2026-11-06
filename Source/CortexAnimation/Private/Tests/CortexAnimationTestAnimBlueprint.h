@@ -25,6 +25,9 @@
 #include "Editor/Transactor.h"
 #include "EdGraphSchema_K2.h"
 #include "Factories/AnimBlueprintFactory.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/AutomationTest.h"
@@ -196,6 +199,45 @@ namespace CortexAnimTest
 			FBlueprintEditorUtils::AddFunctionGraph<UClass>(AnimBlueprint, Graph, /*bIsUserCreated=*/true, nullptr);
 		}
 		return Graph;
+	}
+
+	/** A Blueprint function with one float output pin and no input parameters (a getter a function binding path can name). */
+	inline UEdGraph* AddBlueprintFloatGetter(UAnimBlueprint* AnimBlueprint, const FName Name)
+	{
+		UEdGraph* Graph = AddBlueprintFunction(AnimBlueprint, Name);
+		if (Graph == nullptr)
+		{
+			return nullptr;
+		}
+		TArray<UK2Node_FunctionEntry*> Entries;
+		Graph->GetNodesOfClass<UK2Node_FunctionEntry>(Entries);
+		if (Entries.Num() != 1)
+		{
+			return nullptr;
+		}
+		UK2Node_FunctionResult* Result = FBlueprintEditorUtils::FindOrCreateFunctionResultNode(Entries[0]);
+		if (Result != nullptr)
+		{
+			FEdGraphPinType FloatType;
+			FloatType.PinCategory = UEdGraphSchema_K2::PC_Real;
+			FloatType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
+			Result->CreateUserDefinedPin(UEdGraphSchema_K2::PN_ReturnValue, FloatType, EGPD_Input);
+		}
+		return Graph;
+	}
+
+	/** A pure call node to a function (the shape anim.rebind_function must leave unmodified). */
+	inline UEdGraphNode* AddCallNode(UEdGraph* Graph, const UFunction* Function)
+	{
+		if (Graph == nullptr || Function == nullptr)
+		{
+			return nullptr;
+		}
+		FGraphNodeCreator<UK2Node_CallFunction> Creator(*Graph);
+		UK2Node_CallFunction* Node = Creator.CreateNode();
+		Node->SetFromFunction(const_cast<UFunction*>(Function));
+		Creator.Finalize();
+		return Node;
 	}
 
 	/**
