@@ -122,6 +122,7 @@ bool FCortexBPAdoptSCSNativeTest::RunTest(const FString& Parameters)
 	FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSNative"), TEXT("MirrorBP"), true, true, true);
 	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.Child != nullptr && Fixture.Get != nullptr && Fixture.BoundEvent != nullptr))
 	{
+		CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 		return false;
 	}
 	UBlueprint* Blueprint = Fixture.Blueprint;
@@ -206,6 +207,7 @@ bool FCortexBPAdoptSCSKeepsNodeTest::RunTest(const FString& Parameters)
 	FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSKeeps"), TEXT("MirrorBP"), true, true, false);
 	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.Child != nullptr))
 	{
+		CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 		return false;
 	}
 	UBlueprint* Blueprint = Fixture.Blueprint;
@@ -270,6 +272,7 @@ bool FCortexBPAdoptSCSSameNameTest::RunTest(const FString& Parameters)
 	FMirrorFixture Fixture = MakeSameNameMirror(TEXT("AdoptSCSSameNameApply"));
 	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.Child != nullptr && Fixture.Get != nullptr))
 	{
+		CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 		return false;
 	}
 	UBlueprint* Blueprint = Fixture.Blueprint;
@@ -327,7 +330,7 @@ bool FCortexBPAdoptSCSIchTest::RunTest(const FString& Parameters)
 	FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSIchApplyChild"), TEXT("MirrorBP"), true, true, false, Parent->GeneratedClass);
 	if (!TestNotNull(TEXT("Child fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.Child != nullptr))
 	{
-		CortexAdoptSCSTest::ScsRetire(Parent);
+		CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint, Parent);
 		return false;
 	}
 	UBlueprint* Blueprint = Fixture.Blueprint;
@@ -395,6 +398,7 @@ bool FCortexBPAdoptSCSFailsClosedTest::RunTest(const FString& Parameters)
 		FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSFailCompile"), TEXT("MirrorBP"), true, true, true);
 		if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.BoundEvent != nullptr))
 		{
+			CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 			return false;
 		}
 		UBlueprint* Blueprint = Fixture.Blueprint;
@@ -435,6 +439,7 @@ bool FCortexBPAdoptSCSFailsClosedTest::RunTest(const FString& Parameters)
 		FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSFailReadback"), TEXT("MirrorBP"), true, true, false);
 		if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint))
 		{
+			CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 			return false;
 		}
 		UBlueprint* Blueprint = Fixture.Blueprint;
@@ -461,6 +466,7 @@ bool FCortexBPAdoptSCSFailsClosedTest::RunTest(const FString& Parameters)
 		FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSFailLoss"), TEXT("MirrorBP"), false, true, false);
 		if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint))
 		{
+			CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 			return false;
 		}
 		UBlueprint* Blueprint = Fixture.Blueprint;
@@ -515,6 +521,7 @@ bool FCortexBPAdoptSCSNoCompileTest::RunTest(const FString& Parameters)
 	FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSNoCompile"), TEXT("MirrorBP"), true, true, false);
 	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.Child != nullptr))
 	{
+		CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 		return false;
 	}
 	UBlueprint* Blueprint = Fixture.Blueprint;
@@ -592,6 +599,7 @@ bool FCortexBPAdoptSCSRemoveNoAttachTest::RunTest(const FString& Parameters)
 	FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSRemoveNoAttach"), TEXT("MirrorBP"), true, true, false);
 	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.Child != nullptr))
 	{
+		CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 		return false;
 	}
 	UBlueprint* Blueprint = Fixture.Blueprint;
@@ -599,6 +607,7 @@ bool FCortexBPAdoptSCSRemoveNoAttachTest::RunTest(const FString& Parameters)
 	USceneComponent* NativeRoot = ScsNativeMirrorOf(Blueprint);
 	if (!TestNotNull(TEXT("Native root"), NativeRoot))
 	{
+		CortexAdoptSCSTest::ScsRetire(Blueprint);
 		return false;
 	}
 	Fixture.Mirror->SetParent(NativeRoot);
@@ -616,5 +625,37 @@ bool FCortexBPAdoptSCSRemoveNoAttachTest::RunTest(const FString& Parameters)
 	const USCS_Node* Child = Blueprint->SimpleConstructionScript->FindSCSNode(TEXT("MirrorChild"));
 	TestTrue(TEXT("The child was promoted to the removed node's parent"), Child != nullptr && Child->bIsParentComponentNative);
 	CortexAdoptSCSTest::ScsRetire(Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAdoptSCSUnexpectedLinkTest,
+	"Cortex.Blueprint.AdoptSCS.UnexpectedChildLinkFailsClosed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAdoptSCSUnexpectedLinkTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexAdoptSCSTest;
+	using namespace CortexAdoptSCSApplyTestPrivate;
+
+	// Without attach and without remove_scs the child is not part of the planned change: a link change is unexpected.
+	FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSUnexpectedLink"), TEXT("MirrorBP"), true, false, false);
+	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.Child != nullptr))
+	{
+		CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
+		return false;
+	}
+	USCS_Node* Child = Fixture.Child;
+	const FScsPostApplyHookScope Hook([Child](UBlueprint*)
+	{
+		Child->ParentComponentOrVariableName = TEXT("Unexpected");
+	});
+	TSharedPtr<FJsonObject> Params = AdoptSCSParams(Fixture.Blueprint, TEXT("MirrorBP"), TEXT("NativeMirror"));
+	SetStrings(Params, TEXT("copy"), {TEXT("properties")});
+	const FCortexCommandResult Result = FCortexBPAdoptSCSOps::Execute(Params);
+	TestFalse(TEXT("An unplanned child link change fails the call"), Result.bSuccess);
+	TestEqual(TEXT("READBACK_MISMATCH"), Result.ErrorCode, CortexErrorCodes::ReadbackMismatch);
+	CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 	return true;
 }

@@ -32,6 +32,7 @@ bool FCortexBPAdoptSCSPlanTest::RunTest(const FString& Parameters)
 	FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSPlan"), TEXT("MirrorBP"), true, true, true);
 	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.Child != nullptr && Fixture.Get != nullptr && Fixture.BoundEvent != nullptr))
 	{
+		CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
 		return false;
 	}
 	UBlueprint* Blueprint = Fixture.Blueprint;
@@ -234,7 +235,7 @@ bool FCortexBPAdoptSCSPlanIchTest::RunTest(const FString& Parameters)
 	FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSIchChild"), TEXT("MirrorBP"), false, true, false, Parent->GeneratedClass);
 	if (!TestNotNull(TEXT("Child fixture"), Fixture.Blueprint) || !TestNotNull(TEXT("Mirror node"), Fixture.Mirror))
 	{
-		CortexAdoptSCSTest::ScsRetire(Parent);
+		CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint, Parent);
 		return false;
 	}
 

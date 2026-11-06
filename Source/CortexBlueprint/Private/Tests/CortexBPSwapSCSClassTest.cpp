@@ -146,12 +146,13 @@ bool FCortexBPSwapSCSSwapTest::RunTest(const FString& Parameters)
 	UBlueprint* ComponentBlueprint = ScsSwapMakeComponentBlueprint(TEXT("SwapCompBP"), UStaticMeshComponent::StaticClass(), TEXT("bFilled"), BoolPin(), TEXT("true"));
 	if (!TestNotNull(TEXT("Component Blueprint"), ComponentBlueprint) || !TestNotNull(TEXT("Its generated class"), ComponentBlueprint->GeneratedClass.Get()))
 	{
+		CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
 		return false;
 	}
 	FScsSwapHost Host = ScsSwapMakeHost(TEXT("SwapHost"), ComponentBlueprint->GeneratedClass);
 	if (!TestNotNull(TEXT("Host"), Host.Blueprint) || !TestTrue(TEXT("Nodes"), Host.Swapper != nullptr && Host.Child != nullptr && Host.Sibling != nullptr && Host.Get != nullptr))
 	{
-		CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
+		CortexAdoptSCSTest::ScsRetire(Host.Blueprint, ComponentBlueprint);
 		return false;
 	}
 	UBlueprint* Blueprint = Host.Blueprint;
@@ -274,12 +275,13 @@ bool FCortexBPSwapSCSPayloadTest::RunTest(const FString& Parameters)
 	UBlueprint* ComponentBlueprint = ScsSwapMakeComponentBlueprint(TEXT("SwapCompBP2"), UCortexBPAdoptNativeComponent::StaticClass(), TEXT("Score"), MakePin(UEdGraphSchema_K2::PC_Int), TEXT("3"));
 	if (!TestNotNull(TEXT("Component Blueprint"), ComponentBlueprint))
 	{
+		CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
 		return false;
 	}
 	FScsSwapHost Host = ScsSwapMakeHost(TEXT("SwapHost2"), ComponentBlueprint->GeneratedClass);
 	if (!TestNotNull(TEXT("Host"), Host.Blueprint) || !TestNotNull(TEXT("Swapper"), Host.Swapper))
 	{
-		CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
+		CortexAdoptSCSTest::ScsRetire(Host.Blueprint, ComponentBlueprint);
 		return false;
 	}
 	UBlueprint* Blueprint = Host.Blueprint;
@@ -358,7 +360,7 @@ bool FCortexBPSwapSCSRefusalsTest::RunTest(const FString& Parameters)
 	FScsSwapHost Host = ScsSwapMakeHost(TEXT("SwapHost3"), ComponentBlueprint->GeneratedClass);
 	if (!TestNotNull(TEXT("Host"), Host.Blueprint) || !TestNotNull(TEXT("Swapper"), Host.Swapper))
 	{
-		CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
+		CortexAdoptSCSTest::ScsRetire(Host.Blueprint, ComponentBlueprint);
 		return false;
 	}
 	UBlueprint* Blueprint = Host.Blueprint;
@@ -450,6 +452,7 @@ bool FCortexBPSwapSCSClassDefaultTest::RunTest(const FString& Parameters)
 	UBlueprint* ComponentBlueprint = ScsSwapMakeComponentBlueprint(TEXT("SwapCompBP4"), UStaticMeshComponent::StaticClass(), TEXT("bFilled"), BoolPin(), TEXT("true"));
 	if (!TestTrue(TEXT("Fixture"), Mesh != nullptr && ComponentBlueprint != nullptr))
 	{
+		CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
 		return false;
 	}
 	Cast<UStaticMeshComponent>(ComponentBlueprint->GeneratedClass->GetDefaultObject())->SetStaticMesh(Mesh);
@@ -457,6 +460,7 @@ bool FCortexBPSwapSCSClassDefaultTest::RunTest(const FString& Parameters)
 	FScsSwapHost Host = ScsSwapMakeHost(TEXT("SwapHost4"), ComponentBlueprint->GeneratedClass);
 	if (!TestNotNull(TEXT("Host"), Host.Blueprint))
 	{
+		CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
 		return false;
 	}
 	UStaticMeshComponent* OldTemplate = Cast<UStaticMeshComponent>(Host.Swapper->ComponentTemplate);

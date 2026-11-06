@@ -656,9 +656,13 @@ namespace CortexAdoptSCSPrivate
 		{
 			Keys.Add(TEXT("scs:") + Mapping.ScsNode);
 			Keys.Add(TEXT("inherited:") + Mapping.NativeComponent);
-			for (const FString& Child : Mapping.Children)
+			// Children change their parent link only when they are re-attached or promoted by the removal.
+			if (Plan.Copy.bAttach || Plan.bRemoveScs)
 			{
-				Keys.Add(TEXT("scs:") + Child);
+				for (const FString& Child : Mapping.Children)
+				{
+					Keys.Add(TEXT("scs:") + Child);
+				}
 			}
 		}
 		return Keys;
