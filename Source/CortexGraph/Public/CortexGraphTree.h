@@ -85,6 +85,20 @@ public:
 	/** {name, class, node_count, kind, graph_guid, graph_guid_unique, path[, parent_*, owner_node_guid, subgraph_path, owning_interface, graph_class_kind]} */
 	static TSharedRef<FJsonObject> ToJson(const FCortexGraphTreeEntry& Entry);
 
+	/**
+	 * Resolve the single graph a read command addresses.
+	 *  - graph_path names one graph exactly; graph_guid names one graph anywhere in the tree. When both are given they must agree.
+	 *  - A graph_guid shared by several graphs refuses INVALID_FIELD and lists their paths (ErrorDetails.colliding_graphs);
+	 *    graph_path disambiguates. An unparsable graph_guid is INVALID_FIELD, an unknown graph_guid or graph_path GRAPH_NOT_FOUND.
+	 *  - graph_name and subgraph_path must agree with a graph_guid/graph_path target, else INVALID_FIELD.
+	 *  - Without graph_guid/graph_path, graph_name keeps its root-graph meaning (default EventGraph, then subgraph_path as a
+	 *    composite path). A name that matches only nested graphs refuses GRAPH_NOT_FOUND with
+	 *    ErrorDetails.nested_candidates[{graph_guid, graph_path, kind}] and is never resolved by guesswork.
+	 * OutEntry, when given, receives the resolved graph's catalogue entry.
+	 */
+	static bool ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Params, UEdGraph*& OutGraph,
+		FCortexGraphTreeEntry* OutEntry, FCortexCommandResult& OutError);
+
 	/** Report truncation of the collected entries into Data: truncated=true and truncated_parent_graph_guids; no-op when nothing was cut. */
 	static void AppendTruncation(const TArray<FCortexGraphTreeEntry>& Entries, const TSharedPtr<FJsonObject>& Data);
 };

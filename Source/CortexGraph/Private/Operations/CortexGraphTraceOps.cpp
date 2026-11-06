@@ -344,23 +344,27 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 		return LoadError;
 	}
 
-	FString GraphName;
-	Params->TryGetStringField(TEXT("graph_name"), GraphName);
-	FString SubgraphPath;
-	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
-
-	UEdGraph* Graph = FCortexGraphNodeOps::FindGraph(Blueprint, GraphName, LoadError);
-	if (!Graph)
+	UEdGraph* Graph = nullptr;
+	FCortexGraphTreeEntry Target;
+	if (!FCortexGraphTree::ResolveReadTarget(Blueprint, Params, Graph, &Target, LoadError))
 	{
 		return LoadError;
 	}
-	if (!SubgraphPath.IsEmpty())
+
+	// A graph addressed by identity echoes graph_guid/graph_kind/graph_path; name-addressed callers keep their existing response.
+	FString IdentityGuid;
+	FString IdentityPath;
+	Params->TryGetStringField(TEXT("graph_guid"), IdentityGuid);
+	Params->TryGetStringField(TEXT("graph_path"), IdentityPath);
+	const bool bByIdentity = !IdentityGuid.IsEmpty() || !IdentityPath.IsEmpty();
+	FString SubgraphPath;
+	if (bByIdentity)
 	{
-		Graph = FCortexGraphNodeOps::ResolveSubgraph(Graph, SubgraphPath, LoadError);
-		if (!Graph)
-		{
-			return LoadError;
-		}
+		SubgraphPath = Target.SubgraphPath;
+	}
+	else
+	{
+		Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
 	}
 
 	bool bIncludeEdges = false;
@@ -418,6 +422,11 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 		const TSharedPtr<FJsonObject>* SingleNode = nullptr;
 		if (NodesArray[0].IsValid() && NodesArray[0]->TryGetObject(SingleNode) && SingleNode)
 		{
+			if (bByIdentity)
+			{
+				(*SingleNode)->SetStringField(TEXT("graph_guid"), Graph->GraphGuid.ToString());
+				(*SingleNode)->SetStringField(TEXT("graph_kind"), Target.Kind);
+			}
 			return FCortexCommandRouter::Success(*SingleNode);
 		}
 	}
@@ -456,6 +465,12 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("graph_name"), Graph->GetName());
+	if (bByIdentity)
+	{
+		Data->SetStringField(TEXT("graph_guid"), Graph->GraphGuid.ToString());
+		Data->SetStringField(TEXT("graph_kind"), Target.Kind);
+		Data->SetStringField(TEXT("graph_path"), Target.Path);
+	}
 	if (!SubgraphPath.IsEmpty())
 	{
 		Data->SetStringField(TEXT("subgraph_path"), SubgraphPath);

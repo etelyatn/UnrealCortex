@@ -298,3 +298,218 @@ void FCortexGraphTree::AppendTruncation(const TArray<FCortexGraphTreeEntry>& Ent
 	Data->SetBoolField(TEXT("truncated"), true);
 	Data->SetArrayField(TEXT("truncated_parent_graph_guids"), CutParents);
 }
+
+namespace
+{
+	FString TreeResolveParam(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field)
+	{
+		FString Value;
+		if (Params.IsValid())
+		{
+			Params->TryGetStringField(Field, Value);
+		}
+		return Value;
+	}
+
+	TSharedRef<FJsonObject> TreeResolveGraphReference(const FCortexGraphTreeEntry& Entry)
+	{
+		TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+		Json->SetStringField(TEXT("graph_guid"), Entry.Graph->GraphGuid.ToString());
+		Json->SetStringField(TEXT("graph_path"), Entry.Path);
+		Json->SetStringField(TEXT("kind"), Entry.Kind);
+		return Json;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> TreeResolveReferences(const TArray<const FCortexGraphTreeEntry*>& Entries)
+	{
+		TArray<TSharedPtr<FJsonValue>> References;
+		for (const FCortexGraphTreeEntry* Entry : Entries)
+		{
+			References.Add(MakeShared<FJsonValueObject>(TreeResolveGraphReference(*Entry)));
+		}
+		return References;
+	}
+}
+
+bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Params, UEdGraph*& OutGraph,
+	FCortexGraphTreeEntry* OutEntry, FCortexCommandResult& OutError)
+{
+	OutGraph = nullptr;
+	const FString GuidText = TreeResolveParam(Params, TEXT("graph_guid"));
+	const FString PathText = TreeResolveParam(Params, TEXT("graph_path"));
+	const FString GraphName = TreeResolveParam(Params, TEXT("graph_name"));
+	const FString SubgraphPath = TreeResolveParam(Params, TEXT("subgraph_path"));
+
+	TArray<FCortexGraphTreeEntry> Tree;
+	Collect(Blueprint, Tree);
+
+	const FCortexGraphTreeEntry* Found = nullptr;
+	if (!GuidText.IsEmpty() || !PathText.IsEmpty())
+	{
+		FGuid Guid;
+		if (!GuidText.IsEmpty() && !FGuid::Parse(GuidText, Guid))
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Invalid graph_guid format: '%s'"), *GuidText));
+			return false;
+		}
+
+		if (!PathText.IsEmpty())
+		{
+			for (const FCortexGraphTreeEntry& Entry : Tree)
+			{
+				if (Entry.Path == PathText)
+				{
+					Found = &Entry;
+					break;
+				}
+			}
+			if (Found == nullptr)
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::GraphNotFound,
+					FString::Printf(TEXT("Graph path not found: %s"), *PathText));
+				return false;
+			}
+			if (!GuidText.IsEmpty() && Found->Graph->GraphGuid != Guid)
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("graph_guid %s does not name the graph at graph_path '%s'; that graph's guid is %s"),
+						*GuidText, *PathText, *Found->Graph->GraphGuid.ToString()));
+				return false;
+			}
+		}
+		else
+		{
+			TArray<const FCortexGraphTreeEntry*> Matches;
+			for (const FCortexGraphTreeEntry& Entry : Tree)
+			{
+				if (Entry.Graph->GraphGuid == Guid)
+				{
+					Matches.Add(&Entry);
+				}
+			}
+			if (Matches.IsEmpty())
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::GraphNotFound,
+					FString::Printf(TEXT("Graph with GUID %s not found on Blueprint"), *GuidText));
+				return false;
+			}
+			if (Matches.Num() > 1)
+			{
+				TArray<FString> Paths;
+				for (const FCortexGraphTreeEntry* Match : Matches)
+				{
+					Paths.Add(Match->Path);
+				}
+				TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
+				Details->SetArrayField(TEXT("colliding_graphs"), TreeResolveReferences(Matches));
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("graph_guid %s is shared by %d graphs; address one with graph_path: %s"),
+						*GuidText, Matches.Num(), *FString::Join(Paths, TEXT(", "))),
+					Details);
+				return false;
+			}
+			Found = Matches[0];
+		}
+
+		if (!SubgraphPath.IsEmpty() && Found->SubgraphPath != SubgraphPath)
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("subgraph_path '%s' does not name the graph identified by graph_guid/graph_path; that graph's subgraph_path is '%s'"),
+					*SubgraphPath, *Found->SubgraphPath));
+			return false;
+		}
+		if (!GraphName.IsEmpty())
+		{
+			// graph_name is the graph's own name, or (with its composite subgraph_path) the root graph the path is relative to.
+			const bool bOwnName = Found->Graph->GetName() == GraphName;
+			const bool bRootRelative = !SubgraphPath.IsEmpty() && Found->RootGraphName == GraphName;
+			if (!bOwnName && !bRootRelative)
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("graph_name '%s' does not name the graph identified by graph_guid/graph_path; that graph is '%s'"),
+						*GraphName, *Found->Graph->GetName()));
+				return false;
+			}
+		}
+	}
+	else
+	{
+		const FString TargetName = GraphName.IsEmpty() ? FString(TEXT("EventGraph")) : GraphName;
+		const FCortexGraphTreeEntry* Root = nullptr;
+		for (const FCortexGraphTreeEntry& Entry : Tree)
+		{
+			if (Entry.bRoot && Entry.Graph->GetName() == TargetName)
+			{
+				Root = &Entry;
+				break;
+			}
+		}
+		if (Root == nullptr)
+		{
+			TSharedPtr<FJsonObject> Details;
+			TArray<const FCortexGraphTreeEntry*> Candidates;
+			for (const FCortexGraphTreeEntry& Entry : Tree)
+			{
+				if (!Entry.bRoot && Entry.Graph->GetName() == TargetName)
+				{
+					Candidates.Add(&Entry);
+				}
+			}
+			if (!Candidates.IsEmpty())
+			{
+				Details = MakeShared<FJsonObject>();
+				Details->SetArrayField(TEXT("nested_candidates"), TreeResolveReferences(Candidates));
+			}
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::GraphNotFound,
+				Candidates.IsEmpty()
+					? FString::Printf(TEXT("Graph not found: %s"), *TargetName)
+					: FString::Printf(TEXT("Graph not found: %s; %d nested graphs carry that name, address one by graph_guid or graph_path"),
+						*TargetName, Candidates.Num()),
+				Details);
+			return false;
+		}
+
+		UEdGraph* Graph = Root->Graph;
+		if (!SubgraphPath.IsEmpty())
+		{
+			Graph = FCortexGraphNodeOps::ResolveSubgraph(Graph, SubgraphPath, OutError);
+			if (Graph == nullptr)
+			{
+				return false;
+			}
+		}
+		for (const FCortexGraphTreeEntry& Entry : Tree)
+		{
+			if (Entry.Graph == Graph)
+			{
+				Found = &Entry;
+				break;
+			}
+		}
+	}
+
+	if (Found == nullptr)
+	{
+		// A composite body resolved through subgraph_path beyond the catalogue depth: no entry exists to report.
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::GraphNotFound,
+			FString::Printf(TEXT("Graph '%s' (subgraph_path '%s') is outside the Blueprint's graph tree"), *GraphName, *SubgraphPath));
+		return false;
+	}
+
+	OutGraph = Found->Graph;
+	if (OutEntry != nullptr)
+	{
+		*OutEntry = *Found;
+	}
+	return true;
+}

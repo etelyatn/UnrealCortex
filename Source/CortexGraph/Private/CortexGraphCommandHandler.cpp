@@ -535,10 +535,12 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("max_depth"), TEXT("number"), TEXT("Maximum traversal depth"))
 			.Optional(TEXT("traverse_policy"), TEXT("string"), TEXT("Traversal policy hint"))
 			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include traced edge list")).RollbackSafe(),
-		FCortexCommandInfo{ TEXT("get_subgraph"), TEXT("Read a graph or selected node subset with optional edges") }
+		FCortexCommandInfo{ TEXT("get_subgraph"), TEXT("Read a graph or selected node subset with optional edges; nested graphs (including Animation Blueprint state, transition and conduit graphs, read-only) are addressed by graph_guid or graph_path") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph to inspect, defaults to EventGraph"))
-			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Root graph to inspect, defaults to EventGraph; a name that matches only nested graphs fails with GRAPH_NOT_FOUND and nested_candidates. With graph_guid/graph_path it must name the resolved graph"))
+			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("GraphGuid of any graph in the tree (list_graphs include_subgraphs); GRAPH_NOT_FOUND when unknown, INVALID_FIELD when shared by several graphs (use graph_path)"))
+			.Optional(TEXT("graph_path"), TEXT("string"), TEXT("Root-relative path published by list_graphs; resolves graphs whose graph_guid is not unique"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path; with graph_guid/graph_path it must equal that graph's own subgraph_path"))
 			.Optional(TEXT("node_ids"), TEXT("array"), TEXT("Optional subset of node identifiers"))
 			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include edges between returned nodes")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("list_event_handlers"), TEXT("List event entry nodes across Blueprint graphs") }
