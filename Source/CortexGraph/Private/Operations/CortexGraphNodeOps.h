@@ -32,7 +32,7 @@ public:
 
 	// Shared helpers for reuse across CortexGraph operations
 	static UBlueprint* LoadBlueprint(const FString& AssetPath, FCortexCommandResult& OutError);
-	static void EnumerateUserGraphs(UBlueprint* Blueprint, TArray<FCortexGraphEntry>& OutEntries);
+	static void EnumerateUserGraphs(const UBlueprint* Blueprint, TArray<FCortexGraphEntry>& OutEntries);
 	static FString GraphKindToString(ECortexGraphKind Kind);
 	static bool FindGraphEntry(UBlueprint* Blueprint, const FString& GraphName, FCortexGraphEntry& OutEntry);
 	static bool IsMutableGraphKind(ECortexGraphKind Kind);

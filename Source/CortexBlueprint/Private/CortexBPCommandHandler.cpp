@@ -447,7 +447,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 				"named_slots, widget_animations, widget_bindings, referenced_user_types, cdo_overrides, "
 				"instanced_subobjects, widget_dependencies, entity_summary, complexity_metrics")));
 	Commands.Add(FCortexCommandInfo{TEXT("graph_metrics"),
-		TEXT("Reachability-aware logic metrics per entry node (events, custom/bound/input events, functions): functional node count, conditionals, variable getter fan-out, unreachable nodes (inner macro/collapsed-graph orphans carry a subgraph field), disabled nodes (disabled_nodes), ghost entries (unlinked or disabled), has_tick for live Tick events, and threshold violations")}
+		TEXT("Reachability-aware logic metrics per entry node (events, custom/bound/input events, functions): functional node count, conditionals, variable getter fan-out, unreachable nodes (inner macro/collapsed-graph orphans carry a subgraph field), disabled nodes (disabled_nodes), ghost entries (unlinked or disabled), has_tick for live Tick events, and threshold violations. Graphs nested below a function or event graph (nodes that publish graphs through GetSubGraphs, except composite bodies and animation graphs) are measured too and carry graph_guid in entries, ghost entries, violations and unreachable/disabled rows")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("thresholds"), TEXT("object"), TEXT("{max_nodes_per_entry: int=10, max_nodes_per_blueprint: int=30}; positive integers")));
 	Commands.Add(FCortexCommandInfo{TEXT("cleanup_migration"),
@@ -490,7 +490,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Optional graph name"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after cleanup")));
-	Commands.Add(FCortexCommandInfo{TEXT("search"), TEXT("Search a Blueprint for values across graphs, class defaults, and widget tree")}
+	Commands.Add(FCortexCommandInfo{TEXT("search"), TEXT("Search a Blueprint for values across graphs (including graphs nested below them; a match inside a nested graph carries graph_guid), class defaults, and widget tree")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("query"), TEXT("string"), TEXT("Search text"))
 		.Optional(TEXT("search_in"), TEXT("array"), TEXT("Search scopes"))

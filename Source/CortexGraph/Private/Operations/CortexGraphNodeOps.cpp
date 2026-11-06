@@ -382,7 +382,7 @@ UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortex
 	return Blueprint;
 }
 
-void FCortexGraphNodeOps::EnumerateUserGraphs(UBlueprint* Blueprint, TArray<FCortexGraphEntry>& OutEntries)
+void FCortexGraphNodeOps::EnumerateUserGraphs(const UBlueprint* Blueprint, TArray<FCortexGraphEntry>& OutEntries)
 {
 	OutEntries.Reset();
 	if (Blueprint == nullptr)

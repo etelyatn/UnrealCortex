@@ -77,7 +77,7 @@ public:
 	 * graphs reachable only through SubGraphs). Pointer-deduplicated, cycle-safe, deterministic. A cut at MaxDepth is
 	 * recorded in FCortexGraphTreeEntry::bChildrenTruncated, never dropped silently.
 	 */
-	static void Collect(UBlueprint* Blueprint, TArray<FCortexGraphTreeEntry>& OutEntries);
+	static void Collect(const UBlueprint* Blueprint, TArray<FCortexGraphTreeEntry>& OutEntries);
 
 	/** Kind of a nested graph from its owner node first (exact engine class names), then from the graph class; "nested" otherwise. */
 	static FString KindFromGraph(const UEdGraph* Graph, const UEdGraphNode* Owner);

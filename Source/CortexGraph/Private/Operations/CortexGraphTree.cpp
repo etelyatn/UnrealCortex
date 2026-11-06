@@ -129,7 +129,7 @@ namespace
 	}
 }
 
-void FCortexGraphTree::Collect(UBlueprint* Blueprint, TArray<FCortexGraphTreeEntry>& OutEntries)
+void FCortexGraphTree::Collect(const UBlueprint* Blueprint, TArray<FCortexGraphTreeEntry>& OutEntries)
 {
 	OutEntries.Reset();
 
