@@ -174,10 +174,45 @@ namespace
 		return true;
 	}
 
+	void ReconcileUserTypeSlot(
+		TWeakObjectPtr<UObject>& UserSlot,
+		const TWeakObjectPtr<UObject>& NativeSlot,
+		TArray<FString>& OutNested,
+		TArray<FCortexDataTypeReplacementPrerequisite>& OutPrerequisites);
+
+	/**
+	 * Walks the members of an accepted inner user-defined struct so that ITS inner user types are collected too (outer -> middle -> leaf):
+	 * every member's user type is paired with the native property the active redirect maps it to.
+	 */
+	void CollectInnerMembers(
+		const UUserDefinedStruct* UserStruct,
+		const UScriptStruct* NativeStruct,
+		const FCortexDataTypeReplacementPrerequisite& Accepted,
+		TArray<FString>& OutNested,
+		TArray<FCortexDataTypeReplacementPrerequisite>& OutPrerequisites)
+	{
+		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
+		for (const FCortexDataTypeReplacementMember& Member : Accepted.Members)
+		{
+			const FProperty* UserProperty = UserStruct->FindPropertyByName(FName(*Member.UserName));
+			const FProperty* NativeProperty = NativeStruct->FindPropertyByName(FName(*Member.NativeName));
+			FEdGraphPinType UserType;
+			FEdGraphPinType NativeType;
+			if (UserProperty == nullptr || NativeProperty == nullptr || !Schema->ConvertPropertyToPinType(UserProperty, UserType)
+				|| !Schema->ConvertPropertyToPinType(NativeProperty, NativeType))
+			{
+				continue;
+			}
+			ReconcileUserTypeSlot(UserType.PinSubCategoryObject, NativeType.PinSubCategoryObject, OutNested, OutPrerequisites);
+			ReconcileUserTypeSlot(UserType.PinValueType.TerminalSubCategoryObject, NativeType.PinValueType.TerminalSubCategoryObject, OutNested, OutPrerequisites);
+		}
+	}
+
 	/**
 	 * A member (or a container's element) typed with another user-defined struct or enum is only convertible when that type's complete
-	 * replacement is already active (leaf types first); the active contract is recorded as a prerequisite of the plan. The slot is replaced
-	 * by the native object either way so the remaining comparison sees only genuine type differences.
+	 * replacement is already active (leaf types first); the active contract is recorded as a prerequisite of the plan, and so is every
+	 * user type nested inside it (transitive closure; a type already recorded is not walked again, which also ends a cycle). The slot is
+	 * replaced by the native object either way so the remaining comparison sees only genuine type differences.
 	 */
 	void ReconcileUserTypeSlot(
 		TWeakObjectPtr<UObject>& UserSlot,
@@ -192,17 +227,24 @@ namespace
 		{
 			return;
 		}
+		UserSlot = NativeObject;
+		const FString UserPath = UserObject->GetPathName();
+		if (OutPrerequisites.ContainsByPredicate([&UserPath](const FCortexDataTypeReplacementPrerequisite& Known) { return Known.UserType == UserPath; }))
+		{
+			return;
+		}
 		FCortexDataTypeReplacementPrerequisite Prerequisite;
 		FString Why;
 		if (!CollectPrerequisite(UserObject, NativeObject, Prerequisite, Why))
 		{
-			OutNested.Add(FString::Printf(TEXT("%s (%s)"), *UserObject->GetPathName(), *Why));
+			OutNested.Add(FString::Printf(TEXT("%s (%s)"), *UserPath, *Why));
+			return;
 		}
-		else if (!OutPrerequisites.ContainsByPredicate([&Prerequisite](const FCortexDataTypeReplacementPrerequisite& Known) { return Known.UserType == Prerequisite.UserType; }))
+		OutPrerequisites.Add(Prerequisite);
+		if (const UUserDefinedStruct* InnerStruct = Cast<UUserDefinedStruct>(UserObject))
 		{
-			OutPrerequisites.Add(Prerequisite);
+			CollectInnerMembers(InnerStruct, CastChecked<UScriptStruct>(NativeObject), Prerequisite, OutNested, OutPrerequisites);
 		}
-		UserSlot = NativeObject;
 	}
 
 	FString PinTypeLabel(const FEdGraphPinType& Type)

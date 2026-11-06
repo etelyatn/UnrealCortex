@@ -76,9 +76,9 @@ namespace
 	struct FNormalizer
 	{
 		TMap<FString, FString> MemberMap;
-		TMap<FString, FString> ValueMap;
+		/** Native enum -> (old enumerator token -> native enumerator): the replaced enum of an enum plan and every inner enum a struct plan recorded. */
+		TMap<const UEnum*, TMap<FString, FString>> EnumValueMaps;
 		TMap<FString, FString> StructNames;
-		const UEnum* NativeEnum = nullptr;
 		FString UserPath;
 		FString NativePath;
 		bool bStruct = true;
@@ -126,18 +126,24 @@ namespace
 			}
 		}
 
+		const TMap<FString, FString>* ValuesOf(const FProperty* Property) const
+		{
+			const UEnum* Enum = PropertyEnum(Property);
+			return Enum != nullptr ? EnumValueMaps.Find(Enum) : nullptr;
+		}
+
 		TSharedPtr<FJsonValue> NormalizeTyped(const TSharedPtr<FJsonValue>& Value, const FProperty* Property, const bool bFresh) const
 		{
 			if (!Value.IsValid() || Property == nullptr)
 			{
 				return Value;
 			}
-			if (PropertyEnum(Property) == NativeEnum && NativeEnum != nullptr)
+			if (const TMap<FString, FString>* Values = ValuesOf(Property))
 			{
 				FString Text;
 				if (!bFresh && Value->TryGetString(Text))
 				{
-					if (const FString* Mapped = ValueMap.Find(StripEnumNamespace(Text)))
+					if (const FString* Mapped = Values->Find(StripEnumNamespace(Text)))
 					{
 						return MakeShared<FJsonValueString>(*Mapped);
 					}
@@ -199,7 +205,8 @@ namespace
 				{
 					return Value;
 				}
-				const bool bEnumKey = PropertyEnum(MapProperty->KeyProp) == NativeEnum && NativeEnum != nullptr;
+				const TMap<FString, FString>* KeyValues = ValuesOf(MapProperty->KeyProp);
+				const bool bEnumKey = KeyValues != nullptr;
 				TSharedRef<FJsonObject> Out = MakeShared<FJsonObject>();
 				for (const auto& Pair : Value->AsObject()->Values)
 				{
@@ -209,7 +216,7 @@ namespace
 						Key = StripEnumNamespace(Key);
 						if (!bFresh)
 						{
-							if (const FString* Mapped = ValueMap.Find(Key))
+							if (const FString* Mapped = KeyValues->Find(Key))
 							{
 								Key = *Mapped;
 							}
@@ -664,9 +671,11 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 	// 4. Load, compile, diff, resave.
 	FNormalizer Normalizer;
 	Normalizer.MemberMap = Plan.MemberMap();
-	Normalizer.ValueMap = Plan.ValueMap();
 	Normalizer.bStruct = bStruct;
-	Normalizer.NativeEnum = NativeEnum;
+	if (NativeEnum != nullptr)
+	{
+		Normalizer.EnumValueMaps.Add(NativeEnum, Plan.ValueMap());
+	}
 	Normalizer.UserPath = Plan.UserType;
 	Normalizer.NativePath = Plan.NativeType;
 	Normalizer.StructNames.Add(FPackageName::ObjectPathToObjectName(Plan.UserType), bStruct ? NativeStruct->GetName() : NativeEnum->GetName());
@@ -678,6 +687,18 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 			Normalizer.MemberMap.Add(Member.UserName, Member.NativeName);
 		}
 		Normalizer.StructNames.Add(FPackageName::ObjectPathToObjectName(Prerequisite.UserType), FPackageName::ObjectPathToObjectName(Prerequisite.NativeType));
+		if (Prerequisite.Kind == TEXT("enum"))
+		{
+			// An inner enum recorded by a struct plan: its typed fields are mapped like the replaced enum of an enum plan.
+			if (const UEnum* InnerEnum = FCortexDataTypeReplacementOps::FindNativeEnum(Prerequisite.NativeType))
+			{
+				TMap<FString, FString>& Values = Normalizer.EnumValueMaps.FindOrAdd(InnerEnum);
+				for (const TPair<FString, FString>& Value : Prerequisite.Values)
+				{
+					Values.Add(Value.Key, Value.Value);
+				}
+			}
+		}
 	}
 	const FString WorkDir = FPaths::Combine(FPaths::GetPath(PlanPath), TEXT("verify"));
 	const UObject* UserTypeObject = FindObject<UObject>(nullptr, *Plan.UserType);

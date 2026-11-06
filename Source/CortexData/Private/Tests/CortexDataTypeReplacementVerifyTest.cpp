@@ -932,3 +932,206 @@ bool FCortexIssue122VerifyReferenceTableTest::RunTest(const FString& Parameters)
 	}
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexIssue122VerifyChainTest,
+	"Cortex.Data.TypeReplacement.VerifyChain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexIssue122VerifyChainTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexIssue122DataTest;
+	using namespace CortexIssue122DataTest::Verify;
+
+	// outer -> middle -> leaf (UDS), the leaf holding a UDE-typed member: the leaf and the enum are two levels below the planned struct.
+	FFixture Fixture;
+	UUserDefinedEnum* Ude = Fixture.MakeEnum(TEXT("UDE_Mode"), { TEXT("A"), TEXT("B"), TEXT("C") });
+	if (!TestNotNull(TEXT("UDE"), Ude))
+	{
+		return false;
+	}
+	UUserDefinedStruct* Leaf = Fixture.MakeStruct(TEXT("UDS_Leaf"), { { TEXT("Value"), IntPin() }, { TEXT("Mode"), EnumPin(Ude) } });
+	UUserDefinedStruct* Middle = TestNotNull(TEXT("Leaf"), Leaf) ? Fixture.MakeStruct(TEXT("UDS_Middle"), { { TEXT("Count"), IntPin() }, { TEXT("Leaf"), StructPin(Leaf) } }) : nullptr;
+	UUserDefinedStruct* Chain = TestNotNull(TEXT("Middle"), Middle) ? Fixture.MakeStruct(TEXT("UDS_Chain"), { { TEXT("Count"), IntPin() }, { TEXT("Middle"), StructPin(Middle) } }) : nullptr;
+	if (!TestNotNull(TEXT("Chain"), Chain))
+	{
+		return false;
+	}
+	const FString LeafValue = UserName(Leaf, TEXT("Value"));
+	const FString LeafMode = UserName(Leaf, TEXT("Mode"));
+	const FString MiddleCount = UserName(Middle, TEXT("Count"));
+	const FString MiddleLeaf = UserName(Middle, TEXT("Leaf"));
+	const FString ModeToken = Ude->GetNameStringByIndex(1);
+	const FString MiddleText = FString::Printf(TEXT("(%s=2,%s=(%s=3,%s=%s))"), *MiddleCount, *MiddleLeaf, *LeafValue, *LeafMode, *ModeToken);
+
+	UDataTable* Table = Fixture.MakeTable(TEXT("DT_Chain"), Chain);
+	if (!TestNotNull(TEXT("Table"), Table))
+	{
+		return false;
+	}
+	{
+		FStructOnScope Row(Chain);
+		if (!TestTrue(TEXT("Row values"), SetMember(Chain, Row.GetStructMemory(), TEXT("Count"), TEXT("1")) && SetMember(Chain, Row.GetStructMemory(), TEXT("Middle"), MiddleText)))
+		{
+			return false;
+		}
+		Table->AddRow(TEXT("R1"), Row.GetStructMemory(), Chain);
+	}
+	if (!TestTrue(TEXT("Saved"), Fixture.SaveAsset(Ude) && Fixture.SaveAsset(Leaf) && Fixture.SaveAsset(Middle) && Fixture.SaveAsset(Chain) && Fixture.SaveAsset(Table)))
+	{
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FString ChainPath = Chain->GetPathName();
+	const FString ChainNative = FCortexIssue122ChainRow::StaticStruct()->GetPathName();
+	const FString MiddlePath = Middle->GetPathName();
+	const FString MiddleNative = FCortexIssue122Middle::StaticStruct()->GetPathName();
+	const FString LeafPath = Leaf->GetPathName();
+	const FString LeafNative = FCortexIssue122Leaf::StaticStruct()->GetPathName();
+	UEnum* NativeEnum = StaticEnum<ECortexIssue122Mode>();
+	const FString TablePath = Table->GetPathName();
+	const TArray<TPair<FString, FString>> LeafMembers = { { LeafValue, TEXT("Value") }, { LeafMode, TEXT("Mode") } };
+	const TArray<TPair<FString, FString>> MiddleMembers = { { MiddleCount, TEXT("Count") }, { MiddleLeaf, TEXT("Leaf") } };
+	const TArray<TPair<FString, FString>> ChainMembers = { { UserName(Chain, TEXT("Count")), TEXT("Count") }, { UserName(Chain, TEXT("Middle")), TEXT("Middle") } };
+	TMap<FString, FString> EnumChanges;
+	for (int32 Index = 0; Index < 3; ++Index)
+	{
+		EnumChanges.Add(Ude->GetNameStringByIndex(Index), NativeEnum->GetNameStringByIndex(Index));
+	}
+	const auto LeafRedirects = [&]() { return MakeStructRedirects(LeafPath, LeafNative, LeafMembers); };
+	const auto MiddleRedirects = [&]() { return MakeStructRedirects(MiddlePath, MiddleNative, MiddleMembers); };
+	const auto EnumRedirect = [&]() { return MakeEnumRedirect(Ude->GetPathName(), NativeEnum->GetPathName(), EnumChanges); };
+	const FString PlanPath = Fixture.ScratchPath(TEXT("chain.plan.json"));
+	const auto PlanChain = [&]() -> FCortexCommandResult
+	{
+		TSharedPtr<FJsonObject> Params = PlanParams(ChainPath, ChainNative);
+		Params->SetStringField(TEXT("baseline_dir"), Fixture.ScratchPath(TEXT("baseline")));
+		Params->SetStringField(TEXT("out_path"), PlanPath);
+		return Run(TEXT("plan_type_replacement"), Params);
+	};
+	const auto ExpectPlanRefused = [&](const TCHAR* Label)
+	{
+		const FCortexCommandResult Result = PlanChain();
+		TArray<FString> Codes;
+		TArray<FString> Subjects;
+		TestFalse(*FString::Printf(TEXT("%s: refused"), Label), Result.bSuccess);
+		TestTrue(*FString::Printf(TEXT("%s: as nested_user_type on Middle"), Label), ProblemCodes(Result, Codes, Subjects) && HasProblem(Codes, Subjects, TEXT("nested_user_type"), TEXT("Middle")));
+	};
+
+	// Planning needs the whole chain: the middle's contract alone, or the middle and leaf without the leaf's enum, is not enough.
+	{
+		FRedirectScope MiddleOnly(MiddleRedirects());
+		ExpectPlanRefused(TEXT("Middle only (leaf and enum missing)"));
+	}
+	{
+		FRedirectScope Scope(MiddleRedirects());
+		FRedirectScope LeafScope(LeafRedirects());
+		ExpectPlanRefused(TEXT("Middle and leaf without the leaf's enum"));
+	}
+	{
+		FRedirectScope Scope(MiddleRedirects());
+		FRedirectScope EnumScope({ EnumRedirect() });
+		ExpectPlanRefused(TEXT("Middle and enum without the leaf"));
+	}
+	{
+		FRedirectScope Scope(MiddleRedirects());
+		FRedirectScope LeafScope(LeafRedirects());
+		FRedirectScope EnumScope({ EnumRedirect() });
+		const FCortexCommandResult Plan = PlanChain();
+		if (!TestTrue(TEXT("The plan succeeds with the whole chain active"), Plan.bSuccess))
+		{
+			AddError(Plan.ErrorMessage);
+			return false;
+		}
+		TArray<FString> Recorded;
+		for (const TSharedPtr<FJsonObject>& Prerequisite : Objects(Plan.Data, TEXT("prerequisites")))
+		{
+			Recorded.Add(Prerequisite->GetStringField(TEXT("user_type")));
+		}
+		TestEqual(TEXT("Middle, leaf and the enum are all recorded"), Recorded.Num(), 3);
+		TestTrue(TEXT("... middle"), Recorded.Contains(MiddlePath));
+		TestTrue(TEXT("... leaf"), Recorded.Contains(LeafPath));
+		TestTrue(TEXT("... enum"), Recorded.Contains(Ude->GetPathName()));
+	}
+	TArray<FString> Lines;
+	{
+		const FCortexCommandResult Plan = [&]()
+		{
+			FRedirectScope Scope(MiddleRedirects());
+			FRedirectScope LeafScope(LeafRedirects());
+			FRedirectScope EnumScope({ EnumRedirect() });
+			return PlanChain();
+		}();
+		if (!TestTrue(TEXT("The plan is written"), Plan.bSuccess))
+		{
+			return false;
+		}
+		Lines = Strings(Plan.Data, TEXT("redirects"));
+	}
+	if (!TestTrue(TEXT("Unloaded"), FFixture::Unload({ Table })))
+	{
+		return false;
+	}
+
+	FRedirectScope OuterScope(MakeStructRedirects(ChainPath, ChainNative, ChainMembers), /*bAlreadyRegistered=*/true);
+	if (!TestTrue(TEXT("The outer lines are registered through the ini reader"), RegisterLinesThroughIni(Lines)))
+	{
+		return false;
+	}
+	const FString TablePackage = FPackageName::ObjectPathToPackageName(TablePath);
+	const auto ExpectVerifyRefused = [&](const TCHAR* Label)
+	{
+		const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), VerifyParams(PlanPath, false));
+		TestFalse(*FString::Printf(TEXT("%s: refused"), Label), Result.bSuccess);
+		TestEqual(*FString::Printf(TEXT("%s: REDIRECTS_NOT_ACTIVE"), Label), Result.ErrorCode, CortexErrorCodes::RedirectsNotActive);
+		TestTrue(*FString::Printf(TEXT("%s: a prerequisite is named"), Label), Result.ErrorDetails.IsValid() && Strings(Result.ErrorDetails, TEXT("missing_prerequisites")).Num() > 0);
+		TestTrue(*FString::Printf(TEXT("%s: nothing was loaded"), Label), FindPackage(nullptr, *TablePackage) == nullptr);
+	};
+	{
+		FRedirectScope Scope(MiddleRedirects());
+		FRedirectScope EnumScope({ EnumRedirect() });
+		ExpectVerifyRefused(TEXT("Leaf redirects missing (two levels below the plan)"));
+	}
+	{
+		FRedirectScope Scope(MiddleRedirects());
+		FRedirectScope LeafScope(LeafRedirects());
+		ExpectVerifyRefused(TEXT("Leaf's enum redirect missing"));
+	}
+
+	// Everything active: the nested non-default payload survives, and the leaf's enum value is normalized through the recorded inner mapping.
+	{
+		FRedirectScope Scope(MiddleRedirects());
+		FRedirectScope LeafScope(LeafRedirects());
+		FRedirectScope EnumScope({ EnumRedirect() });
+		const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), VerifyParams(PlanPath, false));
+		if (TestTrue(TEXT("verify succeeds with the whole chain active"), Result.bSuccess))
+		{
+			const TSharedPtr<FJsonObject> Entry = AssetEntry(Result, TablePath);
+			if (TestTrue(TEXT("The table is reported"), Entry.IsValid()))
+			{
+				TestEqual(TEXT("No false difference from the inner enum (rows_changed)"), static_cast<int32>(Entry->GetNumberField(TEXT("rows_changed"))), 0);
+				TestTrue(TEXT("The table is equal"), Entry->GetBoolField(TEXT("equal")));
+			}
+			TestTrue(TEXT("equal"), Result.Data->GetBoolField(TEXT("equal")));
+		}
+		else
+		{
+			AddError(Result.ErrorMessage);
+		}
+		UDataTable* Reloaded = FFixture::Reload<UDataTable>(TablePath);
+		if (TestNotNull(TEXT("Reloaded table"), Reloaded))
+		{
+			const FCortexIssue122ChainRow* Row = Reloaded->FindRow<FCortexIssue122ChainRow>(TEXT("R1"), TEXT("Issue122"));
+			if (TestNotNull(TEXT("Row R1"), Row))
+			{
+				TestEqual(TEXT("Count"), Row->Count, 1);
+				TestEqual(TEXT("Middle.Count"), Row->Middle.Count, 2);
+				TestEqual(TEXT("Middle.Leaf.Value"), Row->Middle.Leaf.Value, 3);
+				TestTrue(TEXT("Middle.Leaf.Mode"), Row->Middle.Leaf.Mode == ECortexIssue122Mode::B);
+			}
+			TestTrue(TEXT("Unloaded again"), FFixture::Unload({ Reloaded }));
+		}
+	}
+	return true;
+}

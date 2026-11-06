@@ -108,6 +108,43 @@ enum class ECortexIssue122Mode : uint8
 	C = 2,
 };
 
+/** Leaf of the outer -> middle -> leaf chain: an int and an enum. */
+USTRUCT(BlueprintType)
+struct FCortexIssue122Leaf
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	int32 Value = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	ECortexIssue122Mode Mode = ECortexIssue122Mode::A;
+};
+
+USTRUCT(BlueprintType)
+struct FCortexIssue122Middle
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	int32 Count = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	FCortexIssue122Leaf Leaf;
+};
+
+USTRUCT(BlueprintType)
+struct FCortexIssue122ChainRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	int32 Count = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	FCortexIssue122Middle Middle;
+};
+
 /** A native-row table that references an enum asset (so the table hard-references the user enum), with an enum-typed field and an unrelated string. */
 USTRUCT(BlueprintType)
 struct FCortexIssue122EnumRefRow : public FTableRowBase
