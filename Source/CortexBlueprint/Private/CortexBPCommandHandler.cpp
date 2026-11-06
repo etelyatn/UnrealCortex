@@ -575,10 +575,15 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding (default: true)")));
-	Commands.Add(FCortexCommandInfo{TEXT("remove_interface"), TEXT("Remove an interface implementation from a Blueprint")}
+	Commands.Add(FCortexCommandInfo{TEXT("remove_interface"), TEXT("Preview or remove an interface implementation from a Blueprint. preserve_implementations is required and states whether loss is accepted: true keeps interface function graphs as ordinary function graphs and turns interface events into same-named custom events with their pin links (engine bPreserveFunctions); false deletes the graphs and leaves event bodies orphaned. dry_run:true changes nothing and returns per function {implementation, node_count, disposition (promoted_to_function|converted_to_custom_event|deleted|orphaned_nodes), in_asset_callers}, validation_hash and fingerprint_before; apply (dry_run false) requires expected_fingerprint (= fingerprint_before) and expected_validation_hash from the dry run (STALE_PRECONDITION otherwise), verifies the predicted disposition on the live graphs before compiling and restores the verified pre-state on a mismatch (READBACK_MISMATCH). A compile error also restores (COMPILE_FAILED).")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
-		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removing (default: true)")));
+		.Required(TEXT("preserve_implementations"), TEXT("boolean"), TEXT("true=keep implementations as functions/custom events, false=delete them (event bodies are orphaned)"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true=preview only (default false)"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removing (default: true)"))
+		.OptionalExpectedFingerprint(TEXT("Apply-required stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}: the dry run's fingerprint_before"))
+		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash returned by the dry run"))
+		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("set_tick_settings"), TEXT("Set Actor tick settings on a Blueprint CDO")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("start_with_tick_enabled"), TEXT("boolean"), TEXT("Enable tick at start (also forces bCanEverTick=true when enabling)"))

@@ -196,7 +196,11 @@
       "params": [
         "asset_path",
         "interface_path",
-        "compile"
+        "preserve_implementations",
+        "dry_run",
+        "compile",
+        "expected_fingerprint",
+        "expected_validation_hash"
       ]
     },
     "remove_blueprint_variable": {

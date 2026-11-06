@@ -20,10 +20,18 @@ public:
 	static FCortexCommandResult AddInterface(const TSharedPtr<FJsonObject>& Params);
 
 	/**
-	 * Remove an interface implementation from a Blueprint.
-	 * Params: asset_path (string), interface_path (string), compile (bool, default true)
+	 * Preview or remove an interface implementation from a Blueprint.
+	 * Params: asset_path (string), interface_path (string), preserve_implementations (bool, required: true keeps function
+	 *         graphs as ordinary functions and events as custom events, false accepts the loss), dry_run (bool, default false),
+	 *         compile (bool, default true), expected_fingerprint + expected_validation_hash (required to apply; read from a dry run).
+	 * Apply verifies the predicted disposition on the live graphs before compiling and restores explicitly on a mismatch.
 	 */
 	static FCortexCommandResult RemoveInterface(const TSharedPtr<FJsonObject>& Params);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Test seam: the pre-compile disposition verifier reports a mismatch (exercises the explicit restore). */
+	static void SetDispositionMismatchForTest(bool bForce);
+#endif
 
 	/**
 	 * Set Actor tick settings on a Blueprint CDO.

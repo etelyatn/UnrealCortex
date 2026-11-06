@@ -15,6 +15,7 @@
 #include "Engine/InheritableComponentHandler.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
+#include "K2Node_Event.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPCompileSupport.h"
 #include "Operations/CortexBPMigrationGuard.h"
@@ -105,6 +106,13 @@ namespace
 			TStrongObjectPtr<UEdGraph> Copy;
 		};
 		TArray<FGraphCopy> Graphs;
+
+		/**
+		 * Exact EventReference of every event node, by node guid. DuplicateObject runs UK2Node_Event::PostDuplicate ->
+		 * FixupEventReference, which rewrites an interface event to the Blueprint's own class (the skeleton class lists the
+		 * interface's skeleton, so ImplementsInterface fails), so the graph copies cannot carry the reference themselves.
+		 */
+		TMap<FGuid, FMemberReference> EventReferences;
 
 		struct FScsState
 		{
@@ -250,10 +258,38 @@ namespace
 			}
 		}
 
+		{
+			TArray<UEdGraph*> LiveGraphs;
+			Blueprint->GetAllGraphs(LiveGraphs);
+			for (const UEdGraph* Graph : LiveGraphs)
+			{
+				for (const UEdGraphNode* Node : Graph->Nodes)
+				{
+					if (const UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
+					{
+						Journal.EventReferences.Add(Event->NodeGuid, Event->EventReference);
+					}
+				}
+			}
+		}
 		Journal.GraphHash = GraphAuthoringHash(Blueprint);
 		Journal.GeneratedDigest = FCortexGraphFingerprint::ComputeGeneratedStateDigest(Blueprint);
 		Journal.ExtraDigest = Spec.DigestExtra ? Spec.DigestExtra(Blueprint) : FString();
 		return true;
+	}
+
+	/** Writes the journaled EventReference back onto every event node of a graph that was duplicated or recompiled. */
+	void RestoreEventReferences(const FJournal& Journal, UEdGraph* Graph)
+	{
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			UK2Node_Event* Event = Cast<UK2Node_Event>(Node);
+			const FMemberReference* Saved = Event != nullptr ? Journal.EventReferences.Find(Event->NodeGuid) : nullptr;
+			if (Saved != nullptr)
+			{
+				Event->EventReference = *Saved;
+			}
+		}
 	}
 
 	/** Reconciles the Blueprint with the journal; idempotent after an undo that already restored everything. */
@@ -290,6 +326,7 @@ namespace
 						bOk = false;
 						continue;
 					}
+					RestoreEventReferences(Journal, Fresh);
 					Array.Add(Fresh);
 				}
 				for (UEdGraph* Old : Replaced)
@@ -356,6 +393,24 @@ namespace
 			UEngine::CopyPropertiesForUnrelatedObjects(Saved.Copy.Get(), Current, CopyParams);
 		}
 		return bOk;
+	}
+
+	/**
+	 * The recovery compile reconstructs event nodes against the skeleton class it starts from, and FixupEventReference rewrites
+	 * an interface event to the Blueprint's own class when that skeleton does not implement the interface yet. The compile
+	 * must not change what the journal restored, so the exact pre-state references are written back afterwards.
+	 */
+	void ReapplyEventReferences(UBlueprint* Blueprint, const FJournal& Journal)
+	{
+		TArray<UEdGraph*> Live;
+		Blueprint->GetAllGraphs(Live);
+		for (UEdGraph* Graph : Live)
+		{
+			if (Graph != nullptr)
+			{
+				RestoreEventReferences(Journal, Graph);
+			}
+		}
 	}
 }
 
@@ -434,11 +489,12 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 	// Inside an outer transaction (router batch) our transaction is nested: it has no entry of its own and the editor refuses to
 	// undo while a transaction is active, so only the journal can restore.
 	const bool bOuterTransaction = GEditor != nullptr && GEditor->IsTransactionActive();
-	// A run that opts out of the editor undo does not begin a transaction at all: it neither records an entry (a state the undo
-	// cannot rebuild) nor needs one, so a user undo after a successful adoption cannot produce that state either.
+	// A run that opts out of the editor undo does not begin a transaction at all unless it asks for the undo step (bRecordUndoStep):
+	// it neither records an entry (a state the undo cannot rebuild) nor needs one, so a user undo after a successful adoption
+	// cannot produce that state either.
 	TUniquePtr<FScopedTransaction> Transaction = MakeUnique<FScopedTransaction>(
 		FText::FromString(FString::Printf(TEXT("Cortex: %s"), *Spec.OpName)),
-		/*bShouldActuallyTransact=*/Spec.bUndoOnFailure);
+		/*bShouldActuallyTransact=*/Spec.bUndoOnFailure || Spec.bRecordUndoStep);
 	Blueprint->Modify();
 	// The guarded transaction is identified by id, not by undo-list growth: redo history or eviction keeps the length flat.
 	const FGuid TransactionId = (!bOuterTransaction && GEditor && GEditor->Trans) ? GEditor->Trans->GetUndoContext(false).TransactionId : FGuid();
@@ -457,6 +513,14 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 		FailurePhase = TEXT("apply");
 		FailureCode = CortexErrorCodes::InvalidOperation;
 		State.ApplyStatus = TEXT("failed");
+	}
+	else if (Spec.VerifyBeforeCompile && !Spec.VerifyBeforeCompile(Blueprint, FailureMessage))
+	{
+		State.ApplyStatus = TEXT("applied");
+		State.bChanged = true;
+		State.ReadbackStatus = TEXT("mismatched");
+		FailurePhase = TEXT("readback");
+		FailureCode = CortexErrorCodes::ReadbackMismatch;
 	}
 	else
 	{
@@ -527,6 +591,10 @@ FCortexCommandResult FCortexBPGuardedRun::Execute(const FSpec& Spec)
 		}
 
 		const bool bPostRecovered = !Spec.PostRecovery || Spec.PostRecovery(Blueprint, RestoreError);
+		if (GraphAuthoringHash(Blueprint) != Journal.GraphHash)
+		{
+			ReapplyEventReferences(Blueprint, Journal);
+		}
 
 #if WITH_DEV_AUTOMATION_TESTS
 		if (GPostRestoreHookForTest)
