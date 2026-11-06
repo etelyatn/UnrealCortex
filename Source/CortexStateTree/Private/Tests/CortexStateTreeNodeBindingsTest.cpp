@@ -1,9 +1,10 @@
 #include "Misc/AutomationTest.h"
+#include "CortexSTCompat.h"
 #include "Misc/EngineVersionComparison.h"
 #include "CortexStateTreeMigrationFixture.h"
 #include "Dom/JsonValue.h"
 
-#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+#if CORTEXST_HAS_NODE_BINDINGS
 namespace
 {
 const TArray<TSharedPtr<FJsonValue>>& MigNBArray(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field)
@@ -70,7 +71,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexStateTreeNodeBindingsTest::RunTest(const FString& Parameters)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	FCortexStateTreeCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = CortexStateTreeTest::Params();
 	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/Temp/NotUsed"));

@@ -419,7 +419,7 @@ FCortexCommandResult FCortexSTBindingOps::GetNodeBindings(const TSharedPtr<FJson
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::NotAvailable,
-			TEXT("Per-node StateTree binding inspection needs Unreal Engine 5.7 or newer"));
+			TEXT("Per-node StateTree binding inspection needs Unreal Engine 5.8 or newer"));
 	}
 
 	FString AssetPath;

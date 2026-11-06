@@ -1048,7 +1048,7 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::NotAvailable,
-			TEXT("Replacing StateTree nodes with binding remap needs Unreal Engine 5.7 or newer"));
+			TEXT("Replacing StateTree nodes with binding remap needs Unreal Engine 5.8 or newer"));
 	}
 
 	FString AssetPath;

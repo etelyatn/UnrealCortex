@@ -8,7 +8,17 @@
 #include "UObject/UnrealType.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeEditorNode.h"
-#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+// The node-binding authoring surface (task completion bindings, binding path display names, FStateTreeEditorNode::SetNodeName and
+// ReallocInstanceData, the five-argument FPropertyBindingPath::ResolveIndirectionsWithValue) first exists in UE 5.8: UE 5.7 has
+// PropertyBindingUtils but none of these (verified against the 5.7 StateTreeEditorNode.h and PropertyBindingPath.h). Below 5.8 the
+// binding-aware commands report NOT_AVAILABLE and every API in this block compiles to its refusal. Gate by this macro, never inline.
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+#define CORTEXST_HAS_NODE_BINDINGS 0
+#else
+#define CORTEXST_HAS_NODE_BINDINGS 1
+#endif
+
+#if CORTEXST_HAS_NODE_BINDINGS
 #include "PropertyBindingPath.h"
 #include "StateTreePropertyBindings.h"
 #endif
@@ -194,11 +204,11 @@ inline FStateTreeTransition& AddTransition(
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Node-binding shims. Binding-aware StateTree code needs the support types that moved into PropertyBindingUtils in UE 5.7
+// Node-binding shims. Binding-aware StateTree code needs the node-binding surface gated by CORTEXST_HAS_NODE_BINDINGS (UE 5.8)
 // (FPropertyBindingPath, FStateTreePropertyPathBinding::IsOutputBinding, FStateTreeEditorNode::GetNodeID/ReallocInstanceData).
 // Older engines compile to the same API with bNodeBindingsAvailable == false; every caller refuses with NOT_AVAILABLE first.
 // ---------------------------------------------------------------------------------------------------------------------
-inline constexpr bool bNodeBindingsAvailable = !UE_VERSION_OLDER_THAN(5, 7, 0);
+inline constexpr bool bNodeBindingsAvailable = CORTEXST_HAS_NODE_BINDINGS != 0;
 
 struct FBindingSegmentInfo
 {
@@ -260,7 +270,7 @@ enum class EPropertyUsage : uint8
 /** Plain copy of everything the editor bindings store (restoring it replaces the collection, order included). */
 struct FEditorBindingsJournal
 {
-#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+#if CORTEXST_HAS_NODE_BINDINGS
 	/** Copy of the stored binding array: restoring writes it back in place (the collection's own vtable lives in the editor module). */
 	TArray<FStateTreePropertyPathBinding> Bindings;
 #endif
@@ -269,7 +279,7 @@ struct FEditorBindingsJournal
 
 inline int32 GetEditorBindingCount(const UStateTreeEditorData& EditorData)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)EditorData;
 	return 0;
 #else
@@ -277,7 +287,7 @@ inline int32 GetEditorBindingCount(const UStateTreeEditorData& EditorData)
 #endif
 }
 
-#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+#if CORTEXST_HAS_NODE_BINDINGS
 namespace Private
 {
 inline void FillBindingSide(const UStateTreeEditorData& EditorData, const FPropertyBindingPath& Path, FBindingSideInfo& Out)
@@ -371,10 +381,10 @@ inline FString LexBindableStructSource(const EStateTreeBindableStructSource Sour
 }
 #endif
 
-/** One stored editor binding with both sides resolved (redirects handled) and its segment GUIDs. False when BindingIndex is out of range or the engine is older than 5.7. */
+/** One stored editor binding with both sides resolved (redirects handled) and its segment GUIDs. False when BindingIndex is out of range or the engine has no node-binding surface (before 5.8). */
 inline bool ReadEditorBinding(const UStateTreeEditorData& EditorData, const int32 BindingIndex, FBindingInfo& Out)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)EditorData;
 	(void)BindingIndex;
 	(void)Out;
@@ -404,7 +414,7 @@ inline bool ReadEditorBinding(const UStateTreeEditorData& EditorData, const int3
 inline FBindableStructInfo DescribeBindableStruct(const UStateTreeEditorData& EditorData, const FGuid& StructID)
 {
 	FBindableStructInfo Info;
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)EditorData;
 	(void)StructID;
 #else
@@ -428,7 +438,7 @@ inline FBindableStructInfo FindContextStructFor(const UStateTreeEditorData& Edit
 {
 	FBindableStructInfo Info;
 	OutStructID.Invalidate();
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)EditorData;
 	(void)Property;
 #else
@@ -459,7 +469,7 @@ inline FBindableStructInfo FindContextStructFor(const UStateTreeEditorData& Edit
 
 inline EPropertyUsage GetPropertyUsage(const FProperty* Property)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)Property;
 	return EPropertyUsage::Invalid;
 #else
@@ -477,13 +487,13 @@ inline EPropertyUsage GetPropertyUsage(const FProperty* Property)
 /** Does the stored path (one side of one binding) still resolve when its first segment is renamed and the owner is a different type? Nested segments are never rewritten. */
 inline bool ResolveRenamedBindingPath(const UStateTreeEditorData& EditorData, const int32 BindingIndex, const EBindingSide Side, const FName NewFirstSegment, const UStruct* NewBase, FString& OutError)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)EditorData;
 	(void)BindingIndex;
 	(void)Side;
 	(void)NewFirstSegment;
 	(void)NewBase;
-	OutError = TEXT("Binding paths cannot be inspected before UE 5.7");
+	OutError = TEXT("Binding paths cannot be inspected before UE 5.8");
 	return false;
 #else
 	const TConstArrayView<FStateTreePropertyPathBinding> Bindings = EditorData.EditorBindings.GetBindings();
@@ -509,7 +519,7 @@ inline bool ResolveRenamedBindingPath(const UStateTreeEditorData& EditorData, co
 /** Rewrites the first segment of one side of one stored binding: name, display name (path resolution falls back to it, PropertyBindingPath.cpp:386-392) and the stale property GUID. */
 inline bool RemapBindingSegments(UStateTreeEditorData& EditorData, const int32 BindingIndex, const EBindingSide Side, const FName NewFirstSegment)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)EditorData;
 	(void)BindingIndex;
 	(void)Side;
@@ -537,7 +547,7 @@ inline bool RemapBindingSegments(UStateTreeEditorData& EditorData, const int32 B
 inline void CaptureEditorBindings(const UStateTreeEditorData& EditorData, FEditorBindingsJournal& OutJournal)
 {
 	OutJournal.Count = GetEditorBindingCount(EditorData);
-#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+#if CORTEXST_HAS_NODE_BINDINGS
 	OutJournal.Bindings = TArray<FStateTreePropertyPathBinding>(EditorData.EditorBindings.GetBindings());
 #endif
 }
@@ -545,7 +555,7 @@ inline void CaptureEditorBindings(const UStateTreeEditorData& EditorData, FEdito
 /** Writes the journaled binding array back in place; false when the count changed (a binding was added or dropped) so nothing is restored blindly. */
 inline bool RestoreEditorBindings(UStateTreeEditorData& EditorData, const FEditorBindingsJournal& Journal)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)EditorData;
 	(void)Journal;
 	return false;
@@ -580,10 +590,10 @@ inline bool RestoreEditorBindings(UStateTreeEditorData& EditorData, const FEdito
 #endif
 }
 
-/** The name an editor node reports; SetNodeName is missing before 5.7 (the older-engine branch never reaches apply). */
+/** The name an editor node reports; SetNodeName exists from 5.8 (the older-engine branch never reaches apply). */
 inline bool SetEditorNodeName(FStateTreeEditorNode& Node, const FName NewName)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)Node;
 	(void)NewName;
 	return false;
@@ -625,7 +635,7 @@ inline uint32 GetEditorContentHash(const UStateTree* StateTree)
 /** The stable property GUID of a named member, or an invalid GUID when unavailable: UStruct::FindPropertyGuidFromName is protected through UE 5.7 (Class.h:970-979 in 5.7, :997 in 5.8 public). Informational in the plan only. */
 inline FGuid FindStructPropertyGuid(const UStruct* Struct, const FName PropertyName)
 {
-#if UE_VERSION_OLDER_THAN(5, 8, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)Struct;
 	(void)PropertyName;
 	return FGuid();
@@ -653,7 +663,7 @@ inline void InitializeNodeAs(FStateTreeEditorNode& Node, const UScriptStruct* Ne
 /** Resets and reallocates the instance and execution runtime data for the current node type, preserving ID, indent and operand (StateTreeEditorNode.cpp:33-41). */
 inline void ReallocInstanceDataKeepingId(FStateTreeEditorNode& Node, UObject* Outer)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	(void)Node;
 	(void)Outer;
 #else

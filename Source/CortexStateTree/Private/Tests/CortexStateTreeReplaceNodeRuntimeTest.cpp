@@ -1,10 +1,11 @@
 #include "Misc/AutomationTest.h"
+#include "CortexSTCompat.h"
 #include "Misc/EngineVersionComparison.h"
 #include "CortexStateTreeMigrationFixture.h"
 #include "StateTreeExecutionContext.h"
 #include "StateTreeInstanceData.h"
 
-#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+#if CORTEXST_HAS_NODE_BINDINGS
 namespace
 {
 const FCortexSTTestEnterRecord* MigRuntimeFind(const FName Node)
@@ -32,7 +33,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexStateTreeReplaceNodeRuntimeTest::RunTest(const FString& Parameters)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	FCortexStateTreeCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = CortexStateTreeTest::Params();
 	Params->SetStringField(TEXT("asset_path"), TEXT("/Game/Temp/NotUsed"));

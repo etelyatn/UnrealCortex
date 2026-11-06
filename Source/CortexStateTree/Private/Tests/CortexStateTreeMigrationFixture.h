@@ -142,7 +142,7 @@ inline FString GetInstanceValueText(const FStateTreeEditorNode& Node, const FNam
 	return Text;
 }
 
-#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+#if CORTEXST_HAS_NODE_BINDINGS
 /**
  * The compile-valid topology of the migration tests (brief Task 14):
  *   state A  (root): task NativeA (FCortexSTTestNativeTask, Count = 21), then Blueprint task BP_T (wrapper)   -- A is ordered before BP_T

@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "CortexSTCompat.h"
 #include "Misc/EngineVersionComparison.h"
 #include "CortexStateTreeMigrationFixture.h"
 #include "Dom/JsonValue.h"
@@ -11,7 +12,7 @@
 #include "Misc/Paths.h"
 #include "Operations/CortexSTReplaceNodeOps.h"
 
-#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+#if CORTEXST_HAS_NODE_BINDINGS
 namespace
 {
 /** The content that must survive a rollback: every node report and the whole-tree binding count (the payload's fingerprint is not content). */
@@ -91,7 +92,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexStateTreeReplaceNodeRollbackTest::RunTest(const FString& Parameters)
 {
-#if UE_VERSION_OLDER_THAN(5, 7, 0)
+#if !CORTEXST_HAS_NODE_BINDINGS
 	return true;
 #else
 	// ── (a) A compile failure after the apply: the journal is restored and the content verified ──
