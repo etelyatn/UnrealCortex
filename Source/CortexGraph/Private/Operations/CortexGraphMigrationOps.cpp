@@ -1244,7 +1244,7 @@ bool FCortexGraphMigrationOps::Plan(
 
 	// Target declaration eligibility, resolved by the shared implementation primitive.
 	FCortexGraphImplementationPlan ImplPlan;
-	if (!FCortexGraphImplementationOps::ValidateEligibility(Blueprint, TargetSelector, ImplPlan, OutError)) return false;
+	if (!FCortexGraphImplementationOps::ValidateEligibility(Blueprint, TargetSelector, ImplPlan, OutError, /*bAllowInterfaceImplementation=*/true)) return false;
 	if (ImplPlan.bParentCall)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
@@ -1270,7 +1270,23 @@ bool FCortexGraphMigrationOps::Plan(
 	}
 	else
 	{
-		if (!Blueprint->FunctionGraphs.Contains(SourceGraph) || SourceGraph->GetFName() != Function->GetFName())
+		// An interface function's function-style implementation lives in the interface description, not in FunctionGraphs.
+		bool bOwnsDeclaration = false;
+		if (ImplPlan.bInterfaceImplementation)
+		{
+			const FBPInterfaceDescription* Description = Blueprint->ImplementedInterfaces.FindByPredicate(
+				[FunctionClass](const FBPInterfaceDescription& Candidate)
+				{
+					return Candidate.Interface != nullptr
+						&& (Candidate.Interface == FunctionClass || Candidate.Interface->GetAuthoritativeClass() == FunctionClass->GetAuthoritativeClass());
+				});
+			bOwnsDeclaration = Description != nullptr && Description->Graphs.Contains(SourceGraph);
+		}
+		else
+		{
+			bOwnsDeclaration = Blueprint->FunctionGraphs.Contains(SourceGraph);
+		}
+		if (!bOwnsDeclaration || SourceGraph->GetFName() != Function->GetFName())
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 				FString::Printf(TEXT("migration source graph '%s' is not the function graph of the target declaration '%s'"),
@@ -1348,12 +1364,18 @@ bool FCortexGraphMigrationOps::Plan(
 				return false;
 			}
 			const UK2Node_Event* const SourceEvent = Cast<UK2Node_Event>(SourceEntry);
-			const UClass* const SourceOwner = SourceEvent ? SourceEvent->EventReference.GetMemberParentClass() : nullptr;
+			// An interface event may name the interface through its skeleton class, so the owner resolves in the Blueprint's own
+			// class context and compares by authoritative class (the engine's own identity test for interface events).
+			const UClass* const SourceOwner = !SourceEvent ? nullptr
+				: (ImplPlan.bInterfaceImplementation
+					? SourceEvent->EventReference.GetMemberParentClass(SourceEvent->GetBlueprintClassFromNode())
+					: SourceEvent->EventReference.GetMemberParentClass());
 			if (!SourceEvent
 				|| SourceEvent->EventReference.GetMemberName() != DeclarationName
 				|| !SourceOwner
 				|| !FunctionClass
-				|| (SourceOwner != FunctionClass && !SourceOwner->IsChildOf(FunctionClass)))
+				|| (SourceOwner != FunctionClass && !SourceOwner->IsChildOf(FunctionClass)
+					&& !(ImplPlan.bInterfaceImplementation && SourceOwner->GetAuthoritativeClass() == FunctionClass->GetAuthoritativeClass())))
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 					FString::Printf(TEXT("migration source node %s is not an entry of the replaced declaration '%s' on '%s'"),
