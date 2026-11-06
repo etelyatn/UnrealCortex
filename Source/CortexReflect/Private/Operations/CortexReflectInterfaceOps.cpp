@@ -12,7 +12,6 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "K2Node_CallFunction.h"
-#include "K2Node_Composite.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_Event.h"
 #include "K2Node_FunctionEntry.h"
@@ -384,8 +383,6 @@ TSharedRef<FJsonObject> FCortexInterfaceCaller::ToJson() const
 
 namespace CortexReflectInterfacePrivate
 {
-	constexpr int32 MaxSubgraphDepth = 16;
-
 	struct FCallerScan
 	{
 		const UClass* InterfaceAuthority = nullptr;
@@ -394,87 +391,48 @@ namespace CortexReflectInterfacePrivate
 		TArray<FCortexInterfaceCaller>* Callers = nullptr;
 		TArray<FCortexInterfaceCaller>* Unresolved = nullptr;
 
-		void VisitGraph(const UBlueprint* Blueprint, const FString& AssetPath, const UEdGraph* TopGraph, const UEdGraph* Graph, const FString& SubgraphPath, int32 Depth) const
+		void ScanBlueprint(const UBlueprint* Blueprint, const FString& AssetPath) const
 		{
-			if (!Graph || Depth > MaxSubgraphDepth)
-			{
-				return;
-			}
 			const UClass* Context = Blueprint->GeneratedClass ? Blueprint->GeneratedClass.Get() : Blueprint->SkeletonGeneratedClass.Get();
-			for (const UEdGraphNode* Node : Graph->Nodes)
-			{
-				if (!Node)
+			CortexReflectNodeRefs::ForEachNode(Blueprint,
+				[&](const UEdGraph* TopGraph, const FString& SubgraphPath, const UEdGraphNode* Node)
 				{
-					continue;
-				}
+					FCortexInterfaceCaller Site;
+					Site.AssetPath = AssetPath;
+					Site.GraphName = TopGraph->GetName();
+					Site.GraphGuid = TopGraph->GraphGuid;
+					Site.SubgraphPath = SubgraphPath;
+					Site.NodeGuid = Node->NodeGuid;
+					Site.NodeClass = CortexReflectNodeRefs::GetNodeClassLabel(Node);
 
-				FCortexInterfaceCaller Site;
-				Site.AssetPath = AssetPath;
-				Site.GraphName = TopGraph->GetName();
-				Site.GraphGuid = TopGraph->GraphGuid;
-				Site.SubgraphPath = SubgraphPath;
-				Site.NodeGuid = Node->NodeGuid;
-				Site.NodeClass = CortexReflectNodeRefs::GetNodeClassLabel(Node);
-
-				// Classified once: a message node derives from the call node, so it is tested first.
-				if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
-				{
-					const bool bMessage = Call->IsA<UK2Node_Message>();
-					const FName FunctionName = Call->FunctionReference.GetMemberName();
-					Site.Kind = bMessage ? TEXT("message") : TEXT("typed_call");
-					Site.Function = FunctionName.ToString();
-					const UClass* Owner = CortexReflectNodeRefs::GetCallMemberOwner(Call, Context);
-					if (Owner)
+					// Classified once: a message node derives from the call node, so it is tested first.
+					if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
 					{
-						if (Owner->IsChildOf(InterfaceAuthority) && (FunctionFilter.IsEmpty() || Site.Function == FunctionFilter))
+						const FName FunctionName = Call->FunctionReference.GetMemberName();
+						Site.Kind = Call->IsA<UK2Node_Message>() ? TEXT("message") : TEXT("typed_call");
+						Site.Function = FunctionName.ToString();
+						const bool bWanted = FunctionFilter.IsEmpty() || Site.Function == FunctionFilter;
+						if (const UClass* Owner = CortexReflectNodeRefs::GetCallMemberOwner(Call, Context))
 						{
+							if (bWanted && Owner->IsChildOf(InterfaceAuthority))
+							{
+								Callers->Add(MoveTemp(Site));
+							}
+						}
+						else if (bWanted && InterfaceFunctions.Contains(FunctionName))
+						{
+							Unresolved->Add(MoveTemp(Site));
+						}
+					}
+					else if (const UClass* CastTarget = CortexReflectNodeRefs::GetCastTargetClass(Node))
+					{
+						if (CastTarget->GetAuthoritativeClass()->IsChildOf(InterfaceAuthority))
+						{
+							Site.Kind = TEXT("interface_cast");
 							Callers->Add(MoveTemp(Site));
 						}
 					}
-					else if (InterfaceFunctions.Contains(FunctionName) && (FunctionFilter.IsEmpty() || Site.Function == FunctionFilter))
-					{
-						Unresolved->Add(MoveTemp(Site));
-					}
-				}
-				else if (const UClass* CastTarget = CortexReflectNodeRefs::GetCastTargetClass(Node))
-				{
-					if (CastTarget->GetAuthoritativeClass()->IsChildOf(InterfaceAuthority))
-					{
-						Site.Kind = TEXT("interface_cast");
-						Callers->Add(MoveTemp(Site));
-					}
-				}
-
-				if (const UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
-				{
-					const FString Name = Composite->BoundGraph ? Composite->BoundGraph->GetName() : FString();
-					VisitGraph(Blueprint, AssetPath, TopGraph, Composite->BoundGraph,
-						SubgraphPath.IsEmpty() ? Name : FString::Printf(TEXT("%s.%s"), *SubgraphPath, *Name), Depth + 1);
-				}
-			}
-		}
-
-		void ScanBlueprint(const UBlueprint* Blueprint, const FString& AssetPath) const
-		{
-			TArray<const UEdGraph*> TopGraphs;
-			for (const TArray<TObjectPtr<UEdGraph>>* List : {&Blueprint->UbergraphPages, &Blueprint->FunctionGraphs, &Blueprint->MacroGraphs, &Blueprint->DelegateSignatureGraphs})
-			{
-				for (const UEdGraph* Graph : *List)
-				{
-					TopGraphs.Add(Graph);
-				}
-			}
-			for (const FBPInterfaceDescription& Description : Blueprint->ImplementedInterfaces)
-			{
-				for (const UEdGraph* Graph : Description.Graphs)
-				{
-					TopGraphs.Add(Graph);
-				}
-			}
-			for (const UEdGraph* Graph : TopGraphs)
-			{
-				VisitGraph(Blueprint, AssetPath, Graph, Graph, FString(), 0);
-			}
+				});
 		}
 	};
 

@@ -6,6 +6,7 @@
 #include "Operations/CortexReflectNameLookupOps.h"
 #include "Operations/CortexReflectDuplicateGraphOps.h"
 #include "Operations/CortexReflectInterfaceOps.h"
+#include "Operations/CortexReflectTypeUsageOps.h"
 
 namespace
 {
@@ -84,6 +85,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 	if (Command == TEXT("find_duplicate_graphs"))
 	{
 		return FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(Params);
+	}
+
+	if (Command == TEXT("find_type_usages"))
+	{
+		return FCortexReflectTypeUsageOps::FindTypeUsages(Params);
 	}
 
 	if (Command == TEXT("find_interface_implementers"))
@@ -170,6 +176,11 @@ TArray<FCortexCommandInfo> ReflectCommandInfos()
 			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose Blueprints are searched (e.g. /Game/MyFeature)"))
 			.Optional(TEXT("include_callers"), TEXT("boolean"), TEXT("Also list the call and cast sites of the interface (default true)"))
 			.Optional(TEXT("function"), TEXT("string"), TEXT("Restrict the reported functions, and the message and typed-call sites, to one interface function (cast sites are not function-specific and stay)"))
+			.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full result to this file (under Project Saved, Content or Config) and return only a compact summary; use it when the inline result would be too large"))
+			.StrictParams(),
+		FCortexCommandInfo{ TEXT("find_type_usages"), TEXT("Inventory where a user-defined struct (UDS) or enum (UDE) is used, classified, for a replacement by a native type; run against the native type afterwards it proves no residual use. The hard referencers of the type's package under path_prefixes are loaded (Blueprints, user-defined structs) or classified from the Asset Registry. Each usage has a category: variable (Blueprint member variable incl. array/set/map, with role type/map_key/map_value), local_variable and function_parameter (function entry/result and custom event user pins), pin (any other node pin of the type, incl. enum equality, for-each-enum and enumerator-name nodes; node_class, graph_guid, node_guid, pin), make_struct, break_struct, set_fields, struct_member (UK2Node_MakeStruct, BreakStruct, SetFieldsInStruct, StructMemberGet/Set), switch_enum, enum_literal, datatable_row_struct (from the RowStructure registry tag, the table is not loaded), data_asset (a UDataAsset instance that hard-references the type, or an instance of a Blueprint DataAsset class whose variables use it, with via_class), save_game (a Blueprint deriving from USaveGame that declares the type; .sav slot files are not scanned) and nested_struct (another user-defined struct with a member of the type). Assets that cannot be loaded are listed under load_failures and assets beyond the node budget under skipped_assets, never counted as free of the type; referencing assets of other classes are listed under other_referencers") }
+			.Required(TEXT("user_type"), TEXT("string"), TEXT("User-defined struct or enum asset path, a /Script/Module.Name path, or a struct or enum name (F/E prefix optional)"))
+			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose assets are inventoried (e.g. /Game/MyFeature)"))
 			.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full result to this file (under Project Saved, Content or Config) and return only a compact summary; use it when the inline result would be too large"))
 			.StrictParams(),
 	};

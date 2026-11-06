@@ -1,7 +1,10 @@
 #include "Operations/CortexReflectNodeRefs.h"
 
+#include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphPin.h"
+#include "Engine/Blueprint.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_Composite.h"
 #include "K2Node_ConstructObjectFromClass.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_SpawnActorFromClass.h"
@@ -10,6 +13,34 @@ namespace CortexReflectNodeRefs
 {
 namespace
 {
+constexpr int32 MaxSubgraphDepth = 16;
+
+void VisitGraph(
+	const UEdGraph* TopGraph,
+	const UEdGraph* Graph,
+	const FString& SubgraphPath,
+	const int32 Depth,
+	const TFunctionRef<void(const UEdGraph*, const FString&, const UEdGraphNode*)>& Visitor)
+{
+	if (!Graph || Depth > MaxSubgraphDepth)
+	{
+		return;
+	}
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+		Visitor(TopGraph, SubgraphPath, Node);
+		if (const UK2Node_Composite* Composite = Cast<UK2Node_Composite>(Node))
+		{
+			const FString Name = Composite->BoundGraph ? Composite->BoundGraph->GetName() : FString();
+			VisitGraph(TopGraph, Composite->BoundGraph, SubgraphPath.IsEmpty() ? Name : FString::Printf(TEXT("%s.%s"), *SubgraphPath, *Name), Depth + 1, Visitor);
+		}
+	}
+}
+
 UClass* GetClassPinDefault(const UK2Node_ConstructObjectFromClass* Node)
 {
 	const UEdGraphPin* ClassPin = Node->GetClassPin();
@@ -70,5 +101,34 @@ const UClass* GetCallMemberOwner(const UK2Node_CallFunction* Node, const UClass*
 		Owner = Function ? Function->GetOwnerClass() : nullptr;
 	}
 	return Owner ? Owner->GetAuthoritativeClass() : nullptr;
+}
+
+void ForEachNode(
+	const UBlueprint* Blueprint,
+	TFunctionRef<void(const UEdGraph* TopGraph, const FString& SubgraphPath, const UEdGraphNode* Node)> Visitor)
+{
+	if (!Blueprint)
+	{
+		return;
+	}
+	TArray<const UEdGraph*> TopGraphs;
+	for (const TArray<TObjectPtr<UEdGraph>>* List : {&Blueprint->UbergraphPages, &Blueprint->FunctionGraphs, &Blueprint->MacroGraphs, &Blueprint->DelegateSignatureGraphs})
+	{
+		for (const UEdGraph* Graph : *List)
+		{
+			TopGraphs.Add(Graph);
+		}
+	}
+	for (const FBPInterfaceDescription& Description : Blueprint->ImplementedInterfaces)
+	{
+		for (const UEdGraph* Graph : Description.Graphs)
+		{
+			TopGraphs.Add(Graph);
+		}
+	}
+	for (const UEdGraph* Graph : TopGraphs)
+	{
+		VisitGraph(Graph, Graph, FString(), 0, Visitor);
+	}
 }
 }

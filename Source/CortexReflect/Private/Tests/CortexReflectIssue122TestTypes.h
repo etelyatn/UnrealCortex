@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/DataAsset.h"
 #include "UObject/Interface.h"
 #include "UObject/Object.h"
 
@@ -38,4 +39,35 @@ class UCortexIssue122ReflectCollision : public UObject
 public:
 	UFUNCTION(BlueprintCallable, Category = "CortexIssue122")
 	int32 GetValue() const { return 0; }
+};
+
+/** A native struct and enum, so the usage inventory can be run against a native type (the residual check after a swap). */
+USTRUCT(BlueprintType)
+struct FCortexIssue122NativeHit
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	int32 Damage = 0;
+};
+
+UENUM(BlueprintType)
+enum class ECortexIssue122NativeMode : uint8
+{
+	Fast,
+	Slow,
+};
+
+/** A DataAsset that hard-references a struct and an enum object, so an instance depends on their packages. */
+UCLASS()
+class UCortexIssue122TypeRefAsset : public UDataAsset
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY()
+	TObjectPtr<UScriptStruct> StructRef;
+
+	UPROPERTY()
+	TObjectPtr<UEnum> EnumRef;
 };
