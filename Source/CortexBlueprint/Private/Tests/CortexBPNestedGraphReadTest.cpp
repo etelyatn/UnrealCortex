@@ -12,6 +12,7 @@
 #include "GameFramework/Actor.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
+#include "K2Node_FunctionEntry.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -235,29 +236,226 @@ bool FCortexBPNestedGraphReadTest::RunTest(const FString& Parameters)
 	}
 	Fixture.Blueprint->MarkAsGarbage();
 
-	// ── A Blueprint without nested graphs gains no graph_guid anywhere ──
-	{
-		UBlueprint* Plain = NewBlueprint(TEXT("BP_NestedGraphReadPlain"));
-		if (!TestNotNull(TEXT("plain Blueprint"), Plain))
-		{
-			return false;
-		}
-		UEdGraph* PlainFn = AddFunctionGraph(Plain);
-		AddPrintString(PlainFn, TEXT("PlainPinNeedle"));
+	return true;
+}
 
+// ── A Blueprint without nested graphs keeps its complete output ─────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPNestedGraphReadPlainOutputTest,
+	"Cortex.Blueprint.NestedGraphRead.PlainOutput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPNestedGraphReadPlainOutputTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexBPNestedGraphReadTestSupport;
+
+	UBlueprint* Plain = NewBlueprint(TEXT("BP_NestedGraphReadPlain"));
+	if (!TestNotNull(TEXT("plain Blueprint"), Plain))
+	{
+		return false;
+	}
+	UEdGraph* PlainFn = AddFunctionGraph(Plain);
+	UK2Node_CallFunction* Call = AddPrintString(PlainFn, TEXT("PlainPinNeedle"));
+
+	// Identifiers the engine assigns; every other value below is a literal.
+	const FString CallId = Call->GetName();
+	FString ConstructionEntryId;
+	for (UEdGraph* Graph : Plain->FunctionGraphs)
+	{
+		if (Graph != nullptr && Graph->GetName() == TEXT("UserConstructionScript"))
+		{
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node != nullptr && Node->IsA<UK2Node_FunctionEntry>())
+				{
+					ConstructionEntryId = Node->GetName();
+				}
+			}
+		}
+	}
+	TestFalse(TEXT("the construction script entry exists"), ConstructionEntryId.IsEmpty());
+
+	auto Str = [](const FString& Value) { return MakeShared<FJsonValueString>(Value); };
+	auto Obj = [](const TSharedPtr<FJsonObject>& Value) { return MakeShared<FJsonValueObject>(Value); };
+
+	// ── blueprint.search ──
+	{
 		const FCortexCommandResult Search = RunSearch(Plain, TEXT("PlainPinNeedle"));
 		if (TestTrue(TEXT("plain search succeeds"), Search.bSuccess))
 		{
-			TestEqual(TEXT("one match"), ObjectsOf(Search.Data, TEXT("matches")).Num(), 1);
-			TestFalse(TEXT("search output carries no graph_guid"), Serialize(Search.Data).Contains(TEXT("graph_guid")));
+			TSharedPtr<FJsonObject> Match = MakeShared<FJsonObject>();
+			Match->SetStringField(TEXT("location"), FString::Printf(TEXT("HostFn/%s/InString"), *CallId));
+			Match->SetStringField(TEXT("property"), TEXT("InString"));
+			Match->SetStringField(TEXT("type"), TEXT("pin"));
+			Match->SetStringField(TEXT("value"), TEXT("PlainPinNeedle"));
+			Match->SetStringField(TEXT("node_id"), CallId);
+			Match->SetStringField(TEXT("graph_name"), TEXT("HostFn"));
+
+			TSharedPtr<FJsonObject> Expected = MakeShared<FJsonObject>();
+			Expected->SetStringField(TEXT("asset_path"), Plain->GetPathName());
+			Expected->SetStringField(TEXT("query"), TEXT("PlainPinNeedle"));
+			Expected->SetNumberField(TEXT("match_count"), 1);
+			Expected->SetBoolField(TEXT("truncated"), false);
+			Expected->SetArrayField(TEXT("matches"), { Obj(Match) });
+			TestTrue(FString::Printf(TEXT("search output is exactly the legacy shape; actual: %s"), *Serialize(Search.Data)),
+				FJsonValue::CompareEqual(FJsonValueObject(Expected), FJsonValueObject(Search.Data)));
 		}
+	}
+
+	// ── blueprint.graph_metrics ──
+	{
 		const FCortexCommandResult Metrics = RunMetrics(Plain);
 		if (TestTrue(TEXT("plain graph_metrics succeeds"), Metrics.bSuccess))
 		{
-			TestFalse(TEXT("graph_metrics output carries no graph_guid"), Serialize(Metrics.Data).Contains(TEXT("graph_guid")));
+			// A fresh Actor Blueprint carries three disabled default events in its EventGraph (never live, so ghost entries).
+			auto MakeEntry = [](const TCHAR* Graph, const TCHAR* Name, const TCHAR* Kind, const FString& NodeId, bool bLive)
+			{
+				TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+				Entry->SetStringField(TEXT("graph"), Graph);
+				Entry->SetStringField(TEXT("name"), Name);
+				Entry->SetStringField(TEXT("kind"), Kind);
+				Entry->SetStringField(TEXT("node_id"), NodeId);
+				Entry->SetBoolField(TEXT("live"), bLive);
+				Entry->SetNumberField(TEXT("functional_nodes"), 0);
+				Entry->SetNumberField(TEXT("conditionals"), 0);
+				Entry->SetNumberField(TEXT("variable_gets"), 0);
+				Entry->SetNumberField(TEXT("max_getter_fanout"), 0);
+				return Entry;
+			};
+			auto MakeGhost = [](const TCHAR* Name, const TCHAR* NodeId)
+			{
+				TSharedPtr<FJsonObject> Ghost = MakeShared<FJsonObject>();
+				Ghost->SetStringField(TEXT("graph"), TEXT("EventGraph"));
+				Ghost->SetStringField(TEXT("name"), Name);
+				Ghost->SetStringField(TEXT("node_id"), NodeId);
+				return Ghost;
+			};
+
+			TSharedPtr<FJsonObject> UnreachableRow = MakeShared<FJsonObject>();
+			UnreachableRow->SetStringField(TEXT("graph"), TEXT("HostFn"));
+			UnreachableRow->SetNumberField(TEXT("count"), 1);
+			UnreachableRow->SetArrayField(TEXT("node_ids"), { Str(CallId) });
+
+			TSharedPtr<FJsonObject> DisabledRow = MakeShared<FJsonObject>();
+			DisabledRow->SetStringField(TEXT("graph"), TEXT("EventGraph"));
+			DisabledRow->SetNumberField(TEXT("count"), 3);
+			DisabledRow->SetArrayField(TEXT("node_ids"), { Str(TEXT("K2Node_Event_0")), Str(TEXT("K2Node_Event_1")), Str(TEXT("K2Node_Event_2")) });
+
+			TSharedPtr<FJsonObject> Totals = MakeShared<FJsonObject>();
+			Totals->SetNumberField(TEXT("functional_nodes"), 0);
+			Totals->SetNumberField(TEXT("unreachable_nodes"), 1);
+			Totals->SetNumberField(TEXT("disabled_nodes"), 3);
+			Totals->SetNumberField(TEXT("ghost_entries"), 3);
+			Totals->SetNumberField(TEXT("entries"), 4);
+
+			TSharedPtr<FJsonObject> Thresholds = MakeShared<FJsonObject>();
+			Thresholds->SetNumberField(TEXT("max_nodes_per_entry"), 10);
+			Thresholds->SetNumberField(TEXT("max_nodes_per_blueprint"), 30);
+
+			TSharedPtr<FJsonObject> Expected = MakeShared<FJsonObject>();
+			Expected->SetStringField(TEXT("asset_path"), Plain->GetPathName());
+			Expected->SetBoolField(TEXT("has_tick"), false);
+			Expected->SetObjectField(TEXT("totals"), Totals);
+			Expected->SetArrayField(TEXT("entries"), {
+				Obj(MakeEntry(TEXT("EventGraph"), TEXT("ReceiveBeginPlay"), TEXT("event"), TEXT("K2Node_Event_0"), false)),
+				Obj(MakeEntry(TEXT("EventGraph"), TEXT("ReceiveActorBeginOverlap"), TEXT("event"), TEXT("K2Node_Event_1"), false)),
+				Obj(MakeEntry(TEXT("EventGraph"), TEXT("ReceiveTick"), TEXT("event"), TEXT("K2Node_Event_2"), false)),
+				Obj(MakeEntry(TEXT("UserConstructionScript"), TEXT("UserConstructionScript"), TEXT("function"), ConstructionEntryId, true)) });
+			Expected->SetArrayField(TEXT("unreachable"), { Obj(UnreachableRow) });
+			Expected->SetArrayField(TEXT("disabled"), { Obj(DisabledRow) });
+			Expected->SetArrayField(TEXT("ghost_entries"), {
+				Obj(MakeGhost(TEXT("ReceiveBeginPlay"), TEXT("K2Node_Event_0"))),
+				Obj(MakeGhost(TEXT("ReceiveActorBeginOverlap"), TEXT("K2Node_Event_1"))),
+				Obj(MakeGhost(TEXT("ReceiveTick"), TEXT("K2Node_Event_2"))) });
+			Expected->SetObjectField(TEXT("thresholds"), Thresholds);
+			Expected->SetArrayField(TEXT("violations"), {});
+			TestTrue(FString::Printf(TEXT("graph_metrics output is exactly the legacy shape; actual: %s"), *Serialize(Metrics.Data)),
+				FJsonValue::CompareEqual(FJsonValueObject(Expected), FJsonValueObject(Metrics.Data)));
 		}
-		Plain->MarkAsGarbage();
 	}
 
+	Plain->MarkAsGarbage();
+	return true;
+}
+
+// ── A cut catalogue is reported, never silent ───────────────────────────────
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPNestedGraphReadTruncatedTest,
+	"Cortex.Blueprint.NestedGraphRead.Truncated",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPNestedGraphReadTruncatedTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexBPNestedGraphReadTestSupport;
+
+	UBlueprint* Blueprint = NewBlueprint(TEXT("BP_NestedGraphReadDeep"));
+	if (!TestNotNull(TEXT("deep Blueprint"), Blueprint))
+	{
+		return false;
+	}
+	// DeepFn -> Level1 -> ... -> Level10. Level9 is below the depth-8 cut and holds the only literal.
+	UEdGraph* Root = AddFunctionGraph(Blueprint);
+	UEdGraph* Parent = Root;
+	TArray<UCortexBPNestedTestGraph*> Chain;
+	for (int32 Level = 1; Level <= 10; ++Level)
+	{
+		UCortexBPNestedTestHostNode* Host = NewObject<UCortexBPNestedTestHostNode>(Parent);
+		Host->CreateNewGuid();
+		Parent->AddNode(Host, false, false);
+		Host->AllocateDefaultPins();
+		UCortexBPNestedTestGraph* Child = NewObject<UCortexBPNestedTestGraph>(Host, *FString::Printf(TEXT("Level%d"), Level), RF_Transactional);
+		Child->Schema = UEdGraphSchema_K2::StaticClass();
+		Child->GraphGuid = FGuid::NewGuid();
+		Host->HostedGraphs.Add(Child);
+		Chain.Add(Child);
+		Parent = Child;
+	}
+	AddPrintString(Chain[8], TEXT("DeepPinNeedle"));
+	const FString CutGuid = Chain[7]->GraphGuid.ToString();
+
+	const FCortexCommandResult Search = RunSearch(Blueprint, TEXT("DeepPinNeedle"));
+	if (TestTrue(TEXT("search succeeds"), Search.bSuccess))
+	{
+		TestEqual(TEXT("the literal below the cut is not found"), ObjectsOf(Search.Data, TEXT("matches")).Num(), 0);
+		bool bTreeCut = false;
+		TestTrue(TEXT("search reports graph_tree_truncated"), Search.Data->TryGetBoolField(TEXT("graph_tree_truncated"), bTreeCut) && bTreeCut);
+		bool bMaxResults = true;
+		TestTrue(TEXT("the existing max_results flag keeps its meaning"), Search.Data->TryGetBoolField(TEXT("truncated"), bMaxResults) && !bMaxResults);
+		const TArray<TSharedPtr<FJsonValue>>* Cut = nullptr;
+		if (TestTrue(TEXT("search lists the cut parents"), Search.Data->TryGetArrayField(TEXT("truncated_parent_graph_guids"), Cut) && Cut))
+		{
+			TestTrue(TEXT("search names Level8"), Cut->Num() == 1 && (*Cut)[0]->AsString() == CutGuid);
+		}
+	}
+
+	const FCortexCommandResult Metrics = RunMetrics(Blueprint);
+	if (TestTrue(TEXT("graph_metrics succeeds"), Metrics.bSuccess))
+	{
+		bool bTruncated = false;
+		TestTrue(TEXT("graph_metrics reports truncated"), Metrics.Data->TryGetBoolField(TEXT("truncated"), bTruncated) && bTruncated);
+		const TArray<TSharedPtr<FJsonValue>>* Cut = nullptr;
+		if (TestTrue(TEXT("graph_metrics lists the cut parents"), Metrics.Data->TryGetArrayField(TEXT("truncated_parent_graph_guids"), Cut) && Cut))
+		{
+			TestTrue(TEXT("graph_metrics names Level8"), Cut->Num() == 1 && (*Cut)[0]->AsString() == CutGuid);
+		}
+	}
+
+	// A complete tree adds neither field.
+	FFixture Shallow;
+	if (TestTrue(TEXT("shallow fixture builds"), BuildFixture(Shallow)))
+	{
+		const FCortexCommandResult ShallowSearch = RunSearch(Shallow.Blueprint, TEXT("PinNeedle"));
+		const FCortexCommandResult ShallowMetrics = RunMetrics(Shallow.Blueprint);
+		TestFalse(TEXT("search adds no graph_tree_truncated for a complete tree"), ShallowSearch.Data->HasField(TEXT("graph_tree_truncated")));
+		TestFalse(TEXT("search adds no cut-parent list for a complete tree"), ShallowSearch.Data->HasField(TEXT("truncated_parent_graph_guids")));
+		TestFalse(TEXT("graph_metrics adds no truncated for a complete tree"), ShallowMetrics.Data->HasField(TEXT("truncated")));
+		Shallow.Blueprint->MarkAsGarbage();
+	}
+
+	Blueprint->MarkAsGarbage();
 	return true;
 }

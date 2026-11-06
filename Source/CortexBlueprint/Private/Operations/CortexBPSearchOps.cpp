@@ -88,9 +88,11 @@ FCortexCommandResult FCortexBPSearchOps::Search(const TSharedPtr<FJsonObject>& P
 	const bool bSearchWidgets = SearchIn.Num() == 0 || SearchIn.Contains(TEXT("widgets"));
 
 	TArray<FSearchMatch> Matches;
+	// GraphGuids of the graphs whose nested graphs were not catalogued (depth limit): the pins below them were not searched.
+	TArray<FString> CutParentGuids;
 	if (bSearchPins)
 	{
-		SearchGraphPins(Blueprint, Query, bCaseSensitive, MaxResults, Matches);
+		SearchGraphPins(Blueprint, Query, bCaseSensitive, MaxResults, Matches, CutParentGuids);
 	}
 	if (bSearchCDO && Matches.Num() < MaxResults)
 	{
@@ -140,6 +142,17 @@ FCortexCommandResult FCortexBPSearchOps::Search(const TSharedPtr<FJsonObject>& P
 		MatchesArray.Add(MakeShared<FJsonValueObject>(MatchObject));
 	}
 	Data->SetArrayField(TEXT("matches"), MatchesArray);
+	if (!CutParentGuids.IsEmpty())
+	{
+		// `truncated` already means the max_results cap was reached; a cut graph tree is reported under its own flag.
+		TArray<TSharedPtr<FJsonValue>> CutGuids;
+		for (const FString& CutGuid : CutParentGuids)
+		{
+			CutGuids.Add(MakeShared<FJsonValueString>(CutGuid));
+		}
+		Data->SetBoolField(TEXT("graph_tree_truncated"), true);
+		Data->SetArrayField(TEXT("truncated_parent_graph_guids"), CutGuids);
+	}
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -149,12 +162,21 @@ void FCortexBPSearchOps::SearchGraphPins(
 	const FString& Query,
 	bool bCaseSensitive,
 	int32 MaxResults,
-	TArray<FSearchMatch>& OutMatches)
+	TArray<FSearchMatch>& OutMatches,
+	TArray<FString>& OutCutParentGuids)
 {
 	// Ubergraph, function and macro graphs (delegate signature and interface graphs were never searched), each followed by the
 	// graphs nested below it: composite bodies and graphs nodes publish through GetSubGraphs().
 	TArray<FCortexGraphTreeEntry> Tree;
 	FCortexGraphTree::Collect(Blueprint, Tree);
+	for (const FCortexGraphTreeEntry& TreeEntry : Tree)
+	{
+		if (TreeEntry.bChildrenTruncated && (TreeEntry.RootKind == ECortexGraphKind::Ubergraph
+			|| TreeEntry.RootKind == ECortexGraphKind::Function || TreeEntry.RootKind == ECortexGraphKind::Macro))
+		{
+			OutCutParentGuids.Add(TreeEntry.Graph->GraphGuid.ToString());
+		}
+	}
 
 	for (const FCortexGraphTreeEntry& TreeEntry : Tree)
 	{

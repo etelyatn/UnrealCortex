@@ -31,7 +31,8 @@ private:
 		const FString& Query,
 		bool bCaseSensitive,
 		int32 MaxResults,
-		TArray<FSearchMatch>& OutMatches);
+		TArray<FSearchMatch>& OutMatches,
+		TArray<FString>& OutCutParentGuids);
 
 	static void SearchClassDefaults(
 		UBlueprint* Blueprint,

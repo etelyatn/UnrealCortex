@@ -451,14 +451,23 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 	// Graphs nested below a measured root graph that a node publishes through GetSubGraphs(). Composite bodies are skipped: the
 	// reachability walk already follows a composite instance into its body.
 	TSet<const UEdGraph*> NestedGraphs;
+	// Entries whose nested graphs were not catalogued (depth limit): what lies below them was not measured.
+	TArray<FCortexGraphTreeEntry> CutEntries;
 	{
 		TArray<FCortexGraphTreeEntry> Tree;
 		FCortexGraphTree::Collect(Blueprint, Tree);
 		for (const FCortexGraphTreeEntry& TreeEntry : Tree)
 		{
-			if (TreeEntry.bRoot || TreeEntry.Kind == TEXT("composite")
-				|| (TreeEntry.RootKind != ECortexGraphKind::Ubergraph && TreeEntry.RootKind != ECortexGraphKind::Function
-					&& TreeEntry.RootKind != ECortexGraphKind::InterfaceImpl))
+			if (TreeEntry.RootKind != ECortexGraphKind::Ubergraph && TreeEntry.RootKind != ECortexGraphKind::Function
+				&& TreeEntry.RootKind != ECortexGraphKind::InterfaceImpl)
+			{
+				continue;
+			}
+			if (TreeEntry.bChildrenTruncated)
+			{
+				CutEntries.Add(TreeEntry);
+			}
+			if (TreeEntry.bRoot || TreeEntry.Kind == TEXT("composite"))
 			{
 				continue;
 			}
@@ -698,5 +707,6 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 	Data->SetArrayField(TEXT("ghost_entries"), GhostArray);
 	Data->SetObjectField(TEXT("thresholds"), ThresholdsOut);
 	Data->SetArrayField(TEXT("violations"), ViolationArray);
+	FCortexGraphTree::AppendTruncation(CutEntries, Data);
 	return Data;
 }
