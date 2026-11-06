@@ -422,14 +422,22 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		TEXT("Reachability-aware logic metrics per entry node (events, custom/bound/input events, functions): functional node count, conditionals, variable getter fan-out, unreachable nodes (inner macro/collapsed-graph orphans carry a subgraph field), disabled nodes (disabled_nodes), ghost entries (unlinked or disabled), has_tick for live Tick events, and threshold violations")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("thresholds"), TEXT("object"), TEXT("{max_nodes_per_entry: int=10, max_nodes_per_blueprint: int=30}; positive integers")));
-	Commands.Add(FCortexCommandInfo{TEXT("cleanup_migration"), TEXT("Clean up a Blueprint after C++ migration")}
+	Commands.Add(FCortexCommandInfo{TEXT("cleanup_migration"),
+		TEXT("Clean up a Blueprint after C++ migration on the guarded-run skeleton: the reparent preflight, engine adoption of variables a native member replaces (adopted_by_engine, cdo_readback {before, after, preserved}, fail closed with READBACK_MISMATCH), explicit removals by the pre-captured variable GUID, a dry_run, the editor's reparent compile flags, and a finalize-only call that verifies the stage's cdo_expectations through expected_cdo_values and saves only after a clean compile. Refuses blocking collisions (NAME_COLLISION) and unacknowledged collisions or SaveGame losses (POTENTIAL_DATA_LOSS); a removal whose nodes would be destroyed refuses MEMBER_REFERENCED until remove_referencing_nodes is set")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
-		.Optional(TEXT("new_parent_class"), TEXT("string"), TEXT("New C++ parent class"))
-		.Optional(TEXT("remove_variables"), TEXT("array"), TEXT("Variables to remove"))
-		.Optional(TEXT("remove_functions"), TEXT("array"), TEXT("Functions to remove"))
-		.Optional(TEXT("migrated_overrides"), TEXT("array"), TEXT("Overrides already migrated"))
-		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after cleanup (default true)"))
-		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the whole package, including pre-existing dirty edits (default true); false stages changes in memory. Compiler errors prevent saving.")));
+		.Optional(TEXT("new_parent_class"), TEXT("string"), TEXT("New C++ parent class: Blueprint asset path, full class path or unique short name"))
+		.Optional(TEXT("remove_variables"), TEXT("array"), TEXT("Variables to remove (a variable a native member replaces is adopted by the engine instead)"))
+		.Optional(TEXT("remove_functions"), TEXT("array"), TEXT("Function graphs to remove"))
+		.Optional(TEXT("migrated_overrides"), TEXT("array"), TEXT("Accepted for the MCP wrapper, which prunes the override event nodes itself"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true = report the plan, the referencing nodes and the SaveGame findings, mutate and dirty nothing (default false)"))
+		.OptionalExpectedFingerprint(TEXT("Stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}; read it from a dry run"))
+		.Optional(TEXT("remove_referencing_nodes"), TEXT("boolean"), TEXT("Remove the graph nodes that name a variable removed explicitly (default false = refuse)"))
+		.Optional(TEXT("acknowledged_collisions"), TEXT("array"), TEXT("Exactly the required_acknowledgment keys of the reparent plan (variable:<n>, scs:<n>)"))
+		.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("Exactly the SaveGame keys of the findings (save_game:<variable>)"))
+		.Optional(TEXT("expected_cdo_values"), TEXT("object"), TEXT("Stage cdo_expectations ({<member>: <value>}) to verify after the finalize compile; a difference fails closed"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after cleanup (default true; the compile carries the editor's reparent flags)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the whole package, including pre-existing dirty edits (default true); false stages changes in memory. Requires compile; compiler errors prevent saving."))
+		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("remove_scs_component"), TEXT("Remove an SCS component node from a Blueprint (use after migrating to C++ UPROPERTY)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("component_name"), TEXT("string"), TEXT("SCS component node name"))
