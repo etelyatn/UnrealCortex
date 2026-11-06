@@ -163,7 +163,7 @@ bool FCortexGraphMigrationRetargetDeepGraphsTest::RunTest(const FString& Paramet
 		Composite->CreateNewGuid();
 		Deepest->AddNode(Composite, true, false);
 		Composite->PostPlacedNewNode();
-		if (!TestNotNull(TEXT("A nested composite graph"), Composite->BoundGraph))
+		if (!TestNotNull(TEXT("A nested composite graph"), Composite->BoundGraph.Get()))
 		{
 			return false;
 		}
