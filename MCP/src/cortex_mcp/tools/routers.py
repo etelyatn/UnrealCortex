@@ -40,12 +40,16 @@ _CACHED_READ_TTL = 300
 # are synchronous natively and scale with the project (a 829-Blueprint compile_all measured 177 s), so
 # they get a long fixed window; the whole-project reads export_migration_analysis, export_dependency_graph,
 # find_duplicate_graphs and find_name_lookups load every Blueprint of their prefixes and share it;
-# find_interface_implementers and find_type_usages load every Blueprint that implements or references the type.
+# find_interface_implementers and find_type_usages load every Blueprint that implements or references the type;
+# data.plan_type_replacement classifies the referencers of a user type and exports a baseline of every affected
+# DataTable/DataAsset, and data.verify_type_replacement loads, compiles, diffs and optionally resaves all of them.
 _WAIT_READY_DEFAULT_SECONDS = 120.0
 _DEFERRED_TIMEOUT_MARGIN = 30.0
 _LIVE_CODING_COMPILE_WINDOW = 1830.0
 _LONG_SYNCHRONOUS_WINDOW = 1800.0
 _LONG_SYNCHRONOUS_COMMANDS = frozenset({
+    "data.plan_type_replacement",
+    "data.verify_type_replacement",
     "blueprint.compile_all",
     "blueprint.export_migration_analysis",
     "level.export_class_instances",

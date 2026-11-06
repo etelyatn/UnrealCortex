@@ -787,6 +787,8 @@ def test_editor_router_widens_receive_window_for_deferred_turnaround_commands(co
 @pytest.mark.parametrize(
     ("domain", "command", "params"),
     [
+        ("data", "plan_type_replacement", {"user_type": "/Game/Ripper/UDS_A", "native_type": "/Script/Ripper.RipA"}),
+        ("data", "verify_type_replacement", {"plan_path": "Saved/CortexTypeReplacement/UDS_A.plan.json", "save": False}),
         ("blueprint", "compile_all", {"path_prefix": "/Game/Ripper", "out_path": "x.json"}),
         ("blueprint", "export_migration_analysis", {"path_prefix": "/Game/Ripper", "out_path": "x.jsonl"}),
         ("level", "export_class_instances", {"class": "A", "maps": ["/Game/M"], "out_path": "x.json"}),
@@ -811,6 +813,8 @@ def test_router_widens_receive_window_for_long_synchronous_commands(domain, comm
 @pytest.mark.parametrize(
     "qualified",
     [
+        "data.plan_type_replacement",
+        "data.verify_type_replacement",
         "blueprint.export_migration_analysis",
         "reflect.export_dependency_graph",
         "reflect.find_duplicate_graphs",
