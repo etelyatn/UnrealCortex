@@ -433,7 +433,7 @@ TArray<FCortexCommandInfo> FCortexReplayCommandHandler::GetSupportedCommands() c
 			TEXT("Query an AI replay run's live or retained terminal status") }
 			.Required(TEXT("run_id"), TEXT("string"), TEXT("Canonical run UUID")),
 		FCortexCommandInfo{ TEXT("cancel_replay"),
-			TEXT("Cancel an AI replay run or return its existing terminal state") }
+			TEXT("Request cancellation of an AI replay run; returns Finalizing or its terminal state") }
 			.Required(TEXT("run_id"), TEXT("string"), TEXT("Canonical run UUID")),
 	};
 }

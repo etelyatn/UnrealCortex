@@ -1,6 +1,8 @@
 #include "CortexReplayTestUtils.h"
 
 #include "CortexCommandRouter.h"
+#include "CortexReplayFormat.h"
+#include "CortexReplayLivePrerequisites.h"
 #include "CortexEditorPhysicalInputSession.h"
 
 #include "Framework/Application/SlateApplication.h"
@@ -14,8 +16,6 @@
 
 namespace
 {
-constexpr int32 FixtureFormatSchemaVersion = 2;
-
 /**
  * Brings the level editor's active viewport window to the front so the selected owned-PIE route
  * window is the actually-active top-level window. Replay ownership requires the route to be the
@@ -114,7 +114,7 @@ FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(
 	FCortexReplaySnapshot Snapshot;
 
 	FCortexReplayInitialState& InitialState = Snapshot.InitialState;
-	InitialState.SchemaVersion = FixtureFormatSchemaVersion;
+	InitialState.SchemaVersion = CortexReplayFormat::RecordingFormatVersion;
 	InitialState.RecordingId = Id;
 	InitialState.PawnClassPath = TEXT("/Game/Blueprints/BP_ReplayPawn.BP_ReplayPawn_C");
 	InitialState.Pose.PawnTransform = FTransform::Identity;
@@ -138,7 +138,7 @@ FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(
 	}
 
 	FCortexReplayMetadata& Metadata = Snapshot.Metadata;
-	Metadata.SchemaVersion = FixtureFormatSchemaVersion;
+	Metadata.SchemaVersion = CortexReplayFormat::RecordingFormatVersion;
 	Metadata.RecordingId = Id;
 	Metadata.Name = FString::Printf(TEXT("Recording %d"), Id);
 	Metadata.MapAssetPath = TEXT("/Game/Maps/ReplayTestMap");
@@ -152,6 +152,17 @@ FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(
 	Metadata.Prerequisites.ViewportSize = FIntPoint(1920, 1080);
 	Metadata.Prerequisites.DpiScale = 1.0;
 	Metadata.Prerequisites.PawnClassPath = InitialState.PawnClassPath;
+	Metadata.Prerequisites.PlayerInputClass = TEXT("/Script/Engine.PlayerInput");
+	Metadata.Prerequisites.InputConfigSha256 = FString::ChrN(64, TEXT('a'));
+	if (CortexReplayLivePrerequisites::IsReady())
+	{
+		const FCortexEditorPhysicalInputTargetInfo& Live = CortexReplayLivePrerequisites::Target();
+		Metadata.Prerequisites.ViewportSize = Live.ViewportSize;
+		Metadata.Prerequisites.DpiScale = Live.DpiScale;
+		Metadata.Prerequisites.PlayerInputClass = Live.PlayerInputClass;
+		Metadata.Prerequisites.InputConfigSha256 = Live.InputConfigSha256;
+		InitialState.Viewport = CortexReplayLivePrerequisites::Viewport();
+	}
 
 	for (const FCortexReplayEvent& Event : Snapshot.Events)
 	{
@@ -177,11 +188,8 @@ FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(
 		}
 	}
 
-	// Format-2 fixture frames express the recorded input cadence: an empty warmup frame that admits
-	// no input (so the input epoch is a valid frame ordinal), one frame per distinct recorded input
-	// time, and a trailing empty frame holding the idle tail open to the recorded duration. A frame
-	// whose event could not be consumed by its own deadline is a malformed recording, so the fixture
-	// never parks input behind an unrelated frame boundary.
+	// Fixture frames are laid out exactly as a capture lays them out, at 60 Hz, so a frame-locked
+	// replay of a fixture spends the recorded duration on real engine frames.
 	ApplyCadenceFrames(Snapshot);
 
 	return Snapshot;
@@ -189,92 +197,77 @@ FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(
 
 void FCortexReplayTestFixture::ApplyCadenceFrames(FCortexReplaySnapshot& Recording)
 {
-	Recording.Frames.Reset();
-
-	// Frame 0 admits no input, so the input epoch stays a valid frame ordinal. A zero-length warmup
-	// never delays the first input.
-	FCortexReplayFrame Warmup;
-	Warmup.FrameIndex = 0;
-	Warmup.FrameBeginSeconds = 0.0;
-	Warmup.InputDeadlineSeconds = 0.0;
-	Warmup.FirstSequence = 0;
-	Warmup.EventCount = 0;
-	Recording.Frames.Add(Warmup);
-
-	// One frame per distinct recorded input time, carrying that time's contiguous event range.
-	int32 Index = 0;
-	while (Index < Recording.Events.Num())
-	{
-		const double Time = Recording.Events[Index].TimeSeconds;
-		int32 Count = 0;
-		while (Index + Count < Recording.Events.Num()
-			&& Recording.Events[Index + Count].TimeSeconds == Time)
-		{
-			++Count;
-		}
-
-		FCortexReplayFrame Frame;
-		Frame.FrameIndex = Recording.Frames.Num();
-		Frame.FrameBeginSeconds = Time;
-		Frame.InputDeadlineSeconds = Time;
-		Frame.FirstSequence = Index;
-		Frame.EventCount = Count;
-		Recording.Frames.Add(Frame);
-		Index += Count;
-	}
-
-	// A trailing frame with no input holds the recorded idle tail open to the recorded duration.
-	FCortexReplayFrame Trailing;
-	Trailing.FrameIndex = Recording.Frames.Num();
-	Trailing.FrameBeginSeconds = Recording.Events.Num() > 0 ? Recording.Events.Last().TimeSeconds : 0.0;
-	Trailing.InputDeadlineSeconds = Recording.Metadata.DurationSeconds;
-	Trailing.FirstSequence = Recording.Events.Num();
-	Trailing.EventCount = 0;
-	Recording.Frames.Add(Trailing);
-
-	// Every frame carries the application delta its capture observed. A fixture recording is a 60 Hz
-	// stream, which is what replay pins the engine cadence to; a recording without a positive delta
-	// could not be pinned and is refused at admission, exactly as a real cadence-free recording is.
 	constexpr double FixtureFrameDeltaSeconds = 1.0 / 60.0;
-	for (FCortexReplayFrame& Frame : Recording.Frames)
+	double Span = FMath::Max(0.0, Recording.Metadata.DurationSeconds);
+	for (const FCortexReplayEvent& Event : Recording.Events)
 	{
-		Frame.AppDeltaSeconds = FixtureFrameDeltaSeconds;
+		Span = FMath::Max(Span, Event.TimeSeconds);
 	}
 
-	Recording.Metadata.Timing.FrameCount = Recording.Frames.Num();
-	Recording.Metadata.Timing.InputEpochFrame = 1;
+	// Frame k consumes the input recorded up to its boundary at k * delta; the stream covers the span
+	// and the last event.
+	const int32 Frames = FMath::CeilToInt32(Span / FixtureFrameDeltaSeconds - 1e-9) + 1;
+	TArray<double> Deltas;
+	Deltas.Init(FixtureFrameDeltaSeconds, Frames);
+	TArray<int32> EventFrames;
+	EventFrames.Reserve(Recording.Events.Num());
+	for (const FCortexReplayEvent& Event : Recording.Events)
+	{
+		EventFrames.Add(FMath::Clamp(FMath::CeilToInt32(Event.TimeSeconds / FixtureFrameDeltaSeconds - 1e-9),
+			0, Frames - 1));
+	}
+	ApplyFrameStream(Recording, Deltas, EventFrames);
 }
 
-FCortexCommandResult AdvanceFrame(FCortexReplayScheduler& Scheduler,
+void FCortexReplayTestFixture::ApplyFrameStream(FCortexReplaySnapshot& Recording,
+	TConstArrayView<double> FrameDeltas, TConstArrayView<int32> EventFrames)
+{
+	checkf(FrameDeltas.Num() > 0, TEXT("A frame stream needs at least one frame"));
+	checkf(EventFrames.Num() == Recording.Events.Num(), TEXT("Every event needs a frame"));
+	Recording.Frames.Reset();
+
+	int32 NextEvent = 0;
+	double Duration = 0.0;
+	for (int32 FrameIndex = 0; FrameIndex < FrameDeltas.Num(); ++FrameIndex)
+	{
+		FCortexReplayFrame Frame;
+		Frame.FrameIndex = FrameIndex;
+		Frame.AppDeltaSeconds = FrameDeltas[FrameIndex];
+		FCortexReplayFrameTick Tick;
+		Tick.RealDeltaSeconds = static_cast<float>(FrameDeltas[FrameIndex]);
+		Frame.WorldTick = Tick;
+		Frame.FirstSequence = NextEvent;
+		while (NextEvent < EventFrames.Num() && EventFrames[NextEvent] == FrameIndex)
+		{
+			++NextEvent;
+		}
+		Frame.EventCount = NextEvent - Frame.FirstSequence;
+		Recording.Frames.Add(Frame);
+		Duration += FrameDeltas[FrameIndex];
+	}
+	checkf(NextEvent == Recording.Events.Num(), TEXT("Event frames must be non-decreasing and in range"));
+
+	Recording.Metadata.DurationSeconds = Duration;
+	Recording.Metadata.Timing.FrameCount = Recording.Frames.Num();
+}
+
+FCortexCommandResult PrepareAndCommit(FCortexReplayScheduler& Scheduler,
 	TFunctionRef<double()> ReadElapsedSeconds,
 	TFunctionRef<FCortexReplayGuardDecision(const FCortexReplayEvent&)> EvaluateGuard,
 	TFunctionRef<FCortexCommandResult(const FCortexReplayEvent&)> Dispatch)
 {
-	// Drain every frame whose whole range is prepared and whose deadline has passed, stopping exactly
-	// at the first frame that is not yet due - the same frontier the scalar scheduler used to break on.
-	for (;;)
+	if (Scheduler.IsComplete())
 	{
-		if (Scheduler.IsComplete())
-		{
-			return FCortexCommandRouter::Success(nullptr);
-		}
-
-		ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
-		const FCortexCommandResult Prepared = Scheduler.PrepareFrame(Scheduler.GetCompletedFrameCount(),
-			ReadElapsedSeconds, EvaluateGuard, Dispatch, Preparation);
-		if (!Prepared.bSuccess)
-		{
-			return Prepared;
-		}
-		if (Preparation != ECortexReplayFramePreparation::Ready)
-		{
-			return Prepared;
-		}
-
-		const FCortexCommandResult Committed = Scheduler.CommitFrame(Scheduler.GetCompletedFrameCount());
-		if (!Committed.bSuccess)
-		{
-			return Committed;
-		}
+		return FCortexCommandRouter::Success(nullptr);
 	}
+
+	ECortexReplayFramePreparation Preparation = ECortexReplayFramePreparation::Waiting;
+	const FCortexCommandResult Prepared = Scheduler.PrepareFrame(Scheduler.GetCompletedFrameCount(),
+		ReadElapsedSeconds, EvaluateGuard, Dispatch, Preparation);
+	if (!Prepared.bSuccess || Preparation != ECortexReplayFramePreparation::Ready)
+	{
+		return Prepared;
+	}
+
+	return Scheduler.CommitFrame(Scheduler.GetCompletedFrameCount());
 }

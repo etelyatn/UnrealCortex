@@ -35,9 +35,6 @@ enum class ECortexReplayPlaybackSummary : uint8
 /** Deletion confirmation; fires only after the human confirms. */
 DECLARE_DELEGATE_OneParam(FOnCortexReplayDeleteConfirmed, int32 /*RecordingId*/);
 
-/** Explicit capture-target choice; fires with the chosen candidate index. */
-DECLARE_DELEGATE_OneParam(FOnCortexReplayTargetChosen, int32 /*CandidateIndex*/);
-
 /**
  * Delete confirmation popup.
  *
@@ -88,8 +85,9 @@ private:
 /**
  * Independent human recording-library window hosted in a nomad tab.
  *
- * Compact library with a top Record/Stop toolbar and a short operation label, one row per human
- * recording, an Edit metadata popup, a delete confirmation and an explicit capture-target choice.
+ * Compact library with a top Record/Stop toolbar and a short operation label, one row per recording
+ * directory (an unloadable one is shown with its load error and can only be deleted), an Edit
+ * metadata popup and a delete confirmation.
  * The window never owns backend runs: closing it is not Stop, and reopening it reflects the current
  * service state. There is no AI-enable or authoring shortcut here; the only way to change permission
  * is the Edit popup's Save.
@@ -141,7 +139,7 @@ public:
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime,
 		const float InDeltaTime) override;
 
-	/** Short current-operation label ("Ready", owned/borrowed capture, wait reason/budget). */
+	/** Short current-operation label ("Ready", capture state, wait reason/budget, last refusal). */
 	TSharedPtr<STextBlock> OperationLabel;
 
 	/** Short local last-playback summary for the selected record. */
@@ -158,8 +156,8 @@ private:
 	FText BuildOperationLabel() const;
 	FText BuildPlaybackSummaryText() const;
 	bool IsReplayActiveForRecording(int32 RecordingId) const;
-	bool HasAnyPieWorldContext() const;
 	FString BuildRefreshKey() const;
+	FString BuildOperationIdentity() const;
 	void UpdateCompactLayoutFromGeometry(const FGeometry& AllottedGeometry);
 	void SurfaceOperationError(const FCortexCommandResult& Result);
 
@@ -179,7 +177,8 @@ private:
 
 	TSharedPtr<FCortexReplayService> Service;
 
-	TArray<FCortexReplayMetadata> Recordings;
+	/** One entry per recording directory; an entry without metadata carries its load error. */
+	TArray<FCortexReplayLibraryEntry> Entries;
 	TArray<TSharedPtr<SCortexReplayRecordingRow>> Rows;
 
 	TSharedPtr<SBox> PopupLayer;
@@ -192,8 +191,10 @@ private:
 
 	int32 SelectedRecordingId = 0;
 	bool bCompactLayout = false;
-	/** Last backend operation signature; a change refreshes the rows (start/completion/publication). */
+	/** Last backend operation and library signature; a change refreshes the rows (start/completion/publication). */
 	FString LastOperationSignature;
+	/** Kind, recording and run of the last seen operation; a different one clears a stale message. */
+	FString LastOperationIdentity;
 	TSharedPtr<SWidget> PopupContent;
 	FString LastStatusMessage;
 	double TimeSinceOperationRefresh = 0.0;

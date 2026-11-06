@@ -240,7 +240,7 @@ TSharedRef<FJsonObject> ReplayCommandsRetainedRunJson(
 
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("format"), TEXT("CortexReplayRun"));
-	Object->SetNumberField(TEXT("schema_version"), 2);
+	Object->SetNumberField(TEXT("schema_version"), 3);
 	Object->SetStringField(TEXT("run_id"), Id.ToString(EGuidFormats::DigitsWithHyphens).ToLower());
 	Object->SetNumberField(TEXT("recording_id"), RecordingId);
 	Object->SetStringField(TEXT("origin"), Origin);
@@ -254,6 +254,7 @@ TSharedRef<FJsonObject> ReplayCommandsRetainedRunJson(
 	Object->SetNumberField(TEXT("completed_frames"), CompletedFrames);
 	Object->SetNumberField(TEXT("frame_count"), FrameCount);
 	Object->SetStringField(TEXT("frames_sha256"), FramesSha256);
+	Object->SetNumberField(TEXT("behind_seconds"), 0.25);
 	Object->SetStringField(TEXT("recording_snapshot_sha256"), SnapshotHash);
 	Object->SetStringField(TEXT("initial_state_sha256"), InitialHash);
 	Object->SetStringField(TEXT("inputs_sha256"), InputsHash);
@@ -299,7 +300,29 @@ TSharedRef<FJsonObject> ReplayCommandsLegacyRunJson(
 	Object->RemoveField(TEXT("completed_frames"));
 	Object->RemoveField(TEXT("frame_count"));
 	Object->RemoveField(TEXT("frames_sha256"));
+	Object->RemoveField(TEXT("behind_seconds"));
 	return Object;
+}
+
+/** Builds one valid terminal run record with caller-supplied frame progress and state. */
+FCortexReplayRunRecord ReplayCommandsMakeTerminalRecord(const FDateTime& Started, const FDateTime& Finalized,
+	int32 CompletedFrames, int32 FrameCount, ECortexReplayState State)
+{
+	FCortexReplayRunRecord Record;
+	Record.Id = FGuid::NewGuid();
+	Record.RecordingId = 1;
+	Record.Origin = ECortexReplayOrigin::AI;
+	Record.State = State;
+	Record.EditorInstanceId = TEXT("origin-editor");
+	Record.StartedAtUtc = Started;
+	Record.FinalizedAtUtc = Finalized;
+	Record.RecordingSnapshotSha256 = FString::ChrN(64, TEXT('a'));
+	Record.InitialStateSha256 = FString::ChrN(64, TEXT('b'));
+	Record.InputsSha256 = FString::ChrN(64, TEXT('c'));
+	Record.FramesSha256 = FString::ChrN(64, TEXT('d'));
+	Record.CompletedFrames = CompletedFrames;
+	Record.FrameCount = FrameCount;
+	return Record;
 }
 
 bool ReplayCommandsWriteRun(
@@ -950,6 +973,9 @@ bool FCortexReplayCommandsReadContractsTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Frames digest exposed"),
 			Data->TryGetStringField(TEXT("frames_sha256"), FramesDigest));
 		TestEqual(TEXT("Frames digest retained"), FramesDigest, FString::ChrN(64, TEXT('7')));
+		double Behind = -1.0;
+		TestTrue(TEXT("Behind time exposed"), Data->TryGetNumberField(TEXT("behind_seconds"), Behind));
+		TestEqual(TEXT("Behind time retained"), Behind, 0.25);
 		TestTrue(TEXT("Terminal current frame is null"),
 			Data->HasTypedField<EJson::Null>(TEXT("current_frame")));
 	}
@@ -2120,21 +2146,7 @@ bool FCortexReplayCommandsRetainedRecordContractTest::RunTest(const FString& Par
 
 	auto MakeRecord = [&](int32 CompletedFrames, int32 FrameCount, ECortexReplayState State)
 	{
-		FCortexReplayRunRecord Record;
-		Record.Id = FGuid::NewGuid();
-		Record.RecordingId = 1;
-		Record.Origin = ECortexReplayOrigin::AI;
-		Record.State = State;
-		Record.EditorInstanceId = TEXT("origin-editor");
-		Record.StartedAtUtc = Started;
-		Record.FinalizedAtUtc = Finalized;
-		Record.RecordingSnapshotSha256 = FString::ChrN(64, TEXT('a'));
-		Record.InitialStateSha256 = FString::ChrN(64, TEXT('b'));
-		Record.InputsSha256 = FString::ChrN(64, TEXT('c'));
-		Record.FramesSha256 = FString::ChrN(64, TEXT('d'));
-		Record.CompletedFrames = CompletedFrames;
-		Record.FrameCount = FrameCount;
-		return Record;
+		return ReplayCommandsMakeTerminalRecord(Started, Finalized, CompletedFrames, FrameCount, State);
 	};
 
 	// An admitted recording may have no frames at all. Refusing its terminal record would leave
@@ -2230,6 +2242,13 @@ bool FCortexReplayCommandsRetainedRecordContractTest::RunTest(const FString& Par
 				R.StartedAtUtc = FDateTime(0);
 				R.FinalizedAtUtc = FDateTime(0);
 			} },
+		{ TEXT("a completed run carrying an execution error"),
+			[](FCortexReplayRunRecord& R)
+			{
+				R.State = ECortexReplayState::Completed;
+				R.ExecutionError = FCortexCommandRouter::Error(
+					FString(TEXT("REPLAY_POSE_GUARD_FAILED")), FString(TEXT("pose mismatch")));
+			} },
 	};
 	for (const FRefusalCase& Case : Refusals)
 	{
@@ -2239,6 +2258,110 @@ bool FCortexReplayCommandsRetainedRecordContractTest::RunTest(const FString& Par
 		TestFalse(*FString::Printf(TEXT("Save refuses a record with %s"), Case.Label),
 			Store.SaveTerminal(Altered).bSuccess);
 	}
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A run's cause survives its terminal record: required for Error, retained for Cancelled and
+// Interrupted whenever one exists, absent for Completed. Schema-1/2 files load as legacy summaries and a
+// Completed file that carries a cause is structurally invalid.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayCommandsRetainedRunCauseTest,
+	"Cortex.Replay.Commands.RetainedRunCauseAndSchema",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayCommandsRetainedRunCauseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayRunStore Store(Fixture.GetProjectRoot());
+	TestTrue(TEXT("Run store initializes"), Store.Initialize().bSuccess);
+
+	const FDateTime Started = FDateTime::UtcNow() - FTimespan::FromMinutes(1);
+	const FDateTime Finalized = FDateTime::UtcNow();
+
+	FCortexReplayRunRecord Revoked = ReplayCommandsMakeTerminalRecord(Started, Finalized, 1, 4, ECortexReplayState::Cancelled);
+	Revoked.ExecutionError = FCortexCommandRouter::Error(
+		FString(TEXT("PERMISSION_DENIED")), FString(TEXT("AI replay permission was revoked")));
+	FCortexReplayRunRecord Lost = ReplayCommandsMakeTerminalRecord(Started, Finalized, 2, 4, ECortexReplayState::Interrupted);
+	const TSharedPtr<FJsonObject> LostDetails = MakeShared<FJsonObject>();
+	LostDetails->SetNumberField(TEXT("sequence"), 4);
+	Lost.ExecutionError = FCortexCommandRouter::Error(
+		FString(TEXT("TARGET_UNAVAILABLE")), FString(TEXT("Replay target is unavailable")), LostDetails);
+	const FCortexReplayRunRecord Plain = ReplayCommandsMakeTerminalRecord(Started, Finalized, 1, 4, ECortexReplayState::Cancelled);
+	const FCortexReplayRunRecord Done = ReplayCommandsMakeTerminalRecord(Started, Finalized, 4, 4, ECortexReplayState::Completed);
+	const FCortexReplayRunRecord* const ToSave[] = { &Revoked, &Lost, &Plain, &Done };
+	for (const FCortexReplayRunRecord* Record : ToSave)
+	{
+		TestTrue(TEXT("The terminal record is persisted"), Store.SaveTerminal(*Record).bSuccess);
+	}
+
+	FCortexReplayRunRecord CompletedWithCause = Done;
+	CompletedWithCause.Id = FGuid::NewGuid();
+	CompletedWithCause.ExecutionError = FCortexCommandRouter::Error(
+		FString(TEXT("REPLAY_POSE_GUARD_FAILED")), FString(TEXT("pose mismatch")));
+	TestFalse(TEXT("A completed run never carries a cause"), Store.SaveTerminal(CompletedWithCause).bSuccess);
+
+	// A schema-2 file and a Completed file carrying a cause, written by hand.
+	const FGuid LegacyId = FGuid::NewGuid();
+	TSharedRef<FJsonObject> LegacyJson = ReplayCommandsRetainedRunJson(LegacyId, 1, TEXT("ai"), TEXT("Cancelled"),
+		TEXT("origin-editor"), Started, Finalized, FString::ChrN(64, TEXT('a')),
+		FString::ChrN(64, TEXT('b')), FString::ChrN(64, TEXT('c')));
+	LegacyJson->SetNumberField(TEXT("schema_version"), 2);
+	TestTrue(TEXT("The schema-2 file is written"), ReplayCommandsWriteRun(Fixture, LegacyId, LegacyJson));
+	const FGuid CauseOnCompletedId = FGuid::NewGuid();
+	TSharedRef<FJsonObject> CauseOnCompletedJson = ReplayCommandsRetainedRunJson(CauseOnCompletedId, 1, TEXT("ai"),
+		TEXT("Completed"), TEXT("origin-editor"), Started, Finalized, FString::ChrN(64, TEXT('a')),
+		FString::ChrN(64, TEXT('b')), FString::ChrN(64, TEXT('c')));
+	TSharedRef<FJsonObject> StrayError = MakeShared<FJsonObject>();
+	StrayError->SetStringField(TEXT("code"), TEXT("REPLAY_POSE_GUARD_FAILED"));
+	StrayError->SetStringField(TEXT("message"), TEXT("stray"));
+	CauseOnCompletedJson->SetObjectField(TEXT("execution_error"), StrayError);
+	TestTrue(TEXT("The completed-with-cause file is written"),
+		ReplayCommandsWriteRun(Fixture, CauseOnCompletedId, CauseOnCompletedJson));
+	const FGuid FutureId = FGuid::NewGuid();
+	TSharedRef<FJsonObject> FutureJson = ReplayCommandsRetainedRunJson(FutureId, 1, TEXT("ai"), TEXT("Cancelled"),
+		TEXT("origin-editor"), Started, Finalized, FString::ChrN(64, TEXT('a')),
+		FString::ChrN(64, TEXT('b')), FString::ChrN(64, TEXT('c')));
+	FutureJson->SetNumberField(TEXT("schema_version"), 4);
+	TestTrue(TEXT("The unknown-schema file is written"), ReplayCommandsWriteRun(Fixture, FutureId, FutureJson));
+
+	FCortexReplayRunStore Reloaded(Fixture.GetProjectRoot());
+	TestTrue(TEXT("Reloaded store initializes"), Reloaded.Initialize().bSuccess);
+
+	FCortexReplayRunRecord Loaded;
+	TestTrue(TEXT("The revoked run reloads"), Reloaded.Load(Revoked.Id, ECortexReplayOrigin::AI, Loaded).bSuccess);
+	TestEqual(TEXT("The cancellation cause code survives"), Loaded.ExecutionError.ErrorCode,
+		FString(TEXT("PERMISSION_DENIED")));
+	TestEqual(TEXT("The cancellation cause message survives"), Loaded.ExecutionError.ErrorMessage,
+		FString(TEXT("AI replay permission was revoked")));
+	TestTrue(TEXT("The Cancelled state survives"), Loaded.State == ECortexReplayState::Cancelled);
+
+	Loaded = FCortexReplayRunRecord();
+	TestTrue(TEXT("The interrupted run reloads"), Reloaded.Load(Lost.Id, ECortexReplayOrigin::AI, Loaded).bSuccess);
+	TestEqual(TEXT("The interruption cause code survives"), Loaded.ExecutionError.ErrorCode,
+		FString(TEXT("TARGET_UNAVAILABLE")));
+	TestTrue(TEXT("The interruption cause details survive"),
+		Loaded.ExecutionError.ErrorDetails.IsValid()
+			&& static_cast<int32>(Loaded.ExecutionError.ErrorDetails->GetNumberField(TEXT("sequence"))) == 4);
+
+	Loaded = FCortexReplayRunRecord();
+	TestTrue(TEXT("The plain cancellation reloads"), Reloaded.Load(Plain.Id, ECortexReplayOrigin::AI, Loaded).bSuccess);
+	TestTrue(TEXT("A cancellation without a cause stays without one"), Loaded.ExecutionError.ErrorCode.IsEmpty());
+
+	Loaded = FCortexReplayRunRecord();
+	TestTrue(TEXT("The completed run reloads"), Reloaded.Load(Done.Id, ECortexReplayOrigin::AI, Loaded).bSuccess);
+	TestTrue(TEXT("A completed run has no cause"), Loaded.ExecutionError.ErrorCode.IsEmpty());
+
+	Loaded = FCortexReplayRunRecord();
+	TestTrue(TEXT("The schema-2 file loads"), Reloaded.Load(LegacyId, ECortexReplayOrigin::AI, Loaded).bSuccess);
+	TestTrue(TEXT("The schema-2 file is a legacy summary"), Loaded.bLegacyFormat);
+	TestFalse(TEXT("A completed run carrying a cause is skipped"),
+		Reloaded.Load(CauseOnCompletedId, ECortexReplayOrigin::AI, Loaded).bSuccess);
+	TestFalse(TEXT("An unknown schema is skipped"),
+		Reloaded.Load(FutureId, ECortexReplayOrigin::AI, Loaded).bSuccess);
 
 	return true;
 }

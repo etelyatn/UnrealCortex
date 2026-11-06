@@ -13,19 +13,9 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/WeakObjectPtr.h"
 
-class UEngine;
 class UGameInstance;
 class ULevelEditorPlaySettings;
 class UWorld;
-struct FRequestPlaySessionParams;
-
-/**
- * Opaque plugin-side authority for one ownership-scoped PIE request.
- *
- * The complete type is private to CortexEngineCompat.cpp: callers can only retain and return the
- * engine-issued handle, never construct or serialize it. Empty when the engine lacks the capability.
- */
-struct FCortexScopedPIEAuthority;
 
 /** Mirrors the engine's scoped phase so consumers never include the engine header. */
 enum class ECortexScopedPIEPhase : uint8
@@ -56,39 +46,14 @@ struct FCortexScopedPIESnapshot
 
 namespace CortexEngineCompat
 {
-	/** True only for the supported ownership-scoped PIE API and matching runtime version. */
-	CORTEXCORE_API bool SupportsScopedPIE(const UEngine& Engine);
-
 	/**
-	 * Admit an owned play request through the engine capability. On an unsupported engine this
-	 * refuses with InvalidOperation before any PIE work and leaves OutAuthority empty (explicit
-	 * unsupported operation, never a silent stock fallback).
+	 * Subscribe to ownership-scoped PIE lifecycle transitions. Only an engine that provides the
+	 * scoped PIE capability emits them; a stock engine returns an invalid handle.
 	 */
-	CORTEXCORE_API FCortexCommandResult RequestOwnedPIE(
-		UEngine& Engine,
-		const FRequestPlaySessionParams& Params,
-		TSharedPtr<FCortexScopedPIEAuthority>& OutAuthority);
-
-	CORTEXCORE_API FCortexCommandResult QuiesceOwnedPIE(
-		const TSharedRef<FCortexScopedPIEAuthority>& Authority);
-
-	CORTEXCORE_API FCortexCommandResult EndOwnedPIE(
-		const TSharedRef<FCortexScopedPIEAuthority>& Authority);
-
-	CORTEXCORE_API FCortexCommandResult ReadOwnedPIE(
-		const TSharedRef<FCortexScopedPIEAuthority>& Authority,
-		FCortexScopedPIESnapshot& OutSnapshot);
-
-	/** Subscribe to scoped lifecycle transitions. Unsupported builds return an invalid handle. */
 	CORTEXCORE_API FDelegateHandle ObserveScopedPIELifecycle(
 		TFunction<void(const FCortexScopedPIESnapshot&)>&& Callback);
 
 	CORTEXCORE_API void RemoveScopedPIELifecycleObserver(FDelegateHandle Handle);
-
-	/** Subscribe to accepted admission/topology changes (exact request serial). */
-	CORTEXCORE_API FDelegateHandle ObservePIEAdmission(TFunction<void(uint64)>&& Callback);
-
-	CORTEXCORE_API void RemovePIEAdmissionObserver(FDelegateHandle Handle);
 
 #if UE_VERSION_OLDER_THAN(5, 8, 0)
 	inline FString JsonKeyToString(const FString& Key)

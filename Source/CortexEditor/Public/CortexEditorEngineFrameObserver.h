@@ -4,47 +4,25 @@
 #include "CortexTypes.h"
 
 class FCortexEditorPhysicalInputSession;
-class UWorld;
 
+/** The owned world tick an engine frame ran: the real delta UWorld::Tick received and its pause state. */
 struct FCortexEditorObservedWorldTick
 {
-	FName TickType = NAME_None;
 	float RealDeltaSeconds = 0.0f;
-	float DeltaSeconds = 0.0f;
-	double RealTimeOffsetSeconds = 0.0;
-	double TimeOffsetSeconds = 0.0;
 	bool bPaused = false;
-	float EffectiveTimeDilation = 1.0f;
 };
 
+/** What the observer saw of one engine frame of the owned PIE session. */
 struct FCortexEditorEngineFrameRecord
 {
 	uint64 CaptureFrameCounter = 0;
-	double FrameBeginSeconds = 0.0;
-	double InputBoundarySeconds = 0.0;
+	/** FApp's delta time sampled at the input boundary: the step GEngine->Tick receives this frame. */
 	double AppDeltaSeconds = 0.0;
-	double AppCurrentSeconds = 0.0;
-	double AppLastSeconds = 0.0;
+	/** -1 once the frame was invalidated, otherwise the owned world ticks seen so far (0 or 1). */
 	int32 SelectedWorldTickCount = 0;
 	TOptional<FCortexEditorObservedWorldTick> WorldTick;
+	/** True once OnSamplingInput ran for this frame; reset when the frame is invalidated. */
 	bool bBoundaryObserved = false;
-	bool bEndObserved = false;
-};
-
-struct FCortexEditorAppClockStep
-{
-	double CurrentSeconds = 0.0;
-	double LastSeconds = 0.0;
-	double DeltaSeconds = 0.0;
-};
-
-enum class ECortexEditorClockState : uint8
-{
-	Preparing,
-	Replaying,
-	Handoff,
-	Released,
-	Lost
 };
 
 /** Observes one native engine frame; installation precedes the owned PIE request. */
@@ -57,15 +35,21 @@ public:
 	FCortexEditorEngineFrameObserver(const FCortexEditorEngineFrameObserver&) = delete;
 	FCortexEditorEngineFrameObserver& operator=(const FCortexEditorEngineFrameObserver&) = delete;
 
+	/**
+	 * OnInputBoundary runs at OnSamplingInput, after the frame's input was pumped and before the
+	 * world ticks; OnFrameClosed runs at OnEndFrame with the finished record, which is invalid
+	 * (bBoundaryObserved false, SelectedWorldTickCount -1) when anything about the frame was foreign.
+	 */
 	FCortexCommandResult Install(FCortexEditorPhysicalInputSession& Session,
 		TFunction<void(const FCortexEditorEngineFrameRecord&)>&& OnInputBoundary,
 		TFunction<void(const FCortexEditorEngineFrameRecord&)>&& OnFrameClosed);
 	void Uninstall();
-	bool HasSelectedWorld() const;
-	UWorld* GetSelectedWorld() const;
-	const FCortexEditorEngineFrameRecord* GetLastClosedFrame() const;
-	int32 GetSelectedWorldTickCount() const;
-	FCortexCommandResult RunSlateOnlyWaitWork();
+
+	/**
+	 * The engine frame in flight once its input boundary was observed and it is still valid, or
+	 * null before the boundary, after it closed, or once it was invalidated.
+	 */
+	const FCortexEditorEngineFrameRecord* GetOpenFrame() const;
 
 private:
 	struct FState;

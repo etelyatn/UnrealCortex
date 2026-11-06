@@ -78,25 +78,11 @@ struct FCortexEditorPhysicalInputUIObservation
 
 struct FCortexEditorPhysicalInputCaptureContext
 {
-	uint64 FrameNumber = 0;
-	double WorldTimeSeconds = 0.0;
-	bool bWorldPaused = false;
-	bool bTargetOwnsPointerCapture = false;
 	TOptional<FCortexEditorPhysicalInputPlayerPose> PressPose;
 	ECortexEditorUICoverage UICoverage = ECortexEditorUICoverage::NotApplicable;
 	ECortexEditorUIUnavailableReason UIUnavailableReason = ECortexEditorUIUnavailableReason::None;
 	TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> UITarget;
 	FVector2D UILocalPosition = FVector2D::ZeroVector;
-};
-
-/** Public UPlayerInput mouse-filter memory; never a synthetic axis event or a private-field patch. */
-struct FCortexEditorNativeMouseFilterState
-{
-	float ZeroTimeSeconds[2] = { 0.0f, 0.0f };
-	float SmoothedMouse[2] = { 0.0f, 0.0f };
-	int32 SampleCount = 0;
-	float SamplingTotalSeconds = 0.0f;
-	float EffectiveTimeDilation = 1.0f;
 };
 
 struct FCortexEditorPhysicalInputTargetInfo

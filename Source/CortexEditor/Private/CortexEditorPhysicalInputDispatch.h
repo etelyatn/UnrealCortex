@@ -24,6 +24,10 @@ struct FCortexEditorPhysicalInputDispatchContext
 	uint64 ProcessedMotionGeneration = 0;
 	/** Generation of the owning operation; revalidated around every virtual dispatch. */
 	uint64 OperationGeneration = 0;
+	/** The human's real OS cursor position captured when the replay epoch armed. */
+	FVector2D HumanCursorPosition = FVector2D::ZeroVector;
+	/** True once replay moved the real OS cursor; cleanup then restores HumanCursorPosition. */
+	bool bRealCursorMoved = false;
 };
 
 /**

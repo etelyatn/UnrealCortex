@@ -16,10 +16,7 @@ namespace CortexReplayErrorCodes
 	constexpr TCHAR InvalidField[] = TEXT("INVALID_FIELD");
 	constexpr TCHAR InvalidValue[] = TEXT("INVALID_VALUE");
 	constexpr TCHAR InvalidOperation[] = TEXT("INVALID_OPERATION");
-	constexpr TCHAR UnknownCommand[] = TEXT("UNKNOWN_COMMAND");
-	constexpr TCHAR DirtyEditorState[] = TEXT("DIRTY_EDITOR_STATE");
 	constexpr TCHAR EditorBusy[] = TEXT("EDITOR_BUSY");
-	constexpr TCHAR AssetNotFound[] = TEXT("ASSET_NOT_FOUND");
 	constexpr TCHAR SaveFailed[] = TEXT("SAVE_FAILED");
 	constexpr TCHAR LimitExceeded[] = TEXT("LIMIT_EXCEEDED");
 

@@ -7,22 +7,26 @@
 #include "CortexTypes.h"
 #include "Templates/Function.h"
 
+/** The fixed UI-readiness wait budgets, defined once for the scheduler, run store and run JSON. */
+namespace CortexReplayWaitBudget
+{
+	constexpr double MaxWaitPerPressSeconds = 1.0;
+	constexpr double MaxAuthorizedWaitSeconds = 5.0;
+}
+
 /**
- * Monotonic event scheduler for one admitted replay snapshot.
+ * Frame-locked event scheduler for one admitted replay snapshot.
  *
- * The scheduler owns no engine state. It is driven by the caller's monotonic elapsed-time
- * provider and dispatches stored events in their recorded order. Game time and the recorded
- * capture diagnostics never schedule playback; only the monotonic clock does.
- *
- * Lateness rule: an event is overdue by more than the fixed 0.100s constant when
- * `Elapsed - (Event.TimeSeconds + AuthorizedWaitSeconds) > 0.100`; there is no added tolerance or
- * configurable allowance. Elapsed time is re-read before guard evaluation, after evaluation,
- * immediately before every dispatch and at trailing completion.
+ * The scheduler owns no engine state. The caller prepares exactly one recorded frame per engine frame
+ * and the scheduler dispatches that frame's whole stored range, in order, in that one preparation:
+ * recorded timestamps and wall-clock time never hold an event back, and no wall-clock delay is a
+ * failure. The caller's monotonic clock only measures UI readiness waits.
  *
  * One blocked UI wait is allowed at a time. A permitted pending guard decision enters the wait
- * state without consuming the event; a later Advance re-polls only that guard. On Ready the
+ * state without consuming the event; a later preparation re-polls only that guard. On Ready the
  * measured wait must be <= 1s and the run total <= 5s before the measured duration is committed
- * to the authorized offset, after which every later event and the trailing duration use it.
+ * to the authorized offset. A non-finite or backward clock observation is REPLAY_TIMING_ERROR. The
+ * clock is read only when a wait is entered or polled, never for an ordinary frame.
  */
 class FCortexReplayScheduler
 {
@@ -32,7 +36,7 @@ public:
 	/**
 	 * Prepares exactly the requested frame's `[FirstSequence, EventCount)` event range, in order,
 	 * and never drains a later frame. Returns success while the frame is still being prepared
-	 * (OutPreparation == Waiting, e.g. blocked on a permitted UI wait) and a REPLAY_TIMING_ERROR /
+	 * (OutPreparation == Waiting, only while blocked on a permitted UI wait) and a REPLAY_TIMING_ERROR /
 	 * guard error when the run must stop. A frame with no events is immediately Ready.
 	 *
 	 * The caller's callables are invoked synchronously on the calling (Game) thread.
@@ -78,8 +82,8 @@ public:
 	ECortexEditorUIObservationState GetWaitReason() const;
 
 private:
-	/** Builds REPLAY_TIMING_ERROR with the event sequence and lateness_ms details. */
-	FCortexCommandResult TimingError(int32 Sequence, double LatenessSeconds) const;
+	/** Builds REPLAY_TIMING_ERROR for an invalid clock observation, with the event sequence. */
+	FCortexCommandResult ClockError(int32 Sequence) const;
 
 	/** Immutable admitted snapshot; shared and never copied per tick. */
 	TSharedRef<const FCortexReplaySnapshot> Snapshot;

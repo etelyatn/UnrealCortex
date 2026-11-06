@@ -1,9 +1,11 @@
 #include "Misc/AutomationTest.h"
 
+#include "Application/ThrottleManager.h"
 #include "CortexCommandRouter.h"
 #include "CortexEditorPhysicalInput.h"
 #include "CortexReplayErrorCodes.h"
 #include "CortexReplayLibrary.h"
+#include "CortexReplayLivePrerequisites.h"
 #include "CortexReplayService.h"
 #include "CortexReplayTestUtils.h"
 #include "CortexReplayTypes.h"
@@ -23,10 +25,15 @@
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/ThreadSafeCounter.h"
 #include "Input/Events.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/App.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
+#include "Misc/OutputDeviceRedirector.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "PlayInEditorDataTypes.h"
@@ -39,6 +46,8 @@
 #include "Tests/AutomationEditorCommon.h"
 #include "UObject/Package.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Text/STextBlock.h"
@@ -52,6 +61,39 @@ constexpr double ReplayTeardownWatchdogSeconds = 15.0;
 
 /** The recorded pawn class must load on the owned PIE target; the sandbox maps spawn a DefaultPawn. */
 constexpr TCHAR ReplayPawnClassPath[] = TEXT("/Script/Engine.DefaultPawn");
+
+/** Restores the human's fixed-step settings when the last reference dies, whatever a test did. */
+struct FCortexReplayFixedStepBaseline
+{
+	bool bUseFixedTimeStep = FApp::UseFixedTimeStep();
+	double FixedDeltaSeconds = FApp::GetFixedDeltaTime();
+
+	~FCortexReplayFixedStepBaseline()
+	{
+		FApp::SetUseFixedTimeStep(bUseFixedTimeStep);
+		FApp::SetFixedDeltaTime(FixedDeltaSeconds);
+	}
+};
+
+/** A distinctive human fixed delta, so restoration is proven exact rather than a reset to a default. */
+constexpr double ReplayHumanFixedDeltaSeconds = 1.0 / 7.0;
+
+/** Saves the human's clock and installs the distinctive human fixed delta with fixed stepping off. */
+TSharedPtr<FCortexReplayFixedStepBaseline> MakeDistinctHumanClock()
+{
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Baseline = MakeShared<FCortexReplayFixedStepBaseline>();
+	FApp::SetUseFixedTimeStep(false);
+	FApp::SetFixedDeltaTime(ReplayHumanFixedDeltaSeconds);
+	return Baseline;
+}
+
+/** Asserts that a finished run handed the engine clock back exactly as the human left it. */
+void TestHumanClockRestored(FAutomationTestBase& Test)
+{
+	Test.TestFalse(TEXT("Fixed stepping is off after the run"), FApp::UseFixedTimeStep());
+	Test.TestEqual(TEXT("The human fixed delta is restored exactly"),
+		FApp::GetFixedDeltaTime(), ReplayHumanFixedDeltaSeconds);
+}
 
 /**
  * The map the recording names, chosen as the alternative to the currently open editor map so the
@@ -122,7 +164,16 @@ public:
 		Device = IPlatformInputDeviceMapper::Get()
 			.GetPrimaryInputDeviceForUser(SlateUser->GetPlatformUserId());
 		UserIndex = SlateUser->GetUserIndex();
+		Viewport = ViewportWidget;
 		return true;
+	}
+
+	/** Focuses the route's viewport and presses the editor's stop-play key without releasing it. */
+	void PressStopKey(bool bRepeat = false)
+	{
+		const FModifierKeysState Modifiers;
+		FSlateApplication::Get().SetUserFocus(UserIndex, Viewport, EFocusCause::SetDirectly);
+		FSlateApplication::Get().ProcessKeyDownEvent(FKeyEvent(EKeys::Escape, Modifiers, UserIndex, bRepeat, 27, 0));
 	}
 
 	void PressDown()
@@ -146,6 +197,7 @@ public:
 
 private:
 	FVector2D Center = FVector2D::ZeroVector;
+	TSharedPtr<SViewport> Viewport;
 	FInputDeviceId Device = INPUTDEVICEID_NONE;
 	int32 UserIndex = 0;
 };
@@ -162,7 +214,7 @@ bool PublishReplayRecording(FAutomationTestBase& Test, FCortexReplayTestFixture&
 	{
 		Snapshot.Metadata.DurationSeconds = FMath::Max(Snapshot.Metadata.DurationSeconds,
 			DurationOverrideSeconds);
-		// The trailing frame's deadline is the recording end, so it must follow the override.
+		// The recorded frames must cover the overridden duration, so the idle tail is real frames.
 		FCortexReplayTestFixture::ApplyCadenceFrames(Snapshot);
 	}
 	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
@@ -204,7 +256,7 @@ TSharedRef<FJsonObject> MakeRetainedRunRecordJson(const FGuid& Id, int32 Recordi
 	const FString Stamp = FDateTime::UtcNow().ToIso8601();
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("format"), TEXT("CortexReplayRun"));
-	Object->SetNumberField(TEXT("schema_version"), 2);
+	Object->SetNumberField(TEXT("schema_version"), 3);
 	Object->SetStringField(TEXT("run_id"), Id.ToString(EGuidFormats::DigitsWithHyphens).ToLower());
 	Object->SetNumberField(TEXT("recording_id"), RecordingId);
 	Object->SetStringField(TEXT("origin"), TEXT("ai"));
@@ -218,6 +270,7 @@ TSharedRef<FJsonObject> MakeRetainedRunRecordJson(const FGuid& Id, int32 Recordi
 	Object->SetNumberField(TEXT("completed_frames"), 2);
 	Object->SetNumberField(TEXT("frame_count"), 2);
 	Object->SetStringField(TEXT("frames_sha256"), FString::ChrN(64, TEXT('d')));
+	Object->SetNumberField(TEXT("behind_seconds"), 0.0);
 	Object->SetStringField(TEXT("recording_snapshot_sha256"), FString::ChrN(64, TEXT('a')));
 	Object->SetStringField(TEXT("initial_state_sha256"), FString::ChrN(64, TEXT('b')));
 	Object->SetStringField(TEXT("inputs_sha256"), FString::ChrN(64, TEXT('c')));
@@ -1274,10 +1327,15 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleFinalizationTest,
 bool FCortexReplayLifecycleFinalizationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
 	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
 
 	// A replay window wide enough that the cancel command reliably observes Replaying
 	// before it cancels (the pre-fix 0.05s recording could complete between frames).
@@ -1311,12 +1369,13 @@ bool FCortexReplayLifecycleFinalizationTest::RunTest(const FString& Parameters)
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service, RunId](FAutomationTestBase& T)
+		[Service, RunId, Clock](FAutomationTestBase& T)
 		{
 			const FCortexCommandResult Run = Service->GetRun(RunId, true);
 			T.TestTrue(TEXT("Terminal result queryable after teardown"), Run.bSuccess);
 			T.TestEqual(TEXT("Cancelled run stays Cancelled"), RunState(Run),
 				FString(TEXT("Cancelled")));
+			TestHumanClockRestored(T);
 			// A successor may now be admitted.
 			const FCortexCommandResult Successor = Service->StartReplay(1, ECortexReplayOrigin::AI);
 			T.TestTrue(TEXT("Successor may start after teardown"), Successor.bSuccess);
@@ -1344,6 +1403,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleOwnedLaunchFocusTest,
 bool FCortexReplayLifecycleOwnedLaunchFocusTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	if (!FSlateApplication::IsInitialized())
 	{
@@ -1483,6 +1546,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleImmutabilityTest,
 bool FCortexReplayLifecycleImmutabilityTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -1584,10 +1651,15 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecyclePieLossTest,
 bool FCortexReplayLifecyclePieLossTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
 	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
 
 	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
 		{MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
@@ -1615,12 +1687,13 @@ bool FCortexReplayLifecyclePieLossTest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service, RunId](FAutomationTestBase& T)
+		[Service, RunId, Clock](FAutomationTestBase& T)
 		{
 			const FCortexCommandResult Run = Service->GetRun(RunId, true);
 			T.TestTrue(TEXT("Interrupted run is queryable"), Run.bSuccess);
 			T.TestEqual(TEXT("Uncontrolled PIE loss interrupts rather than errors"),
 				RunState(Run), FString(TEXT("Interrupted")));
+			TestHumanClockRestored(T);
 			const FCortexCommandResult Again = Service->CancelReplay(RunId, true);
 			T.TestTrue(TEXT("Cancelling an already-terminal run succeeds"), Again.bSuccess);
 			T.TestEqual(TEXT("Repeated terminal cancellation preserves the result"),
@@ -1641,6 +1714,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRevocationTest,
 bool FCortexReplayLifecycleRevocationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -1711,10 +1788,15 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleShutdownTest,
 bool FCortexReplayLifecycleShutdownTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
 	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
 
 	// A recording whose replay stays in flight long enough to observe Replaying and hold a key
 	// down while the backend owner is shut down.
@@ -1744,15 +1826,102 @@ bool FCortexReplayLifecycleShutdownTest::RunTest(const FString& Parameters)
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service](FAutomationTestBase& T)
+		[Service, Clock](FAutomationTestBase& T)
 		{
 			// The reference is still held, so lifetime alone cannot have manufactured teardown.
 			T.TestNotNull(TEXT("Backend owner reference still valid"), &Service.Get());
 			T.TestTrue(TEXT("No owned PIE remains after backend shutdown"),
 				!IsPIEWorldPresentForMap(TEXT("/Game/Maps/TestMap"))
 				&& !IsPIEWorldPresentForMap(TEXT("/Game/Maps/TestRoomMap")));
+			TestHumanClockRestored(T);
 		}, Fixture));
 
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Module-unload barrier (review P0): an explicit unload or hot reload frees this module's code right
+// after ShutdownModule. ShutdownForModuleUnload must return with no ticker, frame delegate, session or
+// observer of the service installed, the terminal run already persisted, and the owned PIE still torn
+// down afterwards (CortexEditor keeps the ending session alive). Catches the asynchronous shutdown that
+// left the ticker and frame hooks registered until a later engine frame.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleModuleUnloadRunTest,
+	"Cortex.Replay.Lifecycle.ModuleUnloadCompletesActiveRunSynchronously",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleModuleUnloadRunTest::RunTest(const FString& Parameters)
+{
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+	if (!PublishReplayRecording(*this, *Fixture, 1, MakeReplayMapAssetPath(),
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 1.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("AI replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId, TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId, Fixture](FAutomationTestBase& T)
+		{
+			Service->ShutdownForModuleUnload();
+			T.TestTrue(TEXT("Nothing of the service remains installed when unload returns"), Service->IsQuiescent());
+			// The terminal record is durable before the code is freed.
+			const TSharedRef<FCortexReplayService> Fresh = MakeService(*Fixture);
+			const FCortexCommandResult Retained = Fresh->GetRun(RunId, true);
+			T.TestTrue(TEXT("The terminal run is persisted at unload"), Retained.bSuccess);
+			T.TestEqual(TEXT("The unloaded run is Cancelled"), RunState(Retained), FString(TEXT("Cancelled")));
+			Fresh->Shutdown();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock](FAutomationTestBase& T)
+		{
+			T.TestFalse(TEXT("The owned PIE was torn down after unload"), GEditor->PlayWorld != nullptr);
+			TestHumanClockRestored(T);
+		}, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Module-unload barrier, capture side: an owned capture in Recording is discarded and nothing of the
+// service stays installed when unload returns; the owned PIE still ends afterwards.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleModuleUnloadCaptureTest,
+	"Cortex.Replay.Lifecycle.ModuleUnloadCompletesCaptureSynchronously",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleModuleUnloadCaptureTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	if (!TestTrue(TEXT("Owned capture admitted"), Service->StartCapture(MakeReplayMapAssetPath()).bSuccess))
+	{
+		return false;
+	}
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			Service->ShutdownForModuleUnload();
+			T.TestTrue(TEXT("Nothing of the capture remains installed when unload returns"), Service->IsQuiescent());
+			T.TestFalse(TEXT("The discarded capture is not published"), Service->GetRecording(1, false).bSuccess);
+			T.TestFalse(TEXT("The discarded capture no longer owns the record"), Service->IsRecordInUse(1));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 	return true;
 }
 
@@ -1909,6 +2078,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTrailingRevocationTest,
 bool FCortexReplayLifecycleTrailingRevocationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2007,6 +2180,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleDestructionTest,
 bool FCortexReplayLifecycleDestructionTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	// The holder lets one command drop the last client reference while the run is only Finalizing.
@@ -2511,6 +2688,113 @@ bool FCortexReplayLifecycleCaptureStopFaultedTest::RunTest(const FString& Parame
 	return true;
 }
 
+namespace
+{
+/**
+ * A foreign second tick of the owned world inside one engine frame: the frame observer invalidates that
+ * frame (it no longer matches one recorded world tick). Broadcast twice so the frame is invalid whether
+ * or not the real world tick already ran this frame.
+ */
+void BroadcastForeignOwnedWorldTicks(UWorld& PlayWorld)
+{
+	FWorldDelegates::OnWorldTickStart.Broadcast(&PlayWorld, LEVELTICK_All, 1.0f / 60.0f);
+	FWorldDelegates::OnWorldTickStart.Broadcast(&PlayWorld, LEVELTICK_All, 1.0f / 60.0f);
+}
+}
+
+// ---------------------------------------------------------------------------
+// Audit C5: a captured frame the engine frame observer invalidated would record a frame the target did
+// not consume as recorded. The capture faults with REPLAY_TIMING_ERROR and is never published.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureInvalidatedFrameFaultsTest,
+	"Cortex.Replay.Lifecycle.CaptureInvalidatedFrameFaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleCaptureInvalidatedFrameFaultsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	if (!TestTrue(TEXT("Owned capture admitted"), Service->StartCapture(MakeReplayMapAssetPath()).bSuccess))
+	{
+		return false;
+	}
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor->PlayWorld;
+			if (T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld))
+			{
+				BroadcastForeignOwnedWorldTicks(*PlayWorld);
+			}
+		}, Fixture));
+	// The invalid frame closes at this frame's end; the next frame observes the fault.
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this, [](FAutomationTestBase&) {}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Stopped = Service->StopCapture(false);
+			T.TestFalse(TEXT("A capture with an invalidated frame does not publish"), Stopped.bSuccess);
+			T.TestEqual(TEXT("The invalidated frame is REPLAY_TIMING_ERROR"), Stopped.ErrorCode,
+				FString(CortexReplayErrorCodes::ReplayTimingError));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			T.TestFalse(TEXT("Nothing was published"), Service->GetRecording(1, false).bSuccess);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit C5, final frame: the frame still open when the human stops is sealed into the recording only if
+// the observer still vouches for it. Invalidating it in the stop frame faults the capture instead of
+// publishing a frame the target did not consume as recorded.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureInvalidatedFinalFrameFaultsTest,
+	"Cortex.Replay.Lifecycle.CaptureInvalidatedFinalFrameFaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleCaptureInvalidatedFinalFrameFaultsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	if (!TestTrue(TEXT("Owned capture admitted"), Service->StartCapture(MakeReplayMapAssetPath()).bSuccess))
+	{
+		return false;
+	}
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	// Let a few valid frames be recorded first.
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.2f));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor->PlayWorld;
+			if (!T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld))
+			{
+				return;
+			}
+			BroadcastForeignOwnedWorldTicks(*PlayWorld);
+			// The stop seals this same, now invalid, open frame.
+			const FCortexCommandResult Stopped = Service->StopCapture(false);
+			T.TestFalse(TEXT("An invalidated final frame does not publish"), Stopped.bSuccess);
+			T.TestEqual(TEXT("The invalidated final frame is REPLAY_TIMING_ERROR"), Stopped.ErrorCode,
+				FString(CortexReplayErrorCodes::ReplayTimingError));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			T.TestFalse(TEXT("Nothing was published"), Service->GetRecording(1, false).bSuccess);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	return true;
+}
+
 // ---------------------------------------------------------------------------
 // Green control: a normal Stop while the owned capture is Recording still publishes and still
 // returns success.
@@ -2566,71 +2850,32 @@ bool FCortexReplayLifecycleCaptureStopDuringRecordingTest::RunTest(const FString
 			}
 			T.TestFalse(TEXT("Published capture no longer owns the record"), Service->IsRecordInUse(1));
 
-			// The recorded idle tail is part of the recording: completion follows the committed
-			// frame frontier, so the capture must publish an empty trailing frame holding the full
-			// capture span instead of ending at the last input.
+			// Format 3: the recording holds exactly the engine frames that consumed input after the
+			// epoch (no warmup/epoch/trailing frames), each on its observed application delta, and
+			// the duration is the sum of those deltas.
 			FCortexReplayLibrary Library(Fixture->GetProjectRoot());
 			TSharedPtr<const FCortexReplaySnapshot> Snapshot;
 			T.TestTrue(TEXT("Published capture reloads"),
 				Library.Load(1, false, Snapshot).bSuccess && Snapshot.IsValid());
-			if (Snapshot.IsValid() && Snapshot->Frames.Num() > 0)
+			if (Snapshot.IsValid())
 			{
-				const FCortexReplayFrame& Trailing = Snapshot->Frames.Last();
-				T.TestEqual(TEXT("The published capture ends with an empty trailing frame"),
-					Trailing.EventCount, 0);
-				T.TestTrue(TEXT("The trailing frame holds the recorded idle tail"),
-					Trailing.InputDeadlineSeconds >= Snapshot->Metadata.DurationSeconds);
-
-				// The capture must record the engine frames it actually observed, not only the frames
-				// that happened to carry input: a lease can only pace to recorded application timing
-				// that exists, and native closure can only be verified against it.
-				int32 FramedWithObservedTiming = 0;
-				int32 InputFreeObservedFrames = 0;
-				int32 InputBearingFramesWithObservedTiming = 0;
+				T.TestEqual(TEXT("The frame count matches the timing block"),
+					Snapshot->Frames.Num(), Snapshot->Metadata.Timing.FrameCount);
+				double DeltaSum = 0.0;
+				int32 AttributedEvents = 0;
 				for (int32 Index = 0; Index < Snapshot->Frames.Num(); ++Index)
 				{
 					const FCortexReplayFrame& Frame = Snapshot->Frames[Index];
-					if (Frame.AppDeltaSeconds > 0.0)
-					{
-						++FramedWithObservedTiming;
-						if (Frame.EventCount > 0)
-						{
-							++InputBearingFramesWithObservedTiming;
-						}
-					}
-					if (Frame.AppDeltaSeconds > 0.0 && Frame.EventCount == 0
-						&& Index > 0 && Index < Snapshot->Frames.Num() - 1)
-					{
-						++InputFreeObservedFrames;
-					}
+					T.TestEqual(TEXT("Frames are indexed from zero"), Frame.FrameIndex, Index);
+					T.TestTrue(TEXT("Every captured frame carries an observed application delta"),
+						Frame.AppDeltaSeconds > 0.0 && Frame.AppDeltaSeconds <= CortexReplayMaxFrameDeltaSeconds);
+					DeltaSum += Frame.AppDeltaSeconds;
+					AttributedEvents += Frame.EventCount;
 				}
-				T.TestTrue(TEXT("Captured frames carry observed application timing"),
-					FramedWithObservedTiming > 0);
-				T.TestTrue(TEXT("The capture records observed engine frames that carry no input"),
-					InputFreeObservedFrames > 0);
-				// This fixture's Slate key injection does not reach the capture's event path, so
-				// attribution can only be asserted when events were actually captured; the library's
-				// publish-time validation still requires every captured event to be attributed to
-				// exactly one frame.
-				if (Snapshot->Events.Num() > 0)
-				{
-					T.TestTrue(TEXT("Captured input is attributed to the engine frames that observed it"),
-						InputBearingFramesWithObservedTiming > 0);
-				}
-				else
-				{
-					T.AddInfo(TEXT("Capture published no events; attribution not observable here"));
-				}
-				// Diagnostic evidence: the observed frame windows and the captured input instants are
-				// both epoch-relative, so a systematic offset here explains any attribution fallout.
-				T.AddInfo(FString::Printf(
-					TEXT("Capture frames=%d observed=%d events=%d firstBoundary=%.3f lastObservedBoundary=%.3f firstEvent=%.3f lastEvent=%.3f"),
-					Snapshot->Frames.Num(), FramedWithObservedTiming, Snapshot->Events.Num(),
-					Snapshot->Frames.Num() > 1 ? Snapshot->Frames[1].FrameBeginSeconds : -1.0,
-					Snapshot->Frames.Num() > 1
-						? Snapshot->Frames[Snapshot->Frames.Num() - 2].InputDeadlineSeconds : -1.0,
-					Snapshot->Events.Num() > 0 ? Snapshot->Events[0].TimeSeconds : -1.0,
-					Snapshot->Events.Num() > 0 ? Snapshot->Events.Last().TimeSeconds : -1.0));
+				T.TestEqual(TEXT("The duration is the sum of the frame deltas"),
+					Snapshot->Metadata.DurationSeconds, DeltaSum, 1e-9);
+				T.TestEqual(TEXT("Every published event is attributed to exactly one frame"),
+					AttributedEvents, Snapshot->Events.Num());
 			}
 		}, Fixture));
 
@@ -2693,6 +2938,251 @@ bool FCortexReplayLifecycleExternalSessionEndPublishesTest::RunTest(const FStrin
 					Recording.Data->GetBoolField(TEXT("complete")), true);
 			}
 			T.TestFalse(TEXT("Published capture no longer owns the record"), Service->IsRecordInUse(1));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit C1: ending the session with the editor's stop-play key (stock Escape) leaves that press
+// unreleased in the captured stream. It is the session-ending gesture, not an input to replay, so it
+// must be dropped: the capture publishes, and no stop-chord press is in the published events.
+// Catches removal of DropTrailingStopChordPress (the capture would be withheld as incomplete).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndStopKeyDroppedTest,
+	"Cortex.Replay.Lifecycle.ExternalSessionEndStopKeyDropped",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleExternalSessionEndStopKeyDroppedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			// A balanced click, then the stop-play key whose release never arrives.
+			Route.PressDown();
+			Route.PressUp();
+			Route.PressStopKey();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+			GEditor->RequestEndPlayMap();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("The Escape-ended capture published"), Service->GetRecording(1, false).bSuccess);
+			FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+			TSharedPtr<const FCortexReplaySnapshot> Snapshot;
+			if (!T.TestTrue(TEXT("The published capture loads"),
+				Library.Load(1, false, Snapshot).bSuccess && Snapshot.IsValid()))
+			{
+				return;
+			}
+			for (const FCortexReplayEvent& Event : Snapshot->Events)
+			{
+				T.TestFalse(TEXT("The stop-play key press is not part of the recording"),
+					Event.Input.Key == EKeys::Escape);
+			}
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A hitch can deliver the stop-play press and its auto-repeat in the same input pump before the deferred
+// end runs. The whole hold (press and repeat) is the ending gesture: the capture still publishes.
+// Catches a hold start that advances to the repeat, leaving the original press held.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndStopKeyRepeatDroppedTest,
+	"Cortex.Replay.Lifecycle.ExternalSessionEndStopKeyRepeatDropped",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleExternalSessionEndStopKeyRepeatDroppedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+
+	const FCortexCommandResult Started = Service->StartCapture(MakeReplayMapAssetPath());
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			Route.PressStopKey();
+			Route.PressStopKey(true);
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+			GEditor->RequestEndPlayMap();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("The repeated stop-key capture published"), Service->GetRecording(1, false).bSuccess);
+			FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+			TSharedPtr<const FCortexReplaySnapshot> Snapshot;
+			if (!T.TestTrue(TEXT("The published capture loads"),
+				Library.Load(1, false, Snapshot).bSuccess && Snapshot.IsValid()))
+			{
+				return;
+			}
+			for (const FCortexReplayEvent& Event : Snapshot->Events)
+			{
+				T.TestFalse(TEXT("No event of the stop-key hold is recorded"), Event.Input.Key == EKeys::Escape);
+			}
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A stop-key hold that began frames before the session ended was consumed as gameplay input (the session
+// was then ended another way). It is not the ending gesture and must not be erased: the stream is kept
+// unbalanced and withheld as INCOMPLETE_RECORDING instead of publishing a stream the runtime never saw.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndEarlierStopKeyHoldWithheldTest,
+	"Cortex.Replay.Lifecycle.ExternalSessionEndEarlierStopKeyHoldWithheld",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleExternalSessionEndEarlierStopKeyHoldWithheldTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+
+	const FCortexCommandResult Started = Service->StartCapture(MakeReplayMapAssetPath());
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned capture PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			Route.PressStopKey();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+		}, Fixture));
+	// Later frames are recorded while the key stays held; then the session is ended another way.
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			T.TestNotNull(TEXT("The held stop key did not end the owned session"), GEditor->PlayWorld.Get());
+			GEditor->RequestEndPlayMap();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture](FAutomationTestBase& T)
+		{
+			AssertCaptureNotPublished(T, *Service, *Fixture, 1);
+			const FCortexCommandResult Summary = Service->GetLastCaptureResult();
+			const TSharedPtr<FJsonObject>* PublicationError = nullptr;
+			if (T.TestTrue(TEXT("Terminal summary carries the publication error"),
+				Summary.bSuccess && Summary.Data.IsValid()
+				&& Summary.Data->TryGetObjectField(TEXT("publication_error"), PublicationError)
+				&& PublicationError != nullptr && PublicationError->IsValid()))
+			{
+				T.TestEqual(TEXT("The kept earlier hold reports INCOMPLETE_RECORDING"),
+					(*PublicationError)->GetStringField(TEXT("code")),
+					FString(CortexReplayErrorCodes::IncompleteRecording));
+			}
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit RUN-01 (capture side): Slate responsive mode must not throttle an owned capture, and the
+// override must be released on every end path. Catches a missing DisableThrottle at capture start or
+// a missing balanced release in ResetCapture.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureThrottleTest,
+	"Cortex.Replay.Lifecycle.CaptureDisablesSlateThrottle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayLifecycleCaptureThrottleTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	// A responsive-mode request is what throttles Slate; it is held for the whole test.
+	const TSharedRef<FThrottleRequest> Responsive = MakeShared<FThrottleRequest>(
+		FSlateThrottleManager::Get().EnterResponsiveMode());
+	TestFalse(TEXT("Responsive mode throttles expensive tasks before the capture"),
+		FSlateThrottleManager::Get().IsAllowingExpensiveTasks());
+
+	const FCortexCommandResult Started = Service->StartCapture(MapPath);
+	TestTrue(TEXT("Owned capture admitted"), Started.bSuccess);
+	if (!Started.bSuccess)
+	{
+		FSlateThrottleManager::Get().LeaveResponsiveMode(*Responsive);
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCapturePhase(this, Service, TEXT("Recording"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("The capture disables Slate throttling while it owns the session"),
+				FSlateThrottleManager::Get().IsAllowingExpensiveTasks());
+			Service->StopCapture(true);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitCaptureIdle(this, Service, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Responsive](FAutomationTestBase& T)
+		{
+			T.TestFalse(TEXT("The throttle override is released when the capture ends"),
+				FSlateThrottleManager::Get().IsAllowingExpensiveTasks());
+			FSlateThrottleManager::Get().LeaveResponsiveMode(*Responsive);
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 
@@ -2911,416 +3401,251 @@ bool FCortexReplayLifecycleExternalSessionEndIncompleteReleasesTest::RunTest(con
 	return true;
 }
 
+/**
+ * Records every PIE world tick from installation on: the real delta the world received and whether
+ * the first local player held W when the tick ended (the state that tick consumed).
+ */
+struct FCortexReplayWorldTickProbe
+{
+	FDelegateHandle StartHandle;
+	FDelegateHandle EndHandle;
+	TArray<float> RealDeltas;
+	TArray<bool> WDownAtEnd;
+
+	void Install()
+	{
+		StartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
+			[this](UWorld* World, ELevelTick, float DeltaSeconds)
+			{
+				if (World != nullptr && World->WorldType == EWorldType::PIE)
+				{
+					RealDeltas.Add(DeltaSeconds);
+				}
+			});
+		EndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
+			[this](UWorld* World, ELevelTick, float)
+			{
+				if (World != nullptr && World->WorldType == EWorldType::PIE)
+				{
+					const APlayerController* Controller = World->GetFirstPlayerController();
+					WDownAtEnd.Add(Controller != nullptr && Controller->IsInputKeyDown(EKeys::W));
+				}
+			});
+	}
+
+	~FCortexReplayWorldTickProbe()
+	{
+		FWorldDelegates::OnWorldTickStart.Remove(StartHandle);
+		FWorldDelegates::OnWorldTickEnd.Remove(EndHandle);
+	}
+};
+
+/** True when Needle occurs in Haystack as one contiguous, bit-identical run. */
+bool ContainsContiguousDeltas(const TArray<float>& Haystack, const TArray<float>& Needle)
+{
+	for (int32 Start = 0; Start + Needle.Num() <= Haystack.Num(); ++Start)
+	{
+		if (FMemory::Memcmp(&Haystack[Start], Needle.GetData(), Needle.Num() * sizeof(float)) == 0)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Publishes an AI-eligible recording laid out frame by frame, with W pressed in recorded frame
+ * DownFrame and released in UpFrame. Event times are the recorded input times of their frames (the
+ * application time elapsed since the epoch when the frame's input was processed). TicklessFrame, when
+ * set, removes that frame's recorded world tick: the capture saw an engine frame that consumed input
+ * while its world did not tick.
+ */
+FCortexCommandResult PublishFrameStreamRecording(const TSharedRef<FCortexReplayTestFixture>& Fixture,
+	const FString& MapPath, const TArray<double>& ReplayedFrameDeltas, int32 DownFrame, int32 UpFrame,
+	int32 TicklessFrame = INDEX_NONE)
+{
+	auto InputTime = [&ReplayedFrameDeltas](int32 Frame)
+	{
+		double Seconds = 0.0;
+		for (int32 Index = 0; Index < Frame; ++Index)
+		{
+			Seconds += ReplayedFrameDeltas[Index];
+		}
+		return Seconds;
+	};
+	FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
+		{ MakeKeyPress(0, InputTime(DownFrame), ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, InputTime(UpFrame), ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
+	Recording.Metadata.MapAssetPath = MapPath;
+	Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
+	const int32 EventFrames[] = { DownFrame, UpFrame };
+	FCortexReplayTestFixture::ApplyFrameStream(Recording, ReplayedFrameDeltas, EventFrames);
+	if (TicklessFrame != INDEX_NONE)
+	{
+		Recording.Frames[TicklessFrame].WorldTick.Reset();
+	}
+	FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+	return Library.Publish(Recording);
+}
 
 // ---------------------------------------------------------------------------
-// No replay or capture operation may leave the engine's exclusive recorded-frame clock installed:
-// a retained custom time step would silently own the editor's application timing.
+// Replay reproduces the RECORDED time step of every frame: the owned world receives exactly the
+// recorded real delta, frame after frame, in recorded order - not a dominant rate and not the host's
+// own frame time. The human's fixed-step settings are handed back exactly once the run ends.
 // ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleNoResidualEngineClockTest,
-	"Cortex.Replay.Lifecycle.NoResidualEngineClockAfterOperations",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRecordedFrameDeltasTest,
+	"Cortex.Replay.Lifecycle.ReplayReproducesRecordedFrameDeltas",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FCortexReplayLifecycleNoResidualEngineClockTest::RunTest(const FString& Parameters)
+
+bool FCortexReplayLifecycleRecordedFrameDeltasTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	if (!GEditor || !GEngine)
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
+		return true;
 	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
 	const FString MapPath = MakeReplayMapAssetPath();
 
-	TestTrue(TEXT("No engine clock is installed before any operation"),
-		GEngine->GetCustomTimeStep() == nullptr);
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
 
-	// A replay that runs to completion.
+	TArray<double> Deltas;
+	for (int32 Repeat = 0; Repeat < 6; ++Repeat)
+	{
+		Deltas.Append({ 1.0 / 30.0, 1.0 / 60.0, 1.0 / 45.0, 1.0 / 90.0 });
+	}
+	if (!TestTrue(TEXT("Variable-delta recording published"),
+		PublishFrameStreamRecording(Fixture, MapPath, Deltas, 0, 20).bSuccess))
+	{
+		return false;
+	}
+	TArray<float> Expected;
+	for (const double Delta : Deltas)
+	{
+		Expected.Add(static_cast<float>(Delta));
+	}
+
+	const TSharedPtr<FCortexReplayWorldTickProbe> Probe = MakeShared<FCortexReplayWorldTickProbe>();
+	Probe->Install();
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Variable-delta replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Completed"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock, Probe, Expected](FAutomationTestBase& T)
+		{
+			T.TestTrue(FString::Printf(
+				TEXT("The owned world ticked with every recorded delta, in order (%d recorded, %d observed)"),
+				Expected.Num(), Probe->RealDeltas.Num()),
+				ContainsContiguousDeltas(Probe->RealDeltas, Expected));
+			TestHumanClockRestored(T);
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Replay is frame-locked: a key held for N recorded frames is down for exactly N world ticks, even
+// when the recorded frames vary tenfold in length. Wall-clock dispatch would hold it for however
+// many host frames fit into the recorded wall time instead.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleHeldKeySpansRecordedFramesTest,
+	"Cortex.Replay.Lifecycle.ReplayHeldKeySpansRecordedFrames",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleHeldKeySpansRecordedFramesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Baseline = MakeDistinctHumanClock();
+
+	// W goes down in replayed frame 0 and up in frame 4: it is held through four recorded world ticks
+	// spanning 0.22 s of recorded time, while 0.13 s of recorded wall time separates the two events.
+	const TArray<double> Deltas = { 0.1, 0.1, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01 };
+	constexpr int32 RecordedHeldTicks = 4;
+	if (!TestTrue(TEXT("Mixed-delta recording published"),
+		PublishFrameStreamRecording(Fixture, MapPath, Deltas, 0, RecordedHeldTicks).bSuccess))
+	{
+		return false;
+	}
+
+	const TSharedPtr<FCortexReplayWorldTickProbe> Probe = MakeShared<FCortexReplayWorldTickProbe>();
+	Probe->Install();
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Mixed-delta replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Completed"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Baseline, Probe, RecordedHeldTicks](FAutomationTestBase& T)
+		{
+			int32 HeldTicks = 0;
+			for (const bool bDown : Probe->WDownAtEnd)
+			{
+				HeldTicks += bDown ? 1 : 0;
+			}
+			T.TestEqual(TEXT("W is held for exactly the recorded number of world ticks"),
+				HeldTicks, RecordedHeldTicks);
+			TestHumanClockRestored(T);
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Replay owns the engine clock only by switching to fixed application stepping, so it must refuse to
+// start while the editor already runs on a fixed step: taking it over would silently replace the
+// human's own timing, and handing it back could not tell the two owners apart.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRefusesFixedStepEditorTest,
+	"Cortex.Replay.Lifecycle.ReplayRefusesWhileEditorFixedSteps",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleRefusesFixedStepEditorTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const FCortexReplayFixedStepBaseline Baseline;
+
 	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
 		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
 		  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
 	{
 		return false;
 	}
+
+	FApp::SetFixedDeltaTime(1.0 / 30.0);
+	FApp::SetUseFixedTimeStep(true);
 	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
-	TestTrue(TEXT("Replay admitted"), Started.bSuccess);
-	if (!Started.bSuccess)
-	{
-		return false;
-	}
-	const FGuid RunId = ParseRunId(Started);
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
-		TEXT("Completed"), Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service](FAutomationTestBase& T)
-		{
-			// The service shared reference is captured on purpose: it keeps the service - and therefore
-			// its clock lease - alive across this assertion, so passing here cannot be an artefact of the
-			// service having been destroyed first.
-			T.TestTrue(TEXT("A completed replay leaves no engine clock installed"),
-				GEngine == nullptr || GEngine->GetCustomTimeStep() == nullptr);
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
-
-	return true;
-}
-
-/**
- * The engine timing settings a replay pins and must hand back verbatim. The destructor restores the
- * captured human values when the last reference dies, so a failing assertion cannot leave the editor
- * running on a recording's cadence.
- */
-struct FCortexReplayEngineTimingBaseline
-{
-	IConsoleVariable* FrameCap = nullptr;
-	FString HumanValue;
-	uint32 HumanSetBy = 0;
-
-	~FCortexReplayEngineTimingBaseline()
-	{
-		if (FrameCap == nullptr)
-		{
-			return;
-		}
-		// Mirrors the service: a human value at console priority is written back, otherwise the
-		// temporary console entry is removed so the human's lower-priority value resurfaces.
-		if ((HumanSetBy & ECVF_SetByMask) == ECVF_SetByConsole)
-		{
-			FrameCap->Set(*HumanValue, ECVF_SetByConsole);
-		}
-		else
-		{
-			FrameCap->Unset(ECVF_SetByConsole);
-		}
-	}
-};
-
-/** Captures the human's engine timing settings; null when the engine frame cap is unavailable. */
-TSharedPtr<FCortexReplayEngineTimingBaseline> CaptureEngineTimingBaseline()
-{
-	IConsoleVariable* FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
-	if (FrameCap == nullptr)
-	{
-		return nullptr;
-	}
-	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline =
-		MakeShared<FCortexReplayEngineTimingBaseline>();
-	Baseline->FrameCap = FrameCap;
-	Baseline->HumanValue = FrameCap->GetString();
-	Baseline->HumanSetBy = FrameCap->GetFlags() & ECVF_SetByMask;
-	return Baseline;
-}
-
-// ---------------------------------------------------------------------------
-// A replay reproduces the RECORDED engine cadence: for the duration of the run the engine's frame
-// cap and its fixed application step are pinned to the cadence the recording was captured at, so
-// frame-rate-dependent gameplay replays on the recorded time base instead of the host's frame rate.
-// The human's own settings come back exactly, which is why the pin is a saved/restored pair rather
-// than a one-way change.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecyclePinsRecordedEngineCadenceTest,
-	"Cortex.Replay.Lifecycle.ReplayPinsRecordedEngineCadence",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexReplayLifecyclePinsRecordedEngineCadenceTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
-	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
-	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
-	const FString MapPath = MakeReplayMapAssetPath();
-
-	// The pin is only observable against a baseline that differs from it, and the human's settings
-	// must survive the whole test, so both are captured here and restored by the baseline's destructor.
-	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
-	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get()))
-	{
-		return false;
-	}
-	IConsoleVariable* FrameCap = Baseline->FrameCap;
-	FrameCap->Set(300.0f, ECVF_SetByConsole);
-	const FString PreRunFrameCap = FrameCap->GetString();
-
-	constexpr int32 RecordedHz = 240;
-	constexpr double RecordedDeltaSeconds = 1.0 / RecordedHz;
-	{
-		FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
-			{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
-			  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
-		Recording.Metadata.MapAssetPath = MapPath;
-		Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
-		FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
-		for (FCortexReplayFrame& Frame : Recording.Frames)
-		{
-			Frame.AppDeltaSeconds = RecordedDeltaSeconds;
-		}
-		FCortexReplayLibrary Library(Fixture->GetProjectRoot());
-		TestTrue(TEXT("Cadence recording published"), Library.Publish(Recording).bSuccess);
-	}
-
-	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
-	if (!TestTrue(TEXT("Cadence replay admitted"), Started.bSuccess))
-	{
-		return false;
-	}
-	const FGuid RunId = ParseRunId(Started);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
-		TEXT("Replaying"), Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, FrameCap, RecordedHz](FAutomationTestBase& T)
-		{
-			T.TestTrue(FString::Printf(TEXT("Frame cap pinned to the recorded cadence (%.1f)"),
-				FrameCap->GetFloat()), FMath::IsNearlyEqual(FrameCap->GetFloat(),
-					static_cast<float>(RecordedHz), 0.5f));
-			T.TestTrue(TEXT("No custom time step took the engine's clock"),
-				GEngine == nullptr || GEngine->GetCustomTimeStep() == nullptr);
-			// The cap is what keeps application time from outrunning the recording: without it this
-			// delta is the host's frame time, which is far smaller than the recorded cycle.
-			T.TestTrue(FString::Printf(
-				TEXT("Application time does not advance faster than the recording (%.9f vs %.9f)"),
-				FApp::GetDeltaTime(), 1.0 / RecordedHz),
-				FApp::GetDeltaTime() >= 1.0 / RecordedHz - 1e-4);
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
-		TEXT("Completed"), Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, FrameCap, PreRunFrameCap](FAutomationTestBase& T)
-		{
-			T.TestEqual(TEXT("Frame cap restored verbatim after the run"),
-				FrameCap->GetString(), PreRunFrameCap);
-		}, Fixture));
-
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// A frame may only be committed while the recording's time base is still in force. If the pinned
-// cadence is lost mid-run - a foreign owner changing application timing - committing further frames
-// would silently replay them on the host's clock, so the run has to fail with a precise error
-// instead of reporting a completed replay that never ran on the recorded time base.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRefusesCommitWithoutRecordedTimebaseTest,
-	"Cortex.Replay.Lifecycle.ReplayRefusesCommitWithoutRecordedTimebase",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexReplayLifecycleRefusesCommitWithoutRecordedTimebaseTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
-	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
-	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
-	const FString MapPath = MakeReplayMapAssetPath();
-
-	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
-	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get()))
-	{
-		return false;
-	}
-	IConsoleVariable* FrameCap = Baseline->FrameCap;
-
-	constexpr int32 RecordedHz = 240;
-	constexpr double RecordedDeltaSeconds = 1.0 / RecordedHz;
-	{
-		// The second event sits far enough out that the run still owns frames once the time base is
-		// broken, so the failure is observed by a commit that a healthy run would perform.
-		FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
-			{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
-			  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
-		Recording.Metadata.MapAssetPath = MapPath;
-		Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
-		FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
-		for (FCortexReplayFrame& Frame : Recording.Frames)
-		{
-			Frame.AppDeltaSeconds = RecordedDeltaSeconds;
-		}
-		FCortexReplayLibrary Library(Fixture->GetProjectRoot());
-		TestTrue(TEXT("Time base recording published"), Library.Publish(Recording).bSuccess);
-	}
-
-	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
-	if (!TestTrue(TEXT("Time base replay admitted"), Started.bSuccess))
-	{
-		return false;
-	}
-	const FGuid RunId = ParseRunId(Started);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
-		TEXT("Replaying"), Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, FrameCap](FAutomationTestBase& T)
-		{
-			T.TestTrue(FString::Printf(
-				TEXT("The recorded cadence is pinned before the run loses it (%.1f)"),
-				FrameCap->GetFloat()), FMath::IsNearlyEqual(FrameCap->GetFloat(), 240.0f, 0.5f));
-			// A foreign owner retunes the engine's frame cap mid-run: application time is no longer
-			// synchronised with the recording, so the next commit must refuse.
-			FrameCap->Set(1000.0f, ECVF_SetByConsole);
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
-		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, Service, RunId](FAutomationTestBase& T)
-		{
-			const FCortexCommandResult Run = Service->GetRun(RunId, true);
-			const TSharedPtr<FJsonObject>* Error = nullptr;
-			T.TestTrue(TEXT("Terminal run carries an execution error"),
-				Run.bSuccess && Run.Data.IsValid()
-					&& Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
-					&& Error != nullptr);
-			T.TestTrue(TEXT("Execution error is REPLAY_TIMEBASE_LOST"),
-				Error != nullptr
-					&& (*Error)->GetStringField(TEXT("code")) == TEXT("REPLAY_TIMEBASE_LOST"));
-			T.TestTrue(TEXT("The run did not complete after losing its time base"),
-				RunState(Run) != TEXT("Completed"));
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
-
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// A recording whose frames carry no usable application cadence cannot be pinned to one, and an
-// unpinned replay could not be verified at commit time, so it is refused at admission rather than
-// run on the host's clock.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRefusesRecordingWithoutCadenceTest,
-	"Cortex.Replay.Lifecycle.ReplayRefusesRecordingWithoutUsableCadence",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexReplayLifecycleRefusesRecordingWithoutCadenceTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
-	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
-	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
-	const FString MapPath = MakeReplayMapAssetPath();
-
-	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
-	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get()))
-	{
-		return false;
-	}
-
-	{
-		FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
-			{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
-			  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
-		Recording.Metadata.MapAssetPath = MapPath;
-		Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
-		FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
-		for (FCortexReplayFrame& Frame : Recording.Frames)
-		{
-			Frame.AppDeltaSeconds = 0.0;
-		}
-		FCortexReplayLibrary Library(Fixture->GetProjectRoot());
-		TestTrue(TEXT("Cadence-free recording published"), Library.Publish(Recording).bSuccess);
-	}
-
-	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
-	TestFalse(TEXT("A recording without a usable cadence is not admitted"), Started.bSuccess);
-	TestEqual(TEXT("The refusal names the recording"), Started.ErrorCode,
-		FString(TEXT("INVALID_RECORDING")));
-	const FCortexCommandResult Current = Service->GetCurrentOperation();
-	TestFalse(TEXT("The refused start left no operation behind"), Current.Data.IsValid());
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// A replay's pacing depends on the engine's ordinary frame-rate wait. If the editor switches to fixed
-// application stepping mid-run - the human's own setting, or another tool - application time advances
-// one fixed step per host frame regardless of the cap, so commits must refuse instead of reporting a
-// completed replay that outran the recording.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRefusesCommitWhenFixedSteppingTakesOverTest,
-	"Cortex.Replay.Lifecycle.ReplayRefusesCommitWhenFixedSteppingTakesOver",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexReplayLifecycleRefusesCommitWhenFixedSteppingTakesOverTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
-	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
-	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
-	const FString MapPath = MakeReplayMapAssetPath();
-
-	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
-	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get()))
-	{
-		return false;
-	}
-	// Fixed stepping is not part of the service's pin, so this guard owns restoring it: a failing
-	// assertion must not leave the editor in fixed-step mode for later tests.
-	struct FFixedStepGuard
-	{
-		bool bSaved = false;
-		double SavedDelta = 0.0;
-		~FFixedStepGuard()
-		{
-			FApp::SetUseFixedTimeStep(bSaved);
-			FApp::SetFixedDeltaTime(SavedDelta);
-		}
-	};
-	const TSharedPtr<FFixedStepGuard> Guard = MakeShared<FFixedStepGuard>();
-	Guard->bSaved = FApp::UseFixedTimeStep();
-	Guard->SavedDelta = FApp::GetFixedDeltaTime();
-	FApp::SetUseFixedTimeStep(false);
-
-	constexpr int32 RecordedHz = 240;
-	constexpr double RecordedDeltaSeconds = 1.0 / RecordedHz;
-	{
-		FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
-			{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
-			  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
-		Recording.Metadata.MapAssetPath = MapPath;
-		Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
-		FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
-		for (FCortexReplayFrame& Frame : Recording.Frames)
-		{
-			Frame.AppDeltaSeconds = RecordedDeltaSeconds;
-		}
-		FCortexReplayLibrary Library(Fixture->GetProjectRoot());
-		TestTrue(TEXT("Fixed-step recording published"), Library.Publish(Recording).bSuccess);
-	}
-
-	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
-	if (!TestTrue(TEXT("Fixed-step replay admitted"), Started.bSuccess))
-	{
-		return false;
-	}
-	const FGuid RunId = ParseRunId(Started);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
-		TEXT("Replaying"), Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, Guard, RecordedDeltaSeconds](FAutomationTestBase& T)
-		{
-			// The fixed delta equals the recorded cycle, so the "never faster than the recording" bound
-			// alone would still be satisfied; only the fact that the engine left its ordinary
-			// frame-rate wait reveals that application time is no longer wall-synchronised.
-			FApp::SetFixedDeltaTime(RecordedDeltaSeconds);
-			FApp::SetUseFixedTimeStep(true);
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
-		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, Guard, Service, RunId](FAutomationTestBase& T)
-		{
-			const FCortexCommandResult Run = Service->GetRun(RunId, true);
-			const TSharedPtr<FJsonObject>* Error = nullptr;
-			T.TestTrue(TEXT("Terminal run carries an execution error"),
-				Run.bSuccess && Run.Data.IsValid()
-					&& Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
-					&& Error != nullptr);
-			T.TestTrue(TEXT("Execution error is REPLAY_TIMEBASE_LOST"),
-				Error != nullptr
-					&& (*Error)->GetStringField(TEXT("code")) == TEXT("REPLAY_TIMEBASE_LOST"));
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
-
+	TestFalse(TEXT("A replay is not admitted while the editor fixed-steps"), Started.bSuccess);
+	TestEqual(TEXT("The refusal names the timing prerequisite"), Started.ErrorCode,
+		FString(TEXT("INCOMPATIBLE_PREREQUISITES")));
+	TestTrue(TEXT("The human's fixed step is left untouched"),
+		FApp::UseFixedTimeStep() && FApp::GetFixedDeltaTime() == 1.0 / 30.0);
+	TestFalse(TEXT("The refused start left no operation behind"), Service->GetCurrentOperation().Data.IsValid());
 	return true;
 }
 
@@ -3363,103 +3688,11 @@ TSharedPtr<FCortexReplaySabotageGuard> CaptureSabotageGuard(const TCHAR* Name)
 	return Guard;
 }
 
-/** Publishes a two-event recording whose every frame carries the given application delta. */
-FCortexCommandResult PublishCadenceRecording(const TSharedRef<FCortexReplayTestFixture>& Fixture,
-	double FrameDeltaSeconds, const FString& MapPath)
-{
-	FCortexReplaySnapshot Recording = Fixture->MakeRecording(1, true,
-		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
-		  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
-	Recording.Metadata.MapAssetPath = MapPath;
-	Recording.InitialState.PawnClassPath = ReplayPawnClassPath;
-	FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
-	for (FCortexReplayFrame& Frame : Recording.Frames)
-	{
-		Frame.AppDeltaSeconds = FrameDeltaSeconds;
-	}
-	FCortexReplayLibrary Library(Fixture->GetProjectRoot());
-	return Library.Publish(Recording);
-}
-
-/** Asserts that a run failed with REPLAY_TIMEBASE_LOST rather than reporting completion. */
-void TestRunLostItsCadence(FAutomationTestBase& Test, const FCortexCommandResult& Run)
-{
-	const TSharedPtr<FJsonObject>* Error = nullptr;
-	Test.TestTrue(TEXT("Terminal run carries an execution error"),
-		Run.bSuccess && Run.Data.IsValid()
-			&& Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
-			&& Error != nullptr);
-	Test.TestTrue(TEXT("Execution error is REPLAY_TIMEBASE_LOST"),
-		Error != nullptr && (*Error)->GetStringField(TEXT("code")) == TEXT("REPLAY_TIMEBASE_LOST"));
-	Test.TestTrue(TEXT("The run did not complete after losing its cadence"),
-		Run.bSuccess && RunState(Run) != TEXT("Completed"));
-}
-
 // ---------------------------------------------------------------------------
-// The engine's frame cap can be bypassed without any of the FApp or custom-provider signals: with
-// t.UnsteadyFPS set, UEngine::GetMaxTickRate ignores t.MaxFPS entirely and runs 8-32 fps at random.
-// Application time still tracks wall time, so only native frame-cadence evidence reveals it.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleClockTakeoverCapBypassTest,
-	"Cortex.Replay.Lifecycle.ClockTakeover.CapBypass",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexReplayLifecycleClockTakeoverCapBypassTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
-	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
-	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
-	const FString MapPath = MakeReplayMapAssetPath();
-
-	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
-	const TSharedPtr<FCortexReplaySabotageGuard> Unsteady = CaptureSabotageGuard(TEXT("t.UnsteadyFPS"));
-	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get())
-		|| !TestNotNull(TEXT("t.UnsteadyFPS exists"), Unsteady.Get()))
-	{
-		return false;
-	}
-
-	// A 2 Hz recording: the pinned cadence allows two native frames per wall second, while unsteady
-	// pacing produces 8-32, so the bypass outruns the recording whatever rate the host can render.
-	if (!TestTrue(TEXT("Slow cadence recording published"),
-		PublishCadenceRecording(Fixture, 0.5, MapPath).bSuccess))
-	{
-		return false;
-	}
-
-	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
-	if (!TestTrue(TEXT("Cap bypass replay admitted"), Started.bSuccess))
-	{
-		return false;
-	}
-	const FGuid RunId = ParseRunId(Started);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
-		TEXT("Replaying"), Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, Unsteady](FAutomationTestBase& T)
-		{
-			// Unsteady pacing ignores the cap from this frame on.
-			Unsteady->Variable->Set(1.0f, ECVF_SetByConsole);
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
-		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, Unsteady, Service, RunId](FAutomationTestBase& T)
-		{
-			TestRunLostItsCadence(T, Service->GetRun(RunId, true));
-		}, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
-
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// t.OverrideFPS replaces the application delta after ordinary pacing, without any mode flag or custom
-// provider. Native frames still follow the cap and application time still tracks wall time, so only
-// the sum of the deltas actually consumed reveals that simulation left the recorded time base.
+// t.OverrideFPS replaces the application delta after the engine's fixed step, without any mode flag
+// or custom provider. The owned world then stops receiving the recorded delta, so the next commit has
+// to fail with REPLAY_TIMEBASE_LOST instead of reporting a replay that ran on a foreign clock, and
+// the run still hands fixed stepping back.
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleClockTakeoverForcedDeltaTest,
 	"Cortex.Replay.Lifecycle.ClockTakeover.ForcedDelta",
@@ -3468,22 +3701,26 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleClockTakeoverForcedDeltaT
 bool FCortexReplayLifecycleClockTakeoverForcedDeltaTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
 	const FString MapPath = MakeReplayMapAssetPath();
 
-	const TSharedPtr<FCortexReplayEngineTimingBaseline> Baseline = CaptureEngineTimingBaseline();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
 	const TSharedPtr<FCortexReplaySabotageGuard> Override = CaptureSabotageGuard(TEXT("t.OverrideFPS"));
-	if (!TestNotNull(TEXT("Engine frame cap exists"), Baseline.Get())
-		|| !TestNotNull(TEXT("t.OverrideFPS exists"), Override.Get()))
+	if (!TestNotNull(TEXT("t.OverrideFPS exists"), Override.Get()))
 	{
 		return false;
 	}
 
-	constexpr int32 RecordedHz = 240;
-	if (!TestTrue(TEXT("Forced-delta recording published"),
-		PublishCadenceRecording(Fixture, 1.0 / RecordedHz, MapPath).bSuccess))
+	// Half a second of 60 Hz frames keeps the run owning frames well after the takeover.
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
 	{
 		return false;
 	}
@@ -3499,21 +3736,1284 @@ bool FCortexReplayLifecycleClockTakeoverForcedDeltaTest::RunTest(const FString& 
 		TEXT("Replaying"), Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, Override](FAutomationTestBase& T)
+		[Override](FAutomationTestBase& T)
 		{
-			// An override slower than the recording makes every consumed delta larger than the recorded
-			// cycle, which no single-frame bound can reject: only the accumulated deltas show that
-			// simulation is running on a clock the recording never had.
 			Override->Variable->Set(10.0f, ECVF_SetByConsole);
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
 		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Baseline, Override, Service, RunId](FAutomationTestBase& T)
+		[Clock, Override, Service, RunId](FAutomationTestBase& T)
 		{
-			TestRunLostItsCadence(T, Service->GetRun(RunId, true));
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("Execution error is REPLAY_TIMEBASE_LOST"), RunExecutionErrorCode(Run),
+				FString(TEXT("REPLAY_TIMEBASE_LOST")));
+			TestHumanClockRestored(T);
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 
 	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Another owner switching the engine to its own fixed step mid-run (a movie capture, a profiling
+// tool) takes application time away from the recording. The run must fail with
+// REPLAY_TIMEBASE_LOST rather than silently overwrite that owner's step and complete, and it must
+// leave the other owner's clock exactly as that owner set it.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleFrameStepReplacedTest,
+	"Cortex.Replay.Lifecycle.ReplayFailsWhenFrameStepIsReplaced",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleFrameStepReplacedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	// Half a second of 60 Hz frames keeps the run owning frames well after the takeover.
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Replaced-step replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	constexpr double ForeignFixedDeltaSeconds = 1.0 / 24.0;
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[ForeignFixedDeltaSeconds](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("The replay owns fixed stepping while it consumes recorded frames"),
+				FApp::UseFixedTimeStep());
+			FApp::SetFixedDeltaTime(ForeignFixedDeltaSeconds);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock, Service, RunId, ForeignFixedDeltaSeconds](FAutomationTestBase& T)
+		{
+			T.TestEqual(TEXT("Execution error is REPLAY_TIMEBASE_LOST"),
+				RunExecutionErrorCode(Service->GetRun(RunId, true)), FString(TEXT("REPLAY_TIMEBASE_LOST")));
+			T.TestTrue(TEXT("The other owner's fixed step is left exactly as it set it"),
+				FApp::UseFixedTimeStep() && FApp::GetFixedDeltaTime() == ForeignFixedDeltaSeconds);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+namespace
+{
+/** Owns one Slate responsive-mode throttle request and always gives it back. */
+struct FCortexReplayResponsiveModeGuard
+{
+	FThrottleRequest Request;
+
+	void Enter()
+	{
+		if (!Request.IsValid())
+		{
+			Request = FSlateThrottleManager::Get().EnterResponsiveMode();
+		}
+	}
+
+	void Leave()
+	{
+		if (Request.IsValid())
+		{
+			FSlateThrottleManager::Get().LeaveResponsiveMode(Request);
+		}
+	}
+
+	~FCortexReplayResponsiveModeGuard()
+	{
+		Leave();
+	}
+};
+
+/** Holds Slate responsive mode for a number of engine frames, then leaves it. */
+class FCortexReplayHoldResponsiveMode : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayHoldResponsiveMode(TSharedRef<FCortexReplayResponsiveModeGuard> InGuard, uint64 InFrames,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Guard(MoveTemp(InGuard)), Frames(InFrames), KeepAlive(MoveTemp(InKeepAlive)) {}
+	bool Update() override
+	{
+		if (!bEntered)
+		{
+			bEntered = true;
+			Guard->Enter();
+			StartFrame = GFrameCounter;
+			return false;
+		}
+		if (GFrameCounter - StartFrame >= Frames)
+		{
+			Guard->Leave();
+			return true;
+		}
+		return false;
+	}
+private:
+	TSharedRef<FCortexReplayResponsiveModeGuard> Guard;
+	uint64 Frames;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+	bool bEntered = false;
+	uint64 StartFrame = 0;
+};
+
+/** library.json's next_recording_id, or -1 when the file cannot be read. */
+int64 ReadNextRecordingId(const FCortexReplayTestFixture& Fixture)
+{
+	FString Text;
+	const FString Path = FPaths::Combine(Fixture.GetProjectRoot(), TEXT(".cortex/replay/library.json"));
+	if (!FFileHelper::LoadFileToString(Text, *Path))
+	{
+		return -1;
+	}
+	TSharedPtr<FJsonObject> Object;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
+	double Value = 0.0;
+	if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid()
+		|| !Object->TryGetNumberField(TEXT("next_recording_id"), Value))
+	{
+		return -1;
+	}
+	return static_cast<int64>(Value);
+}
+
+bool IsNullJsonField(const FCortexCommandResult& Result, const TCHAR* Field)
+{
+	if (!Result.Data.IsValid())
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonValue> Value = Result.Data->TryGetField(Field);
+	return Value.IsValid() && Value->Type == EJson::Null;
+}
+}
+
+// ---------------------------------------------------------------------------
+// Audit RUN-01: Slate responsive mode (a menu, a drag, a modal) throttles the editor and makes
+// UEditorEngine skip PIE world ticks. The replay's frame ownership must survive it: the frame clock
+// disables the Slate throttle while it owns the clock, so every recorded frame still gets exactly one
+// owned world tick and the run completes instead of failing REPLAY_TIMEBASE_LOST.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleSlateResponsiveModeTest,
+	"Cortex.Replay.Lifecycle.ReplaySurvivesSlateResponsiveMode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleSlateResponsiveModeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+	const TSharedRef<FCortexReplayResponsiveModeGuard> Throttle = MakeShared<FCortexReplayResponsiveModeGuard>();
+
+	// About one second of 60 Hz frames: W down at 0, up at 0.9, run ends at 1.0.
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.9, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true, 1.0))
+	{
+		return false;
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayHoldResponsiveMode(Throttle, 6, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock, Throttle, Service, RunId](FAutomationTestBase& T)
+		{
+			Throttle->Leave();
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("A responsive-mode burst does not fail the run"), RunState(Run),
+				FString(TEXT("Completed")));
+			T.TestEqual(TEXT("No execution error is reported"), RunExecutionErrorCode(Run), FString());
+			TestHumanClockRestored(T);
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit RUN-09: t.OverrideFPS replaces the application delta after the fixed step, so replay cannot
+// own the recorded clock. Frame-clock admission refuses the start synchronously as
+// INCOMPATIBLE_PREREQUISITES while the override is active, alongside fixed-step, benchmarking,
+// fixed-frame-rate and custom-time-step modes.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRefusesOverriddenFrameRateTest,
+	"Cortex.Replay.Lifecycle.ReplayRefusesOverriddenFrameRate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleRefusesOverriddenFrameRateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+	const TSharedPtr<FCortexReplaySabotageGuard> Override = CaptureSabotageGuard(TEXT("t.OverrideFPS"));
+	if (!TestNotNull(TEXT("t.OverrideFPS exists"), Override.Get()))
+	{
+		return false;
+	}
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.25, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+
+	Override->Variable->Set(30.0f, ECVF_SetByConsole);
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	const bool bPieStarted = HasAnyPIEWorldContext() || (GEditor && GEditor->PlayWorld != nullptr);
+	const FCortexCommandResult Current = Service->GetCurrentOperation();
+	if (Started.bSuccess)
+	{
+		// Do not leave an admitted run behind when the refusal is missing.
+		Service->CancelReplay(ParseRunId(Started), true);
+	}
+
+	TestFalse(TEXT("A replay is not admitted while t.OverrideFPS replaces the frame delta"), Started.bSuccess);
+	TestEqual(TEXT("The refusal names the timing prerequisite"), Started.ErrorCode,
+		FString(CortexReplayErrorCodes::IncompatiblePrerequisites));
+	TestFalse(TEXT("The refused start left no operation behind"), Current.Data.IsValid());
+	TestFalse(TEXT("The refused start requested no PIE session"), bPieStarted);
+	if (Started.bSuccess)
+	{
+		ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit S3: a terminal run that is not an Error still has a cause. An Interrupted run (PIE lost)
+// exposes a non-empty execution_error.code, and a run cancelled by permission revocation exposes
+// PERMISSION_DENIED: the run JSON emits execution_error for every non-Completed terminal state that
+// retained a cause, not only for Error.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleInterruptedRunRetainsCauseTest,
+	"Cortex.Replay.Lifecycle.InterruptedRunRetainsCause",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleInterruptedRunRetainsCauseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.25, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true)
+		|| !PublishReplayRecording(*this, *Fixture, 2, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true, 1.0))
+	{
+		return false;
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("First AI replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid InterruptedId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, InterruptedId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase&)
+		{
+			if (GEditor) { GEditor->RequestEndPlayMap(); }
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, InterruptedId, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, InterruptedId, Fixture, Clock](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(InterruptedId, true);
+			T.TestEqual(TEXT("PIE loss interrupts the run"), RunState(Run), FString(TEXT("Interrupted")));
+			T.TestNotEqual(TEXT("The interrupted run exposes the cause of the interruption"),
+				RunExecutionErrorCode(Run), FString());
+
+			// Second run: revoke the live permission while it replays; the cancellation cause must
+			// be retained as PERMISSION_DENIED.
+			const FCortexCommandResult Second = Service->StartReplay(2, ECortexReplayOrigin::AI);
+			if (!T.TestTrue(TEXT("Second AI replay admitted"), Second.bSuccess))
+			{
+				return;
+			}
+			const FGuid CancelledId = ParseRunId(Second);
+			FAutomationTestBase* Test = &T;
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(Test, Service, CancelledId,
+				TEXT("Replaying"), Fixture));
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(Test, Service, CancelledId, 2, Fixture));
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(Test,
+				[Fixture](FAutomationTestBase& Inner)
+				{
+					Inner.TestTrue(TEXT("Live permission revoked during replay"),
+						SetMetadataAIEnabled(ReplayMetadataPath(*Fixture, 2), false));
+				}, Fixture));
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(Test, Service, CancelledId,
+				TEXT("Cancelled"), Fixture));
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(Test, Fixture));
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(Test,
+				[Service, CancelledId](FAutomationTestBase& Inner)
+				{
+					const FCortexCommandResult Cancelled = Service->GetRun(CancelledId, true);
+					Inner.TestEqual(TEXT("Revocation cancels the run"), RunState(Cancelled),
+						FString(TEXT("Cancelled")));
+					Inner.TestEqual(TEXT("The cancelled run exposes the revocation cause"),
+						RunExecutionErrorCode(Cancelled), FString(CortexReplayErrorCodes::PermissionDenied));
+				}, Fixture));
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit C6/S8: refusing a capture because an unrelated PIE is running does not consume a recording
+// id and says EDITOR_BUSY. StartCapture checks the editor for unrelated PIE before reserving the id,
+// so the refusal leaves the next recording id unchanged.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureRefusedKeepsIdTest,
+	"Cortex.Replay.Lifecycle.CaptureRefusedWhilePIERunningKeepsRecordingId",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleCaptureRefusedKeepsIdTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+
+	// Materialise library.json so the counter has a concrete value to compare.
+	{
+		FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+		int32 Seeded = 0;
+		if (!TestTrue(TEXT("Counter seeded"), Library.ReserveId(Seeded).bSuccess))
+		{
+			return false;
+		}
+	}
+	const int64 CounterBefore = ReadNextRecordingId(*Fixture);
+	if (!TestTrue(TEXT("The recording counter is readable"), CounterBefore > 0))
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitExternalPiePlaying(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Fixture, MapPath, CounterBefore](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Started = Service->StartCapture(MapPath);
+			T.TestFalse(TEXT("Capture is refused while an unrelated PIE runs"), Started.bSuccess);
+			T.TestEqual(TEXT("The refusal is EDITOR_BUSY"), Started.ErrorCode,
+				FString(CortexReplayErrorCodes::EditorBusy));
+			T.TestEqual(TEXT("The refused capture consumed no recording id"),
+				ReadNextRecordingId(*Fixture), CounterBefore);
+			T.TestTrue(TEXT("The unrelated PIE world is untouched"),
+				GEditor && GEditor->PlayWorld != nullptr);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit RUN-02/S7: cancel_replay reports the same run snapshot get_run reports right after. Once
+// cancellation has moved the run to Finalizing, current_frame and waiting are null in both: one live
+// predicate (not Finalizing, not terminal) builds the run JSON for every reader, so the two responses
+// cannot disagree. This test pins that agreement.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCancelResponseMatchesGetRunTest,
+	"Cortex.Replay.Lifecycle.CancelResponseMatchesGetRun",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleCancelResponseMatchesGetRunTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("AI replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId, Clock](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Cancel = Service->CancelReplay(RunId, true);
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestTrue(TEXT("Cancel succeeded"), Cancel.bSuccess);
+			T.TestTrue(TEXT("get_run succeeded"), Run.bSuccess);
+			T.TestEqual(TEXT("Both responses describe the same state"), RunState(Cancel), RunState(Run));
+			T.TestTrue(TEXT("cancel_replay reports no current frame once finalizing"),
+				IsNullJsonField(Cancel, TEXT("current_frame")));
+			T.TestTrue(TEXT("get_run reports no current frame once finalizing"),
+				IsNullJsonField(Run, TEXT("current_frame")));
+			T.TestTrue(TEXT("cancel_replay reports no waiting wait once finalizing"),
+				IsNullJsonField(Cancel, TEXT("waiting")));
+			T.TestTrue(TEXT("get_run reports no waiting wait once finalizing"),
+				IsNullJsonField(Run, TEXT("waiting")));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+
+	return true;
+}
+
+namespace
+{
+constexpr TCHAR UiWaitRootTag[] = TEXT("CortexReplayWaitRoot");
+constexpr TCHAR UiWaitControlTag[] = TEXT("CortexReplayWaitControl");
+
+/** A numeric field of the run's execution_error.details, or Default when absent. */
+double RunErrorDetailNumber(const FCortexCommandResult& Run, const TCHAR* Field, double Default)
+{
+	const TSharedPtr<FJsonObject>* Error = nullptr;
+	const TSharedPtr<FJsonObject>* Details = nullptr;
+	double Value = Default;
+	if (Run.Data.IsValid() && Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
+		&& Error != nullptr && Error->IsValid()
+		&& (*Error)->TryGetObjectField(TEXT("details"), Details) && Details != nullptr && Details->IsValid())
+	{
+		(*Details)->TryGetNumberField(Field, Value);
+	}
+	return Value;
+}
+
+/** A numeric top-level field of the run, or Default when absent. */
+double RunNumber(const FCortexCommandResult& Run, const TCHAR* Field, double Default)
+{
+	double Value = Default;
+	if (Run.Data.IsValid())
+	{
+		Run.Data->TryGetNumberField(Field, Value);
+	}
+	return Value;
+}
+
+/**
+ * Publishes recording 1 for the UI-wait tests: a pointer press at the viewport's top-left corner whose
+ * supported guard names a tagged control that only exists once a test adds it, then its release. Until
+ * the control exists the live observation is pointer-pending, so the run blocks on a UI wait.
+ */
+bool PublishUiWaitRecording(FAutomationTestBase& Test, FCortexReplayTestFixture& Fixture, const FString& MapPath)
+{
+	const TSharedRef<FCortexEditorPhysicalInputWidgetIdentity> Identity =
+		MakeShared<FCortexEditorPhysicalInputWidgetIdentity>();
+	Identity->RootKind = ECortexEditorUIRootKind::Slate;
+	Identity->Surface = ECortexEditorUISurface::Viewport;
+	Identity->Discriminator = ECortexEditorUIRootDiscriminator::RootTag;
+	Identity->RootTag = UiWaitRootTag;
+	Identity->TargetTag = UiWaitControlTag;
+	Identity->IdentitySha256 = FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(*Identity);
+
+	FCortexReplayEvent Down = MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::PointerDown,
+		EKeys::LeftMouseButton);
+	Down.Input.ViewportPosition = FVector2D(1.0, 1.0);
+	FCortexReplayInteractionGuard Guard;
+	Guard.UICoverage = ECortexEditorUICoverage::Supported;
+	Guard.UITarget = Identity;
+	Guard.ExpectedLocalPosition = FVector2D::ZeroVector;
+	Down.Guard = Guard;
+
+	FCortexReplayEvent Up = MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::PointerUp,
+		EKeys::LeftMouseButton);
+	Up.Input.ViewportPosition = FVector2D(1.0, 1.0);
+	return PublishReplayRecording(Test, Fixture, 1, MapPath, {Down, Up}, true);
+}
+
+/** Adds the tagged root and control the UI-wait recording names to the owned PIE game viewport. */
+bool AddUiWaitWidgetToOwnedViewport(FAutomationTestBase& Test)
+{
+	if (GEngine != nullptr)
+	{
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if (Context.WorldType != EWorldType::PIE || Context.GameViewport == nullptr)
+			{
+				continue;
+			}
+			const TSharedRef<SBorder> Control = SNew(SBorder)
+				.Visibility(EVisibility::Visible)
+				.BorderBackgroundColor(FLinearColor::Transparent);
+			Control->SetTag(FName(UiWaitControlTag));
+			const TSharedRef<SBox> Root = SNew(SBox)[Control];
+			Root->SetTag(FName(UiWaitRootTag));
+			Context.GameViewport->AddViewportWidgetContent(Root);
+			return true;
+		}
+	}
+	Test.AddError(TEXT("No owned PIE game viewport to host the UI-wait control"));
+	return false;
+}
+
+/** Waits until get_run reports a blocked UI wait, then runs one check in that same frame. */
+class FCortexReplayAwaitUiWait : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayAwaitUiWait(FAutomationTestBase* InTest, TSharedRef<FCortexReplayService> InService,
+		FGuid InRunId, TFunction<void(FAutomationTestBase&, const FCortexCommandResult&)> InOnWaiting,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), RunId(InRunId), OnWaiting(MoveTemp(InOnWaiting))
+		, KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Run = Service->GetRun(RunId, true);
+		if (!Run.bSuccess)
+		{
+			Test->AddError(TEXT("get_run failed while awaiting a UI wait"));
+			return true;
+		}
+		const TSharedPtr<FJsonObject>* Waiting = nullptr;
+		if (Run.Data.IsValid() && Run.Data->TryGetObjectField(TEXT("waiting"), Waiting)
+			&& Waiting != nullptr && Waiting->IsValid())
+		{
+			Test->TestEqual(TEXT("The wait is on the pending pointer observation"),
+				(*Waiting)->GetStringField(TEXT("reason")), FString(TEXT("pointer_pending")));
+			OnWaiting(*Test, Run);
+			return true;
+		}
+		if (IsTerminalRunState(RunState(Run)))
+		{
+			Test->AddError(FString::Printf(TEXT("The run ended (%s) without ever waiting"), *RunState(Run)));
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > ReplayReadyWatchdogSeconds * 2)
+		{
+			Test->AddError(TEXT("The run never reported a UI wait"));
+			return true;
+		}
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	FGuid RunId;
+	TFunction<void(FAutomationTestBase&, const FCortexCommandResult&)> OnWaiting;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+
+/** Stalls every engine frame, so a host slower than the recording falls behind it. */
+struct FCortexReplayEndFrameStall
+{
+	FDelegateHandle Handle;
+
+	void Install(float StallSeconds)
+	{
+		Handle = FCoreDelegates::OnEndFrame.AddLambda([StallSeconds]()
+		{
+			FPlatformProcess::SleepNoStats(StallSeconds);
+		});
+	}
+
+	void Remove()
+	{
+		if (Handle.IsValid())
+		{
+			FCoreDelegates::OnEndFrame.Remove(Handle);
+			Handle.Reset();
+		}
+	}
+
+	~FCortexReplayEndFrameStall()
+	{
+		Remove();
+	}
+};
+
+/** The lag samples one run reported while it was live. */
+struct FCortexReplayBehindSamples
+{
+	double MaxBehindSeconds = 0.0;
+	int32 Samples = 0;
+	FString FinalState;
+	double FinalBehindSeconds = -1.0;
+};
+
+/** Samples get_run.behind_seconds every frame until the run is terminal. */
+class FCortexReplaySampleBehind : public IAutomationLatentCommand
+{
+public:
+	FCortexReplaySampleBehind(FAutomationTestBase* InTest, TSharedRef<FCortexReplayService> InService,
+		FGuid InRunId, TSharedRef<FCortexReplayBehindSamples> InSamples,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), RunId(InRunId), Samples(MoveTemp(InSamples))
+		, KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Run = Service->GetRun(RunId, true);
+		if (!Run.bSuccess)
+		{
+			Test->AddError(TEXT("get_run failed while sampling lag"));
+			return true;
+		}
+		const double Behind = RunNumber(Run, TEXT("behind_seconds"), -1.0);
+		Samples->MaxBehindSeconds = FMath::Max(Samples->MaxBehindSeconds, Behind);
+		++Samples->Samples;
+		if (IsTerminalRunState(RunState(Run)))
+		{
+			Samples->FinalState = RunState(Run);
+			Samples->FinalBehindSeconds = Behind;
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > ReplayReadyWatchdogSeconds * 4)
+		{
+			Test->AddError(TEXT("The slow-host run never finalized"));
+			return true;
+		}
+		return false;
+	}
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	FGuid RunId;
+	TSharedRef<FCortexReplayBehindSamples> Samples;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+
+/** Counts the log lines of one category that contain a fragment. */
+class FCortexReplayLogMatchCounter : public FOutputDevice
+{
+public:
+	explicit FCortexReplayLogMatchCounter(FString InFragment)
+		: Fragment(MoveTemp(InFragment))
+	{
+		GLog->AddOutputDevice(this);
+	}
+
+	~FCortexReplayLogMatchCounter() override
+	{
+		GLog->RemoveOutputDevice(this);
+	}
+
+	int32 GetCount() const { return Count.GetValue(); }
+
+	void Serialize(const TCHAR* Message, ELogVerbosity::Type, const FName& Category) override
+	{
+		if (Category == FName(TEXT("LogCortexReplay")) && FCString::Strstr(Message, *Fragment) != nullptr)
+		{
+			Count.Increment();
+		}
+	}
+
+	bool CanBeUsedOnAnyThread() const override { return true; }
+
+private:
+	FString Fragment;
+	FThreadSafeCounter Count;
+};
+
+/**
+ * With the run store unwritable, the finished run keeps retrying its terminal write - once per second,
+ * not once per engine frame - holds its record while it does, and publishes as soon as the store
+ * is writable again.
+ */
+class FCortexReplayAwaitPersistenceRetry : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayAwaitPersistenceRetry(FAutomationTestBase* InTest, TSharedRef<FCortexReplayService> InService,
+		FGuid InRunId, FString InRunsPath, TSharedRef<FCortexReplayLogMatchCounter> InFailures,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive = nullptr)
+		: Test(InTest), Service(MoveTemp(InService)), RunId(InRunId), RunsPath(MoveTemp(InRunsPath))
+		, Failures(MoveTemp(InFailures)), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		const double Now = FPlatformTime::Seconds();
+		if (PhaseStart == 0.0) { PhaseStart = Now; }
+		const FCortexCommandResult Run = Service->GetRun(RunId, true);
+		switch (Phase)
+		{
+		case EPhase::AwaitFirstFailure:
+			if (Failures->GetCount() >= 1)
+			{
+				BaselineFailures = Failures->GetCount();
+				Phase = EPhase::Observe;
+				PhaseStart = Now;
+			}
+			else if (Now - PhaseStart > ReplayTeardownWatchdogSeconds * 3)
+			{
+				Test->AddError(TEXT("The run never attempted its terminal write"));
+				return true;
+			}
+			return false;
+		case EPhase::Observe:
+			if (Now - PhaseStart < ObserveSeconds)
+			{
+				return false;
+			}
+			Test->TestTrue(FString::Printf(
+				TEXT("The terminal write retries at 1 Hz, not every engine frame (%d retries in %.1f s)"),
+				Failures->GetCount() - BaselineFailures, ObserveSeconds),
+				Failures->GetCount() - BaselineFailures <= 5);
+			Test->TestEqual(TEXT("The unpublished run keeps its record while the write fails"),
+				RunState(Run), FString(TEXT("Finalizing")));
+			IFileManager::Get().Delete(*RunsPath, false, true, true);
+			IFileManager::Get().MakeDirectory(*RunsPath, true);
+			Phase = EPhase::AwaitPublished;
+			PhaseStart = Now;
+			return false;
+		case EPhase::AwaitPublished:
+			if (RunState(Run) == TEXT("Cancelled"))
+			{
+				Test->TestTrue(TEXT("The terminal record is on disk once the store is writable"),
+					IFileManager::Get().FileExists(*FPaths::Combine(RunsPath,
+						RunId.ToString(EGuidFormats::DigitsWithHyphens).ToLower() + TEXT(".json"))));
+				return true;
+			}
+			if (Now - PhaseStart > 5.0)
+			{
+				Test->AddError(TEXT("The run never published after the store became writable"));
+				return true;
+			}
+			return false;
+		}
+		return true;
+	}
+private:
+	enum class EPhase : uint8 { AwaitFirstFailure, Observe, AwaitPublished };
+	static constexpr double ObserveSeconds = 3.5;
+
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	FGuid RunId;
+	FString RunsPath;
+	TSharedRef<FCortexReplayLogMatchCounter> Failures;
+	EPhase Phase = EPhase::AwaitFirstFailure;
+	double PhaseStart = 0.0;
+	int32 BaselineFailures = 0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+}
+
+// ---------------------------------------------------------------------------
+// Audit C9/RUN-01: a recorded frame whose world ticked must tick the owned world exactly once. When the
+// owned world stops ticking mid-run, the next frame is not committed and the run fails with a precise
+// REPLAY_TIMEBASE_LOST instead of completing on a silently stalled world.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleOwnedWorldStopsTickingTest,
+	"Cortex.Replay.Lifecycle.ReplayFailsWhenOwnedWorldStopsTicking",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleOwnedWorldStopsTickingTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	TArray<double> Deltas;
+	Deltas.Init(1.0 / 60.0, 40);
+	if (!TestTrue(TEXT("Recording published"),
+		PublishFrameStreamRecording(Fixture, MapPath, Deltas, 0, 30).bSuccess))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			if (T.TestNotNull(TEXT("The owned PIE world exists"), PlayWorld))
+			{
+				// The world stays alive but is never ticked again, like a throttled or suspended editor.
+				PlayWorld->SetShouldTick(false);
+			}
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock, Service, RunId](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("The stalled world fails the run with REPLAY_TIMEBASE_LOST"),
+				RunExecutionErrorCode(Run), FString(TEXT("REPLAY_TIMEBASE_LOST")));
+			T.TestEqual(TEXT("The failure says the recorded tick never happened"),
+				RunErrorDetailNumber(Run, TEXT("observed_world_ticks"), -1.0), 0.0);
+			T.TestEqual(TEXT("The failure names the expected tick"),
+				RunErrorDetailNumber(Run, TEXT("expected_world_ticks"), -1.0), 1.0);
+			T.TestTrue(TEXT("The stalled frame was not committed"),
+				RunNumber(Run, TEXT("completed_frames"), 0.0) < RunNumber(Run, TEXT("frame_count"), 0.0));
+			TestHumanClockRestored(T);
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit RUN-01/C9: a recorded frame that consumed input without a world tick cannot be replayed while the
+// replay world does tick. The run never ticks the world silently: it fails with REPLAY_TIMEBASE_LOST,
+// naming the recorded frame, the expected zero ticks and the one it observed.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRecordedFrameWithoutTickTest,
+	"Cortex.Replay.Lifecycle.ReplayFailsWhenRecordedFrameHasNoWorldTick",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleRecordedFrameWithoutTickTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	constexpr int32 TicklessFrame = 3;
+	TArray<double> Deltas;
+	Deltas.Init(1.0 / 60.0, 40);
+	if (!TestTrue(TEXT("Recording with a tickless frame published"),
+		PublishFrameStreamRecording(Fixture, MapPath, Deltas, 0, 30, TicklessFrame).bSuccess))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Error"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock, Service, RunId](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("A ticking world on a tickless recorded frame is REPLAY_TIMEBASE_LOST"),
+				RunExecutionErrorCode(Run), FString(TEXT("REPLAY_TIMEBASE_LOST")));
+			T.TestEqual(TEXT("The failure names the recorded frame"),
+				RunErrorDetailNumber(Run, TEXT("frame_index"), -1.0), static_cast<double>(TicklessFrame));
+			T.TestEqual(TEXT("The recording expected no world tick"),
+				RunErrorDetailNumber(Run, TEXT("expected_world_ticks"), -1.0), 0.0);
+			T.TestEqual(TEXT("The replay world ticked once"),
+				RunErrorDetailNumber(Run, TEXT("observed_world_ticks"), -1.0), 1.0);
+			T.TestEqual(TEXT("The frames before it were committed"),
+				RunNumber(Run, TEXT("completed_frames"), -1.0), static_cast<double>(TicklessFrame));
+			TestHumanClockRestored(T);
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit RUN-06: a host slower than the recording does not fail the run; it falls behind. While the run is
+// live get_run reports the lag, and the run still completes with every frame verified.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleSlowHostReportsBehindTest,
+	"Cortex.Replay.Lifecycle.ReplayOnSlowHostReportsBehindAndCompletes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleSlowHostReportsBehindTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	// Half a second of 60 Hz frames, each followed by a 30 ms host stall.
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.5, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+	const TSharedRef<FCortexReplayEndFrameStall> Stall = MakeShared<FCortexReplayEndFrameStall>();
+	Stall->Install(0.03f);
+	const TSharedRef<FCortexReplayBehindSamples> Samples = MakeShared<FCortexReplayBehindSamples>();
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Replay admitted"), Started.bSuccess))
+	{
+		Stall->Remove();
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplaySampleBehind(this, Service, RunId, Samples, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock, Stall, Samples](FAutomationTestBase& T)
+		{
+			Stall->Remove();
+			T.TestEqual(TEXT("A slow host falls behind instead of failing the run"),
+				Samples->FinalState, FString(TEXT("Completed")));
+			T.TestTrue(FString::Printf(TEXT("The live run reported its lag (max %.4f s over %d samples)"),
+				Samples->MaxBehindSeconds, Samples->Samples), Samples->MaxBehindSeconds > 0.0);
+			T.TestTrue(TEXT("The terminal record keeps the last paced frame's lag"),
+				Samples->FinalBehindSeconds >= 0.0);
+			TestHumanClockRestored(T);
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A live UI wait inside an owned run: the press waits on a tagged control, the control appears, the press
+// is dispatched, the frame commits unverified (its wait frames ran on the editor's clock) and the run goes
+// on to complete without REPLAY_TIMEBASE_LOST. The wait is reported as authorized wait time.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleUiWaitCommitsTest,
+	"Cortex.Replay.Lifecycle.UIWaitCommitsWithoutTimebaseLoss",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleUiWaitCommitsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishUiWaitRecording(*this, *Fixture, MapPath))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitUiWait(this, Service, RunId,
+		[](FAutomationTestBase& T, const FCortexCommandResult& Run)
+		{
+			T.TestEqual(TEXT("Nothing is dispatched while the press waits"), RunDispatchedEvents(Run), 0);
+			AddUiWaitWidgetToOwnedViewport(T);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Completed"), Fixture, ReplayReadyWatchdogSeconds * 4));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock, Service, RunId](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("A live UI wait does not lose the time base"), RunExecutionErrorCode(Run), FString());
+			T.TestEqual(TEXT("Both recorded events were dispatched"), RunDispatchedEvents(Run), 2);
+			T.TestTrue(TEXT("The wait is reported as authorized wait time"),
+				RunNumber(Run, TEXT("authorized_wait_seconds"), 0.0) > 0.0);
+			T.TestEqual(TEXT("Every frame was committed"),
+				RunNumber(Run, TEXT("completed_frames"), -1.0), RunNumber(Run, TEXT("frame_count"), -2.0));
+			TestHumanClockRestored(T);
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit RUN-02/S7: cancelling a run that is blocked on a UI wait reports the same snapshot get_run reports
+// next - no stale waiting object, no current frame - and the pending press is never dispatched.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCancelDuringUiWaitTest,
+	"Cortex.Replay.Lifecycle.CancelDuringUIWaitReportsNoWaiting",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleCancelDuringUiWaitTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishUiWaitRecording(*this, *Fixture, MapPath))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitUiWait(this, Service, RunId,
+		[Service, RunId](FAutomationTestBase& T, const FCortexCommandResult&)
+		{
+			const FCortexCommandResult Cancel = Service->CancelReplay(RunId, true);
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestTrue(TEXT("Cancel succeeded"), Cancel.bSuccess);
+			T.TestEqual(TEXT("Both responses describe the same state"), RunState(Cancel), RunState(Run));
+			T.TestTrue(TEXT("cancel_replay reports no waiting object"), IsNullJsonField(Cancel, TEXT("waiting")));
+			T.TestTrue(TEXT("get_run reports no waiting object"), IsNullJsonField(Run, TEXT("waiting")));
+			T.TestTrue(TEXT("cancel_replay reports no current frame"), IsNullJsonField(Cancel, TEXT("current_frame")));
+			T.TestTrue(TEXT("get_run reports no current frame"), IsNullJsonField(Run, TEXT("current_frame")));
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock, Service, RunId](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("The cancelled run is Cancelled"), RunState(Run), FString(TEXT("Cancelled")));
+			T.TestEqual(TEXT("The pending press was never dispatched"), RunDispatchedEvents(Run), 0);
+			TestHumanClockRestored(T);
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit RUN-07: a terminal record that cannot be written is retried once per second, not once per engine
+// frame, and the run keeps its record until the write succeeds.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTerminalPersistenceRetryTest,
+	"Cortex.Replay.Lifecycle.TerminalPersistenceRetriesAtOneHertz",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleTerminalPersistenceRetryTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.25, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+
+	// A file where the run store's directory belongs: every terminal write fails until it is removed.
+	const FString RunsPath = FPaths::Combine(Fixture->GetProjectRoot(), TEXT("Saved/CortexReplay/Runs"));
+	IFileManager::Get().DeleteDirectory(*RunsPath, false, true);
+	if (!TestTrue(TEXT("The run store is blocked"), FFileHelper::SaveStringToFile(TEXT("blocked"), *RunsPath)))
+	{
+		return false;
+	}
+	const TSharedRef<FCortexReplayLogMatchCounter> Failures =
+		MakeShared<FCortexReplayLogMatchCounter>(TEXT("terminal persistence failed"));
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("Replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+	TestTrue(TEXT("The run is cancelled"), Service->CancelReplay(RunId, true).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitPersistenceRetry(this, Service, RunId, RunsPath, Failures, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Clock, Failures](FAutomationTestBase& T)
+		{
+			TestHumanClockRestored(T);
+		}, Fixture));
+
+	return true;
+}
+
+namespace
+{
+/**
+ * Publishes one live-target recording altered by Mutate, replays it, and asserts the run ends as Error
+ * INCOMPATIBLE_PREREQUISITES naming Field with nothing dispatched.
+ */
+bool RunPrerequisiteMismatchCase(FAutomationTestBase& Test, const TCHAR* Field,
+	TFunctionRef<void(FCortexReplaySnapshot&)> Mutate)
+{
+	if (!GEditor) { Test.AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	FCortexReplaySnapshot Snapshot = Fixture->MakeRecording(1, true,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.25, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) });
+	Snapshot.Metadata.MapAssetPath = MakeReplayMapAssetPath();
+	Snapshot.InitialState.PawnClassPath = ReplayPawnClassPath;
+	Mutate(Snapshot);
+	FCortexReplayLibrary Library(Fixture->GetProjectRoot());
+	if (!Test.TestTrue(TEXT("Recording published"), Library.Publish(Snapshot).bSuccess))
+	{
+		return false;
+	}
+
+	// Prerequisites are compared at readiness against the live owned target, so the start is admitted.
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!Test.TestTrue(TEXT("Replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+	const FString FieldName(Field);
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(&Test, Service, RunId, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(&Test, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(&Test,
+		[Service, RunId, FieldName](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("The mismatch ends the run as Error"), RunState(Run), FString(TEXT("Error")));
+			T.TestEqual(TEXT("The mismatch is INCOMPATIBLE_PREREQUISITES"), RunExecutionErrorCode(Run),
+				FString(CortexReplayErrorCodes::IncompatiblePrerequisites));
+			T.TestEqual(TEXT("The mismatch dispatches nothing"), RunDispatchedEvents(Run), 0);
+			const TSharedPtr<FJsonObject>* Error = nullptr;
+			const TSharedPtr<FJsonObject>* Details = nullptr;
+			if (T.TestTrue(TEXT("The mismatch carries details"),
+				Run.Data.IsValid() && Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
+				&& Error != nullptr && Error->IsValid()
+				&& (*Error)->TryGetObjectField(TEXT("details"), Details) && Details != nullptr && Details->IsValid()))
+			{
+				T.TestEqual(TEXT("The mismatch names the field"), (*Details)->GetStringField(TEXT("field")), FieldName);
+			}
+		}, Fixture));
+	return true;
+}
+}
+
+// ---------------------------------------------------------------------------
+// Audit PIF-05: a recording captured under another input configuration does not replay: the run ends as
+// Error INCOMPATIBLE_PREREQUISITES naming input_config_sha256 before any input is dispatched.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleInputConfigMismatchTest,
+	"Cortex.Replay.Lifecycle.ReplayRefusesMismatchedInputConfig",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleInputConfigMismatchTest::RunTest(const FString& Parameters)
+{
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	return RunPrerequisiteMismatchCase(*this, TEXT("input_config_sha256"), [](FCortexReplaySnapshot& Snapshot)
+	{
+		Snapshot.Metadata.Prerequisites.InputConfigSha256 = FString::ChrN(64, TEXT('f'));
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Audit PIF-01: a recording whose viewport began with a different mouse-capture state does not replay
+// (mouse look would be dropped or an extra click injected): Error INCOMPATIBLE_PREREQUISITES naming
+// viewport_mouse_capture before any input is dispatched.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleViewportCaptureMismatchTest,
+	"Cortex.Replay.Lifecycle.ReplayRefusesMismatchedViewportCapture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleViewportCaptureMismatchTest::RunTest(const FString& Parameters)
+{
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	return RunPrerequisiteMismatchCase(*this, TEXT("viewport_mouse_capture"), [](FCortexReplaySnapshot& Snapshot)
+	{
+		Snapshot.InitialState.Viewport.bMouseCapture = !Snapshot.InitialState.Viewport.bMouseCapture;
+	});
 }

@@ -2,6 +2,7 @@
 
 #include "CortexCommandRouter.h"
 #include "CortexReplayErrorCodes.h"
+#include "CortexReplayScheduler.h"
 #include "CortexReplayModule.h"
 
 #include "Dom/JsonObject.h"
@@ -19,10 +20,10 @@
 namespace
 {
 constexpr TCHAR StoreFormat[] = TEXT("CortexReplayRun");
-constexpr int32 StoreSchemaVersion = 1;
-constexpr int32 StoreFramesSchemaVersion = 2;
-/** The scheduler's fixed cumulative authorized-wait budget; retained records are bounded by it. */
-constexpr double StoreMaxAuthorizedWaitSeconds = 5.0;
+/** Schemas 1 and 2 predate the current frame identity and load as legacy summaries. */
+constexpr int32 StoreFirstSchemaVersion = 1;
+constexpr int32 StoreSecondSchemaVersion = 2;
+constexpr int32 StoreSchemaVersion = 3;
 
 /** Reads a mandatory integral field without coercion; rejects fractions and out-of-range values. */
 bool StoreTryReadInt32(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field, int32& Out,
@@ -194,6 +195,180 @@ FString FCortexReplayRunStore::RecordPath(const FGuid& Id) const
 bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, bool bPreFrameAllowed,
 	FString& OutReason);
 
+/**
+ * Parses one persisted record into a terminal run record. OutReason names the first structural defect,
+ * so every skipped file can be explained from the log. A schema-1/2 record predates frame identity
+ * and loads as a legacy summary; the current schema carries frame identity and behind time.
+ */
+static bool StoreParseTerminalRecord(const TSharedPtr<FJsonObject>& Object,
+	FCortexReplayRunRecord& Record, FString& OutReason)
+{
+	FString Format;
+	if (!Object->TryGetStringField(TEXT("format"), Format) || Format != StoreFormat)
+	{
+		OutReason = TEXT("not a CortexReplayRun record");
+		return false;
+	}
+	int32 SchemaVersion = 0;
+	if (!Object->TryGetNumberField(TEXT("schema_version"), SchemaVersion))
+	{
+		OutReason = TEXT("schema_version is missing");
+		return false;
+	}
+	const bool bCurrentSchema = SchemaVersion == StoreSchemaVersion;
+	if (!bCurrentSchema && SchemaVersion != StoreFirstSchemaVersion && SchemaVersion != StoreSecondSchemaVersion)
+	{
+		OutReason = FString::Printf(TEXT("unsupported schema_version %d"), SchemaVersion);
+		return false;
+	}
+
+	FString GuidText;
+	FString OriginText;
+	FString StateText;
+	if (!Object->TryGetStringField(TEXT("run_id"), GuidText) || !FGuid::Parse(GuidText, Record.Id)
+		|| !Record.Id.IsValid())
+	{
+		OutReason = TEXT("run_id is missing or not a GUID");
+		return false;
+	}
+	if (!Object->TryGetStringField(TEXT("origin"), OriginText) || !StoreParseOrigin(OriginText, Record.Origin))
+	{
+		OutReason = TEXT("origin is missing or unknown");
+		return false;
+	}
+	if (!Object->TryGetStringField(TEXT("state"), StateText) || !StoreParseState(StateText, Record.State))
+	{
+		OutReason = TEXT("state is missing or unknown");
+		return false;
+	}
+	// Old nonterminal or corrupt files are ignored, never resumed or fabricated.
+	if (!StoreIsTerminalState(Record.State))
+	{
+		OutReason = FString::Printf(TEXT("state %s is not terminal"), *StateText);
+		return false;
+	}
+
+	// Mandatory terminal fields, invariants and state-specific error data are all required; a
+	// malformed record is skipped rather than indexed as a partially valid result.
+	FString StartedText;
+	FString FinalizedText;
+	if (!StoreTryReadInt32(Object, TEXT("recording_id"), Record.RecordingId, 1, MAX_int32))
+	{
+		OutReason = TEXT("recording_id is missing or not a positive integer");
+		return false;
+	}
+	if (!Object->TryGetStringField(TEXT("editor_instance_id"), Record.EditorInstanceId)
+		|| Record.EditorInstanceId.IsEmpty())
+	{
+		OutReason = TEXT("editor_instance_id is missing or empty");
+		return false;
+	}
+	if (!Object->TryGetStringField(TEXT("started_at_utc"), StartedText)
+		|| !FDateTime::ParseIso8601(*StartedText, Record.StartedAtUtc))
+	{
+		OutReason = TEXT("started_at_utc is missing or not an ISO-8601 time");
+		return false;
+	}
+	if (!Object->TryGetStringField(TEXT("finalized_at_utc"), FinalizedText) || FinalizedText.IsEmpty()
+		|| !FDateTime::ParseIso8601(*FinalizedText, Record.FinalizedAtUtc))
+	{
+		OutReason = TEXT("finalized_at_utc is missing or not an ISO-8601 time");
+		return false;
+	}
+	if (!StoreTryReadInt32(Object, TEXT("dispatched_events"), Record.DispatchedEvents, 0, MAX_int32)
+		|| !StoreTryReadInt32(Object, TEXT("total_events"), Record.TotalEvents, 0, MAX_int32))
+	{
+		OutReason = TEXT("dispatched_events or total_events is missing or not a count");
+		return false;
+	}
+	if (!StoreTryReadDouble(Object, TEXT("authorized_wait_seconds"), Record.AuthorizedWaitSeconds, 0.0,
+		CortexReplayWaitBudget::MaxAuthorizedWaitSeconds))
+	{
+		OutReason = TEXT("authorized_wait_seconds is missing or outside the wait budget");
+		return false;
+	}
+	if (!Object->TryGetStringField(TEXT("recording_snapshot_sha256"), Record.RecordingSnapshotSha256)
+		|| !Object->TryGetStringField(TEXT("initial_state_sha256"), Record.InitialStateSha256)
+		|| !Object->TryGetStringField(TEXT("inputs_sha256"), Record.InputsSha256))
+	{
+		OutReason = TEXT("a recording identity digest is missing");
+		return false;
+	}
+
+	if (bCurrentSchema)
+	{
+		// Frame identity is mandatory in the current record format: the frontier must lie inside the
+		// admitted frame set and the digest must be a SHA-256; the value domain is checked below.
+		if (!StoreTryReadInt32(Object, TEXT("completed_frames"), Record.CompletedFrames, 0, MAX_int32)
+			|| !StoreTryReadInt32(Object, TEXT("frame_count"), Record.FrameCount, 0, MAX_int32)
+			|| !Object->TryGetStringField(TEXT("frames_sha256"), Record.FramesSha256)
+			|| !StoreTryReadDouble(Object, TEXT("behind_seconds"), Record.BehindSeconds,
+				0.0, TNumericLimits<double>::Max()))
+		{
+			OutReason = TEXT("frame identity (completed_frames, frame_count, frames_sha256, behind_seconds) is missing or malformed");
+			return false;
+		}
+	}
+	else
+	{
+		// A pre-frame record keeps loading for compact discovery; its full detail is unsupported.
+		Record.bLegacyFormat = true;
+	}
+
+	const TSharedPtr<FJsonObject>* Coverage = nullptr;
+	int64 PosePresses = 0;
+	int64 SupportedPresses = 0;
+	int64 UnavailablePresses = 0;
+	int64 NotApplicablePresses = 0;
+	if (!Object->TryGetObjectField(TEXT("guard_coverage"), Coverage) || Coverage == nullptr
+		|| !StoreTryReadCount(*Coverage, TEXT("pose_presses"), PosePresses)
+		|| !StoreTryReadCount(*Coverage, TEXT("ui_supported_presses"), SupportedPresses)
+		|| !StoreTryReadCount(*Coverage, TEXT("ui_unavailable_presses"), UnavailablePresses)
+		|| !StoreTryReadCount(*Coverage, TEXT("ui_not_applicable_presses"), NotApplicablePresses))
+	{
+		OutReason = TEXT("guard_coverage is missing or malformed");
+		return false;
+	}
+	Record.GuardCoverage.PosePresses = static_cast<int32>(PosePresses);
+	Record.GuardCoverage.UISupportedPresses = static_cast<int32>(SupportedPresses);
+	Record.GuardCoverage.UIUnavailablePresses = static_cast<int32>(UnavailablePresses);
+	Record.GuardCoverage.UINotApplicablePresses = static_cast<int32>(NotApplicablePresses);
+
+	// The cause of a non-Completed run: required for Error, kept for Cancelled and Interrupted whenever
+	// one exists, and absent for Completed.
+	const TSharedPtr<FJsonObject>* Error = nullptr;
+	const bool bHasError = Object->TryGetObjectField(TEXT("execution_error"), Error)
+		&& Error != nullptr && Error->IsValid();
+	if (Record.State == ECortexReplayState::Completed && bHasError)
+	{
+		OutReason = TEXT("a completed run carries an execution_error");
+		return false;
+	}
+	if (Record.State == ECortexReplayState::Error && !bHasError)
+	{
+		OutReason = TEXT("a terminal Error carries no execution_error");
+		return false;
+	}
+	if (bHasError)
+	{
+		FString ErrorCode;
+		if (!(*Error)->TryGetStringField(TEXT("code"), ErrorCode) || ErrorCode.IsEmpty())
+		{
+			OutReason = TEXT("execution_error carries no code");
+			return false;
+		}
+		Record.ExecutionError.bSuccess = false;
+		Record.ExecutionError.ErrorCode = ErrorCode;
+		(*Error)->TryGetStringField(TEXT("message"), Record.ExecutionError.ErrorMessage);
+		const TSharedPtr<FJsonObject>* Details = nullptr;
+		if ((*Error)->TryGetObjectField(TEXT("details"), Details) && Details != nullptr)
+		{
+			Record.ExecutionError.ErrorDetails = *Details;
+		}
+	}
+	return true;
+}
+
 FCortexCommandResult FCortexReplayRunStore::Initialize()
 {
 	Records.Reset();
@@ -205,156 +380,36 @@ FCortexCommandResult FCortexReplayRunStore::Initialize()
 	for (const FString& File : Files)
 	{
 		const FString Path = FPaths::Combine(Directory, File);
+		auto Skip = [&File](const FString& Reason)
+		{
+			UE_LOG(LogCortexReplay, Log, TEXT("Run store skipped %s: %s"), *File, *Reason);
+		};
+
 		FString Text;
 		if (!FFileHelper::LoadFileToString(Text, *Path))
 		{
+			Skip(TEXT("the file is unreadable"));
 			continue;
 		}
-
 		TSharedPtr<FJsonObject> Object;
 		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
 		if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid())
 		{
-			continue;
-		}
-
-		FString Format;
-		int32 SchemaVersion = 0;
-		FString GuidText;
-		FString OriginText;
-		FString StateText;
-		FGuid Id;
-		ECortexReplayOrigin Origin = ECortexReplayOrigin::AI;
-		ECortexReplayState State = ECortexReplayState::Preparing;
-		if (!Object->TryGetStringField(TEXT("format"), Format) || Format != StoreFormat
-			|| !Object->TryGetNumberField(TEXT("schema_version"), SchemaVersion)
-			|| (SchemaVersion != StoreSchemaVersion && SchemaVersion != StoreFramesSchemaVersion)
-			|| !Object->TryGetStringField(TEXT("run_id"), GuidText)
-			|| !FGuid::Parse(GuidText, Id) || !Id.IsValid()
-			|| !Object->TryGetStringField(TEXT("origin"), OriginText)
-			|| !StoreParseOrigin(OriginText, Origin)
-			|| !Object->TryGetStringField(TEXT("state"), StateText)
-			|| !StoreParseState(StateText, State))
-		{
-			continue;
-		}
-
-		// Old nonterminal or corrupt files are ignored, never resumed or fabricated.
-		if (!StoreIsTerminalState(State))
-		{
+			Skip(TEXT("the file is not a JSON object"));
 			continue;
 		}
 
 		FCortexReplayRunRecord Record;
-		Record.Id = Id;
-		Record.Origin = Origin;
-		Record.State = State;
-
-		// Mandatory terminal fields, invariants and state-specific error data are all required;
-		// a malformed record is skipped rather than indexed as a partially valid result.
-		FString EditorInstanceId;
-		FString StartedText;
-		FString FinalizedText;
-		if (!StoreTryReadInt32(Object, TEXT("recording_id"), Record.RecordingId, 1, MAX_int32)
-			|| !Object->TryGetStringField(TEXT("editor_instance_id"), EditorInstanceId)
-			|| EditorInstanceId.IsEmpty()
-			|| !Object->TryGetStringField(TEXT("started_at_utc"), StartedText)
-			|| !FDateTime::ParseIso8601(*StartedText, Record.StartedAtUtc)
-			|| !Object->TryGetStringField(TEXT("finalized_at_utc"), FinalizedText)
-			|| FinalizedText.IsEmpty()
-			|| !FDateTime::ParseIso8601(*FinalizedText, Record.FinalizedAtUtc)
-			|| Record.FinalizedAtUtc < Record.StartedAtUtc
-			|| !StoreTryReadInt32(Object, TEXT("dispatched_events"), Record.DispatchedEvents, 0, MAX_int32)
-			|| !StoreTryReadInt32(Object, TEXT("total_events"), Record.TotalEvents, 0, MAX_int32)
-			|| Record.DispatchedEvents > Record.TotalEvents
-			|| !StoreTryReadDouble(Object, TEXT("authorized_wait_seconds"),
-				Record.AuthorizedWaitSeconds, 0.0, StoreMaxAuthorizedWaitSeconds)
-			|| !Object->TryGetStringField(TEXT("recording_snapshot_sha256"),
-				Record.RecordingSnapshotSha256)
-			|| !Object->TryGetStringField(TEXT("initial_state_sha256"), Record.InitialStateSha256)
-			|| !Object->TryGetStringField(TEXT("inputs_sha256"), Record.InputsSha256)
-			|| !StoreIsLowerHexSha256(Record.RecordingSnapshotSha256)
-			|| !StoreIsLowerHexSha256(Record.InitialStateSha256)
-			|| !StoreIsLowerHexSha256(Record.InputsSha256))
+		FString Reason;
+		if (!StoreParseTerminalRecord(Object, Record, Reason)
+			// The same contract the writer enforces: a record that violates it is skipped rather than
+			// indexed as a partially valid result.
+			|| !StoreValidateTerminalRecord(Record, /*bPreFrameAllowed=*/true, Reason))
 		{
+			Skip(Reason);
 			continue;
 		}
-		Record.EditorInstanceId = EditorInstanceId;
-
-		if (SchemaVersion == StoreFramesSchemaVersion)
-		{
-			// Frame identity is mandatory in the current record format: the frontier must lie inside
-			// the admitted frame set, the digest must be a SHA-256, and a Completed run must have
-			// finished every frame.
-			if (!StoreTryReadInt32(Object, TEXT("completed_frames"), Record.CompletedFrames, 0, MAX_int32)
-				|| !StoreTryReadInt32(Object, TEXT("frame_count"), Record.FrameCount, 0, MAX_int32)
-				|| Record.CompletedFrames > Record.FrameCount
-				|| !Object->TryGetStringField(TEXT("frames_sha256"), Record.FramesSha256)
-				|| !StoreIsLowerHexSha256(Record.FramesSha256)
-				|| (State == ECortexReplayState::Completed
-					&& Record.CompletedFrames != Record.FrameCount))
-			{
-				continue;
-			}
-		}
-		else
-		{
-			// A pre-frame record keeps loading for compact discovery; its full detail is unsupported.
-			Record.bLegacyFormat = true;
-		}
-
-		const TSharedPtr<FJsonObject>* Coverage = nullptr;
-		int64 PosePresses = 0;
-		int64 SupportedPresses = 0;
-		int64 UnavailablePresses = 0;
-		int64 NotApplicablePresses = 0;
-		if (!Object->TryGetObjectField(TEXT("guard_coverage"), Coverage) || Coverage == nullptr
-			|| !StoreTryReadCount(*Coverage, TEXT("pose_presses"), PosePresses)
-			|| !StoreTryReadCount(*Coverage, TEXT("ui_supported_presses"), SupportedPresses)
-			|| !StoreTryReadCount(*Coverage, TEXT("ui_unavailable_presses"), UnavailablePresses)
-			|| !StoreTryReadCount(*Coverage, TEXT("ui_not_applicable_presses"), NotApplicablePresses)
-			// The partition is summed in int64 so large counts cannot wrap and alias a valid total,
-			// and the guarded presses must not exceed the admitted event count.
-			|| SupportedPresses + UnavailablePresses + NotApplicablePresses != PosePresses
-			|| PosePresses > static_cast<int64>(Record.TotalEvents))
-		{
-			continue;
-		}
-		Record.GuardCoverage.PosePresses = static_cast<int32>(PosePresses);
-		Record.GuardCoverage.UISupportedPresses = static_cast<int32>(SupportedPresses);
-		Record.GuardCoverage.UIUnavailablePresses = static_cast<int32>(UnavailablePresses);
-		Record.GuardCoverage.UINotApplicablePresses = static_cast<int32>(NotApplicablePresses);
-
-		if (State == ECortexReplayState::Error)
-		{
-			const TSharedPtr<FJsonObject>* Error = nullptr;
-			FString ErrorCode;
-			if (!Object->TryGetObjectField(TEXT("execution_error"), Error) || Error == nullptr
-				|| !(*Error)->TryGetStringField(TEXT("code"), ErrorCode) || ErrorCode.IsEmpty())
-			{
-				continue; // A terminal Error must carry its bounded execution error data.
-			}
-			Record.ExecutionError.bSuccess = false;
-			Record.ExecutionError.ErrorCode = ErrorCode;
-			(*Error)->TryGetStringField(TEXT("message"), Record.ExecutionError.ErrorMessage);
-			const TSharedPtr<FJsonObject>* Details = nullptr;
-			if ((*Error)->TryGetObjectField(TEXT("details"), Details) && Details != nullptr)
-			{
-				Record.ExecutionError.ErrorDetails = *Details;
-			}
-		}
-
-		// The same contract the writer enforces: a record that violates it is skipped rather than
-		// indexed as a partially valid result.
-		FString RecordReason;
-		if (!StoreValidateTerminalRecord(Record, /*bPreFrameAllowed=*/true, RecordReason))
-		{
-			UE_LOG(LogCortexReplay, Log, TEXT("Run store skipped record %s: %s"),
-				*GuidText, *RecordReason);
-			continue;
-		}
-
-		Records.Add(RecordKey(Id, Origin), MoveTemp(Record));
+		Records.Add(RecordKey(Record.Id, Record.Origin), MoveTemp(Record));
 	}
 
 	return FCortexCommandRouter::Success(nullptr);
@@ -407,7 +462,7 @@ bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, bool bPre
 		return false;
 	}
 	if (!FMath::IsFinite(Record.AuthorizedWaitSeconds) || Record.AuthorizedWaitSeconds < 0.0
-		|| Record.AuthorizedWaitSeconds > StoreMaxAuthorizedWaitSeconds)
+		|| Record.AuthorizedWaitSeconds > CortexReplayWaitBudget::MaxAuthorizedWaitSeconds)
 	{
 		OutReason = TEXT("Run record authorized wait is outside the fixed budget");
 		return false;
@@ -443,6 +498,11 @@ bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, bool bPre
 			OutReason = TEXT("A completed run must have finished its frame frontier");
 			return false;
 		}
+		if (!FMath::IsFinite(Record.BehindSeconds) || Record.BehindSeconds < 0.0)
+		{
+			OutReason = TEXT("Run record behind time is negative or non-finite");
+			return false;
+		}
 	}
 	// Summed in int64 so large counts cannot wrap and alias a valid partition.
 	const int64 PosePresses = Record.GuardCoverage.PosePresses;
@@ -462,6 +522,11 @@ bool StoreValidateTerminalRecord(const FCortexReplayRunRecord& Record, bool bPre
 		OutReason = TEXT("A terminal Error must carry a bounded execution code");
 		return false;
 	}
+	if (Record.State == ECortexReplayState::Completed && !Record.ExecutionError.ErrorCode.IsEmpty())
+	{
+		OutReason = TEXT("A completed run must not carry an execution error");
+		return false;
+	}
 	return true;
 }
 
@@ -475,7 +540,7 @@ FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunR
 
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("format"), StoreFormat);
-	Object->SetNumberField(TEXT("schema_version"), StoreFramesSchemaVersion);
+	Object->SetNumberField(TEXT("schema_version"), StoreSchemaVersion);
 	Object->SetStringField(TEXT("run_id"), StoreGuidToString(Record.Id));
 	Object->SetNumberField(TEXT("recording_id"), Record.RecordingId);
 	Object->SetStringField(TEXT("origin"), StoreOriginToString(Record.Origin));
@@ -492,6 +557,7 @@ FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunR
 	Object->SetNumberField(TEXT("completed_frames"), Record.CompletedFrames);
 	Object->SetNumberField(TEXT("frame_count"), Record.FrameCount);
 	Object->SetStringField(TEXT("frames_sha256"), Record.FramesSha256);
+	Object->SetNumberField(TEXT("behind_seconds"), Record.BehindSeconds);
 
 	TSharedRef<FJsonObject> Coverage = MakeShared<FJsonObject>();
 	Coverage->SetNumberField(TEXT("pose_presses"), Record.GuardCoverage.PosePresses);
@@ -501,7 +567,7 @@ FCortexCommandResult FCortexReplayRunStore::SaveTerminal(const FCortexReplayRunR
 		Record.GuardCoverage.UINotApplicablePresses);
 	Object->SetObjectField(TEXT("guard_coverage"), Coverage);
 
-	if (Record.State == ECortexReplayState::Error && !Record.ExecutionError.ErrorCode.IsEmpty())
+	if (Record.State != ECortexReplayState::Completed && !Record.ExecutionError.ErrorCode.IsEmpty())
 	{
 		TSharedRef<FJsonObject> Error = MakeShared<FJsonObject>();
 		Error->SetStringField(TEXT("code"), Record.ExecutionError.ErrorCode);

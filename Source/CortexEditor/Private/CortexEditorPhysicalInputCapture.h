@@ -109,8 +109,6 @@ struct FCortexEditorPhysicalInputCaptureState
 	TSet<FKey> ForeignHeldKeys;
 	TSet<FKey> ForeignHeldButtons;
 	TSet<FKey> ForeignInFlight;
-	/** The exact synthetic keyboard-focus owner so cleanup never steals a foreign focus. */
-	TWeakPtr<SWidget> SyntheticFocusOwner;
 	/** Monotonic time the capture epoch started; never persisted as a cross-PC identity. */
 	double CaptureEpochSeconds = 0.0;
 };

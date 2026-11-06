@@ -18,19 +18,24 @@ DECLARE_DELEGATE_OneParam(FOnCortexReplayRowAction, int32 /*RecordingId*/);
  * One compact library row (approximately 48 px tall) for the independent Replay window.
  *
  * Layout: integer ID before the title, a one-line description beneath it, a read-only short map
- * name whose tooltip and accessible name expose the full canonical asset path, the creation
- * date/time, a read-only AI-use indicator, and Play/Edit/Delete icon actions.
+ * name whose tooltip and accessible name expose the full canonical asset path, the recording
+ * length, the recording date/time in the viewer's local time (exact UTC instant in the tooltip), a
+ * read-only AI-use indicator, and Play/Edit/Delete icon actions.
  *
  * The AI indicator is deliberately a non-interactive read-only surface: it is never an editable
  * checkbox or a keyboard toggle, and permission can only change through the Edit popup. The map
  * column is likewise read-only and never an editable text field. Compact mode keeps every required
  * field present when the window is docked narrow.
+ *
+ * A recording directory that cannot be loaded is shown with its load error in place of the
+ * description; the window disables Play and Edit for it and leaves Delete available.
  */
 class SCortexReplayRecordingRow : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SCortexReplayRecordingRow) {}
 		SLATE_ARGUMENT(FCortexReplayMetadata, Recording)
+		SLATE_ARGUMENT(FString, LoadErrorText)
 		SLATE_ARGUMENT(bool, bSelected)
 		SLATE_ARGUMENT(bool, bCompact)
 		SLATE_ARGUMENT(bool, bPlayEnabled)
@@ -48,6 +53,7 @@ public:
 		const FPointerEvent& MouseEvent) override;
 
 	int32 GetRecordingId() const;
+	bool IsUnloadable() const;
 	const FCortexReplayMetadata& GetRecording() const;
 	bool IsSelected() const;
 	bool IsCompact() const;
@@ -60,6 +66,21 @@ public:
 	FText GetAIIndicatorText() const;
 	FText GetAIIndicatorTooltip() const;
 
+	/**
+	 * Recording length: "8.6 s" below one minute (tenths), "m:ss" below one hour, "h:mm:ss" above.
+	 * Empty when the recording has no usable length (non-positive or non-finite).
+	 */
+	static FText FormatLength(double Seconds);
+
+	/** Recording date as "YYYY-MM-DD HH:MM" after applying the given UTC offset. */
+	static FText FormatRecordedAt(const FDateTime& CreatedAtUtc, const FTimespan& UtcOffset);
+
+	/** This machine's current local-minus-UTC offset, rounded to whole minutes. */
+	static FTimespan GetLocalUtcOffset();
+
+	/** The date column tooltip: the exact recording instant in UTC. */
+	FText GetDateTooltipText() const;
+
 	/** The displayed read-only map column. Never an editable text field. */
 	TSharedPtr<STextBlock> MapText;
 
@@ -70,6 +91,7 @@ public:
 	TSharedPtr<STextBlock> TitleText;
 	TSharedPtr<STextBlock> DescriptionText;
 	TSharedPtr<STextBlock> DateText;
+	TSharedPtr<STextBlock> LengthText;
 
 	TSharedPtr<SButton> PlayButton;
 	TSharedPtr<SButton> EditButton;
@@ -82,6 +104,7 @@ private:
 	FReply HandleDeleteClicked();
 
 	FCortexReplayMetadata Recording;
+	FString LoadErrorText;
 	bool bSelected = false;
 	bool bCompact = false;
 	bool bPlayEnabled = true;

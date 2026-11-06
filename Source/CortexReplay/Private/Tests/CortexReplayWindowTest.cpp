@@ -1,15 +1,18 @@
 // Task 6 window regression suite: the independent human recording-library window.
 //
 // These tests drive the actual Slate widgets (metadata dialog drafts + Save/Cancel, delete
-// confirmation, target choice) and read the real library/run-store back from disk. Widget callback
+// confirmation, row actions) and read the real library/run-store back from disk. Widget callback
 // bodies are not bypassed: Save/Cancel go through the dialog's own actions and the window's
 // service-backed commit path.
 
 #include "Misc/AutomationTest.h"
 
+#include "CortexCommandRouter.h"
 #include "CortexEditorPhysicalInput.h"
 #include "CortexReplayLibrary.h"
+#include "CortexReplayRunStore.h"
 #include "CortexReplayService.h"
+#include "CortexReplayLivePrerequisites.h"
 #include "CortexReplayTestUtils.h"
 #include "CortexReplayTypes.h"
 #include "Dom/JsonObject.h"
@@ -29,6 +32,7 @@
 #include "Rendering/SlateLayoutTransform.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
+#include "Misc/App.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -968,12 +972,12 @@ bool FCortexReplayWindowSelectedSummaryTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
-// Desktop/narrow rows keep every required field; targets are chosen explicitly.
+// Desktop/narrow rows keep every required field.
 // ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowCompactAndTargetChoiceTest,
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowCompactRowsTest,
 	"Cortex.Replay.Window.CompactRowsFollowDockedWidth",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FCortexReplayWindowCompactAndTargetChoiceTest::RunTest(const FString& Parameters)
+bool FCortexReplayWindowCompactRowsTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
@@ -1016,6 +1020,7 @@ bool FCortexReplayWindowCompactAndTargetChoiceTest::RunTest(const FString& Param
 			TestTrue(TEXT("Row keeps its description"), Row->DescriptionText.IsValid());
 			TestTrue(TEXT("Row keeps its read-only map"), Row->MapText.IsValid());
 			TestTrue(TEXT("Row keeps its date"), Row->DateText.IsValid());
+			TestTrue(TEXT("Row keeps its length"), Row->LengthText.IsValid());
 			TestTrue(TEXT("Row keeps its read-only AI indicator"), Row->AIIndicator.IsValid());
 			TestTrue(TEXT("Row keeps Play"), Row->PlayButton.IsValid());
 			TestTrue(TEXT("Row keeps Edit"), Row->EditButton.IsValid());
@@ -1024,6 +1029,75 @@ bool FCortexReplayWindowCompactAndTargetChoiceTest::RunTest(const FString& Param
 	}
 
 
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Each row shows the recording's length and its recording date in the viewer's local time, with
+// the exact UTC instant in the tooltip. A recording without a usable length shows none.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowRowLengthAndDateTest,
+	"Cortex.Replay.Window.RowShowsLengthAndLocalRecordingDate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowRowLengthAndDateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	struct FLengthCase
+	{
+		double Seconds;
+		const TCHAR* Expected;
+	};
+	const FLengthCase LengthCases[] = {
+		{8.61891769990325, TEXT("8.6 s")},
+		{0.04, TEXT("0.0 s")},
+		{59.94, TEXT("59.9 s")},
+		{59.96, TEXT("1:00")},
+		{125.4, TEXT("2:05")},
+		{3725.0, TEXT("1:02:05")},
+		{0.0, TEXT("")},
+		{-1.0, TEXT("")},
+		{TNumericLimits<double>::Max() * 2.0, TEXT("")},
+	};
+	for (const FLengthCase& Case : LengthCases)
+	{
+		TestEqual(FString::Printf(TEXT("Length of %g s"), Case.Seconds),
+			SCortexReplayRecordingRow::FormatLength(Case.Seconds).ToString(), FString(Case.Expected));
+	}
+
+	const FDateTime RecordedUtc(2026, 11, 6, 23, 29, 7);
+	TestEqual(TEXT("A positive UTC offset moves the date into the next local day"),
+		SCortexReplayRecordingRow::FormatRecordedAt(RecordedUtc, FTimespan::FromHours(2.0)).ToString(),
+		FString(TEXT("2026-11-07 01:29")));
+	TestEqual(TEXT("A negative half-hour offset is applied exactly"),
+		SCortexReplayRecordingRow::FormatRecordedAt(RecordedUtc, FTimespan::FromMinutes(-210.0)).ToString(),
+		FString(TEXT("2026-11-06 19:59")));
+
+	FCortexReplayMetadata Metadata;
+	Metadata.RecordingId = 7;
+	Metadata.Name = TEXT("TestRoomAround");
+	Metadata.MapAssetPath = TEXT("/Game/Maps/TestRoomMap");
+	Metadata.CreatedAtUtc = RecordedUtc;
+	Metadata.DurationSeconds = 8.61891769990325;
+	const TSharedRef<SCortexReplayRecordingRow> Row = SNew(SCortexReplayRecordingRow).Recording(Metadata);
+	if (TestTrue(TEXT("Row shows a length column"), Row->LengthText.IsValid()))
+	{
+		TestEqual(TEXT("Row length"), Row->LengthText->GetText().ToString(), FString(TEXT("8.6 s")));
+	}
+	if (TestTrue(TEXT("Row shows a date column"), Row->DateText.IsValid()))
+	{
+		const FTimespan LocalOffset = SCortexReplayRecordingRow::GetLocalUtcOffset();
+		TestEqual(TEXT("Row date is the local recording time"), Row->DateText->GetText().ToString(),
+			SCortexReplayRecordingRow::FormatRecordedAt(RecordedUtc, LocalOffset).ToString());
+		TestEqual(TEXT("Row date tooltip carries the exact UTC instant"),
+			Row->GetDateTooltipText().ToString(), FString(TEXT("Recorded 2026-11-06 23:29:07 UTC")));
+	}
+
+	const TSharedRef<SCortexReplayRecordingRow> Unloadable = SNew(SCortexReplayRecordingRow)
+		.Recording(Metadata).LoadErrorText(TEXT("UNSUPPORTED_RECORDING_FORMAT: bad"));
+	TestTrue(TEXT("An unloadable row shows no length"),
+		Unloadable->LengthText.IsValid() && Unloadable->LengthText->GetText().IsEmpty());
+	TestTrue(TEXT("An unloadable row shows no date"),
+		Unloadable->DateText.IsValid() && Unloadable->DateText->GetText().IsEmpty());
 	return true;
 }
 
@@ -1037,6 +1111,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowActiveRunLifecycleTest,
 bool FCortexReplayWindowActiveRunLifecycleTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
 	if (!GEditor)
 	{
 		AddError(TEXT("GEditor missing"));
@@ -1609,5 +1687,484 @@ bool FCortexReplayWindowFreshCaptureRefusesActivePIETest::RunTest(const FString&
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(this, Fixture));
 
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit remediation tests (window surface). Each header names the audit defect whose fix it pins.
+// ---------------------------------------------------------------------------
+namespace
+{
+/** Forces fixed-step timing (so replay admission is refused) and restores the exact prior state. */
+class FWindowFixedStepGuard
+{
+public:
+	FWindowFixedStepGuard()
+		: bPreviousFixed(FApp::UseFixedTimeStep()), PreviousDelta(FApp::GetFixedDeltaTime())
+	{
+		FApp::SetUseFixedTimeStep(true);
+	}
+
+	void Restore()
+	{
+		if (!bRestored)
+		{
+			bRestored = true;
+			FApp::SetUseFixedTimeStep(bPreviousFixed);
+			FApp::SetFixedDeltaTime(PreviousDelta);
+		}
+	}
+
+	~FWindowFixedStepGuard() { Restore(); }
+
+private:
+	bool bPreviousFixed;
+	double PreviousDelta;
+	bool bRestored = false;
+};
+
+/** Message fragment of the fixed-step admission refusal in FCortexReplayFrameClock::CheckAdmission. */
+constexpr TCHAR WindowFixedStepRefusalFragment[] = TEXT("fixed-step");
+
+bool WindowNoActiveOperation(const FCortexReplayService& Service)
+{
+	const FCortexCommandResult Operation = Service.GetCurrentOperation();
+	return Operation.bSuccess && !Operation.Data.IsValid();
+}
+
+/** Gathers the text of every visible STextBlock beneath a widget (what the human actually reads). */
+void WindowCollectVisibleText(const TSharedRef<SWidget>& Widget, TArray<FString>& Out)
+{
+	if (!Widget->GetVisibility().IsVisible())
+	{
+		return;
+	}
+	if (Widget->GetType() == FName(TEXT("STextBlock")))
+	{
+		Out.Add(StaticCastSharedRef<STextBlock>(Widget)->GetText().ToString());
+	}
+	if (FChildren* Children = Widget->GetChildren())
+	{
+		for (int32 Index = 0; Index < Children->Num(); ++Index)
+		{
+			WindowCollectVisibleText(Children->GetChildAt(Index), Out);
+		}
+	}
+}
+
+bool WindowAnyVisibleTextContains(const TSharedRef<SWidget>& Widget, const TCHAR* Fragment)
+{
+	TArray<FString> Texts;
+	WindowCollectVisibleText(Widget, Texts);
+	for (const FString& Text : Texts)
+	{
+		if (Text.Contains(Fragment, ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+/** Cancels whatever replay is active and waits until the backend is idle and no PIE world remains. */
+void WindowEnqueueCancelAndDrain(FAutomationTestBase* Test,
+	const TSharedRef<FCortexReplayService>& Service,
+	const TSharedRef<FCortexReplayTestFixture>& Fixture)
+{
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(Test,
+		[Service](FAutomationTestBase&)
+		{
+			const FCortexCommandResult Operation = Service->GetCurrentOperation();
+			if (Operation.bSuccess && Operation.Data.IsValid()
+				&& Operation.Data->GetStringField(TEXT("kind")) == TEXT("replay"))
+			{
+				FGuid RunId;
+				FGuid::Parse(Operation.Data->GetStringField(TEXT("run_id")), RunId);
+				Service->CancelReplay(RunId, false);
+			}
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitOperation(Test, Service, FString(), false,
+		WindowReadyWatchdogSeconds * 2, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitNoPieWorlds(Test, Fixture));
+}
+} // namespace
+
+// Audit S1: HandlePlayClicked surfaces the StartReplay result, so an INCOMPATIBLE_PREREQUISITES refusal
+// reaches the human in the operation label.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowPlayRefusalIsSurfacedTest,
+	"Cortex.Replay.Window.PlayRefusalIsSurfaced",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowPlayRefusalIsSurfacedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	if (!PublishRecording(*this, Fixture, 1, false, FString(),
+		{WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 WindowMakeKeyEvent(1, 0.2, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}))
+	{
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+	Window->RefreshLibrary();
+	const TSharedPtr<SCortexReplayRecordingRow> Row = Window->GetRow(1);
+	if (!TestTrue(TEXT("Row exists"), Row.IsValid() && Row->PlayButton.IsValid()))
+	{
+		return false;
+	}
+
+	{
+		FWindowFixedStepGuard FixedStep;
+		Row->PlayButton->SimulateClick();
+
+		TestTrue(TEXT("The refused Play starts no operation"), WindowNoActiveOperation(*Service));
+		TestFalse(TEXT("The refused Play leaves the recording unused"), Service->IsRecordInUse(1));
+		TestTrue(TEXT("Operation label names the refusal"),
+			Window->GetOperationLabel().ToString().Contains(WindowFixedStepRefusalFragment));
+
+		// The visible label widget, not only the accessor, carries the refusal after a window tick.
+		TickWindow(*Window, 0.0, 0.25f);
+		TestTrue(TEXT("Visible operation label shows the refusal"),
+			Window->OperationLabel.IsValid()
+			&& Window->OperationLabel->GetText().ToString().Contains(WindowFixedStepRefusalFragment));
+	}
+	return true;
+}
+
+// Audit S2: while any capture or run is active, the window disables every row's Play and Delete, not only
+// the active recording's: during a replay of recording 1, recording 2's Play is disabled.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowRowActionsDisabledDuringOperationTest,
+	"Cortex.Replay.Window.RowActionsDisabledDuringOperation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowRowActionsDisabledDuringOperationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	const FString MapPath = WindowMapAssetPath();
+	const TArray<FCortexReplayEvent> Events = {
+		WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		WindowMakeKeyEvent(1, 6.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)};
+	if (!WindowPublishPlaybackRecording(*this, *Fixture, 1, MapPath, Events, false)
+		|| !WindowPublishPlaybackRecording(*this, *Fixture, 2, MapPath, Events, false))
+	{
+		return false;
+	}
+
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::Human);
+	if (!TestTrue(TEXT("Human replay of recording 1 admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowAwaitActiveWindowReplay(this, Service, Window, 1, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FWindowRunOnce(this,
+		[Window](FAutomationTestBase& T)
+		{
+			TickWindow(*Window);
+			const TSharedPtr<SCortexReplayRecordingRow> Active = Window->GetRow(1);
+			const TSharedPtr<SCortexReplayRecordingRow> Other = Window->GetRow(2);
+			if (!T.TestTrue(TEXT("Both rows exist"), Active.IsValid() && Other.IsValid()))
+			{
+				return;
+			}
+			T.TestFalse(TEXT("Active row Play is disabled"), Active->PlayButton->IsEnabled());
+			T.TestFalse(TEXT("Other row Play is disabled while an operation is active"),
+				Other->PlayButton->IsEnabled());
+		}, Fixture));
+	WindowEnqueueCancelAndDrain(this, Service, Fixture);
+	return true;
+}
+
+// Audit S9: a refusal text is cleared by the next human action. After a refused Play shows its message
+// (precondition assertion), a successful Play drops the stale refusal from the label (final assertion).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowStaleMessageClearedByNextActionTest,
+	"Cortex.Replay.Window.StaleMessageClearedByNextAction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowStaleMessageClearedByNextActionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	if (!WindowPublishPlaybackRecording(*this, *Fixture, 1, WindowMapAssetPath(),
+		{WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 WindowMakeKeyEvent(1, 6.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}, false))
+	{
+		return false;
+	}
+
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+	const TSharedPtr<SCortexReplayRecordingRow> Row = Window->GetRow(1);
+	if (!TestTrue(TEXT("Row exists"), Row.IsValid() && Row->PlayButton.IsValid()))
+	{
+		return false;
+	}
+
+	{
+		FWindowFixedStepGuard FixedStep;
+		Row->PlayButton->SimulateClick();
+		TestTrue(TEXT("Refusal is surfaced before the next action"),
+			Window->GetOperationLabel().ToString().Contains(WindowFixedStepRefusalFragment));
+		FixedStep.Restore();
+	}
+
+	// The row widgets may have been rebuilt; click the current Play button of recording 1.
+	const TSharedPtr<SCortexReplayRecordingRow> CurrentRow = Window->GetRow(1);
+	if (!TestTrue(TEXT("Row still exists"), CurrentRow.IsValid() && CurrentRow->PlayButton.IsValid()))
+	{
+		return false;
+	}
+	CurrentRow->PlayButton->SimulateClick();
+	TestTrue(TEXT("Successful Play starts a replay"), Service->IsRecordInUse(1));
+	TestFalse(TEXT("Label no longer shows the earlier refusal"),
+		Window->GetOperationLabel().ToString().Contains(WindowFixedStepRefusalFragment));
+	TickWindow(*Window, 0.0, 0.25f);
+	TestFalse(TEXT("Visible label no longer shows the earlier refusal"),
+		Window->OperationLabel.IsValid()
+		&& Window->OperationLabel->GetText().ToString().Contains(WindowFixedStepRefusalFragment));
+
+	WindowEnqueueCancelAndDrain(this, Service, Fixture);
+	return true;
+}
+
+// Audit S10: HandleDeleteConfirmed surfaces the DeleteRecording result. A refused delete (the recording
+// started replaying after the confirmation opened) closes the dialog and shows the refusal in the
+// operation label instead of failing silently.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowDeleteFailureIsSurfacedTest,
+	"Cortex.Replay.Window.DeleteFailureIsSurfaced",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowDeleteFailureIsSurfacedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	if (!WindowPublishPlaybackRecording(*this, *Fixture, 1, WindowMapAssetPath(),
+		{WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 WindowMakeKeyEvent(1, 6.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}, false))
+	{
+		return false;
+	}
+
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+	const TSharedPtr<SCortexReplayDeleteDialog> Dialog = Window->OpenDeleteConfirmation(1);
+	if (!TestTrue(TEXT("Delete confirmation opened unblocked"),
+		Dialog.IsValid() && !Dialog->IsDeleteBlocked()))
+	{
+		return false;
+	}
+
+	// The recording becomes in use after the confirmation opened, so the service refuses the delete.
+	if (!TestTrue(TEXT("Replay of recording 1 admitted"),
+		Service->StartReplay(1, ECortexReplayOrigin::Human).bSuccess))
+	{
+		return false;
+	}
+	Dialog->OnConfirmClicked();
+
+	TestTrue(TEXT("The refused delete kept the recording"), RecordingExists(*Fixture, 1));
+	TestTrue(TEXT("Operation label shows the delete failure"),
+		Window->GetOperationLabel().ToString().Contains(TEXT("in use")));
+	TickWindow(*Window, 0.0, 0.25f);
+	TestTrue(TEXT("Visible label shows the delete failure"),
+		Window->OperationLabel.IsValid()
+		&& Window->OperationLabel->GetText().ToString().Contains(TEXT("in use")));
+
+	WindowEnqueueCancelAndDrain(this, Service, Fixture);
+	return true;
+}
+
+// Audit S4: the window lists recordings through FCortexReplayLibrary::ListEntries, which reports a
+// recording that fails to load as an unloadable row carrying its load error. The row is visible, shows
+// the reason, has Play and Edit disabled and keeps Delete available.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowUnloadableRecordingShownWithReasonTest,
+	"Cortex.Replay.Window.UnloadableRecordingShownWithReason",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowUnloadableRecordingShownWithReasonTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	if (!PublishRecording(*this, Fixture, 1, false, FString(),
+		{WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		 WindowMakeKeyEvent(1, 0.2, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)}))
+	{
+		return false;
+	}
+
+	const FString RecordingDirectory = FPaths::GetPath(Fixture.GetInputsPath(1));
+	const FString FramesPath = FPaths::Combine(RecordingDirectory, TEXT("frames.jsonl"));
+	if (!TestTrue(TEXT("Fixture removed frames.jsonl"), IFileManager::Get().Delete(*FramesPath)))
+	{
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+	Window->RefreshLibrary();
+
+	const TSharedPtr<SCortexReplayRecordingRow> Row = Window->GetRow(1);
+	if (!TestTrue(TEXT("A row for the unloadable recording exists"), Row.IsValid()))
+	{
+		return false;
+	}
+	TestTrue(TEXT("Play is disabled for an unloadable recording"),
+		Row->PlayButton.IsValid() && !Row->PlayButton->IsEnabled());
+	TestTrue(TEXT("The row shows the load error reason"),
+		WindowAnyVisibleTextContains(Row.ToSharedRef(), TEXT("frames.jsonl")));
+
+	const TSharedPtr<SCortexReplayDeleteDialog> Dialog = Window->OpenDeleteConfirmation(1);
+	if (TestTrue(TEXT("Delete confirmation opens for the unloadable recording"), Dialog.IsValid()))
+	{
+		Dialog->OnConfirmClicked();
+	}
+	TestFalse(TEXT("Delete removes the unloadable recording directory"),
+		IFileManager::Get().DirectoryExists(*RecordingDirectory));
+	Window->RefreshLibrary();
+	TestNull(TEXT("Deleted recording has no row"), Window->GetRow(1).Get());
+	return true;
+}
+
+// A retained terminal run shows the cause the run ended with (Error, Interrupted) and the lag it
+// accumulated, so the human can tell a guard failure from a lost target without the MCP transport.
+// Catches: a summary that prints only the bare state, or never surfaces behind_seconds.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowSummaryShowsCauseAndLagTest,
+	"Cortex.Replay.Window.SelectedSummaryShowsTerminalCauseAndLag",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowSummaryShowsCauseAndLagTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	for (int32 Id = 1; Id <= 3; ++Id)
+	{
+		if (!PublishRecording(*this, Fixture, Id, true, FString(),
+			{WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W)}))
+		{
+			return false;
+		}
+	}
+
+	{
+		FCortexReplayRunStore Store(Fixture.GetProjectRoot());
+		if (!TestTrue(TEXT("Run store initializes"), Store.Initialize().bSuccess))
+		{
+			return false;
+		}
+
+		auto SaveRun = [&](int32 RecordingId, ECortexReplayState State, const FCortexCommandResult& Cause,
+			double BehindSeconds)
+		{
+			FCortexReplayRunRecord Record;
+			Record.Id = FGuid::NewGuid();
+			Record.RecordingId = RecordingId;
+			Record.Origin = ECortexReplayOrigin::AI;
+			Record.State = State;
+			Record.EditorInstanceId = TEXT("window-test-editor");
+			Record.StartedAtUtc = FDateTime::UtcNow() - FTimespan::FromMinutes(1);
+			Record.FinalizedAtUtc = FDateTime::UtcNow();
+			Record.RecordingSnapshotSha256 = FString::ChrN(64, TEXT('a'));
+			Record.InitialStateSha256 = FString::ChrN(64, TEXT('b'));
+			Record.InputsSha256 = FString::ChrN(64, TEXT('c'));
+			Record.FramesSha256 = FString::ChrN(64, TEXT('d'));
+			Record.BehindSeconds = BehindSeconds;
+			Record.ExecutionError = Cause;
+			return Store.SaveTerminal(Record).bSuccess;
+		};
+
+		const bool bSaved =
+			SaveRun(1, ECortexReplayState::Error,
+				FCortexCommandRouter::Error(FString(TEXT("REPLAY_POSE_GUARD_FAILED")), FString(TEXT("pose mismatch"))),
+				0.0)
+			&& SaveRun(2, ECortexReplayState::Interrupted,
+				FCortexCommandRouter::Error(FString(TEXT("TARGET_UNAVAILABLE")), FString(TEXT("Replay target is gone"))),
+				0.0)
+			&& SaveRun(3, ECortexReplayState::Completed, FCortexCommandResult(), 0.75);
+		if (!TestTrue(TEXT("Retained runs written"), bSaved))
+		{
+			return false;
+		}
+	}
+
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(Fixture);
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+
+	Window->SelectRecording(1);
+	const FString ErrorSummary = Window->GetSelectedPlaybackSummaryText().ToString();
+	TestTrue(TEXT("Error summary names the code and message"),
+		ErrorSummary.Contains(TEXT("REPLAY_POSE_GUARD_FAILED: pose mismatch")));
+	TestFalse(TEXT("A run that never fell behind shows no lag"), ErrorSummary.Contains(TEXT("Behind")));
+
+	Window->SelectRecording(2);
+	TestTrue(TEXT("Interrupted summary names its cause"),
+		Window->GetSelectedPlaybackSummaryText().ToString()
+			.Contains(TEXT("TARGET_UNAVAILABLE: Replay target is gone")));
+
+	Window->SelectRecording(3);
+	const FString LagSummary = Window->GetSelectedPlaybackSummaryText().ToString();
+	TestTrue(TEXT("Completed summary shows the lag"), LagSummary.Contains(TEXT("Behind schedule by 0.75 s")));
+	TestFalse(TEXT("A completed run shows no cause"), LagSummary.Contains(TEXT("(")));
+	return true;
+}
+
+// A successful Play selects the played row so its summary shows the run (mockup rcPlayPreview).
+// Catches: HandlePlayClicked starting the run without selecting the recording.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowPlaySelectsPlayedRowTest,
+	"Cortex.Replay.Window.PlaySelectsPlayedRow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexReplayWindowPlaySelectsPlayedRowTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor)
+	{
+		AddError(TEXT("GEditor missing"));
+		return false;
+	}
+
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
+	const TArray<FCortexReplayEvent> Events = {
+		WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		WindowMakeKeyEvent(1, 6.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)};
+	if (!WindowPublishPlaybackRecording(*this, *Fixture, 1, WindowMapAssetPath(), Events, false)
+		|| !WindowPublishPlaybackRecording(*this, *Fixture, 2, WindowMapAssetPath(), Events, false))
+	{
+		return false;
+	}
+
+	const TSharedRef<SCortexReplayWindow> Window = SNew(SCortexReplayWindow).Service(Service);
+	Window->SelectRecording(2);
+	const TSharedPtr<SCortexReplayRecordingRow> Row = Window->GetRow(1);
+	if (!TestTrue(TEXT("Row exists"), Row.IsValid() && Row->PlayButton.IsValid()))
+	{
+		return false;
+	}
+
+	Row->PlayButton->SimulateClick();
+	TestTrue(TEXT("Play started a replay of recording 1"), Service->IsRecordInUse(1));
+	TestEqual(TEXT("The played row became the selection"), Window->GetSelectedRecordingId(), 1);
+
+	WindowEnqueueCancelAndDrain(this, Service, Fixture);
 	return true;
 }

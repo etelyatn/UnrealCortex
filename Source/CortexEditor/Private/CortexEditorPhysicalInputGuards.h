@@ -33,9 +33,9 @@ struct FCortexEditorPhysicalInputGuardState
 	/** Last viewport-local pointer position observed through normal routing. */
 	FVector2D LastViewportPointerPosition = FVector2D::ZeroVector;
 	/**
-	 * Exact screen-space pointer accumulator: the space the engine consumes. Relative motion adds
-	 * each recorded delta to this value directly, so a viewport<->screen scale round trip can never
-	 * lose a fraction of a pixel per event and drift the replayed look.
+	 * Screen-space pointer position the engine consumes: the exact (fractional) position of the
+	 * last observed or replayed pointer, always inside the coordinate-root viewport for replayed
+	 * relative motion. Relative motion advances RelativeMotionAccumulator, not this value.
 	 */
 	FVector2D LastScreenPointerPosition = FVector2D::ZeroVector;
 	/**
@@ -44,6 +44,14 @@ struct FCortexEditorPhysicalInputGuardState
 	 * viewport-derived accumulation did.
 	 */
 	bool bHasScreenPointerPosition = false;
+	/**
+	 * Unclamped exact sum of the replayed relative deltas. The whole-unit delta each event presents
+	 * is round(accumulator + delta) - round(accumulator), so the recorded total transfers exactly
+	 * even where the presented position is held at the viewport edge. Reseeded from
+	 * LastScreenPointerPosition by every observed or absolute position.
+	 */
+	FVector2D RelativeMotionAccumulator = FVector2D::ZeroVector;
+	bool bHasRelativeMotionAccumulator = false;
 };
 
 /**

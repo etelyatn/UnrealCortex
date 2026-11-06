@@ -21,6 +21,48 @@
 
 #define LOCTEXT_NAMESPACE "CortexReplayWindow"
 
+namespace
+{
+/** Kind, recording and run of a backend operation; its state is deliberately not part of it. */
+FString MakeOperationIdentity(const FJsonObject& Operation)
+{
+	FString RunId;
+	Operation.TryGetStringField(TEXT("run_id"), RunId);
+	return FString::Printf(TEXT("%s|%d|%s"), *Operation.GetStringField(TEXT("kind")),
+		static_cast<int32>(Operation.GetNumberField(TEXT("recording_id"))), *RunId);
+}
+
+/** Lag below this is ordinary frame jitter and is not worth the human's attention. */
+constexpr double VisibleBehindSeconds = 0.05;
+
+/** " (CODE: message)" when the run retained a terminal cause, otherwise an empty string. */
+FString DescribeRunCause(const FJsonObject& Run)
+{
+	const TSharedPtr<FJsonObject>* Error = nullptr;
+	FString Code;
+	if (!Run.TryGetObjectField(TEXT("execution_error"), Error) || Error == nullptr || !Error->IsValid()
+		|| !(*Error)->TryGetStringField(TEXT("code"), Code) || Code.IsEmpty())
+	{
+		return FString();
+	}
+	FString Message;
+	(*Error)->TryGetStringField(TEXT("message"), Message);
+	return Message.IsEmpty() ? FString::Printf(TEXT(" (%s)"), *Code)
+		: FString::Printf(TEXT(" (%s: %s)"), *Code, *Message);
+}
+
+/** " Behind schedule by N s." when the run's recorded timeline visibly trails the clock. */
+FString DescribeBehind(const FJsonObject& Run)
+{
+	double Behind = 0.0;
+	if (!Run.TryGetNumberField(TEXT("behind_seconds"), Behind) || Behind <= VisibleBehindSeconds)
+	{
+		return FString();
+	}
+	return FString::Printf(TEXT(" Behind schedule by %.2f s."), Behind);
+}
+} // namespace
+
 // ---------------------------------------------------------------------------------------------
 // SCortexReplayDeleteDialog
 // ---------------------------------------------------------------------------------------------
@@ -253,7 +295,7 @@ void SCortexReplayWindow::Construct(const FArguments& InArgs)
 			]
 		]
 
-		// Popup layer: metadata dialog, delete confirmation and target choice render here.
+		// Popup layer: metadata dialog and delete confirmation render here.
 		+ SOverlay::Slot()
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
@@ -268,21 +310,25 @@ void SCortexReplayWindow::Construct(const FArguments& InArgs)
 
 void SCortexReplayWindow::RefreshLibrary()
 {
-	Recordings.Reset();
+	Entries.Reset();
 	if (Service.IsValid())
 	{
-		Service->ListHumanRecordings(Recordings);
+		const FCortexCommandResult Listed = Service->ListHumanRecordingEntries(Entries);
+		if (!Listed.bSuccess)
+		{
+			LastStatusMessage = Listed.ErrorMessage;
+		}
 	}
 
-	const bool bSelectionStillValid = Recordings.ContainsByPredicate(
-		[this](const FCortexReplayMetadata& Metadata)
-		{
-			return Metadata.RecordingId == SelectedRecordingId;
-		});
-	if (!bSelectionStillValid)
+	if (FindRecordingIndex(SelectedRecordingId) == INDEX_NONE)
 	{
 		SelectedRecordingId = 0;
 	}
+
+	// The rebuilt rows reflect the current backend state, so a message produced by the action that
+	// triggered this refresh must not be cleared as "stale" by the next tick.
+	LastOperationSignature = BuildRefreshKey();
+	LastOperationIdentity = BuildOperationIdentity();
 
 	RebuildRows();
 	UpdateOperationLabel();
@@ -373,6 +419,8 @@ void SCortexReplayWindow::StopActiveOperation()
 		return;
 	}
 
+	LastStatusMessage.Reset();
+
 	const FCortexCommandResult Operation = Service->GetCurrentOperation();
 	if (Operation.bSuccess && Operation.Data.IsValid())
 	{
@@ -405,13 +453,13 @@ FText SCortexReplayWindow::GetOperationLabel() const
 TSharedPtr<SCortexReplayMetadataDialog> SCortexReplayWindow::OpenMetadataDialog(int32 RecordingId)
 {
 	const int32 Index = FindRecordingIndex(RecordingId);
-	if (Index == INDEX_NONE)
+	if (Index == INDEX_NONE || !Entries[Index].Metadata.IsSet())
 	{
 		return nullptr;
 	}
 
 	MetadataDialog = SNew(SCortexReplayMetadataDialog)
-		.Recording(Recordings[Index])
+		.Recording(Entries[Index].Metadata.GetValue())
 		.OnCommitted_Lambda([this, RecordingId](const FString& Name, const FString& Description,
 			bool bAIEnabled)
 		{
@@ -446,9 +494,11 @@ TSharedPtr<SCortexReplayDeleteDialog> SCortexReplayWindow::OpenDeleteConfirmatio
 	}
 
 	const bool bBlocked = Service.IsValid() && Service->IsRecordInUse(RecordingId);
+	const FString RecordingName = Entries[Index].Metadata.IsSet()
+		? Entries[Index].Metadata->Name : FString(TEXT("Unloadable recording"));
 	DeleteDialog = SNew(SCortexReplayDeleteDialog)
 		.RecordingId(RecordingId)
-		.RecordingName(Recordings[Index].Name)
+		.RecordingName(RecordingName)
 		.bDeleteBlocked(bBlocked)
 		.OnConfirmed(this, &SCortexReplayWindow::HandleDeleteConfirmed)
 		.OnDismissed(this, &SCortexReplayWindow::HandleDeleteDismissed);
@@ -514,13 +564,24 @@ void SCortexReplayWindow::Tick(const FGeometry& AllottedGeometry, const double I
 	// The real docked width decides the compact row layout for a narrow arrangement.
 	UpdateCompactLayoutFromGeometry(AllottedGeometry);
 
+	// A different operation than the one last seen (for example a transport-started run) supersedes
+	// the message of the previous human action.
+	const FString OperationIdentity = BuildOperationIdentity();
+	if (OperationIdentity != LastOperationIdentity)
+	{
+		LastOperationIdentity = OperationIdentity;
+		if (!OperationIdentity.IsEmpty())
+		{
+			LastStatusMessage.Reset();
+		}
+	}
+
 	// Backend operation and library-revision transitions refresh the rows and their availability,
 	// so a transport-started run disables Play/Delete and a recording published asynchronously
 	// (even after the operation went idle) appears without any external refresh call.
 	const FString RefreshKey = BuildRefreshKey();
 	if (RefreshKey != LastOperationSignature)
 	{
-		LastOperationSignature = RefreshKey;
 		RefreshLibrary();
 	}
 
@@ -564,35 +625,21 @@ FString SCortexReplayWindow::BuildRefreshKey() const
 	}
 
 	Key += TEXT("|");
-	Key += Operation.Data->GetStringField(TEXT("kind"));
-	Key += TEXT("|");
 	Key += Operation.Data->GetStringField(TEXT("state"));
 	Key += TEXT("|");
-	Key += FString::FromInt(
-		static_cast<int32>(Operation.Data->GetNumberField(TEXT("recording_id"))));
-	FString RunId;
-	if (Operation.Data->TryGetStringField(TEXT("run_id"), RunId))
-	{
-		Key += TEXT("|");
-		Key += RunId;
-	}
+	Key += MakeOperationIdentity(*Operation.Data);
 	return Key;
 }
 
-bool SCortexReplayWindow::HasAnyPieWorldContext() const
+FString SCortexReplayWindow::BuildOperationIdentity() const
 {
-	if (!GEngine)
+	const FCortexCommandResult Operation = Service.IsValid()
+		? Service->GetCurrentOperation() : FCortexCommandResult();
+	if (!Operation.bSuccess || !Operation.Data.IsValid())
 	{
-		return false;
+		return FString();
 	}
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		if (Context.WorldType == EWorldType::PIE)
-		{
-			return true;
-		}
-	}
-	return false;
+	return MakeOperationIdentity(*Operation.Data);
 }
 
 void SCortexReplayWindow::SurfaceOperationError(const FCortexCommandResult& Result)
@@ -610,15 +657,44 @@ void SCortexReplayWindow::RebuildRows()
 		RowContainer->ClearChildren();
 	}
 
-	for (const FCortexReplayMetadata& Metadata : Recordings)
+	// Any capture or run owns the target: no recording can start, so every Play is disabled.
+	bool bAnyOperation = false;
+	if (Service.IsValid())
 	{
-		const bool bInUse = Service.IsValid() && Service->IsRecordInUse(Metadata.RecordingId);
+		const FCortexCommandResult Operation = Service->GetCurrentOperation();
+		bAnyOperation = Operation.bSuccess && Operation.Data.IsValid();
+	}
+
+	for (const FCortexReplayLibraryEntry& Entry : Entries)
+	{
+		const bool bUnloadable = !Entry.Metadata.IsSet();
+		const bool bInUse = Service.IsValid() && Service->IsRecordInUse(Entry.RecordingId);
+
+		FCortexReplayMetadata RowMetadata;
+		RowMetadata.RecordingId = Entry.RecordingId;
+		FString LoadErrorText;
+		if (bUnloadable)
+		{
+			LoadErrorText = Entry.LoadError.ErrorMessage.IsEmpty()
+				? Entry.LoadError.ErrorCode
+				: FString::Printf(TEXT("%s: %s"), *Entry.LoadError.ErrorCode, *Entry.LoadError.ErrorMessage);
+			if (LoadErrorText.IsEmpty())
+			{
+				LoadErrorText = TEXT("The recording could not be loaded");
+			}
+		}
+		else
+		{
+			RowMetadata = Entry.Metadata.GetValue();
+		}
+
 		TSharedPtr<SCortexReplayRecordingRow> Row = SNew(SCortexReplayRecordingRow)
-			.Recording(Metadata)
-			.bSelected(Metadata.RecordingId == SelectedRecordingId)
+			.Recording(RowMetadata)
+			.LoadErrorText(LoadErrorText)
+			.bSelected(Entry.RecordingId == SelectedRecordingId)
 			.bCompact(bCompactLayout)
-			.bPlayEnabled(!bInUse)
-			.bEditEnabled(true)
+			.bPlayEnabled(!bAnyOperation && !bUnloadable)
+			.bEditEnabled(!bUnloadable)
 			.bDeleteEnabled(!bInUse)
 			.OnPlay(this, &SCortexReplayWindow::HandlePlayClicked)
 			.OnEdit(this, &SCortexReplayWindow::HandleEditClicked)
@@ -670,9 +746,9 @@ void SCortexReplayWindow::UpdateToolbarEnablement()
 
 int32 SCortexReplayWindow::FindRecordingIndex(int32 RecordingId) const
 {
-	for (int32 Index = 0; Index < Recordings.Num(); ++Index)
+	for (int32 Index = 0; Index < Entries.Num(); ++Index)
 	{
-		if (Recordings[Index].RecordingId == RecordingId)
+		if (Entries[Index].RecordingId == RecordingId)
 		{
 			return Index;
 		}
@@ -767,8 +843,7 @@ FText SCortexReplayWindow::BuildOperationLabel() const
 	}
 	else
 	{
-		// Every capture is an owned fresh-PIE capture now that borrowing is removed, so the label no
-		// longer derives ownership from the origin field (which stays "human" for provenance).
+		// Every capture is an owned fresh-PIE capture; the origin field stays "human" for provenance.
 		Label = FString::Printf(TEXT("Recording #%d · %s · %s"), RecordingId, TEXT("owned"), *State);
 		if (Operation.Data->GetBoolField(TEXT("publication_failed")))
 		{
@@ -831,20 +906,32 @@ FText SCortexReplayWindow::BuildPlaybackSummaryText() const
 	}
 
 	FString RetainedState;
+	FString RetainedCause;
+	FString RetainedBehind;
 	const FCortexCommandResult Last = Service->GetLastRunForRecording(SelectedRecordingId);
 	if (Last.bSuccess && Last.Data.IsValid())
 	{
 		RetainedState = Last.Data->GetStringField(TEXT("state"));
+		RetainedCause = DescribeRunCause(*Last.Data);
+		RetainedBehind = DescribeBehind(*Last.Data);
 	}
 
 	if (IsReplayActiveForRecording(SelectedRecordingId))
 	{
 		// A previous result is never presented as the verdict of the active run.
-		return RetainedState.IsEmpty()
-			? LOCTEXT("PlaybackInProgress", "Playback in progress.")
-			: FText::FromString(FString::Printf(
-				TEXT("Playback in progress. Previous run: %s. Gameplay correctness is not evaluated."),
-				*RetainedState));
+		FString Active = TEXT("Playback in progress.");
+		const FCortexCommandResult Operation = Service->GetCurrentOperation();
+		if (Operation.bSuccess && Operation.Data.IsValid())
+		{
+			Active += DescribeBehind(*Operation.Data);
+		}
+		if (!RetainedState.IsEmpty())
+		{
+			Active += FString::Printf(
+				TEXT(" Previous run: %s%s. Gameplay correctness is not evaluated."),
+				*RetainedState, *RetainedCause);
+		}
+		return FText::FromString(Active);
 	}
 
 	if (RetainedState.IsEmpty())
@@ -852,7 +939,8 @@ FText SCortexReplayWindow::BuildPlaybackSummaryText() const
 		return LOCTEXT("NotReplayed", "Not replayed yet");
 	}
 	return FText::FromString(FString::Printf(
-		TEXT("%s. Gameplay correctness is not evaluated."), *RetainedState));
+		TEXT("%s%s.%s Gameplay correctness is not evaluated."),
+		*RetainedState, *RetainedCause, *RetainedBehind));
 }
 
 void SCortexReplayWindow::ShowPopup(const TSharedPtr<SWidget>& Content)
@@ -891,6 +979,8 @@ void SCortexReplayWindow::HandleMetadataCommitted(int32 RecordingId, const FStri
 		return;
 	}
 
+	LastStatusMessage.Reset();
+
 	const FCortexCommandResult Saved = Service->SaveMetadata(RecordingId, Name, Description, bAIEnabled);
 	if (!Saved.bSuccess)
 	{
@@ -916,17 +1006,28 @@ void SCortexReplayWindow::HandleMetadataDismissed()
 
 void SCortexReplayWindow::HandleDeleteConfirmed(int32 RecordingId)
 {
-	if (Service.IsValid())
-	{
-		Service->DeleteRecording(RecordingId);
-	}
 	DeleteDialog.Reset();
 	HidePopup();
-	if (SelectedRecordingId == RecordingId)
+	if (!Service.IsValid())
 	{
-		SelectedRecordingId = 0;
+		return;
+	}
+
+	LastStatusMessage.Reset();
+	const FCortexCommandResult Deleted = Service->DeleteRecording(RecordingId);
+	if (Deleted.bSuccess)
+	{
+		if (SelectedRecordingId == RecordingId)
+		{
+			SelectedRecordingId = 0;
+		}
 	}
 	RefreshLibrary();
+	if (!Deleted.bSuccess)
+	{
+		// Surfaced after the refresh, which re-reads the library and would otherwise overwrite it.
+		SurfaceOperationError(Deleted);
+	}
 }
 
 void SCortexReplayWindow::HandleDeleteDismissed()
@@ -937,10 +1038,19 @@ void SCortexReplayWindow::HandleDeleteDismissed()
 
 void SCortexReplayWindow::HandlePlayClicked(int32 RecordingId)
 {
-	if (Service.IsValid())
+	if (!Service.IsValid())
 	{
-		Service->StartReplay(RecordingId, ECortexReplayOrigin::Human);
+		return;
 	}
+
+	LastStatusMessage.Reset();
+	const FCortexCommandResult Started = Service->StartReplay(RecordingId, ECortexReplayOrigin::Human);
+	if (!Started.bSuccess)
+	{
+		SurfaceOperationError(Started);
+		return;
+	}
+	SelectedRecordingId = RecordingId;
 	RefreshLibrary();
 }
 

@@ -20,6 +20,8 @@ constexpr float MapColumnDesktop = 120.0f;
 constexpr float MapColumnCompact = 92.0f;
 constexpr float DateColumnDesktop = 106.0f;
 constexpr float DateColumnCompact = 82.0f;
+constexpr float LengthColumnDesktop = 56.0f;
+constexpr float LengthColumnCompact = 44.0f;
 constexpr float AIColumnDesktop = 52.0f;
 constexpr float AIColumnCompact = 42.0f;
 constexpr float ActionButtonWidth = 27.0f;
@@ -32,16 +34,12 @@ FText ShortMapLabel(const FString& MapAssetPath)
 	}
 	return FText::FromString(FPaths::GetBaseFilename(MapAssetPath));
 }
-
-FText FormatCreatedAt(const FDateTime& CreatedAtUtc)
-{
-	return FText::FromString(CreatedAtUtc.ToString(TEXT("%Y-%m-%d %H:%M")));
-}
 } // namespace
 
 void SCortexReplayRecordingRow::Construct(const FArguments& InArgs)
 {
 	Recording = InArgs._Recording;
+	LoadErrorText = InArgs._LoadErrorText;
 	bSelected = InArgs._bSelected;
 	bCompact = InArgs._bCompact;
 	bPlayEnabled = InArgs._bPlayEnabled;
@@ -56,6 +54,7 @@ void SCortexReplayRecordingRow::Construct(const FArguments& InArgs)
 	const FMargin RowPadding = bCompact ? FMargin(6.0f, 2.0f) : FMargin(10.0f, 4.0f);
 	const float MapWidth = bCompact ? MapColumnCompact : MapColumnDesktop;
 	const float DateWidth = bCompact ? DateColumnCompact : DateColumnDesktop;
+	const float LengthWidth = bCompact ? LengthColumnCompact : LengthColumnDesktop;
 	const float AIWidth = bCompact ? AIColumnCompact : AIColumnDesktop;
 
 	ChildSlot
@@ -93,15 +92,16 @@ void SCortexReplayRecordingRow::Construct(const FArguments& InArgs)
 						.FillWidth(1.0f)
 						[
 							SAssignNew(TitleText, STextBlock)
-							.Text(FText::FromString(Recording.Name))
-							.ToolTipText(FText::FromString(Recording.Description))
+							.Text(IsUnloadable() ? LOCTEXT("UnloadableTitle", "Unloadable recording")
+								: FText::FromString(Recording.Name))
+							.ToolTipText(FText::FromString(IsUnloadable() ? LoadErrorText : Recording.Description))
 						]
 					]
 					+ SVerticalBox::Slot()
 					.AutoHeight()
 					[
 						SAssignNew(DescriptionText, STextBlock)
-						.Text(FText::FromString(Recording.Description))
+						.Text(FText::FromString(IsUnloadable() ? LoadErrorText : Recording.Description))
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					]
 				]
@@ -116,8 +116,23 @@ void SCortexReplayRecordingRow::Construct(const FArguments& InArgs)
 					.WidthOverride(MapWidth)
 					[
 						SAssignNew(MapText, STextBlock)
-						.Text(ShortMapLabel(Recording.MapAssetPath))
+						.Text(IsUnloadable() ? FText::GetEmpty() : ShortMapLabel(Recording.MapAssetPath))
 						.ToolTipText(FText::FromString(Recording.MapAssetPath))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					]
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(6.0f, 0.0f)
+				[
+					SNew(SBox)
+					.WidthOverride(LengthWidth)
+					[
+						SAssignNew(LengthText, STextBlock)
+						.Text(IsUnloadable() ? FText::GetEmpty() : FormatLength(Recording.DurationSeconds))
+						.ToolTipText(LOCTEXT("LengthTooltip", "Recording length"))
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					]
 				]
@@ -131,7 +146,9 @@ void SCortexReplayRecordingRow::Construct(const FArguments& InArgs)
 					.WidthOverride(DateWidth)
 					[
 						SAssignNew(DateText, STextBlock)
-						.Text(FormatCreatedAt(Recording.CreatedAtUtc))
+						.Text(IsUnloadable() ? FText::GetEmpty()
+							: FormatRecordedAt(Recording.CreatedAtUtc, GetLocalUtcOffset()))
+						.ToolTipText(IsUnloadable() ? FText::GetEmpty() : GetDateTooltipText())
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					]
 				]
@@ -146,7 +163,8 @@ void SCortexReplayRecordingRow::Construct(const FArguments& InArgs)
 					.WidthOverride(AIWidth)
 					[
 						SAssignNew(AIIndicator, STextBlock)
-						.Text(Recording.bAIEnabled ? LOCTEXT("AIOn", "AI on") : LOCTEXT("AIOff", "AI off"))
+						.Text(IsUnloadable() ? FText::GetEmpty()
+							: Recording.bAIEnabled ? LOCTEXT("AIOn", "AI on") : LOCTEXT("AIOff", "AI off"))
 						.ToolTipText(LOCTEXT("AIIndicatorTooltip",
 							"AI use is read-only in the list. Change it in Edit."))
 					]
@@ -217,6 +235,11 @@ FReply SCortexReplayRecordingRow::OnMouseButtonDown(const FGeometry& /*MyGeometr
 	return FReply::Unhandled();
 }
 
+bool SCortexReplayRecordingRow::IsUnloadable() const
+{
+	return !LoadErrorText.IsEmpty();
+}
+
 int32 SCortexReplayRecordingRow::GetRecordingId() const
 {
 	return Recording.RecordingId;
@@ -235,6 +258,44 @@ bool SCortexReplayRecordingRow::IsSelected() const
 bool SCortexReplayRecordingRow::IsCompact() const
 {
 	return bCompact;
+}
+
+FText SCortexReplayRecordingRow::FormatLength(double Seconds)
+{
+	if (!FMath::IsFinite(Seconds) || Seconds <= 0.0)
+	{
+		return FText::GetEmpty();
+	}
+	const int64 Tenths = FMath::RoundToInt64(Seconds * 10.0);
+	if (Tenths < 600)
+	{
+		return FText::FromString(FString::Printf(TEXT("%lld.%lld s"), Tenths / 10, Tenths % 10));
+	}
+	const int64 Total = FMath::Max<int64>(60, FMath::RoundToInt64(Seconds));
+	const int64 Hours = Total / 3600;
+	const int64 Minutes = (Total / 60) % 60;
+	const int64 Secs = Total % 60;
+	return FText::FromString(Hours > 0
+		? FString::Printf(TEXT("%lld:%02lld:%02lld"), Hours, Minutes, Secs)
+		: FString::Printf(TEXT("%lld:%02lld"), Minutes, Secs));
+}
+
+FText SCortexReplayRecordingRow::FormatRecordedAt(const FDateTime& CreatedAtUtc, const FTimespan& UtcOffset)
+{
+	return FText::FromString((CreatedAtUtc + UtcOffset).ToString(TEXT("%Y-%m-%d %H:%M")));
+}
+
+FTimespan SCortexReplayRecordingRow::GetLocalUtcOffset()
+{
+	// Now() and UtcNow() are two reads of the clock; whole minutes absorb the gap between them.
+	const double Minutes = (FDateTime::Now() - FDateTime::UtcNow()).GetTotalMinutes();
+	return FTimespan::FromMinutes(static_cast<double>(FMath::RoundToInt64(Minutes)));
+}
+
+FText SCortexReplayRecordingRow::GetDateTooltipText() const
+{
+	return FText::Format(LOCTEXT("RecordedAtUtcTooltip", "Recorded {0} UTC"),
+		FText::FromString(Recording.CreatedAtUtc.ToString(TEXT("%Y-%m-%d %H:%M:%S"))));
 }
 
 FText SCortexReplayRecordingRow::GetMapLabel() const

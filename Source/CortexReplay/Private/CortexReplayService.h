@@ -44,11 +44,20 @@ public:
 	/** Read-only run status; a terminal execution Error is still a successful query. */
 	FCortexCommandResult GetRun(const FGuid& Id, bool bAIOnly) const;
 
-	/** Cancels an admitted run; a finalized run returns its existing terminal state unchanged. */
+	/**
+	 * Cancels an admitted run. The response is the run's state right after the request: Finalizing
+	 * while owned teardown is still in flight, or the terminal state once it completed. A finalized
+	 * run returns its existing terminal state unchanged.
+	 */
 	FCortexCommandResult CancelReplay(const FGuid& Id, bool bAIOnly);
 
 	FCortexCommandResult ListRecordings(int32 AfterId, int32 PageSize) const;
-	FCortexCommandResult ListHumanRecordings(TArray<FCortexReplayMetadata>& Out) const;
+
+	/**
+	 * Human-library listing from metadata only: one entry per recording directory, with the load
+	 * error of every directory that cannot be loaded. Payloads are not read or hashed.
+	 */
+	FCortexCommandResult ListHumanRecordingEntries(TArray<FCortexReplayLibraryEntry>& Out) const;
 
 	/**
 	 * Monotonic revision of the owned library, bumped by successful publish/delete/metadata saves.
@@ -81,6 +90,16 @@ public:
 
 	/** Backend-owner shutdown: neutralizes owned input, ends owned PIE and drops delegates/ticker. */
 	void Shutdown();
+
+	/**
+	 * Module-unload barrier: Shutdown, then completes any finalization now instead of on a later
+	 * engine frame. On return no ticker, frame delegate or callback into this module remains; an
+	 * owned PIE still ending is kept alive by CortexEditor until its teardown completes.
+	 */
+	void ShutdownForModuleUnload();
+
+	/** True when no ticker, frame delegate, session or capture observer of this service is installed. */
+	bool IsQuiescent() const;
 
 private:
 	/**

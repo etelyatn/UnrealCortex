@@ -3,16 +3,16 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Unreal%20Engine-5.6%2B-blue?style=flat-square&logo=unrealengine" alt="UE 5.6+">
   <img src="https://img.shields.io/badge/Type-Editor%20Only-green?style=flat-square" alt="Editor Only">
-  <img src="https://img.shields.io/badge/Modules-14-lightgrey?style=flat-square" alt="14 Modules">
+  <img src="https://img.shields.io/badge/Modules-15-lightgrey?style=flat-square" alt="15 Modules">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow?style=flat-square&logo=python" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/License-MIT-lightgrey?style=flat-square" alt="MIT">
 </p>
 
 **Give your AI hands inside Unreal Engine.**
 
-Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, analyzing Blueprints for bugs and performance issues, generating 3D assets, and even playing and testing your game autonomously. No copy-pasting, no file exports. Changes appear live with full undo support.
+Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, analyzing Blueprints for bugs and performance issues, generating 3D assets, playing and testing your game autonomously, and replaying gameplay you recorded by hand, frame for frame. No copy-pasting, no file exports. Changes appear live with full undo support.
 
-> **Status:** v0.1.9 Beta — All 14 modules shipped and tested.
+> **Status:** v0.3.3 Beta — All 15 modules shipped and tested.
 
 ---
 
@@ -160,6 +160,21 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 **Reproducibility:** Set random seed for deterministic test runs.
 
 **Example tasks:** *"Walk to the shop NPC, interact, and verify the shop menu opens"* · *"Run a full playthrough: spawn, pick up the sword, enter the dungeon, kill the first enemy"* · *"Assert that the player's health drops after stepping on the lava tile"*
+
+</details>
+
+<details>
+<summary><strong>Recorded Gameplay Replay — CortexReplay</strong> &nbsp;·&nbsp; Record real input in PIE, let AI replay it frame-exactly</summary>
+
+<br>
+
+**Record:** In the **Cortex Replay** window a human records a PIE session: real keyboard and mouse input (keys, buttons, pointer and raw mouse motion, wheel) together with every engine frame's time step, the starting map, the player pose and the viewport/input prerequisites. Stopping PIE with its own stop key ends and saves the recording. The list shows each recording's ID, name, map, length and recording date (local time; the exact UTC time is in the tooltip), and whether AI may use it.
+
+**Replay:** Replay starts a fresh PIE on the recorded map, restores the recorded start pose, then dispatches each recorded frame on exactly one engine frame with that frame's recorded delta. Movement and look therefore integrate exactly as they did when recorded. No custom engine and no custom time step are needed, so it runs on a stock engine.
+
+**AI access:** AI can only replay recordings a human has enabled, through `replay_cmd` (`list_recordings`, `get_recording`, `start_replay`, `get_run`, `cancel_replay`). Every key/button press is guarded against pose drift; a drifted pose, a changed time step or a prerequisite mismatch ends the run with a structured error instead of playing on. A finished run reports frame and event counts and the recording digests, so an agent can verify that the recording still replays faithfully. Replay has no gameplay assertions; combine it with QA when you need a pass/fail.
+
+**Example tasks:** *"Which recordings can you replay, and how long are they?"* · *"Validate that recording 3 still replays after my movement changes"* · *"Replay TestRoomAround and report any drift"*
 
 </details>
 
@@ -525,12 +540,13 @@ void FMyDomainModule::StartupModule()
 | **CortexGen** | CortexCore | `HTTP` · `Json` · `JsonUtilities` · `AssetTools` · `DeveloperSettings` · `ImageWrapper` · `UnrealEd` |
 | **CortexAnimation** | CortexCore | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `UnrealEd` · `AssetRegistry` · `AnimGraph` · `BlueprintGraph` · `Kismet` |
 | **CortexFrontend** | CortexCore · CortexGen | `Slate` · `SlateCore` · `GraphEditor` · `BlueprintGraph` · `Kismet` · `ImageWrapper` · `EditorScriptingUtilities` · `DesktopPlatform` |
+| **CortexReplay** | CortexCore · CortexEditor | `Slate` · `SlateCore` · `InputCore` · `UnrealEd` · `LevelEditor` · `ToolMenus` · `Json` |
 
 Domain modules depend only on CortexCore (and shared infrastructure: CortexGraph, CortexEditor). Never on each other. CortexFrontend is a UI leaf module with no MCP command surface.
 
 ### Cook and Packaging Safety
 
-All 14 modules declare `"Type": "Editor"` in `UnrealCortex.uplugin`. Because `Type: Editor` modules are not loaded in non-editor targets (cook, server, game), the `PostEngineInit` load phase is only relevant in the editor. The plugin is never included in cooked or packaged builds.
+All 15 modules declare `"Type": "Editor"` in `UnrealCortex.uplugin`. Because `Type: Editor` modules are not loaded in non-editor targets (cook, server, game), the `PostEngineInit` load phase is only relevant in the editor. The plugin is never included in cooked or packaged builds.
 
 ### Generic Serialization
 

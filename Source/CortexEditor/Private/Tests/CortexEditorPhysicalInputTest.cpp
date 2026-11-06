@@ -12,7 +12,8 @@
 
 #include "CortexEditorPhysicalInput.h"
 #include "CortexEditorPhysicalInputSession.h"
-#include "CortexEditorEngineClockLease.h"
+#include "CortexEditorPhysicalInputSelfCursorMove.h"
+#include "Misc/ScopeExit.h"
 #include "CortexEditorEngineFrameObserver.h"
 #include "HAL/PlatformProcess.h"
 #include "KeyState.h"
@@ -20,6 +21,7 @@
 #include "Misc/CoreDelegates.h"
 #include "CortexTypes.h"
 
+#include "Camera/PlayerCameraManager.h"
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
 #include "Engine/Engine.h"
@@ -70,24 +72,6 @@ constexpr double CortexPhysicalInputProductDeadlineWatchdogSeconds = 45.0;
 constexpr double CortexPhysicalInputTeardownWatchdogSeconds = 15.0;
 
 /**
- * The ownership-scoped PIE capability is not part of a marketplace engine. Tests that assert its
- * contract — the parked engine-clock lease, exact engine-issued request identity, and
- * foreign-instance survival across an owned end — remain as evidence for a capable build, but are
- * skipped on a stock engine instead of reported as failures.
- */
-bool SkipWithoutScopedPIE(FAutomationTestBase& Test, const TCHAR* Requirement)
-{
-	if (GEngine != nullptr && CortexEngineCompat::SupportsScopedPIE(*GEngine))
-	{
-		return false;
-	}
-	Test.AddInfo(FString::Printf(
-		TEXT("Skipped: %s requires the ownership-scoped PIE capability, which stock engines do not provide"),
-		Requirement));
-	return true;
-}
-
-/**
  * Real drag-drop payload for the owned drag cleanup regression. It records the engine's own
  * cancellation callback, so the test can judge cleanup by the operation's observable lifecycle
  * rather than by session bookkeeping.
@@ -123,6 +107,11 @@ struct FCortexEditorPhysicalInputTestFixture
 	TArray<FCortexEditorPhysicalInputCaptureContext> CapturedContexts;
 	bool bMenuOpen = false;
 	float SliderValue = 0.0f;
+	/** Cursor bookkeeping for the route-admission test: saved, off-route and on-route positions. */
+	FVector2D SavedCursor = FVector2D::ZeroVector;
+	FVector2D PendingOffRoute = FVector2D::ZeroVector;
+	FVector2D PendingRouteCenter = FVector2D::ZeroVector;
+	int32 Begin = 0;
 
 	// Extensions used by the owned/borrowed/deadline cases. Readiness must publish exactly
 	// once per session, so the callback count is tracked in addition to the bool flag.
@@ -3886,27 +3875,93 @@ bool FCortexPhysicalInputUnrelatedSameUserPointerTest::RunTest(const FString& Pa
 			Test.TestTrue(TEXT("Selected input root available"), InputRoot.IsValid());
 			if (!InputRoot.IsValid()) { return; }
 
+			// A real OS packet's coordinate is where the cursor is, and Slate resolves the pointer path
+			// for that coordinate through the window under the real cursor. The test therefore brings
+			// the route window to front (as clicking into it would) and moves the real cursor with the
+			// dispatched packet; two frames are given for the platform to deliver the move.
+			EnsureSelectedRouteWindowActive(*F.Session);
+			F.SavedCursor = Slate.GetCursorPos();
+
 			// A point outside the selected viewport's own route (same Slate user and device).
 			const FVector2D OffRoute =
 				InputRoot->GetCachedGeometry().GetAbsolutePosition() - FVector2D(40.0, 40.0);
-			const int32 Begin = F.Captured.Num();
-			Slate.ProcessMouseMoveEvent(FPointerEvent(Binding.InputDevice, Pointer, OffRoute, OffRoute,
-				TSet<FKey>(), EKeys::Invalid, 0.0f, Modifiers, User), false);
+			Slate.SetCursorPos(OffRoute);
+			F.PendingOffRoute = OffRoute;
+			F.Begin = F.Captured.Num();
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			Slate.ProcessMouseMoveEvent(FPointerEvent(Binding.InputDevice, Pointer, F.PendingOffRoute,
+				F.PendingOffRoute, TSet<FKey>(), EKeys::Invalid, 0.0f, Modifiers,
+				Binding.SlateUserIndex), false);
 			Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice, Pointer,
-				OffRoute, OffRoute, TSet<FKey>({ EKeys::LeftMouseButton }), EKeys::LeftMouseButton,
-				0.0f, Modifiers, User));
-			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer, OffRoute,
-				OffRoute, TSet<FKey>(), EKeys::LeftMouseButton, 0.0f, Modifiers, User));
-			Test.TestEqual(TEXT("Same-user off-route input was not captured"), F.Captured.Num(), Begin);
+				F.PendingOffRoute, F.PendingOffRoute, TSet<FKey>({ EKeys::LeftMouseButton }),
+				EKeys::LeftMouseButton, 0.0f, Modifiers, Binding.SlateUserIndex));
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice, Pointer,
+				F.PendingOffRoute, F.PendingOffRoute, TSet<FKey>(), EKeys::LeftMouseButton, 0.0f,
+				Modifiers, Binding.SlateUserIndex));
+			Test.TestEqual(TEXT("Same-user off-route input was not captured"), F.Captured.Num(), F.Begin);
 
-			// Input genuinely on the selected route is still captured.
-			const FGeometry Geometry = F.Slider->GetCachedGeometry();
-			const FVector2D Size = Geometry.GetLocalSize();
-			if (Size.X <= 0.0) { return; }
-			const FVector2D Center = Geometry.LocalToAbsolute(Size * 0.5);
-			Slate.ProcessMouseMoveEvent(FPointerEvent(Binding.InputDevice, Pointer, Center, Center,
-				TSet<FKey>(), EKeys::Invalid, 0.0f, Modifiers, User), false);
-			Test.TestTrue(TEXT("On-route pointer motion is still captured"), F.Captured.Num() > Begin);
+			// Positive control that needs no hit test: with the route focused (the off-route click may
+			// have moved focus), a selected-user key on the route is captured, so the negative result
+			// above is not an unarmed capture or a lost route binding.
+			TSharedPtr<SWidget> RouteWidget = Binding.ViewportWidget.Pin();
+			if (!RouteWidget.IsValid())
+			{
+				RouteWidget = Binding.InputRoot.Pin();
+			}
+			if (RouteWidget.IsValid())
+			{
+				Slate.SetUserFocus(Binding.SlateUserIndex, RouteWidget, EFocusCause::SetDirectly);
+			}
+			const int32 BeforeKey = F.Captured.Num();
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::W, Modifiers, Binding.InputDevice, false, 0, 0,
+				Binding.SlateUserIndex));
+			Slate.ProcessKeyUpEvent(FKeyEvent(EKeys::W, Modifiers, Binding.InputDevice, false, 0, 0,
+				Binding.SlateUserIndex));
+			Test.TestEqual(TEXT("Same-user on-route key input is captured"), F.Captured.Num(), BeforeKey + 2);
+
+			// Pointer positive half: park the real cursor on the route centre; the next step asserts the
+			// on-route pointer is captured once the platform reports the route window under the cursor.
+			const TSharedPtr<SWidget> InputRoot = Binding.InputRoot.Pin();
+			if (InputRoot.IsValid())
+			{
+				const FGeometry& Geometry = InputRoot->GetCachedGeometry();
+				F.PendingRouteCenter = Geometry.GetAbsolutePosition() + Geometry.GetAbsoluteSize() * 0.5;
+				Slate.SetCursorPos(F.PendingRouteCenter);
+			}
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			const uint32 Pointer = FSlateApplicationBase::CursorPointerIndex;
+			// Route admission resolves through the OS window under the real cursor
+			// (SlateApplication.cpp:1151). That precondition is environment state: when another window
+			// covers the route, the on-route pointer half is skipped explicitly rather than asserted.
+			const TSharedPtr<SWindow> RouteWindow = ResolveSelectedRouteWindow(*F.Session);
+			const TSharedPtr<FGenericWindow> UnderCursor = Slate.GetPlatformApplication()->GetWindowUnderCursor();
+			if (!RouteWindow.IsValid() || !UnderCursor.IsValid() || RouteWindow->GetNativeWindow() != UnderCursor)
+			{
+				Test.AddInfo(TEXT("Skipped the on-route pointer half: the OS does not report the route window under the cursor"));
+				Slate.SetCursorPos(F.SavedCursor);
+				return;
+			}
+			const int32 BeforePointer = F.Captured.Num();
+			Slate.ProcessMouseMoveEvent(FPointerEvent(Binding.InputDevice, Pointer, F.PendingRouteCenter,
+				F.PendingRouteCenter + FVector2D(1.0, 0.0), TSet<FKey>(), EKeys::Invalid, 0.0f, Modifiers,
+				Binding.SlateUserIndex), false);
+			Test.TestTrue(TEXT("On-route pointer motion is captured"), F.Captured.Num() > BeforePointer);
+			Slate.SetCursorPos(F.SavedCursor);
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;
@@ -4423,8 +4478,8 @@ bool FCortexPhysicalInputReplayedCaptureWaitTest::RunTest(const FString& Paramet
 // with the off-route position, while unrelated editor motion remains excluded. Consumer-level
 // delivery of a captured off-route move (a rendered widget reacting to the routed move) is deferred
 // to the Task 10 rendered matrix (physical human input) per the fix-cap ruling: this harness can
-// only establish the session's admission/recording contract (the round-4
-// IsPointerCaptureOnSelectedRoute admission is what admits this move).
+// only establish the session's admission/recording contract (the live-captor route check
+// admits this move).
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputCapturedMoveOutsideRouteTest,
 	"Cortex.Editor.PhysicalInputCapturedMoveOutsideRoute",
@@ -4469,9 +4524,9 @@ bool FCortexPhysicalInputCapturedMoveOutsideRouteTest::RunTest(const FString& Pa
 			Test.TestTrue(TEXT("Captured press really captured the pointer"),
 				Slate.HasUserMouseCapture(User));
 
-			// The pointer leaves the viewport while the capture is live: the round-4
-			// IsPointerCaptureOnSelectedRoute admission admits the move, so the replay stream records
-			// it (with the off-route position) even though it is outside the captured hit area.
+			// The pointer leaves the viewport while the capture is live: the live-captor route
+			// check admits the move, so the replay stream records it (with the off-route
+			// position) even though it is outside the captured hit area.
 			Slate.ProcessMouseMoveEvent(FPointerEvent(Binding.InputDevice, Pointer, OffRoute, Center,
 				Pressed, EKeys::Invalid, 0.0f, Modifiers, User), false);
 			Test.TestEqual(TEXT("Captured outside-route press and move were recorded"),
@@ -6133,8 +6188,6 @@ bool FCortexPhysicalInputOwnedReplayAlreadyFocusedTest::RunTest(const FString& P
 
 			const FCortexCommandResult Arm = Fixture->Session->BeginReplayEpoch();
 			T.TestTrue(TEXT("Already-focused owned replay arm succeeds"), Arm.bSuccess);
-			T.TestTrue(TEXT("Already-focused owned replay epoch is armed"),
-				Fixture->Session->IsReplayEpochArmed());
 
 			PlaySettings->GameGetsMouseControl = bSavedGameGetsMouseControl;
 		}));
@@ -6204,8 +6257,6 @@ bool FCortexPhysicalInputOwnedReplayFocusCancellationTest::RunTest(const FString
 			T.TestTrue(TEXT("Focus-change callback fired during the owned replay arm"),
 				*bFocusCallbackFired);
 			T.TestFalse(TEXT("Owned replay arm fails after synchronous focus cancellation"), Arm.bSuccess);
-			T.TestFalse(TEXT("No replay epoch is armed after focus cancellation"),
-				Fixture->Session->IsReplayEpochArmed());
 			T.TestFalse(TEXT("Cancelled arm leaves no bound successor target"),
 				Fixture->Session->GetTargetBinding().World.IsValid());
 
@@ -6263,592 +6314,78 @@ bool FCortexPhysicalInputHumanReplayForeignInputTest::RunTest(const FString& Par
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockDeltaFidelityTest,
-	"Cortex.Editor.PhysicalInput.NativeClockDeltaFidelity",
+// ---------------------------------------------------------------------------
+// Observer frame attribution (the contract capture builds its frames on): the input boundary is
+// delivered exactly once per engine frame, before that frame's world tick, with the application delta;
+// GetOpenFrame exposes exactly that record from the boundary until the frame closes; a closed frame's
+// selected-world tick count and tick (real delta, pause) equal an independent engine observation; and
+// an observer cannot adopt a PIE that is already running.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeFrameAttributionTest,
+	"Cortex.Editor.PhysicalInput.NativeFrameAttribution",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FCortexPhysicalInputNativeClockDeltaFidelityTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease"))) { return true; }
-	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
-	struct FNativeDeltaProbe
-	{
-		FDelegateHandle WorldTickHandle;
-		FCortexEditorEngineClockLease Clock;
-		IConsoleVariable* FrameCap = nullptr;
-		FString SavedFrameCap;
-		uint32 SavedSetBy = 0;
-		float ConsumedDeltas[4] = {};
-		int32 Count = 0;
-
-		~FNativeDeltaProbe()
-		{
-			FWorldDelegates::OnWorldTickStart.Remove(WorldTickHandle);
-			if (FrameCap)
-			{
-				FrameCap->Set(*SavedFrameCap, ECVF_SetByConsole);
-				FrameCap->ClearFlags(ECVF_SetByMask);
-				FrameCap->SetFlags(static_cast<EConsoleVariableFlags>(SavedSetBy));
-			}
-		}
-	};
-	const auto Probe = MakeShared<FNativeDeltaProbe>();
-	Probe->FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
-	if (!TestNotNull(TEXT("Normal host FPS cap exists"), Probe->FrameCap))
-	{
-		return false;
-	}
-	Probe->SavedFrameCap = Probe->FrameCap->GetString();
-	Probe->SavedSetBy = Probe->FrameCap->GetFlags() & ECVF_SetByMask;
-	Probe->FrameCap->Set(120.0f, ECVF_SetByConsole);
-	const FCortexCommandResult ClockResult = Probe->Clock.Acquire(*GEngine, 1,
-		[](FCortexEditorAppClockStep& Step)
-		{
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 30.0;
-			Step.DeltaSeconds = 1.0 / 30.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			FCortexCommandResult Result;
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(FString::Printf(TEXT("Clock acquired (%s: %s)"),
-		*ClockResult.ErrorCode, *ClockResult.ErrorMessage), ClockResult.bSuccess))
-	{
-		return false;
-	}
-	TestTrue(TEXT("Owned PIE admitted"),
-		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeClockDeltaFidelity"),
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			const TWeakPtr<FNativeDeltaProbe> WeakProbe = Probe;
-			const TWeakObjectPtr<UWorld> SelectedWorld = Fixture->Session->GetTargetBinding().World;
-			Probe->WorldTickHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-				[WeakProbe, SelectedWorld](UWorld* World, ELevelTick, float DeltaSeconds)
-				{
-					if (World != SelectedWorld.Get()) { return; }
-					if (const auto Pinned = WeakProbe.Pin())
-					{
-						if (Pinned->Count < UE_ARRAY_COUNT(Pinned->ConsumedDeltas))
-						{
-							Pinned->ConsumedDeltas[Pinned->Count++] = DeltaSeconds;
-						}
-					}
-				});
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 8,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestEqual(TEXT("Four selected-world consumer frames observed"), Probe->Count, 4);
-			for (int32 Index = 0; Index < Probe->Count; ++Index)
-			{
-				Test.TestEqual(FString::Printf(TEXT("Consumer frame %d uses recorded delta"), Index),
-					Probe->ConsumedDeltas[Index], static_cast<float>(1.0 / 30.0), 0.0f);
-			}
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Clock handoff admitted only after owned PIE ended"),
-				Probe->Clock.BeginHandoff().bSuccess);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Real default-clock handoff completed"), Probe->Clock.IsHandoffComplete());
-			Test.TestTrue(TEXT("Default delta is bounded and positive"),
-				FApp::GetDeltaTime() > 0.0 && FApp::GetDeltaTime() <= 0.117);
-			Test.TestTrue(TEXT("Default current and last do not move backward"),
-				FApp::GetCurrentTime() >= FApp::GetLastTime());
-		}));
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockHandoffOwnershipTest,
-	"Cortex.Editor.PhysicalInput.NativeClockHandoffOwnership",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockHandoffOwnershipTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease"))) { return true; }
-	if (!GEditor || !GEngine)
-	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	struct FClockFailureProbe
-	{
-		FCortexEditorEngineClockLease Clock;
-		FDelegateHandle WorldTickHandle;
-		TWeakObjectPtr<UWorld> SelectedWorld;
-		bool bRequestFailure = false;
-		bool bFailureObserved = false;
-		int32 SelectedTicksAfterFailure = 0;
-		float LastExtraDeltaSeconds = 0.0f;
-
-		~FClockFailureProbe()
-		{
-			FWorldDelegates::OnWorldTickStart.Remove(WorldTickHandle);
-		}
-	};
-	const auto Probe = MakeShared<FClockFailureProbe>();
-	const TWeakPtr<FClockFailureProbe> WeakProbe = Probe;
-	const TWeakPtr<FCortexEditorPhysicalInputTestFixture> WeakFixture = Fixture;
-	// UE attaches the provider before Initialize returns: a failed initialization
-	// must remove only that partial owned attachment and preserve the normal profile.
-	const bool SavedFixedRate = GEngine->bUseFixedFrameRate;
-	const bool SavedFixedStep = FApp::UseFixedTimeStep();
-	const double SavedFixedDelta = FApp::GetFixedDeltaTime();
-	Probe->Clock.SetForceInitializeFailureForTests(true);
-	const FCortexCommandResult Partial = Probe->Clock.Acquire(*GEngine, 1,
-		[](FCortexEditorAppClockStep&)
-		{
-			FCortexCommandResult Result;
-			Result.bSuccess = true;
-			return Result;
-		});
-	TestFalse(TEXT("Real partial initialization is rejected"), Partial.bSuccess);
-	TestNull(TEXT("Failed owned attachment is removed"), GEngine->GetCustomTimeStep());
-	TestEqual(TEXT("Partial initialization preserves engine fixed-rate setting"),
-		!!GEngine->bUseFixedFrameRate, SavedFixedRate);
-	TestEqual(TEXT("Partial initialization preserves application fixed-step setting"),
-		FApp::UseFixedTimeStep(), SavedFixedStep);
-	TestEqual(TEXT("Partial initialization preserves fixed delta"),
-		FApp::GetFixedDeltaTime(), SavedFixedDelta);
-	const FCortexCommandResult Acquired = Probe->Clock.Acquire(*GEngine, 2,
-		[WeakProbe, WeakFixture](FCortexEditorAppClockStep& Step)
-		{
-			const auto Pinned = WeakProbe.Pin();
-			const auto OwnedFixture = WeakFixture.Pin();
-			FCortexCommandResult Result;
-			if (!Pinned.IsValid() || !OwnedFixture.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Native fault probe owner expired");
-				return Result;
-			}
-			if (Pinned->bRequestFailure)
-			{
-				Pinned->bFailureObserved = true;
-				OwnedFixture->Session->EndOwnedPIE();
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Controlled recorded-clock producer failure");
-				return Result;
-			}
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 30.0;
-			Step.DeltaSeconds = 1.0 / 30.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(FString::Printf(TEXT("Owned clock admitted (%s: %s)"),
-		*Acquired.ErrorCode, *Acquired.ErrorMessage), Acquired.bSuccess))
-	{
-		return false;
-	}
-	TestTrue(TEXT("Owned PIE admitted"),
-		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeClockHandoffOwnership"),
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestFalse(TEXT("A live PIE cannot enter cleanup-only handoff"), Probe->Clock.BeginHandoff().bSuccess);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeClockFaultContainment"),
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			(void)Test;
-			Probe->SelectedWorld = Fixture->Session->GetTargetBinding().World;
-			const TWeakPtr<FClockFailureProbe> Weak = Probe;
-			Probe->WorldTickHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-				[Weak](UWorld* World, ELevelTick, float DeltaSeconds)
-				{
-					const auto Pinned = Weak.Pin();
-					if (Pinned.IsValid() && Pinned->bFailureObserved
-						&& World == Pinned->SelectedWorld.Get())
-					{
-						++Pinned->SelectedTicksAfterFailure;
-						Pinned->LastExtraDeltaSeconds = DeltaSeconds;
-					}
-				});
-			Probe->bRequestFailure = true;
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Real producer failure occurred before engine world processing"),
-				Probe->bFailureObserved);
-			Test.TestFalse(TEXT("Clock preserves the typed failure"), Probe->Clock.GetLastFailure().bSuccess);
-			Test.TestEqual(FString::Printf(TEXT("No unrecorded selected-world tick after clock failure (extra delta %.9f)"),
-				Probe->LastExtraDeltaSeconds), Probe->SelectedTicksAfterFailure, 0);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Failure teardown admits real clock handoff"),
-				Probe->Clock.BeginHandoff().bSuccess);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Failure cleanup observes the next normal clock frame"),
-				Probe->Clock.IsHandoffComplete());
-			Test.TestTrue(TEXT("Failure cleanup default clock remains bounded"),
-				FApp::GetDeltaTime() > 0.0 && FApp::GetDeltaTime() <= 0.117);
-		}));
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeSlateWaitTest,
-	"Cortex.Editor.PhysicalInput.NativeSlateWaitNoWorldAdvance",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeSlateWaitTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (!GEditor || !GEngine)
-	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	struct FSlateWaitProbe
-	{
-		FCortexEditorEngineFrameObserver Observer;
-		bool bTimerRan = false;
-		bool bNestedRejected = false;
-	};
-	const auto Probe = MakeShared<FSlateWaitProbe>();
-	TestTrue(TEXT("Observer installed before owned request"),
-		Probe->Observer.Install(*Fixture->Session,
-			[](const FCortexEditorEngineFrameRecord&) {},
-			[](const FCortexEditorEngineFrameRecord&) {}).bSuccess);
-	TestTrue(TEXT("Owned PIE admitted"), Fixture->Session->BeginOwnedPIE(
-		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture,
-		TEXT("NativeSlateWaitNoWorldAdvance"),
-		[Fixture, Probe](FAutomationTestBase& Test, FCortexEditorPhysicalInputTestFixture& F)
-		{
-			EnsureSelectedRouteWindowActive(*F.Session);
-			UWorld* World = F.Session->GetTargetBinding().World.Get();
-			if (!Test.TestNotNull(TEXT("Exact selected world"), World) || !F.Slider.IsValid())
-			{
-				return;
-			}
-			// The existing real tagged slider has cached geometry. Hide it, then permit
-			// only Slate's active timer to make the recorded target ready again.
-			const FVector2D Absolute = PhysicalTestWidgetAbsoluteCenter(*F.Slider);
-			FCortexEditorPhysicalInputEvent Press;
-			Press.Kind = ECortexEditorPhysicalInputKind::PointerDown;
-			Press.Key = EKeys::LeftMouseButton;
-			Press.ViewportPosition = ToViewportLocal(F, Absolute);
-			const auto Identity = PhysicalTestMakeSlateIdentity(
-				TEXT("CortexPhysicalProbeRoot"), TEXT("CortexPhysicalProbeSlider"));
-			F.Slider->SetVisibility(EVisibility::Collapsed);
-			Test.TestTrue(TEXT("Hidden layout is refreshed using Slate-only work"),
-				Probe->Observer.RunSlateOnlyWaitWork().bSuccess);
-			FCortexEditorPhysicalInputUIObservation Before;
-			F.Session->ObserveUI(Press, *Identity, Before);
-			Test.TestTrue(TEXT("Hidden target is not ready"),
-				Before.State != ECortexEditorUIObservationState::Ready);
-			const uint64 FrameBefore = GFrameCounter;
-			const double RealBefore = World->GetRealTimeSeconds();
-			const double GameBefore = World->GetTimeSeconds();
-			const float DeltaBefore = World->GetDeltaSeconds();
-			const double AppCurrentBefore = FApp::GetCurrentTime();
-			const double AppLastBefore = FApp::GetLastTime();
-			const double AppDeltaBefore = FApp::GetDeltaTime();
-			const int32 TicksBefore = Probe->Observer.GetSelectedWorldTickCount();
-			FCortexEditorNativeMouseFilterState FilterBefore;
-			Test.TestTrue(TEXT("Native filter observed before wait"),
-				F.Session->ReadNativeMouseFilterState(FilterBefore).bSuccess);
-			const TWeakPtr<FSlateWaitProbe> WeakProbe = Probe;
-			const TWeakPtr<FCortexEditorPhysicalInputTestFixture> WeakFixture = Fixture;
-			F.Overlay->RegisterActiveTimer(0.0f, FWidgetActiveTimerDelegate::CreateLambda(
-				[WeakProbe, WeakFixture](double, float)
-				{
-					const auto P = WeakProbe.Pin();
-					const auto Owned = WeakFixture.Pin();
-					if (P.IsValid() && Owned.IsValid())
-					{
-						P->bTimerRan = true;
-						P->bNestedRejected = !P->Observer.RunSlateOnlyWaitWork().bSuccess;
-						Owned->Slider->SetVisibility(EVisibility::Visible);
-					}
-					return EActiveTimerReturnType::Stop;
-				}));
-			const FCortexCommandResult Wait = Probe->Observer.RunSlateOnlyWaitWork();
-			Test.TestTrue(FString::Printf(TEXT("Slate-only wait succeeds (%s: %s)"),
-				*Wait.ErrorCode, *Wait.ErrorMessage), Wait.bSuccess);
-			Test.TestTrue(TEXT("Actual Slate active timer made the target visible"), Probe->bTimerRan);
-			Test.TestTrue(TEXT("Nested Slate work is rejected"), Probe->bNestedRejected);
-			// Active timers run after the first prepass. The next permitted
-			// Slate-only pass lays out the newly-visible control.
-			Test.TestTrue(TEXT("Newly visible target receives its next layout pass"),
-				Probe->Observer.RunSlateOnlyWaitWork().bSuccess);
-			FCortexEditorPhysicalInputUIObservation After;
-			const FCortexCommandResult Observed = F.Session->ObserveUI(Press, *Identity, After);
-			Test.TestTrue(TEXT("Delayed real target resolves"), Observed.bSuccess);
-			Test.TestEqual(TEXT("Delayed target is ready without a world tick"),
-				After.State, ECortexEditorUIObservationState::Ready);
-			Test.TestEqual(TEXT("Global frame unchanged"), GFrameCounter, FrameBefore);
-			Test.TestEqual(TEXT("Selected world tick count unchanged"),
-				Probe->Observer.GetSelectedWorldTickCount(), TicksBefore);
-			Test.TestEqual(TEXT("World real time unchanged"), World->GetRealTimeSeconds(), RealBefore);
-			Test.TestEqual(TEXT("World game time unchanged"), World->GetTimeSeconds(), GameBefore);
-			Test.TestEqual(TEXT("World delta unchanged"), World->GetDeltaSeconds(), DeltaBefore, 0.0f);
-			Test.TestEqual(TEXT("App current unchanged"), FApp::GetCurrentTime(), AppCurrentBefore);
-			Test.TestEqual(TEXT("App last unchanged"), FApp::GetLastTime(), AppLastBefore);
-			Test.TestEqual(TEXT("App delta unchanged"), FApp::GetDeltaTime(), AppDeltaBefore);
-			FCortexEditorNativeMouseFilterState FilterAfter;
-			Test.TestTrue(TEXT("Native filter observed after wait"),
-				F.Session->ReadNativeMouseFilterState(FilterAfter).bSuccess);
-			for (int32 Axis = 0; Axis < 2; ++Axis)
-			{
-				Test.TestEqual(TEXT("Native zero time unchanged"),
-					FilterAfter.ZeroTimeSeconds[Axis], FilterBefore.ZeroTimeSeconds[Axis], 0.0f);
-				Test.TestEqual(TEXT("Native smoothed mouse unchanged"),
-					FilterAfter.SmoothedMouse[Axis], FilterBefore.SmoothedMouse[Axis], 0.0f);
-			}
-			Test.TestEqual(TEXT("Native mouse samples unchanged"),
-				FilterAfter.SampleCount, FilterBefore.SampleCount);
-			Test.TestEqual(TEXT("Native sampling total unchanged"),
-				FilterAfter.SamplingTotalSeconds, FilterBefore.SamplingTotalSeconds, 0.0f);
-			Test.TestEqual(TEXT("Effective dilation unchanged"),
-				FilterAfter.EffectiveTimeDilation, FilterBefore.EffectiveTimeDilation, 0.0f);
-			// A target with no Slate-side producer stays pending: waiting does not
-			// manufacture readiness by ticking the game world.
-			F.Slider->SetVisibility(EVisibility::Collapsed);
-			Test.TestTrue(TEXT("A second Slate-only pass remains safe"),
-				Probe->Observer.RunSlateOnlyWaitWork().bSuccess);
-			FCortexEditorPhysicalInputUIObservation WorldDependent;
-			F.Session->ObserveUI(Press, *Identity, WorldDependent);
-			Test.TestTrue(TEXT("No game producer means the target remains unready"),
-				WorldDependent.State != ECortexEditorUIObservationState::Ready);
-			Test.TestEqual(TEXT("Waiting did not advance game time"),
-				World->GetTimeSeconds(), GameBefore);
-		}, true, false, true));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Probe](FAutomationTestBase&) { Probe->Observer.Uninstall(); }));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	return true;
-}
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeFirstWorldFrameTest,
-	"Cortex.Editor.PhysicalInput.NativeFirstWorldFrame",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeFirstWorldFrameTest::RunTest(const FString& Parameters)
+bool FCortexPhysicalInputNativeFrameAttributionTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	if (!GEditor || !GEngine) { AddError(TEXT("Editor engine missing")); return false; }
 	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
 	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
 
-	// One shared, game-thread-confined probe owns both the native observer and the
-	// independent engine observations, so latent commands keep them alive across
-	// frames and teardown is explicit and ordered.
-	struct FFirstWorldProbe
+	// One game-thread-confined probe owns the observer and the independent engine observations so
+	// latent commands keep them alive across frames and teardown is explicit and ordered.
+	struct FAttributionProbe
 	{
 		FCortexEditorEngineFrameObserver Observer;
-
-		// ---- independent engine observation (never routed through the observer) ----
-		FDelegateHandle BeginFrameHandle;
-		FDelegateHandle SamplingHandle;
 		FDelegateHandle WorldStartHandle;
-		FDelegateHandle WorldEndHandle;
 
-		struct FSampledClock
-		{
-			double DeltaSeconds = 0.0;
-			double CurrentSeconds = 0.0;
-			double LastSeconds = 0.0;
-			bool bPIEWorldPresent = false;
-		};
-		TMap<uint64, FSampledClock> SampledClocks;
-		bool bDuplicateSampling = false;
+		/** Independent per-frame count and real delta of owned PIE world ticks. */
+		TMap<uint64, int32> TicksPerFrame;
+		TMap<uint64, float> RealDeltaPerFrame;
 
-		// Independent per-global-frame count of the selected world's real ticks (zero/duplicate invariant).
-		TMap<uint64, int32> SelectedTicksPerFrame;
-		bool bDuplicateTickFrame = false;
-		// Set if the observer's latched last-closed record is mutated after it was delivered.
-		bool bLatchedFrameMutated = false;
-
-		bool bFirstTickObserved = false;
-		TWeakObjectPtr<UWorld> FirstTickWorld;
-		uint64 FirstTickFrameCounter = 0;
-		float FirstTickRealDelta = 0.0f;
-		float FirstTickEndDelta = 0.0f;
-		ELevelTick FirstTickLevelType = LEVELTICK_All;
-		bool bFirstTickEnded = false;
-		int32 SelectedTickCount = 0;
-
-		// ---- observer callbacks ----
-		struct FBoundarySnapshot
-		{
-			bool bValid = false;
-			bool bWorldBound = false;
-			bool bPawnBound = false;
-			bool bReadySeen = false;
-			double AppDeltaSeconds = 0.0;
-			double AppCurrentSeconds = 0.0;
-			double AppLastSeconds = 0.0;
-			double InputBoundarySeconds = 0.0;
-		};
-		TMap<uint64, FBoundarySnapshot> BoundarySnapshots;
-
+		TSet<uint64> BoundaryFrames;
+		bool bDuplicateBoundary = false;
+		bool bOpenFrameMatchedAtBoundary = true;
+		bool bOpenFrameNullAtClose = true;
+		bool bBoundaryAfterTick = false;
 		TArray<FCortexEditorEngineFrameRecord> ClosedFrames;
-		int32 FirstSelectedClosedIndex = INDEX_NONE;
-		FCortexEditorEngineFrameRecord BirthFrame;
-		bool bReadyLatched = false;
-		int32 ReadyLatchedClosedFrameCount = 0;
-
-		void RemoveIndependentDelegates()
-		{
-			FCoreDelegates::OnBeginFrame.Remove(BeginFrameHandle);
-			FCoreDelegates::OnSamplingInput.Remove(SamplingHandle);
-			FWorldDelegates::OnWorldTickStart.Remove(WorldStartHandle);
-			FWorldDelegates::OnWorldTickEnd.Remove(WorldEndHandle);
-			BeginFrameHandle.Reset();
-			SamplingHandle.Reset();
-			WorldStartHandle.Reset();
-			WorldEndHandle.Reset();
-		}
 
 		void Shutdown()
 		{
 			Observer.Uninstall();
-			RemoveIndependentDelegates();
+			FWorldDelegates::OnWorldTickStart.Remove(WorldStartHandle);
+			WorldStartHandle.Reset();
 		}
 
-		~FFirstWorldProbe()
+		~FAttributionProbe()
 		{
 			Shutdown();
 		}
 	};
-
-	const auto Probe = MakeShared<FFirstWorldProbe>();
-	const TWeakPtr<FCortexEditorPhysicalInputTestFixture> WeakFixture = Fixture;
-
-	// Independent observers in place before the native observer so they see the same frames.
-	Probe->SamplingHandle = FCoreDelegates::OnSamplingInput.AddLambda([Probe]()
-	{
-		const uint64 Counter = GFrameCounter;
-		if (Probe->SampledClocks.Contains(Counter))
-		{
-			// The native observer assumes exactly one OnSamplingInput per global frame; record
-			// any independent evidence that this assumption was violated.
-			Probe->bDuplicateSampling = true;
-			return;
-		}
-		FFirstWorldProbe::FSampledClock Clock;
-		Clock.DeltaSeconds = FApp::GetDeltaTime();
-		Clock.CurrentSeconds = FApp::GetCurrentTime();
-		Clock.LastSeconds = FApp::GetLastTime();
-		for (const FWorldContext& Context : GEngine->GetWorldContexts())
-		{
-			Clock.bPIEWorldPresent |= Context.WorldType == EWorldType::PIE
-				&& Context.World() != nullptr;
-		}
-		Probe->SampledClocks.Add(Counter, Clock);
-	});
+	const auto Probe = MakeShared<FAttributionProbe>();
 	Probe->WorldStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-		[Probe](UWorld* World, ELevelTick TickType, float DeltaSeconds)
-		{
-			if (!World || World->WorldType != EWorldType::PIE) { return; }
-			if (!Probe->bFirstTickObserved)
-			{
-				Probe->bFirstTickObserved = true;
-				Probe->FirstTickWorld = World;
-				Probe->FirstTickFrameCounter = GFrameCounter;
-				Probe->FirstTickRealDelta = DeltaSeconds;
-				Probe->FirstTickLevelType = TickType;
-			}
-			if (World == Probe->FirstTickWorld.Get())
-			{
-				++Probe->SelectedTickCount;
-				int32& FrameTicks = Probe->SelectedTicksPerFrame.FindOrAdd(GFrameCounter);
-				++FrameTicks;
-				if (FrameTicks > 1)
-				{
-					Probe->bDuplicateTickFrame = true;
-				}
-			}
-		});
-	Probe->WorldEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
 		[Probe](UWorld* World, ELevelTick, float DeltaSeconds)
 		{
-			if (!Probe->bFirstTickEnded && World == Probe->FirstTickWorld.Get())
-			{
-				Probe->bFirstTickEnded = true;
-				Probe->FirstTickEndDelta = DeltaSeconds;
-			}
+			if (!World || World->WorldType != EWorldType::PIE) { return; }
+			++Probe->TicksPerFrame.FindOrAdd(GFrameCounter);
+			Probe->RealDeltaPerFrame.Add(GFrameCounter, DeltaSeconds);
 		});
 
-	// Latched-frame integrity probe: registered before the observer's own BeginFrame so it runs
-	// first and can observe whether the just-closed record was mutated after it was delivered
-	// (the observer invalidates only the rolling current record, so a stray world tick outside an
-	// open frame would corrupt the record a consumer already read).
-	Probe->BeginFrameHandle = FCoreDelegates::OnBeginFrame.AddLambda([Probe]()
-	{
-		const FCortexEditorEngineFrameRecord* Live = Probe->Observer.GetLastClosedFrame();
-		if (Live != nullptr && Probe->ClosedFrames.Num() > 0)
-		{
-			const FCortexEditorEngineFrameRecord& Copy = Probe->ClosedFrames.Last();
-			if (Live->CaptureFrameCounter != Copy.CaptureFrameCounter
-				|| Live->SelectedWorldTickCount != Copy.SelectedWorldTickCount
-				|| Live->WorldTick.IsSet() != Copy.WorldTick.IsSet())
-			{
-				Probe->bLatchedFrameMutated = true;
-			}
-		}
-	});
-
-	// ---- install the native observer BEFORE the owned PIE request ----
 	const FCortexCommandResult Installed = Probe->Observer.Install(*Fixture->Session,
-		[Probe, WeakFixture](const FCortexEditorEngineFrameRecord& Record)
+		[Probe](const FCortexEditorEngineFrameRecord& Boundary)
 		{
-			FFirstWorldProbe::FBoundarySnapshot Snapshot;
-			Snapshot.bValid = true;
-			Snapshot.InputBoundarySeconds = Record.InputBoundarySeconds;
-			Snapshot.AppDeltaSeconds = Record.AppDeltaSeconds;
-			Snapshot.AppCurrentSeconds = Record.AppCurrentSeconds;
-			Snapshot.AppLastSeconds = Record.AppLastSeconds;
-			if (const auto Pinned = WeakFixture.Pin())
+			if (Probe->BoundaryFrames.Contains(Boundary.CaptureFrameCounter))
 			{
-				Snapshot.bReadySeen = Pinned->bReadySeen;
-				Snapshot.bWorldBound = Pinned->Session->GetTargetBinding().World.IsValid();
-				Snapshot.bPawnBound = Pinned->Session->GetTargetBinding().Pawn.IsValid();
+				Probe->bDuplicateBoundary = true;
 			}
-			Probe->BoundarySnapshots.Add(Record.CaptureFrameCounter, Snapshot);
+			Probe->BoundaryFrames.Add(Boundary.CaptureFrameCounter);
+			Probe->bOpenFrameMatchedAtBoundary &= Probe->Observer.GetOpenFrame() == &Boundary;
+			Probe->bBoundaryAfterTick |= Probe->TicksPerFrame.Contains(GFrameCounter);
 		},
-		[Probe](const FCortexEditorEngineFrameRecord& Record)
+		[Probe](const FCortexEditorEngineFrameRecord& Closed)
 		{
-			Probe->ClosedFrames.Add(Record);
-			if (Probe->FirstSelectedClosedIndex == INDEX_NONE && Record.SelectedWorldTickCount > 0)
-			{
-				Probe->FirstSelectedClosedIndex = Probe->ClosedFrames.Num() - 1;
-				Probe->BirthFrame = Record;
-			}
+			Probe->bOpenFrameNullAtClose &= Probe->Observer.GetOpenFrame() == nullptr;
+			Probe->ClosedFrames.Add(Closed);
 		});
 	if (!TestTrue(FString::Printf(TEXT("Native observer installs before the owned PIE request (%s: %s)"),
 		*Installed.ErrorCode, *Installed.ErrorMessage), Installed.bSuccess))
@@ -6856,28 +6393,16 @@ bool FCortexPhysicalInputNativeFirstWorldFrameTest::RunTest(const FString& Param
 		Probe->Shutdown();
 		return false;
 	}
-	TestTrue(TEXT("Observer has no selected world before the owned request"),
-		!Probe->Observer.HasSelectedWorld());
+	TestNull(TEXT("No frame is open outside a frame boundary"), Probe->Observer.GetOpenFrame());
 
-	// Readiness latch wrapper: record how many frames had already closed so the birth frame can
-	// be proven to precede the ready target.
-	const TFunction<void(const FCortexCommandResult&)> InnerReady = MakeFixtureReadyCallback(Fixture);
-	TFunction<void(const FCortexCommandResult&)> ReadyCallback =
-		[InnerReady, Probe](const FCortexCommandResult& Ready)
-		{
-			Probe->bReadyLatched = true;
-			Probe->ReadyLatchedClosedFrameCount = Probe->ClosedFrames.Num();
-			InnerReady(Ready);
-		};
-	TestTrue(TEXT("Owned PIE admitted"),
-		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MoveTemp(ReadyCallback)).bSuccess);
-
+	TestTrue(TEXT("Owned PIE admitted"), Fixture->Session->BeginOwnedPIE(
+		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
 
-	// Real controlled late observer installation while the owned PIE is already running.
+	// A fresh observer cannot adopt the owned PIE that is already running.
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeFirstWorldFrameLateInstall"),
-		[Probe, Fixture](FAutomationTestBase& Test)
+		TEXT("NativeFrameAttributionLateInstall"),
+		[Fixture](FAutomationTestBase& Test)
 		{
 			FCortexEditorEngineFrameObserver LateObserver;
 			const FCortexCommandResult Late = LateObserver.Install(*Fixture->Session,
@@ -6887,194 +6412,43 @@ bool FCortexPhysicalInputNativeFirstWorldFrameTest::RunTest(const FString& Param
 			Test.TestEqual(TEXT("Late install reports the native timing error"),
 				Late.ErrorCode, FString(TEXT("REPLAY_TIMING_ERROR")));
 			LateObserver.Uninstall();
-
-			const FCortexCommandResult Reinstall = Probe->Observer.Install(*Fixture->Session,
-				[](const FCortexEditorEngineFrameRecord&) {},
-				[](const FCortexEditorEngineFrameRecord&) {});
-			Test.TestFalse(TEXT("The installed observer cannot reinstall itself"), Reinstall.bSuccess);
-			Test.TestEqual(TEXT("Reinstall reports the native timing error"),
-				Reinstall.ErrorCode, FString(TEXT("REPLAY_TIMING_ERROR")));
-
-			Test.TestTrue(TEXT("Observer pinned its selected world at birth"),
-				Probe->Observer.HasSelectedWorld());
-			Test.TestEqual(TEXT("Observer selected world is the session's exact owned world"),
-				Probe->Observer.GetSelectedWorld(), Fixture->Session->GetTargetBinding().World.Get());
-			const FCortexEditorEngineFrameRecord* LastClosed = Probe->Observer.GetLastClosedFrame();
-			Test.TestNotNull(TEXT("Observer exposes a last closed frame"), LastClosed);
-			if (LastClosed != nullptr && Probe->ClosedFrames.Num() > 0)
-			{
-				Test.TestEqual(TEXT("Last-closed getter matches the recorded close"),
-					static_cast<int64>(LastClosed->CaptureFrameCounter),
-					static_cast<int64>(Probe->ClosedFrames.Last().CaptureFrameCounter));
-			}
 		}));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
-		[Probe, Fixture](FAutomationTestBase& Test)
+		[Probe](FAutomationTestBase& Test)
 		{
-			// ---- independent observation present ----
-			Test.TestTrue(TEXT("Independent probe observed the first owned PIE world tick"),
-				Probe->bFirstTickObserved);
-			Test.TestTrue(TEXT("Independent probe observed that tick's end"),
-				Probe->bFirstTickEnded);
-			Test.TestFalse(TEXT("OnSamplingInput fired at most once per global frame during the run"),
-				Probe->bDuplicateSampling);
-			Test.TestTrue(TEXT("Independent probe counted the selected world's ticks"),
-				Probe->SelectedTickCount >= 1);
-			Test.TestEqual(TEXT("Independent tick type is a full native level tick"),
-				static_cast<int32>(Probe->FirstTickLevelType), static_cast<int32>(LEVELTICK_All));
+			Test.TestTrue(TEXT("The observer closed several frames"), Probe->ClosedFrames.Num() >= 3);
+			Test.TestFalse(TEXT("Each engine frame delivers exactly one input boundary"),
+				Probe->bDuplicateBoundary);
+			Test.TestTrue(TEXT("GetOpenFrame is the delivered boundary record during the boundary"),
+				Probe->bOpenFrameMatchedAtBoundary);
+			Test.TestTrue(TEXT("GetOpenFrame is null once a frame closed"), Probe->bOpenFrameNullAtClose);
+			Test.TestFalse(TEXT("The boundary precedes the owned world tick of its frame"),
+				Probe->bBoundaryAfterTick);
 
-			// ---- observer never invalidated a frame: no duplicate/missing/null/foreign topology ----
-			Test.TestTrue(TEXT("Observer closed at least one frame"), Probe->ClosedFrames.Num() > 0);
-			int64 PreviousCounter = -1;
-			bool bMonotonic = true;
-			bool bAllBoundary = true;
-			bool bAllEnd = true;
-			bool bAnyInvalid = false;
+			int32 TickedFrames = 0;
 			for (const FCortexEditorEngineFrameRecord& Frame : Probe->ClosedFrames)
 			{
-				if (PreviousCounter >= 0
-					&& static_cast<int64>(Frame.CaptureFrameCounter) <= PreviousCounter)
+				Test.TestTrue(TEXT("No closed frame was invalidated"),
+					Frame.bBoundaryObserved && Frame.SelectedWorldTickCount >= 0);
+				Test.TestTrue(TEXT("Every frame carries a positive application delta"),
+					Frame.AppDeltaSeconds > 0.0);
+				const int32* Independent = Probe->TicksPerFrame.Find(Frame.CaptureFrameCounter);
+				Test.TestEqual(TEXT("Selected tick count equals the independent per-frame count"),
+					Frame.SelectedWorldTickCount, Independent != nullptr ? *Independent : 0);
+				Test.TestEqual(TEXT("A world tick is recorded exactly when the world ticked"),
+					Frame.WorldTick.IsSet(), Independent != nullptr);
+				if (Frame.WorldTick.IsSet())
 				{
-					bMonotonic = false;
-				}
-				PreviousCounter = static_cast<int64>(Frame.CaptureFrameCounter);
-				bAllBoundary &= Frame.bBoundaryObserved;
-				bAllEnd &= Frame.bEndObserved;
-				bAnyInvalid |= Frame.SelectedWorldTickCount < 0;
-			}
-			Test.TestTrue(TEXT("Closed frame counters strictly increase (no duplicate/out-of-order boundary)"),
-				bMonotonic);
-			Test.TestTrue(TEXT("Every closed frame retained its sampled boundary"), bAllBoundary);
-			Test.TestTrue(TEXT("Every closed frame closed after its boundary"), bAllEnd);
-			Test.TestFalse(TEXT("No frame was invalidated (no duplicate/missing/null/foreign topology detected)"),
-				bAnyInvalid);
-
-			// ---- runtime zero/duplicate tick invariant against independent per-frame ticks ----
-			TArray<FString> TickMismatches;
-			for (const FCortexEditorEngineFrameRecord& Frame : Probe->ClosedFrames)
-			{
-				const int32* Independent = Probe->SelectedTicksPerFrame.Find(Frame.CaptureFrameCounter);
-				const int32 IndependentCount = Independent != nullptr ? *Independent : 0;
-				if (Frame.SelectedWorldTickCount != IndependentCount)
-				{
-					TickMismatches.Add(FString::Printf(TEXT("frame %llu observer %d independent %d"),
-						static_cast<unsigned long long>(Frame.CaptureFrameCounter),
-						Frame.SelectedWorldTickCount, IndependentCount));
+					++TickedFrames;
+					Test.TestEqual(TEXT("The recorded real delta equals the independent tick delta"),
+						Frame.WorldTick->RealDeltaSeconds, Probe->RealDeltaPerFrame.FindRef(Frame.CaptureFrameCounter));
 				}
 			}
-			FString TickMismatchDetail;
-			if (TickMismatches.Num() > 0)
-			{
-				TickMismatchDetail = FString::Printf(TEXT(" (mismatches: %s)"),
-					*FString::Join(TickMismatches, TEXT("; ")));
-			}
-			Test.TestTrue(FString::Printf(
-				TEXT("Observer zero/duplicate tick channel matches independent per-frame selected ticks%s"),
-				*TickMismatchDetail), TickMismatches.Num() == 0);
-			Test.TestFalse(TEXT("No global frame carried duplicate selected-world ticks"),
-				Probe->bDuplicateTickFrame);
-			Test.TestFalse(TEXT("The latched last-closed frame was never mutated after close"),
-				Probe->bLatchedFrameMutated);
-
-			// ---- recording-local ordinal 0: the first selected-world frame ----
-			if (!Test.TestTrue(TEXT("Observer attributed a selected-world frame"),
-				Probe->FirstSelectedClosedIndex >= 0))
-			{
-				return;
-			}
-			for (int32 Index = 0; Index < Probe->FirstSelectedClosedIndex; ++Index)
-			{
-				Test.TestEqual(TEXT("Pre-birth frame carries a null world tick (distinct from zero delta)"),
-					Probe->ClosedFrames[Index].SelectedWorldTickCount, 0);
-				Test.TestFalse(TEXT("Pre-birth frame has no world tick record"),
-					Probe->ClosedFrames[Index].WorldTick.IsSet());
-			}
-			const FCortexEditorEngineFrameRecord& Birth = Probe->BirthFrame;
-			Test.TestEqual(TEXT("Birth frame is recording-local ordinal 0: exactly one selected tick"),
-				Birth.SelectedWorldTickCount, 1);
-			if (!Test.TestTrue(TEXT("Birth frame carries the world tick record"), Birth.WorldTick.IsSet()))
-			{
-				return;
-			}
-
-			// ---- identity: observer, independent observation and session agree on the world ----
-			Test.TestTrue(TEXT("Independent first PIE tick is the observer's selected world"),
-				Probe->FirstTickWorld.Get() == Probe->Observer.GetSelectedWorld());
-			Test.TestEqual(TEXT("Observer selected world is the session's exact owned world"),
-				Probe->Observer.GetSelectedWorld(), Fixture->Session->GetTargetBinding().World.Get());
-			Test.TestEqual(TEXT("Birth frame is the same global frame as the independent first tick"),
-				static_cast<int64>(Birth.CaptureFrameCounter),
-				static_cast<int64>(Probe->FirstTickFrameCounter));
-
-			// ---- native consumed delta vs observer boundary and independent observation ----
-			Test.TestEqual(TEXT("Birth frame native consumed delta matches the independent world tick"),
-				Birth.WorldTick->RealDeltaSeconds, Probe->FirstTickRealDelta, 0.0f);
-			Test.TestEqual(TEXT("Birth frame world end delta matches the independent observation"),
-				Birth.WorldTick->DeltaSeconds, Probe->FirstTickEndDelta, 0.0f);
-			Test.TestEqual(TEXT("Sampled app clock reaches the selected world tick unchanged"),
-				Birth.WorldTick->RealDeltaSeconds, static_cast<float>(Birth.AppDeltaSeconds), 0.0f);
-			Test.TestEqual(TEXT("Birth frame world tick type is a full native level tick"),
-				Birth.WorldTick->TickType.ToString(), FString(TEXT("LEVELTICK_All")));
-			Test.TestFalse(TEXT("Birth frame world tick is not paused"), Birth.WorldTick->bPaused);
-			Test.TestTrue(TEXT("Birth frame effective dilation is positive"),
-				Birth.WorldTick->EffectiveTimeDilation > 0.0f);
-
-			// ---- observer baseline origin is the birth frame's own pre-tick instant ----
-			Test.TestEqual(TEXT("Birth frame real-time offset is its own consumed real delta"),
-				Birth.WorldTick->RealTimeOffsetSeconds,
-				static_cast<double>(Birth.WorldTick->RealDeltaSeconds), 0.0);
-			Test.TestEqual(TEXT("Birth frame time offset is its own consumed world delta"),
-				Birth.WorldTick->TimeOffsetSeconds,
-				static_cast<double>(Birth.WorldTick->DeltaSeconds), 0.0);
-
-			// ---- boundary sample identity and the world-born-after-sampling contract ----
-			if (const FFirstWorldProbe::FBoundarySnapshot* Snapshot =
-				Probe->BoundarySnapshots.Find(Birth.CaptureFrameCounter))
-			{
-				Test.TestFalse(TEXT("Birth frame was sampled before the owned world existed"),
-					Snapshot->bWorldBound);
-				Test.TestFalse(TEXT("Birth frame was sampled before the owned pawn was bound"),
-					Snapshot->bPawnBound);
-				Test.TestFalse(TEXT("Birth frame boundary precedes the readiness latch"),
-					Snapshot->bReadySeen);
-				Test.TestTrue(TEXT("Frame begin precedes its sampled input boundary"),
-					Birth.FrameBeginSeconds <= Snapshot->InputBoundarySeconds);
-				Test.TestEqual(TEXT("Closed birth frame retains the sampled app delta"),
-					Birth.AppDeltaSeconds, Snapshot->AppDeltaSeconds, 0.0);
-				Test.TestEqual(TEXT("Closed birth frame retains the sampled app current"),
-					Birth.AppCurrentSeconds, Snapshot->AppCurrentSeconds, 0.0);
-				Test.TestEqual(TEXT("Closed birth frame retains the sampled app last"),
-					Birth.AppLastSeconds, Snapshot->AppLastSeconds, 0.0);
-			}
-			else
-			{
-				Test.AddError(TEXT("Birth frame boundary snapshot missing"));
-			}
-
-			// ---- independent FApp clock sample for the same global frame ----
-			if (const FFirstWorldProbe::FSampledClock* Clock =
-				Probe->SampledClocks.Find(Birth.CaptureFrameCounter))
-			{
-				Test.TestFalse(TEXT("Actual PIE world is born after this frame's sampling"),
-					Clock->bPIEWorldPresent);
-				Test.TestEqual(TEXT("Observer app delta equals the independent FApp sample"),
-					Birth.AppDeltaSeconds, Clock->DeltaSeconds, 0.0);
-				Test.TestEqual(TEXT("Observer app current equals the independent FApp sample"),
-					Birth.AppCurrentSeconds, Clock->CurrentSeconds, 0.0);
-				Test.TestEqual(TEXT("Observer app last equals the independent FApp sample"),
-					Birth.AppLastSeconds, Clock->LastSeconds, 0.0);
-			}
-			else
-			{
-				Test.AddError(TEXT("Independent FApp sample for the birth frame is missing"));
-			}
-
-			Test.TestTrue(TEXT("Readiness latched after the observer was installed"),
-				Probe->bReadyLatched);
+			Test.TestTrue(TEXT("Frames after the owned world was born carry its tick"), TickedFrames > 0);
 		}));
 
-	// Explicit teardown before the fixture shuts its session down (observer holds a raw session
+	// Explicit teardown before the fixture shuts its session down (the observer holds a raw session
 	// pointer until Uninstall clears it).
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
 		[Probe](FAutomationTestBase&)
@@ -7085,588 +6459,6 @@ bool FCortexPhysicalInputNativeFirstWorldFrameTest::RunTest(const FString& Param
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;
 }
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockExternalClearTest,
-	"Cortex.Editor.PhysicalInput.NativeClockExternalClearContainment",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockExternalClearTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease"))) { return true; }
-	if (!GEditor || !GEngine)
-	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	struct FClearProbe
-	{
-		FCortexEditorEngineClockLease Clock;
-		FDelegateHandle SamplingHandle;
-		FDelegateHandle WorldStartHandle;
-		FDelegateHandle WorldEndHandle;
-		TWeakObjectPtr<UWorld> SelectedWorld;
-		bool bSelectedWorldCaptured = false;
-		int32 SelectedTicksAfterLoss = 0;
-		int32 SelectedTickEndsAfterLoss = 0;
-		int32 StepCount = 0;
-		bool bCleared = false;
-		bool bFirstDefaultObserved = false;
-		double FirstDefaultDelta = 0.0;
-		double FirstDefaultCurrent = 0.0;
-		double FirstDefaultLast = 0.0;
-		double CleanupBaseCurrent = 0.0;
-		double FixedCleanupCurrent = 0.0;
-		bool bFixedCleanupObserved = false;
-		bool SavedFixedRate = false;
-		bool SavedFixedStep = false;
-		double SavedFixedDelta = 0.0;
-		~FClearProbe()
-		{
-			FCoreDelegates::OnSamplingInput.Remove(SamplingHandle);
-			FWorldDelegates::OnWorldTickStart.Remove(WorldStartHandle);
-			FWorldDelegates::OnWorldTickEnd.Remove(WorldEndHandle);
-		}
-	};
-	const auto Probe = MakeShared<FClearProbe>();
-	Probe->SavedFixedRate = GEngine->bUseFixedFrameRate;
-	Probe->SavedFixedStep = FApp::UseFixedTimeStep();
-	Probe->SavedFixedDelta = FApp::GetFixedDeltaTime();
-	const TWeakPtr<FClearProbe> WeakProbe = Probe;
-	const TWeakPtr<FCortexEditorPhysicalInputTestFixture> WeakFixture = Fixture;
-	Probe->WorldStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-		[WeakProbe](UWorld* World, ELevelTick, float)
-		{
-			const auto P = WeakProbe.Pin();
-			if (P.IsValid() && P->bCleared && World == P->SelectedWorld.Get())
-			{
-				++P->SelectedTicksAfterLoss;
-			}
-		});
-	Probe->WorldEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
-		[WeakProbe](UWorld* World, ELevelTick, float)
-		{
-			const auto P = WeakProbe.Pin();
-			if (P.IsValid() && P->bCleared && World == P->SelectedWorld.Get())
-			{
-				++P->SelectedTickEndsAfterLoss;
-			}
-		});
-	Probe->SamplingHandle = FCoreDelegates::OnSamplingInput.AddLambda([WeakProbe]()
-	{
-		const auto P = WeakProbe.Pin();
-		if (P.IsValid() && P->bCleared && GEngine->GetCustomTimeStep() == nullptr)
-		{
-			constexpr double CleanupDelta = static_cast<double>(static_cast<float>(1.0 / 60.0));
-			if (FApp::UseFixedTimeStep()
-				&& FApp::GetDeltaTime() == CleanupDelta
-				&& FApp::GetLastTime() == P->CleanupBaseCurrent
-				&& FApp::GetCurrentTime() == P->CleanupBaseCurrent + CleanupDelta)
-			{
-				P->bFixedCleanupObserved = true;
-				P->FixedCleanupCurrent = FApp::GetCurrentTime();
-			}
-			else if (!FApp::UseFixedTimeStep() && !P->bFirstDefaultObserved)
-			{
-				P->bFirstDefaultObserved = true;
-				P->FirstDefaultDelta = FApp::GetDeltaTime();
-				P->FirstDefaultCurrent = FApp::GetCurrentTime();
-				P->FirstDefaultLast = FApp::GetLastTime();
-			}
-		}
-	});
-	const FCortexCommandResult Acquired = Probe->Clock.Acquire(*GEngine, 3,
-		[WeakProbe, WeakFixture](FCortexEditorAppClockStep& Step)
-		{
-			const auto P = WeakProbe.Pin();
-			const auto Owned = WeakFixture.Pin();
-			FCortexCommandResult Result;
-			if (!P.IsValid() || !Owned.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Provider-clear probe owner expired");
-				return Result;
-			}
-			if (++P->StepCount == 40)
-			{
-				// End the exact owned consumer before external provider loss. The
-				// engine still has its normal deferred PIE destruction to perform.
-				P->SelectedWorld = Owned->Session->GetTargetBinding().World;
-				P->bSelectedWorldCaptured = P->SelectedWorld.IsValid();
-				Owned->Session->EndOwnedPIE();
-				P->bCleared = true;
-				P->CleanupBaseCurrent = FApp::GetCurrentTime();
-				GEngine->SetCustomTimeStep(nullptr);
-				Result.bSuccess = true;
-				return Result;
-			}
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 30.0;
-			Step.DeltaSeconds = 1.0 / 30.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(TEXT("Sustained clock acquired"), Acquired.bSuccess))
-	{
-		return false;
-	}
-	TestTrue(TEXT("Owned PIE admitted"), Fixture->Session->BeginOwnedPIE(
-		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 48,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Actual provider was cleared after forty recorded updates"), Probe->bCleared);
-			Test.TestTrue(TEXT("Exact selected world captured before binding invalidation"), Probe->bSelectedWorldCaptured);
-			Test.TestEqual(TEXT("No selected-world tick admitted after loss"), Probe->SelectedTicksAfterLoss, 0);
-			Test.TestEqual(TEXT("No selected-world tick ended after loss"), Probe->SelectedTickEndsAfterLoss, 0);
-			Test.TestTrue(TEXT("Actual fixed cleanup was observed"), Probe->bFixedCleanupObserved);
-			Test.TestTrue(TEXT("Actual resumed default frame was observed"), Probe->bFirstDefaultObserved);
-			constexpr double CleanupDelta = static_cast<double>(static_cast<float>(1.0 / 60.0));
-			Test.TestTrue(FString::Printf(TEXT("First default delta after sustained provider clear is positive and bounded: %.9f"),
-				Probe->FirstDefaultDelta), FMath::IsFinite(Probe->FirstDefaultDelta)
-				&& Probe->FirstDefaultDelta > 0.0 && Probe->FirstDefaultDelta <= 0.100 + CleanupDelta);
-			Test.TestTrue(TEXT("First default current/last remain non-backward from cleanup"),
-				Probe->FirstDefaultLast >= Probe->FixedCleanupCurrent
-				&& Probe->FirstDefaultCurrent >= Probe->FirstDefaultLast);
-			Test.TestEqual(TEXT("Provider loss remains truthfully Lost"),
-				Probe->Clock.GetState(), ECortexEditorClockState::Lost);
-			Test.TestNull(TEXT("No provider resurrected after external clear"), GEngine->GetCustomTimeStep());
-			Test.TestEqual(TEXT("Original engine fixed-rate setting unchanged"),
-				!!GEngine->bUseFixedFrameRate, Probe->SavedFixedRate);
-			Test.TestEqual(TEXT("Original fixed-step setting unchanged"), FApp::UseFixedTimeStep(), Probe->SavedFixedStep);
-			Test.TestEqual(TEXT("Original fixed delta unchanged"), FApp::GetFixedDeltaTime(), Probe->SavedFixedDelta);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Repeated lost cleanup is admitted without resurrecting ownership"),
-				Probe->Clock.BeginHandoff().bSuccess);
-			Test.TestEqual(TEXT("Cleanup never fabricates Released after loss"),
-				Probe->Clock.GetState(), ECortexEditorClockState::Lost);
-		}));
-	return true;
-}
-
-namespace
-{
-/** Alternating recorded application deltas the owned clock lease reproduces here. */
-constexpr double CortexNativePacketSampleDeltas[3] = { 1.0 / 30.0, 1.0 / 120.0, 1.0 / 45.0 };
-
-/**
- * Owns the exclusive recorded-frame clock and the native observations of one packet bundle.
- *
- * The selected-world tick-start hook is the exact native boundary that runs after the engine's
- * pointer flush (UPlayerInput::KeyStateMap accumulators are live) and before that frame's
- * UPlayerInput::ProcessInputStack flushes them into the consumer-visible RawValue/Value and the
- * PlayerController applies the axis to the control rotation. Reading there yields the real
- * per-axis sample counts; the immediately following boundary yields the flushed raw values.
- */
-struct FCortexNativePacketSampleProbe
-{
-	FCortexEditorEngineClockLease Clock;
-	int32 DeltaIndex = 0;
-
-	TWeakObjectPtr<UWorld> SelectedWorld;
-	TWeakObjectPtr<APlayerController> BoundController;
-	FDelegateHandle WorldEndHandle;
-	bool bSeenRecordedDelta[3] = {};
-	bool bUnexpectedRecordedDelta = false;
-	bool bControllerChanged = false;
-	float ConsumedWorldDeltas[3] = {};
-	float ConsumedDilations[3] = {};
-	FDelegateHandle WorldTickHandle;
-
-	bool bArmed = false;
-
-	// Sample-frame boundary (accumulators live, pre-flush).
-	bool bSawSamples = false;
-	int32 SamplesX = -1;
-	int32 SamplesY = -1;
-	double RawAccX = 0.0;
-	double RawAccY = 0.0;
-	double SampleAppDelta = 0.0;
-	float SampleWorldDelta = 0.0f;
-	FRotator RotationBeforeInput = FRotator::ZeroRotator;
-
-	// Immediately following selected-world boundary (the sample frame has flushed).
-	bool bFlushObserved = false;
-	double FlushedRawX = 0.0;
-	double FlushedRawY = 0.0;
-	double ConsumedX = 0.0;
-	double ConsumedY = 0.0;
-	double SmoothedXAtFlush = 0.0;
-	double ZeroTimeXAtFlush = 0.0;
-	FRotator RotationAfterInput = FRotator::ZeroRotator;
-
-	// Baseline native state + live identity captured on the exact bound instance.
-	bool bBaselineRead = false;
-	FCortexEditorNativeMouseFilterState BaselineFilter;
-	FString BaselineClass;
-	FString BaselineSha;
-	TWeakObjectPtr<UPlayerInput> BoundInput;
-	FVector2D DownViewportPosition = FVector2D::ZeroVector;
-
-	void RemoveHook()
-	{
-		if (WorldTickHandle.IsValid())
-		{
-			FWorldDelegates::OnWorldTickStart.Remove(WorldTickHandle);
-			WorldTickHandle.Reset();
-		}
-		FWorldDelegates::OnWorldTickEnd.Remove(WorldEndHandle);
-		WorldEndHandle.Reset();
-	}
-
-	~FCortexNativePacketSampleProbe()
-	{
-		RemoveHook();
-	}
-};
-} // namespace
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativePacketSamplesTest,
-	"Cortex.Editor.PhysicalInput.NativePacketSamples",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FCortexPhysicalInputNativePacketSamplesTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease"))) { return true; }
-	if (!GEditor || !GEngine) { AddError(TEXT("Editor engine missing")); return false; }
-	if (!FSlateApplication::IsInitialized())
-	{
-		AddError(TEXT("Slate must be initialized for the native feasibility gate"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
-
-	const auto Probe = MakeShared<FCortexNativePacketSampleProbe>();
-	const TWeakPtr<FCortexNativePacketSampleProbe> WeakProbe = Probe;
-
-	// Acquire the recorded-frame clock before requesting the owned PIE, alternating the deltas.
-	const FCortexCommandResult ClockResult = Probe->Clock.Acquire(*GEngine, 7,
-		[WeakProbe](FCortexEditorAppClockStep& Step)
-		{
-			const TSharedPtr<FCortexNativePacketSampleProbe> Pinned = WeakProbe.Pin();
-			FCortexCommandResult Result;
-			if (!Pinned.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Native packet sample probe owner expired");
-				return Result;
-			}
-			const double Delta = CortexNativePacketSampleDeltas[
-				Pinned->DeltaIndex++ % UE_ARRAY_COUNT(CortexNativePacketSampleDeltas)];
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + Delta;
-			Step.DeltaSeconds = Delta;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(FString::Printf(TEXT("Recorded clock admitted (%s: %s)"),
-		*ClockResult.ErrorCode, *ClockResult.ErrorMessage), ClockResult.bSuccess))
-	{
-		return false;
-	}
-
-	TestTrue(TEXT("Owned PIE admitted"),
-		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-
-	// Install the native boundary hook and read the exact baseline native state/identity.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativePacketSamplesInstall"),
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
-			APlayerController* const Controller = F.Session->GetTargetBinding().Controller.Get();
-			UPlayerInput* const PlayerInput = Controller ? Controller->PlayerInput : nullptr;
-			Test.TestNotNull(TEXT("Bound controller exists"), Controller);
-			if (Controller == nullptr || PlayerInput == nullptr)
-			{
-				return;
-			}
-			Probe->SelectedWorld = F.Session->GetTargetBinding().World;
-			Probe->BoundController = Controller;
-
-			Test.TestTrue(TEXT("Baseline native mouse-filter state read"),
-				F.Session->ReadNativeMouseFilterState(Probe->BaselineFilter).bSuccess);
-			Test.TestTrue(TEXT("Baseline live input config read"),
-				F.Session->ReadNativeInputConfig(Probe->BaselineClass, Probe->BaselineSha).bSuccess);
-			Probe->bBaselineRead = true;
-			Probe->BoundInput = PlayerInput;
-			Test.TestEqual(TEXT("Live PlayerInput class identity matches the bound instance"),
-				Probe->BaselineClass, PlayerInput->GetClass()->GetPathName());
-
-			const TWeakPtr<FCortexNativePacketSampleProbe> LocalWeak = Probe;
-			Probe->WorldTickHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-				[LocalWeak](UWorld* World, ELevelTick, float DeltaSeconds)
-				{
-					const TSharedPtr<FCortexNativePacketSampleProbe> Pinned = LocalWeak.Pin();
-					if (!Pinned.IsValid() || World != Pinned->SelectedWorld.Get())
-					{
-						return;
-					}
-					APlayerController* const TickController = Pinned->BoundController.Get();
-					UPlayerInput* const TickInput = TickController ? TickController->PlayerInput : nullptr;
-					if (TickController == nullptr || TickController->GetWorld() != World
-						|| TickInput != Pinned->BoundInput.Get())
-					{
-						Pinned->bControllerChanged = true;
-						return;
-					}
-					const FKeyState* const XState = TickInput->GetKeyState(EKeys::MouseX);
-					const FKeyState* const YState = TickInput->GetKeyState(EKeys::MouseY);
-					if (XState == nullptr || YState == nullptr)
-					{
-						return;
-					}
-					if (Pinned->bArmed && !Pinned->bSawSamples
-						&& (XState->SampleCountAccumulator > 0 || YState->SampleCountAccumulator > 0))
-					{
-						Pinned->bSawSamples = true;
-						Pinned->SamplesX = XState->SampleCountAccumulator;
-						Pinned->SamplesY = YState->SampleCountAccumulator;
-						Pinned->RawAccX = XState->RawValueAccumulator.X;
-						Pinned->RawAccY = YState->RawValueAccumulator.X;
-						Pinned->SampleAppDelta = FApp::GetDeltaTime();
-						Pinned->SampleWorldDelta = DeltaSeconds;
-						Pinned->RotationBeforeInput = TickController->GetControlRotation();
-					}
-					else if (Pinned->bSawSamples && !Pinned->bFlushObserved)
-					{
-						Pinned->bFlushObserved = true;
-						Pinned->FlushedRawX = XState->RawValue.X;
-						Pinned->FlushedRawY = YState->RawValue.X;
-						Pinned->ConsumedX = TickInput->GetKeyValue(EKeys::MouseX);
-						Pinned->ConsumedY = TickInput->GetKeyValue(EKeys::MouseY);
-						Pinned->SmoothedXAtFlush = TickInput->SmoothedMouse[0];
-						Pinned->ZeroTimeXAtFlush = TickInput->ZeroTime[0];
-						Pinned->RotationAfterInput = TickController->GetControlRotation();
-					}
-				});
-			Probe->WorldEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
-				[LocalWeak](UWorld* World, ELevelTick, float)
-				{
-					const auto Pinned = LocalWeak.Pin();
-					if (!Pinned.IsValid() || World != Pinned->SelectedWorld.Get())
-					{
-						return;
-					}
-					bool bMatched = false;
-					for (int32 Index = 0; Index < UE_ARRAY_COUNT(CortexNativePacketSampleDeltas); ++Index)
-					{
-						if (FApp::GetDeltaTime() == CortexNativePacketSampleDeltas[Index])
-						{
-							bMatched = true;
-							Pinned->bSeenRecordedDelta[Index] = true;
-							Pinned->ConsumedWorldDeltas[Index] = World->GetDeltaSeconds();
-							Pinned->ConsumedDilations[Index] = World->GetWorldSettings()->GetEffectiveTimeDilation();
-						}
-					}
-					Pinned->bUnexpectedRecordedDelta |= !bMatched;
-				});
-		}));
-
-	// A real viewport button down (engine default CapturePermanently_IncludingInitialMouseDown)
-	// acquires native mouse capture, then the two relative packets land in one native flush window.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
-			EnsureSelectedRouteWindowActive(*F.Session);
-			const TSharedPtr<SViewport> Route = ResolveOwnedRouteRoot(*F.Session);
-			Test.TestTrue(TEXT("Owned route root resolvable"), Route.IsValid());
-			if (!Route.IsValid())
-			{
-				return;
-			}
-			const FGeometry RouteGeometry = Route->GetCachedGeometry();
-			const FVector2D RouteSize = RouteGeometry.GetLocalSize();
-			if (RouteSize.X <= 0.0 || RouteSize.Y <= 0.0)
-			{
-				Test.AddError(TEXT("Owned route root has no usable geometry"));
-				return;
-			}
-			const FVector2D CenterScreen = RouteGeometry.LocalToAbsolute(RouteSize * 0.5);
-			Probe->DownViewportPosition = ToViewportLocal(F, CenterScreen);
-
-			FCortexEditorPhysicalInputEvent Down;
-			Down.Kind = ECortexEditorPhysicalInputKind::PointerDown;
-			Down.Key = EKeys::LeftMouseButton;
-			Down.ViewportPosition = Probe->DownViewportPosition;
-			Test.TestTrue(TEXT("Owned pointer down dispatched"), F.Session->Dispatch(Down).bSuccess);
-			Test.TestTrue(TEXT("Owned viewport holds native mouse capture (sample accumulation path)"),
-				Route->HasMouseCapture());
-
-			Probe->bArmed = true;
-
-			FCortexEditorPhysicalInputEvent MoveX;
-			MoveX.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
-			MoveX.Key = EKeys::Mouse2D;
-			MoveX.Delta = FVector2D(4.0, 0.0);
-			Test.TestTrue(TEXT("Relative packet (4,0) dispatched"), F.Session->Dispatch(MoveX).bSuccess);
-
-			FCortexEditorPhysicalInputEvent MoveY;
-			MoveY.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
-			MoveY.Key = EKeys::Mouse2D;
-			MoveY.Delta = FVector2D(0.0, 3.0);
-			Test.TestTrue(TEXT("Relative packet (0,3) dispatched"), F.Session->Dispatch(MoveY).bSuccess);
-		}));
-
-	// Assertions on the exact bound native consumer.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 5,
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
-			APlayerController* const Controller = F.Session->GetTargetBinding().Controller.Get();
-			UPlayerInput* const PlayerInput = Controller ? Controller->PlayerInput : nullptr;
-			Test.TestNotNull(TEXT("Bound controller still exists"), Controller);
-			if (Controller == nullptr || PlayerInput == nullptr)
-			{
-				Probe->RemoveHook();
-				return;
-			}
-
-			// --- native pre-flush per-axis sample counts (zero-component packet counted) ---
-			Test.TestTrue(TEXT("Native pre-flush sample boundary observed"), Probe->bSawSamples);
-			Test.TestEqual(TEXT("Native MouseX sample count in one flush"), Probe->SamplesX, 2);
-			Test.TestEqual(TEXT("Native MouseY sample count in one flush (zero-axis packet counted)"),
-				Probe->SamplesY, 2);
-			Test.TestEqual(TEXT("Raw accumulated MouseX in one flush"), Probe->RawAccX, 4.0, 0.0);
-			Test.TestEqual(TEXT("Raw accumulated MouseY in one flush"), Probe->RawAccY, -3.0, 0.0);
-
-			Test.TestFalse(TEXT("Native consumption stayed on the exact bound controller/input"), Probe->bControllerChanged);
-			Test.TestFalse(TEXT("Native world consumed no unrecorded application delta"), Probe->bUnexpectedRecordedDelta);
-			for (int32 Index = 0; Index < UE_ARRAY_COUNT(CortexNativePacketSampleDeltas); ++Index)
-			{
-				Test.TestTrue(FString::Printf(TEXT("Recorded cadence %d was actually consumed"), Index),
-					Probe->bSeenRecordedDelta[Index]);
-				Test.TestEqual(FString::Printf(TEXT("Recorded cadence %d preserved effective dilation"), Index),
-					Probe->ConsumedDilations[Index], Probe->BaselineFilter.EffectiveTimeDilation, 0.0f);
-				Test.TestEqual(FString::Printf(TEXT("Recorded cadence %d world delta is native recorded delta times dilation"), Index),
-					Probe->ConsumedWorldDeltas[Index],
-					static_cast<float>(CortexNativePacketSampleDeltas[Index]) * Probe->ConsumedDilations[Index], 0.0f);
-			}
-			bool bKnownDelta = false;
-			for (const double Candidate : CortexNativePacketSampleDeltas)
-			{
-				bKnownDelta |= Probe->SampleAppDelta == Candidate;
-			}
-			Test.TestTrue(TEXT("Bundle frame application delta exactly matches a recorded delta"), bKnownDelta);
-			Test.TestEqual(TEXT("Selected-world tick-start argument is the native application delta"),
-				Probe->SampleWorldDelta, static_cast<float>(Probe->SampleAppDelta), 0.0f);
-
-			// --- post-flush consumer-visible raw axis values on the bound UPlayerInput ---
-			Test.TestTrue(TEXT("Consumer flush boundary observed"), Probe->bFlushObserved);
-			Test.TestEqual(TEXT("Post-flush native raw MouseX"), Probe->FlushedRawX, 4.0, 0.0);
-			Test.TestEqual(TEXT("Post-flush native raw MouseY"), Probe->FlushedRawY, -3.0, 0.0);
-			Test.TestTrue(TEXT("Consumed MouseX axis value is positive"), Probe->ConsumedX > 0.0);
-			Test.TestTrue(TEXT("Consumed MouseY axis value is negative"), Probe->ConsumedY < 0.0);
-
-			// --- native smoothing memory consumed the samples (first-filter-call behavior) ---
-			const UInputSettings* const Settings = GetDefault<UInputSettings>();
-			if (Settings->bEnableMouseSmoothing)
-			{
-				Test.TestFalse(TEXT("Native mouse smoothing consumed the samples (SmoothedMouse X changed)"),
-					FMath::IsNearlyEqual(Probe->SmoothedXAtFlush,
-						static_cast<double>(Probe->BaselineFilter.SmoothedMouse[0]), 1e-9));
-			}
-			else
-			{
-				Test.TestTrue(TEXT("Mouse smoothing disabled: smoothing memory is untouched"),
-					FMath::IsNearlyEqual(Probe->SmoothedXAtFlush,
-						static_cast<double>(Probe->BaselineFilter.SmoothedMouse[0]), 1e-9));
-			}
-
-			// --- actual post-world control rotation, not merely registered events ---
-			const double YawScale = Settings->bEnableLegacyInputScales
-				? static_cast<double>(Controller->InputYawScale_DEPRECATED) : 1.0;
-			const double PitchScale = Settings->bEnableLegacyInputScales
-				? static_cast<double>(Controller->InputPitchScale_DEPRECATED) : 1.0;
-			const double YawDelta = FMath::FindDeltaAngleDegrees(
-				Probe->RotationBeforeInput.Yaw, Probe->RotationAfterInput.Yaw);
-			const double PitchDelta = FMath::FindDeltaAngleDegrees(
-				Probe->RotationBeforeInput.Pitch, Probe->RotationAfterInput.Pitch);
-			Test.TestEqual(TEXT("Yaw delta equals the consumed axis value times the live yaw scale"),
-				YawDelta, Probe->ConsumedX * 1.0 * YawScale, 0.05);
-			Test.TestEqual(TEXT("Pitch delta equals the consumed axis value times the live pitch scale"),
-				PitchDelta, Probe->ConsumedY * -1.0 * PitchScale, 0.05);
-
-			// --- live PlayerInput class/config identity across the bundle ---
-			Test.TestTrue(TEXT("The exact bound PlayerInput instance handled the bundle"),
-				PlayerInput == Probe->BoundInput.Get());
-			FString LiveClass;
-			FString LiveSha;
-			Test.TestTrue(TEXT("Live input config re-read after the bundle"),
-				F.Session->ReadNativeInputConfig(LiveClass, LiveSha).bSuccess);
-			Test.TestEqual(TEXT("Live PlayerInput class unchanged"), LiveClass, Probe->BaselineClass);
-			Test.TestEqual(TEXT("Live PlayerInput class equals the bound instance class"),
-				LiveClass, PlayerInput->GetClass()->GetPathName());
-			Test.TestEqual(TEXT("Live input config hash unchanged"), LiveSha, Probe->BaselineSha);
-
-			// --- exact native mouse-filter restore/readback on the still-original instance ---
-			Test.TestTrue(TEXT("Baseline native mouse-filter state was read"), Probe->bBaselineRead);
-			Test.TestTrue(TEXT("Native mouse-filter restore accepted the exact baseline"),
-				F.Session->RestoreNativeMouseFilterState(Probe->BaselineFilter).bSuccess);
-			FCortexEditorNativeMouseFilterState Readback;
-			Test.TestTrue(TEXT("Restored native mouse-filter state reads back"),
-				F.Session->ReadNativeMouseFilterState(Readback).bSuccess);
-			Test.TestEqual(TEXT("Restored sample count"), Readback.SampleCount,
-				Probe->BaselineFilter.SampleCount);
-			Test.TestEqual(TEXT("Restored sampling total"), Readback.SamplingTotalSeconds,
-				Probe->BaselineFilter.SamplingTotalSeconds, 0.0f);
-			Test.TestEqual(TEXT("Restored zero time X"), Readback.ZeroTimeSeconds[0],
-				Probe->BaselineFilter.ZeroTimeSeconds[0], 0.0f);
-			Test.TestEqual(TEXT("Restored zero time Y"), Readback.ZeroTimeSeconds[1],
-				Probe->BaselineFilter.ZeroTimeSeconds[1], 0.0f);
-			Test.TestEqual(TEXT("Restored smoothed mouse X"), Readback.SmoothedMouse[0],
-				Probe->BaselineFilter.SmoothedMouse[0], 0.0f);
-			Test.TestEqual(TEXT("Restored smoothed mouse Y"), Readback.SmoothedMouse[1],
-				Probe->BaselineFilter.SmoothedMouse[1], 0.0f);
-			Test.TestEqual(TEXT("Restored effective dilation"), Readback.EffectiveTimeDilation,
-				Probe->BaselineFilter.EffectiveTimeDilation, 0.0f);
-
-			// Stop observing and release the owned synthetic button before teardown.
-			Probe->RemoveHook();
-			FCortexEditorPhysicalInputEvent Up;
-			Up.Kind = ECortexEditorPhysicalInputKind::PointerUp;
-			Up.Key = EKeys::LeftMouseButton;
-			Up.ViewportPosition = Probe->DownViewportPosition;
-			Test.TestTrue(TEXT("Owned pointer up dispatched"), F.Session->Dispatch(Up).bSuccess);
-		}));
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Recorded clock handoff admitted after owned PIE ended"),
-				Probe->Clock.BeginHandoff().bSuccess);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Real default-clock handoff completed"), Probe->Clock.IsHandoffComplete());
-			Test.TestTrue(TEXT("Default delta is bounded and positive"),
-				FApp::GetDeltaTime() > 0.0
-					&& FApp::GetDeltaTime() <= CortexEditorClockLease::DefaultFrameMaxDeltaSeconds);
-			Test.TestTrue(TEXT("Default current and last do not move backward"),
-				FApp::GetCurrentTime() >= FApp::GetLastTime());
-		}));
-	return true;
-}
-
 namespace
 {
 /** Recorded fractional motion the injector must reproduce through the native viewport consumer. */
@@ -7952,1688 +6744,6 @@ bool FCortexPhysicalInputFractionalMotionCarryTest::RunTest(const FString& Param
 	return true;
 }
 
-// ---------------------------------------------------------------------------
-// Case 1: a producer failure must quiesce the exact owned session with no further
-// selected-world admission, even though the caller never calls EndOwnedPIE.
-// Current lease: RunTimedFrame returns false on a failed read (engine skip path keeps
-// advancing application GameTime by the previous delta), so the still-live owned world
-// is ticked once more in the SAME engine update -> RED on the direct tick counters.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockProducerFailureOwnedQuiescenceTest,
-	"Cortex.Editor.PhysicalInput.NativeClockProducerFailureOwnedQuiescence",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockProducerFailureOwnedQuiescenceTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease and retained engine authority"))) { return true; }
-	if (!GEditor || !GEngine)
-	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-
-	struct FProducerFailureProbe
-	{
-		FCortexEditorEngineClockLease Clock;
-		FDelegateHandle WorldStartHandle;
-		FDelegateHandle WorldEndHandle;
-		// Exact selected world weak identity, captured before the failure invalidates the route.
-		TWeakObjectPtr<UWorld> SelectedWorld;
-		bool bSelectedWorldCaptured = false;
-		// Producer bookkeeping: progress must be frozen once the read fails.
-		int32 ProducerReadCount = 0;
-		int32 AppliedStepCount = 0;
-		int32 ReadCountAtFailure = 0;
-		int32 AppliedCountAtFailure = 0;
-		bool bRequestFailure = false;
-		bool bFailureObserved = false;
-		FString FailureCode;
-		FString FailureMessage;
-		// Direct engine-observation counters for the exact selected world.
-		int32 TicksAfterFailure = 0;
-		int32 TickEndsAfterFailure = 0;
-		float LastExtraDeltaSeconds = 0.0f;
-		double LastExtraCurrentSeconds = 0.0;
-		~FProducerFailureProbe()
-		{
-			FWorldDelegates::OnWorldTickStart.Remove(WorldStartHandle);
-			FWorldDelegates::OnWorldTickEnd.Remove(WorldEndHandle);
-		}
-	};
-	const auto Probe = MakeShared<FProducerFailureProbe>();
-	const TWeakPtr<FProducerFailureProbe> WeakProbe = Probe;
-
-	const FCortexCommandResult Acquired = Probe->Clock.Acquire(*GEngine, 1,
-		[WeakProbe](FCortexEditorAppClockStep& Step)
-		{
-			const auto Pinned = WeakProbe.Pin();
-			FCortexCommandResult Result;
-			if (!Pinned.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Producer-failure probe owner expired");
-				return Result;
-			}
-			++Pinned->ProducerReadCount;
-			if (Pinned->bRequestFailure)
-			{
-				// A real failed producer read. No Session.EndOwnedPIE here: the amendment must
-				// stop the terminal owned consumer from the retained exact-session authority.
-				Pinned->bFailureObserved = true;
-				Pinned->ReadCountAtFailure = Pinned->ProducerReadCount;
-				Pinned->AppliedCountAtFailure = Pinned->AppliedStepCount;
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Controlled recorded-clock producer failure (no owned-session end)");
-				Pinned->FailureCode = Result.ErrorCode;
-				Pinned->FailureMessage = Result.ErrorMessage;
-				return Result;
-			}
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 30.0;
-			Step.DeltaSeconds = 1.0 / 30.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			++Pinned->AppliedStepCount;
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(FString::Printf(TEXT("Owned clock admitted (%s: %s)"),
-		*Acquired.ErrorCode, *Acquired.ErrorMessage), Acquired.bSuccess))
-	{
-		return false;
-	}
-
-	TestTrue(TEXT("Owned PIE admitted"), Fixture->Session->BeginOwnedPIE(
-		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeClockProducerFailureOwnedQuiescence"),
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			(void)Test;
-			Probe->Clock.SetReplaying();
-			Probe->SelectedWorld = Fixture->Session->GetTargetBinding().World;
-			Probe->bSelectedWorldCaptured = Probe->SelectedWorld.IsValid();
-			const TWeakPtr<FProducerFailureProbe> Weak = Probe;
-			Probe->WorldStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-				[Weak](UWorld* World, ELevelTick, float DeltaSeconds)
-				{
-					const auto Pinned = Weak.Pin();
-					if (Pinned.IsValid() && Pinned->bFailureObserved && World == Pinned->SelectedWorld.Get())
-					{
-						++Pinned->TicksAfterFailure;
-						Pinned->LastExtraDeltaSeconds = DeltaSeconds;
-						Pinned->LastExtraCurrentSeconds = FApp::GetCurrentTime();
-					}
-				});
-			Probe->WorldEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
-				[Weak](UWorld* World, ELevelTick, float)
-				{
-					const auto Pinned = Weak.Pin();
-					if (Pinned.IsValid() && Pinned->bFailureObserved && World == Pinned->SelectedWorld.Get())
-					{
-						++Pinned->TickEndsAfterFailure;
-					}
-				});
-			// Trigger the real failed read on the next owned engine frame.
-			Probe->bRequestFailure = true;
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Real producer failure occurred before engine world processing"),
-				Probe->bFailureObserved);
-			Test.TestTrue(TEXT("Exact selected world captured before route invalidation"),
-				Probe->bSelectedWorldCaptured);
-			Test.TestTrue(TEXT("Producer failure preserved its typed error"),
-				Probe->Clock.GetLastFailure().ErrorCode == Probe->FailureCode
-				&& Probe->Clock.GetLastFailure().ErrorMessage == Probe->FailureMessage);
-			Test.TestFalse(TEXT("Clock still carries a failure, not a success"), Probe->Clock.GetLastFailure().bSuccess);
-			Test.TestEqual(TEXT("Producer progress is frozen after the failed read"),
-				Probe->AppliedStepCount, Probe->AppliedCountAtFailure);
-			Test.TestEqual(TEXT("The failed read is not re-invoked after the failure"),
-				Probe->ProducerReadCount, Probe->ReadCountAtFailure);
-			Test.TestEqual(FString::Printf(
-				TEXT("No unrecorded selected-world tick after the producer failure (extra delta %.9f, app current %.9f)"),
-				Probe->LastExtraDeltaSeconds, Probe->LastExtraCurrentSeconds),
-				Probe->TicksAfterFailure, 0);
-			Test.TestEqual(TEXT("No unrecorded selected-world tick end after the producer failure"),
-				Probe->TickEndsAfterFailure, 0);
-		}));
-	// Cleanup happens only after the assertions: end the exact owned session, then the normal
-	// post-owned-PIE handoff must still complete against a real default clock frame.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Fixture](FAutomationTestBase& Test)
-		{
-			(void)Test;
-			Fixture->Session->EndOwnedPIE();
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Held-provider failure teardown admits the normal post-owned-PIE handoff"),
-				Probe->Clock.BeginHandoff().bSuccess);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Failure cleanup observes the next real default clock frame"),
-				Probe->Clock.IsHandoffComplete());
-			Test.TestTrue(TEXT("Failure cleanup default delta remains positive and bounded"),
-				FMath::IsFinite(FApp::GetDeltaTime()) && FApp::GetDeltaTime() > 0.0
-				&& FApp::GetDeltaTime() <= CortexEditorClockLease::DefaultFrameMaxDeltaSeconds);
-		}));
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// Case 2a: sustained forty recorded updates, then an external provider clear performed at the
-// sampling boundary (FCoreDelegates::OnSamplingInput), i.e. OUTSIDE the provider's own update
-// callback. The cleanup frame must reanchor application time; the following real default frame
-// must be finite, positive and bounded.
-//
-// Independent timing oracle: a frame-closure (OnEndFrame) observer registered before the lease can
-// ever register its cleanup observer. It classifies:
-//   * fixed cleanup      -> exact native signature (delta == double(float(1/60)) and
-//                           last == CleanupBaseCurrent and current == CleanupBaseCurrent + delta),
-//                           the signature is unique because CleanupBaseCurrent is the recorded
-//                           current captured immediately before the actual clear;
-//   * first real default -> the first provider-null frame that is NOT that signature.
-// The classification does NOT gate on FApp::UseFixedTimeStep so it is correct whether or not the
-// owned fixed-step settings have already been restored by the time the frame closes.
-//
-// NOTE (reported): the exact owned consumer is ended here (EndOwnedPIE) only to isolate the
-// already-observed clear boundary, because terminating the terminal input/consumer authority is
-// the amendment's responsibility. Case 1 is the separate zero-world-tick, unassisted case.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockExternalClearAtSamplingTest,
-	"Cortex.Editor.PhysicalInput.NativeClockExternalClearAtSampling",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockExternalClearAtSamplingTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease"))) { return true; }
-	if (!GEditor || !GEngine)
-	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	const TWeakPtr<FCortexEditorPhysicalInputTestFixture> WeakFixture = Fixture;
-	const double CleanupDelta = static_cast<double>(static_cast<float>(CortexEditorClockLease::CleanupDeltaSeconds));
-
-	struct FSamplingClearProbe
-	{
-		FCortexEditorEngineClockLease Clock;
-		FDelegateHandle SamplingClearHandle;
-		FDelegateHandle EndFrameClassifyHandle;
-		FDelegateHandle WorldStartHandle;
-		FDelegateHandle WorldEndHandle;
-		TWeakObjectPtr<UWorld> SelectedWorld;
-		bool bSelectedWorldCaptured = false;
-		int32 StepCount = 0;
-		bool bArmClear = false;
-		bool bCleared = false;
-		double CleanupBaseCurrent = 0.0;
-		// The clear frame's application time was already applied before the clear
-		// (LaunchEngineLoop 5701 precedes OnSamplingInput 5833), so its closure still carries the
-		// last recorded state; classification must start on a strictly later global frame.
-		uint64 ClearFrameCounter = 0;
-		// Independent fixed-vs-default oracle.
-		bool bFixedCleanupObserved = false;
-		double FixedCleanupCurrent = 0.0;
-		bool bFirstDefaultObserved = false;
-		double FirstDefaultDelta = 0.0;
-		double FirstDefaultCurrent = 0.0;
-		double FirstDefaultLast = 0.0;
-		// Direct selected-world tick admission after the clear.
-		int32 TicksAfterClear = 0;
-		int32 TickEndsAfterClear = 0;
-		bool SavedFixedRate = false;
-		bool SavedFixedStep = false;
-		double SavedFixedDelta = 0.0;
-		~FSamplingClearProbe()
-		{
-			FCoreDelegates::OnSamplingInput.Remove(SamplingClearHandle);
-			FCoreDelegates::OnEndFrame.Remove(EndFrameClassifyHandle);
-			FWorldDelegates::OnWorldTickStart.Remove(WorldStartHandle);
-			FWorldDelegates::OnWorldTickEnd.Remove(WorldEndHandle);
-		}
-	};
-	const auto Probe = MakeShared<FSamplingClearProbe>();
-	const TWeakPtr<FSamplingClearProbe> WeakProbe = Probe;
-	Probe->SavedFixedRate = GEngine->bUseFixedFrameRate;
-	Probe->SavedFixedStep = FApp::UseFixedTimeStep();
-	Probe->SavedFixedDelta = FApp::GetFixedDeltaTime();
-
-	Probe->SamplingClearHandle = FCoreDelegates::OnSamplingInput.AddLambda([WeakProbe, WeakFixture]()
-	{
-		const auto P = WeakProbe.Pin();
-		if (!P.IsValid() || P->bCleared || !P->bArmClear)
-		{
-			return;
-		}
-		const auto Owned = WeakFixture.Pin();
-		if (!Owned.IsValid())
-		{
-			return;
-		}
-		P->CleanupBaseCurrent = FApp::GetCurrentTime();
-		P->ClearFrameCounter = GFrameCounter;
-		P->bCleared = true;
-		// Isolating clear boundary (reported): end the exact owned consumer, then perform the
-		// actual external provider clear. The engine still has its own normal deferred PIE
-		// destruction to perform.
-		Owned->Session->EndOwnedPIE();
-		GEngine->SetCustomTimeStep(nullptr);
-	});
-
-	Probe->EndFrameClassifyHandle = FCoreDelegates::OnEndFrame.AddLambda([WeakProbe, CleanupDelta]()
-	{
-		const auto P = WeakProbe.Pin();
-		if (!P.IsValid() || !P->bCleared || GEngine->GetCustomTimeStep() != nullptr)
-		{
-			return;
-		}
-		if (GFrameCounter == P->ClearFrameCounter)
-		{
-			// The clear frame's own closure still carries the pre-clear recorded application
-			// time; a later frame must actually run before any fixed/default classification.
-			return;
-		}
-		const double Delta = FApp::GetDeltaTime();
-		const double Current = FApp::GetCurrentTime();
-		const double Last = FApp::GetLastTime();
-		if (Delta == CleanupDelta && Last == P->CleanupBaseCurrent && Current == P->CleanupBaseCurrent + CleanupDelta)
-		{
-			P->bFixedCleanupObserved = true;
-			P->FixedCleanupCurrent = Current;
-			return;
-		}
-		if (!P->bFirstDefaultObserved)
-		{
-			P->bFirstDefaultObserved = true;
-			P->FirstDefaultDelta = Delta;
-			P->FirstDefaultCurrent = Current;
-			P->FirstDefaultLast = Last;
-		}
-	});
-
-	const FCortexCommandResult Acquired = Probe->Clock.Acquire(*GEngine, 3,
-		[WeakProbe, WeakFixture](FCortexEditorAppClockStep& Step)
-		{
-			const auto P = WeakProbe.Pin();
-			const auto Owned = WeakFixture.Pin();
-			FCortexCommandResult Result;
-			if (!P.IsValid() || !Owned.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Sampling-clear probe owner expired");
-				return Result;
-			}
-			if (++P->StepCount == 40)
-			{
-				// Forty real recorded updates: arm the external clear for the sampling boundary of
-				// the next engine frame (outside this provider update callback).
-				P->bArmClear = true;
-			}
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 30.0;
-			Step.DeltaSeconds = 1.0 / 30.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(TEXT("Sustained clock acquired"), Acquired.bSuccess))
-	{
-		return false;
-	}
-
-	TestTrue(TEXT("Owned PIE admitted"), Fixture->Session->BeginOwnedPIE(
-		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeClockExternalClearAtSampling"),
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			(void)Test;
-			Probe->Clock.SetReplaying();
-			Probe->SelectedWorld = Fixture->Session->GetTargetBinding().World;
-			Probe->bSelectedWorldCaptured = Probe->SelectedWorld.IsValid();
-			const TWeakPtr<FSamplingClearProbe> Weak = Probe;
-			Probe->WorldStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-				[Weak](UWorld* World, ELevelTick, float)
-				{
-					const auto Pinned = Weak.Pin();
-					if (Pinned.IsValid() && Pinned->bCleared && World == Pinned->SelectedWorld.Get())
-					{
-						++Pinned->TicksAfterClear;
-					}
-				});
-			Probe->WorldEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
-				[Weak](UWorld* World, ELevelTick, float)
-				{
-					const auto Pinned = Weak.Pin();
-					if (Pinned.IsValid() && Pinned->bCleared && World == Pinned->SelectedWorld.Get())
-					{
-						++Pinned->TickEndsAfterClear;
-					}
-				});
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 48,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("External provider clear happened at the sampling boundary"), Probe->bCleared);
-			Test.TestTrue(TEXT("Exact selected world captured before binding invalidation"), Probe->bSelectedWorldCaptured);
-			Test.TestTrue(TEXT("Exact native fixed 1/60 cleanup signature was observed"),
-				Probe->bFixedCleanupObserved);
-			Test.TestTrue(TEXT("First real default frame was observed"), Probe->bFirstDefaultObserved);
-			Test.TestTrue(FString::Printf(
-				TEXT("First default delta after the sampling clear is finite, positive and bounded: %.9f"),
-				Probe->FirstDefaultDelta),
-				FMath::IsFinite(Probe->FirstDefaultDelta) && Probe->FirstDefaultDelta > 0.0
-				&& Probe->FirstDefaultDelta <= CortexEditorClockLease::DefaultFrameMaxDeltaSeconds);
-			Test.TestTrue(TEXT("Default current/last do not move backward from the cleanup frame"),
-				Probe->FirstDefaultLast >= Probe->FixedCleanupCurrent
-				&& Probe->FirstDefaultCurrent >= Probe->FirstDefaultLast);
-			Test.TestEqual(TEXT("External clear remains truthfully Lost"),
-				Probe->Clock.GetState(), ECortexEditorClockState::Lost);
-			Test.TestFalse(TEXT("A lost external clear is not a successful Released handoff"),
-				Probe->Clock.IsHandoffComplete());
-			Test.TestNull(TEXT("No provider resurrected after the sampling clear"), GEngine->GetCustomTimeStep());
-			Test.TestEqual(TEXT("Original engine fixed-rate setting unchanged"),
-				!!GEngine->bUseFixedFrameRate, Probe->SavedFixedRate);
-			Test.TestEqual(TEXT("Original fixed-step setting unchanged"),
-				FApp::UseFixedTimeStep(), Probe->SavedFixedStep);
-			Test.TestEqual(TEXT("Original fixed delta unchanged"),
-				FApp::GetFixedDeltaTime(), Probe->SavedFixedDelta);
-			Test.TestEqual(TEXT("No selected-world tick admitted after the sampling clear (with explicit owned end)"),
-				Probe->TicksAfterClear, 0);
-			Test.TestEqual(TEXT("No selected-world tick end after the sampling clear (with explicit owned end)"),
-				Probe->TickEndsAfterClear, 0);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Repeated lost cleanup is admitted without resurrecting ownership"),
-				Probe->Clock.BeginHandoff().bSuccess);
-			Test.TestEqual(TEXT("Cleanup never fabricates Released after loss"),
-				Probe->Clock.GetState(), ECortexEditorClockState::Lost);
-		}));
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// Case 2b: identical sustained forty-update load, but the external clear is performed at the frame
-// CLOSURE boundary (FCoreDelegates::OnEndFrame) instead of in the provider callback. The clear frame
-// itself still carries the last recorded state, so the oracle skips exactly that one frame before
-// classifying; everything else matches case 2a.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockExternalClearAtClosureTest,
-	"Cortex.Editor.PhysicalInput.NativeClockExternalClearAtClosure",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockExternalClearAtClosureTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease"))) { return true; }
-	if (!GEditor || !GEngine)
-	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	const TWeakPtr<FCortexEditorPhysicalInputTestFixture> WeakFixture = Fixture;
-	const double CleanupDelta = static_cast<double>(static_cast<float>(CortexEditorClockLease::CleanupDeltaSeconds));
-
-	struct FClosureClearProbe
-	{
-		FCortexEditorEngineClockLease Clock;
-		FDelegateHandle ClosureClearHandle;
-		FDelegateHandle EndFrameClassifyHandle;
-		FDelegateHandle WorldStartHandle;
-		FDelegateHandle WorldEndHandle;
-		TWeakObjectPtr<UWorld> SelectedWorld;
-		bool bSelectedWorldCaptured = false;
-		int32 StepCount = 0;
-		bool bArmClear = false;
-		bool bCleared = false;
-		// The clear frame still carries the last recorded state; classify from the next frame on.
-		uint64 ClearFrameCounter = 0;
-		double CleanupBaseCurrent = 0.0;
-		bool bFixedCleanupObserved = false;
-		double FixedCleanupCurrent = 0.0;
-		bool bFirstDefaultObserved = false;
-		double FirstDefaultDelta = 0.0;
-		double FirstDefaultCurrent = 0.0;
-		double FirstDefaultLast = 0.0;
-		int32 TicksAfterClear = 0;
-		int32 TickEndsAfterClear = 0;
-		bool SavedFixedRate = false;
-		bool SavedFixedStep = false;
-		double SavedFixedDelta = 0.0;
-		~FClosureClearProbe()
-		{
-			FCoreDelegates::OnEndFrame.Remove(ClosureClearHandle);
-			FCoreDelegates::OnEndFrame.Remove(EndFrameClassifyHandle);
-			FWorldDelegates::OnWorldTickStart.Remove(WorldStartHandle);
-			FWorldDelegates::OnWorldTickEnd.Remove(WorldEndHandle);
-		}
-	};
-	const auto Probe = MakeShared<FClosureClearProbe>();
-	const TWeakPtr<FClosureClearProbe> WeakProbe = Probe;
-	Probe->SavedFixedRate = GEngine->bUseFixedFrameRate;
-	Probe->SavedFixedStep = FApp::UseFixedTimeStep();
-	Probe->SavedFixedDelta = FApp::GetFixedDeltaTime();
-
-	// Registered first so the clear is injected exactly once at a frame closure.
-	Probe->ClosureClearHandle = FCoreDelegates::OnEndFrame.AddLambda([WeakProbe, WeakFixture]()
-	{
-		const auto P = WeakProbe.Pin();
-		if (!P.IsValid() || P->bCleared || !P->bArmClear)
-		{
-			return;
-		}
-		const auto Owned = WeakFixture.Pin();
-		if (!Owned.IsValid())
-		{
-			return;
-		}
-		P->CleanupBaseCurrent = FApp::GetCurrentTime();
-		P->ClearFrameCounter = GFrameCounter;
-		P->bCleared = true;
-		// Isolating clear boundary (reported): the amendment owns terminal input/consumer authority.
-		Owned->Session->EndOwnedPIE();
-		GEngine->SetCustomTimeStep(nullptr);
-	});
-
-	Probe->EndFrameClassifyHandle = FCoreDelegates::OnEndFrame.AddLambda([WeakProbe, CleanupDelta]()
-	{
-		const auto P = WeakProbe.Pin();
-		if (!P.IsValid() || !P->bCleared || GEngine->GetCustomTimeStep() != nullptr)
-		{
-			return;
-		}
-		if (GFrameCounter == P->ClearFrameCounter)
-		{
-			// The clear frame's own closure still carries the pre-clear recorded application time.
-			return;
-		}
-		const double Delta = FApp::GetDeltaTime();
-		const double Current = FApp::GetCurrentTime();
-		const double Last = FApp::GetLastTime();
-		if (Delta == CleanupDelta && Last == P->CleanupBaseCurrent && Current == P->CleanupBaseCurrent + CleanupDelta)
-		{
-			P->bFixedCleanupObserved = true;
-			P->FixedCleanupCurrent = Current;
-			return;
-		}
-		if (!P->bFirstDefaultObserved)
-		{
-			P->bFirstDefaultObserved = true;
-			P->FirstDefaultDelta = Delta;
-			P->FirstDefaultCurrent = Current;
-			P->FirstDefaultLast = Last;
-		}
-	});
-
-	const FCortexCommandResult Acquired = Probe->Clock.Acquire(*GEngine, 4,
-		[WeakProbe, WeakFixture](FCortexEditorAppClockStep& Step)
-		{
-			const auto P = WeakProbe.Pin();
-			const auto Owned = WeakFixture.Pin();
-			FCortexCommandResult Result;
-			if (!P.IsValid() || !Owned.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Closure-clear probe owner expired");
-				return Result;
-			}
-			if (++P->StepCount == 40)
-			{
-				// Arm the external clear for the closure of this same engine frame.
-				P->bArmClear = true;
-			}
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 30.0;
-			Step.DeltaSeconds = 1.0 / 30.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(TEXT("Sustained clock acquired"), Acquired.bSuccess))
-	{
-		return false;
-	}
-
-	TestTrue(TEXT("Owned PIE admitted"), Fixture->Session->BeginOwnedPIE(
-		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeClockExternalClearAtClosure"),
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			(void)Test;
-			Probe->Clock.SetReplaying();
-			Probe->SelectedWorld = Fixture->Session->GetTargetBinding().World;
-			Probe->bSelectedWorldCaptured = Probe->SelectedWorld.IsValid();
-			const TWeakPtr<FClosureClearProbe> Weak = Probe;
-			Probe->WorldStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-				[Weak](UWorld* World, ELevelTick, float)
-				{
-					const auto Pinned = Weak.Pin();
-					if (Pinned.IsValid() && Pinned->bCleared && World == Pinned->SelectedWorld.Get())
-					{
-						++Pinned->TicksAfterClear;
-					}
-				});
-			Probe->WorldEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
-				[Weak](UWorld* World, ELevelTick, float)
-				{
-					const auto Pinned = Weak.Pin();
-					if (Pinned.IsValid() && Pinned->bCleared && World == Pinned->SelectedWorld.Get())
-					{
-						++Pinned->TickEndsAfterClear;
-					}
-				});
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 48,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("External provider clear happened at the frame-closure boundary"), Probe->bCleared);
-			Test.TestTrue(TEXT("Exact selected world captured before binding invalidation"), Probe->bSelectedWorldCaptured);
-			Test.TestTrue(TEXT("Exact native fixed 1/60 cleanup signature was observed"),
-				Probe->bFixedCleanupObserved);
-			Test.TestTrue(TEXT("First real default frame was observed"), Probe->bFirstDefaultObserved);
-			Test.TestTrue(FString::Printf(
-				TEXT("First default delta after the closure clear is finite, positive and bounded: %.9f"),
-				Probe->FirstDefaultDelta),
-				FMath::IsFinite(Probe->FirstDefaultDelta) && Probe->FirstDefaultDelta > 0.0
-				&& Probe->FirstDefaultDelta <= CortexEditorClockLease::DefaultFrameMaxDeltaSeconds);
-			Test.TestTrue(TEXT("Default current/last do not move backward from the cleanup frame"),
-				Probe->FirstDefaultLast >= Probe->FixedCleanupCurrent
-				&& Probe->FirstDefaultCurrent >= Probe->FirstDefaultLast);
-			Test.TestEqual(TEXT("External clear remains truthfully Lost"),
-				Probe->Clock.GetState(), ECortexEditorClockState::Lost);
-			Test.TestFalse(TEXT("A lost external clear is not a successful Released handoff"),
-				Probe->Clock.IsHandoffComplete());
-			Test.TestNull(TEXT("No provider resurrected after the closure clear"), GEngine->GetCustomTimeStep());
-			Test.TestEqual(TEXT("Original engine fixed-rate setting unchanged"),
-				!!GEngine->bUseFixedFrameRate, Probe->SavedFixedRate);
-			Test.TestEqual(TEXT("Original fixed-step setting unchanged"),
-				FApp::UseFixedTimeStep(), Probe->SavedFixedStep);
-			Test.TestEqual(TEXT("Original fixed delta unchanged"),
-				FApp::GetFixedDeltaTime(), Probe->SavedFixedDelta);
-			Test.TestEqual(TEXT("No selected-world tick admitted after the closure clear (with explicit owned end)"),
-				Probe->TicksAfterClear, 0);
-			Test.TestEqual(TEXT("No selected-world tick end after the closure clear (with explicit owned end)"),
-				Probe->TickEndsAfterClear, 0);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Repeated lost cleanup is admitted without resurrecting ownership"),
-				Probe->Clock.BeginHandoff().bSuccess);
-			Test.TestEqual(TEXT("Cleanup never fabricates Released after loss"),
-				Probe->Clock.GetState(), ECortexEditorClockState::Lost);
-		}));
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// Case 4: destroy the last lease wrapper inside its executing producer callback, then collect
-// garbage before the callback returns. A pinned C++ lease state alone does not prove that the
-// transient UObject provider or exact owned session survives reentrancy. Verify provider liveness
-// through GC, zero additional exact-world ticks, no further producer calls, and eventual cleanup.
-// IsCleanupComplete assertions require the approved API amendment.
-// ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockCleanupLifetimeTest,
-	"Cortex.Editor.PhysicalInput.NativeClockCleanupLifetime",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockCleanupLifetimeTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease"))) { return true; }
-	if (!GEditor || !GEngine)
-	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-
-	struct FRetainedClockOwner
-	{
-		FCortexEditorEngineClockLease Clock;
-	};
-	struct FLifetimeProbe
-	{
-		bool bArmDestroy = false;
-		bool bWrapperDestroyed = false;
-		bool bProviderPresentAtDestruction = false;
-		int32 ProducerCalls = 0;
-		int32 CallsAfterDestruction = 0;
-		TWeakObjectPtr<UWorld> SelectedWorld;
-		FDelegateHandle WorldStartHandle;
-		FDelegateHandle WorldEndHandle;
-		int32 TicksAfterDestruction = 0;
-		int32 TickEndsAfterDestruction = 0;
-		TWeakObjectPtr<UEngineCustomTimeStep> ExecutingProvider;
-		bool bExecutingProviderRetainedThroughGC = false;
-		bool SavedFixedRate = false;
-		bool SavedFixedStep = false;
-		double SavedFixedDelta = 0.0;
-		~FLifetimeProbe()
-		{
-			FWorldDelegates::OnWorldTickStart.Remove(WorldStartHandle);
-			FWorldDelegates::OnWorldTickEnd.Remove(WorldEndHandle);
-		}
-	};
-
-	const auto Probe = MakeShared<FLifetimeProbe>();
-	const TWeakPtr<FLifetimeProbe> WeakProbe = Probe;
-	// The callback pins the heap slot independently before resetting its last wrapper reference:
-	// the destructor may clear the stored callback and its captured copy during that reset.
-	const TSharedPtr<TSharedPtr<FRetainedClockOwner>> OwnerSlot =
-		MakeShared<TSharedPtr<FRetainedClockOwner>>();
-	*OwnerSlot = MakeShared<FRetainedClockOwner>();
-
-	Probe->SavedFixedRate = GEngine->bUseFixedFrameRate;
-	Probe->SavedFixedStep = FApp::UseFixedTimeStep();
-	Probe->SavedFixedDelta = FApp::GetFixedDeltaTime();
-
-	const FCortexCommandResult Acquired = (*OwnerSlot)->Clock.Acquire(*GEngine, 5,
-		[WeakProbe, OwnerSlot](FCortexEditorAppClockStep& Step)
-		{
-			const auto P = WeakProbe.Pin();
-			FCortexCommandResult Result;
-			if (!P.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Lifetime probe owner expired");
-				return Result;
-			}
-			++P->ProducerCalls;
-			if (P->bWrapperDestroyed)
-			{
-				++P->CallsAfterDestruction;
-			}
-			if (P->bArmDestroy && !P->bWrapperDestroyed)
-			{
-				P->bWrapperDestroyed = true;
-				P->bProviderPresentAtDestruction = GEngine->GetCustomTimeStep() != nullptr;
-				// Destroy the wrapper from inside the producer callback. The transient clock's
-				// UpdateTimeStep retains the lease state via a local TSharedPtr for this whole call.
-				P->ExecutingProvider = GEngine->GetCustomTimeStep();
-				const auto PinnedSlot = OwnerSlot;
-				PinnedSlot->Reset();
-				CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-				P->bExecutingProviderRetainedThroughGC = P->ExecutingProvider.IsValid();
-				Result.bSuccess = true;
-				return Result;
-			}
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 30.0;
-			Step.DeltaSeconds = 1.0 / 30.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(FString::Printf(TEXT("Retained-owner clock admitted (%s: %s)"),
-		*Acquired.ErrorCode, *Acquired.ErrorMessage), Acquired.bSuccess))
-	{
-		return false;
-	}
-
-	TestTrue(TEXT("Owned PIE admitted"), Fixture->Session->BeginOwnedPIE(
-		Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeClockCleanupLifetime"),
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			(void)Test;
-			Probe->SelectedWorld = Fixture->Session->GetTargetBinding().World;
-			const TWeakPtr<FLifetimeProbe> Weak = Probe;
-			Probe->WorldStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-				[Weak](UWorld* World, ELevelTick, float)
-				{
-					const auto P = Weak.Pin();
-					if (P.IsValid() && P->bWrapperDestroyed && World == P->SelectedWorld.Get())
-					{
-						++P->TicksAfterDestruction;
-					}
-				});
-			Probe->WorldEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
-				[Weak](UWorld* World, ELevelTick, float)
-				{
-					const auto P = Weak.Pin();
-					if (P.IsValid() && P->bWrapperDestroyed && World == P->SelectedWorld.Get())
-					{
-						++P->TickEndsAfterDestruction;
-					}
-				});
-			Probe->bArmDestroy = true;
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Lease wrapper was destroyed inside the producer callback"),
-				Probe->bWrapperDestroyed);
-			Test.TestTrue(TEXT("Owned provider was attached at the moment of reentrant destruction"),
-				Probe->bProviderPresentAtDestruction);
-			Test.TestNull(TEXT("Reentrant destruction released the owned engine provider"),
-				GEngine->GetCustomTimeStep());
-			Test.TestEqual(TEXT("Destroyed lease never invokes its read callback again"),
-				Probe->CallsAfterDestruction, 0);
-			Test.TestTrue(TEXT("Executing native provider survived reentrant wrapper destruction and GC"),
-				Probe->bExecutingProviderRetainedThroughGC);
-			Test.TestEqual(TEXT("Retired wrapper admits no additional exact owned-world tick"),
-				Probe->TicksAfterDestruction, 0);
-			Test.TestEqual(TEXT("Retired wrapper admits no additional exact owned-world tick end"),
-				Probe->TickEndsAfterDestruction, 0);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Fixture](FAutomationTestBase& Test)
-		{
-			(void)Test;
-			Fixture->Session->EndOwnedPIE();
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestNull(TEXT("Provider stays released after exact owned teardown"),
-				GEngine->GetCustomTimeStep());
-			Test.TestEqual(TEXT("Original engine fixed-rate setting unchanged"),
-				!!GEngine->bUseFixedFrameRate, Probe->SavedFixedRate);
-			Test.TestEqual(TEXT("Original fixed-step setting unchanged"),
-				FApp::UseFixedTimeStep(), Probe->SavedFixedStep);
-			Test.TestEqual(TEXT("Original fixed delta unchanged"),
-				FApp::GetFixedDeltaTime(), Probe->SavedFixedDelta);
-			// Explicit GC after the owned teardown/lifetime constraints: the released transient
-			// clock must collect with no dangling owner and no access violation.
-			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-			Test.TestNull(TEXT("No provider after GC of the released transient clock"),
-				GEngine->GetCustomTimeStep());
-			Test.TestFalse(TEXT("Released transient provider collects after terminal teardown"),
-				Probe->ExecutingProvider.IsValid());
-		}));
-	return true;
-}
-// ===========================================================================
-// 1) Cortex.Editor.PhysicalInput.NativeClockForeignTeardownSafety  (mandatory gate)
-// ===========================================================================
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockForeignTeardownSafetyTest,
-	"Cortex.Editor.PhysicalInput.NativeClockForeignTeardownSafety",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockForeignTeardownSafetyTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease and foreign-instance survival"))) { return true; }
-	if (!GEditor || !GEngine) { AddError(TEXT("Editor engine missing")); return false; }
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
-
-	struct FForeignTeardownProbe
-	{
-		FCortexEditorEngineClockLease Clock;
-		FDelegateHandle PieStartedHandle;
-		FDelegateHandle WorldTickStartHandle;
-
-		/** Armed only for the post-quiescence foreign instance so the owned birth is not captured. */
-		bool bArmForeignCapture = false;
-		/** Set in the same latent frame the owned engine-wide end is queued. */
-		bool bOwnedEndRequested = false;
-
-		TWeakObjectPtr<UWorld> OwnedWorld;
-		FName OwnedContextHandle = NAME_None;
-
-		// ---- actual native birth/tick observations of the late-join instance ----
-		bool bForeignWorldlessObserved = false;
-		int32 ForeignWorldlessCount = 0;
-		FName ForeignContextHandle = NAME_None;
-		TWeakObjectPtr<UWorld> ForeignWorld;
-		bool bForeignTickedBeforeEnd = false;
-		int32 ForeignTicksBeforeEnd = 0;
-
-		// ---- owned terminal world must admit zero further ticks ----
-		int32 OwnedTicksAfterEnd = 0;
-
-		bool bLateJoinRequestedSeen = false;
-
-		bool SavedFixedRate = false;
-		bool SavedFixedStep = false;
-		double SavedFixedDelta = 0.0;
-		/** Exact attached provider identity captured before the queued end. */
-		UEngineCustomTimeStep* SavedProvider = nullptr;
-
-		void RemoveDelegates()
-		{
-			FWorldDelegates::OnPIEStarted.Remove(PieStartedHandle);
-			FWorldDelegates::OnWorldTickStart.Remove(WorldTickStartHandle);
-			PieStartedHandle.Reset();
-			WorldTickStartHandle.Reset();
-		}
-		~FForeignTeardownProbe() { RemoveDelegates(); }
-	};
-
-	const auto Probe = MakeShared<FForeignTeardownProbe>();
-	const TWeakPtr<FForeignTeardownProbe> WeakProbe = Probe;
-	const TWeakPtr<FCortexEditorPhysicalInputTestFixture> WeakFixture = Fixture;
-
-	// The native engine clock provider is acquired before the owned request so the probe can
-	// prove the session's engine-wide end does not touch the provider.
-	const FCortexCommandResult Acquired = Probe->Clock.Acquire(*GEngine, 4,
-		[WeakProbe, WeakFixture](FCortexEditorAppClockStep& Step)
-		{
-			const auto P = WeakProbe.Pin();
-			const auto Owned = WeakFixture.Pin();
-			FCortexCommandResult Result;
-			if (!P.IsValid() || !Owned.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Native foreign-teardown probe owner expired");
-				return Result;
-			}
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 60.0;
-			Step.DeltaSeconds = 1.0 / 60.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(FString::Printf(TEXT("Native clock acquired (%s: %s)"),
-		*Acquired.ErrorCode, *Acquired.ErrorMessage), Acquired.bSuccess))
-	{
-		return false;
-	}
-
-	// Independent native observers. Neither reads private engine state; both read only the
-	// public world-context list and the world's own tick boundary.
-	Probe->PieStartedHandle = FWorldDelegates::OnPIEStarted.AddLambda(
-		[WeakProbe](UGameInstance*)
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid() || !P->bArmForeignCapture || GEngine == nullptr)
-			{
-				return;
-			}
-			int32 WorldlessPIEContexts = 0;
-			FName Handle = NAME_None;
-			for (const FWorldContext& Context : GEngine->GetWorldContexts())
-			{
-				if (Context.WorldType == EWorldType::PIE && Context.World() == nullptr)
-				{
-					++WorldlessPIEContexts;
-					Handle = Context.ContextHandle;
-				}
-			}
-			P->ForeignWorldlessCount = WorldlessPIEContexts;
-			if (WorldlessPIEContexts == 1)
-			{
-				P->bForeignWorldlessObserved = true;
-				P->ForeignContextHandle = Handle;
-			}
-		});
-	Probe->WorldTickStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-		[WeakProbe](UWorld* World, ELevelTick, float)
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid() || !P->bArmForeignCapture || World == nullptr)
-			{
-				return;
-			}
-			if (World == P->OwnedWorld.Get())
-			{
-				if (P->bOwnedEndRequested)
-				{
-					++P->OwnedTicksAfterEnd;
-				}
-				return;
-			}
-			if (World->WorldType == EWorldType::PIE)
-			{
-				if (!P->ForeignWorld.IsValid())
-				{
-					P->ForeignWorld = World;
-				}
-				if (World == P->ForeignWorld.Get())
-				{
-					P->bForeignTickedBeforeEnd = true;
-					++P->ForeignTicksBeforeEnd;
-				}
-			}
-		});
-
-	TestTrue(TEXT("Owned PIE admitted"),
-		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-
-	// Injection: queue the OWNED end through the ownership-scoped authority, then request a late join
-	// in the same latent frame. The scoped end retires only the owned instance, so the late-joined
-	// foreign context/world is born and keeps ticking — the aggregate end flag must stay clear, since
-	// raising it is exactly what would tear down the foreign instance.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeClockForeignTeardownSafety.Inject"),
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			Probe->OwnedWorld = Fixture->Session->GetTargetBinding().World;
-			for (const FWorldContext& Context : GEngine->GetWorldContexts())
-			{
-				if (Context.WorldType == EWorldType::PIE && Context.World() == Probe->OwnedWorld.Get())
-				{
-					Probe->OwnedContextHandle = Context.ContextHandle;
-				}
-			}
-			Probe->SavedFixedRate = !!GEngine->bUseFixedFrameRate;
-			Probe->SavedFixedStep = FApp::UseFixedTimeStep();
-			Probe->SavedFixedDelta = FApp::GetFixedDeltaTime();
-			Probe->SavedProvider = GEngine->GetCustomTimeStep();
-
-			// Arm only now: the owned birth already happened and must not be captured.
-			Probe->bArmForeignCapture = true;
-
-			Fixture->Session->EndOwnedPIE();
-			Probe->bOwnedEndRequested = true;
-
-			// The scoped owned end must NOT raise the engine-wide aggregate end flag: doing so is
-			// exactly what would tear down the foreign late-joined instance.
-			Test.TestFalse(TEXT("Owned end does not raise the engine-wide end flag"), GEditor->ShouldEndPlayMap());
-			Test.TestTrue(TEXT("Owned terminal world no longer ticks"),
-				Probe->OwnedWorld.IsValid() && !Probe->OwnedWorld->ShouldTick());
-
-			const TOptional<FPlayInEditorSessionInfo> InfoBefore = GEditor->GetPlayInEditorSessionInfo();
-			Test.TestTrue(TEXT("PIE session info is still present while the end is only queued"),
-				InfoBefore.IsSet());
-
-			GEditor->RequestLateJoin();
-			const TOptional<FPlayInEditorSessionInfo> InfoAfter = GEditor->GetPlayInEditorSessionInfo();
-			Probe->bLateJoinRequestedSeen = InfoAfter.IsSet() && InfoAfter->bLateJoinRequested;
-			Test.TestTrue(TEXT("Engine recorded the late-join request"), Probe->bLateJoinRequestedSeen);
-		}));
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 8,
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("A second real PIE context was born during the queued engine-wide end"),
-				Probe->bForeignWorldlessObserved);
-			Test.TestTrue(TEXT("The foreign world was observed ticking before the engine-wide end"),
-				Probe->bForeignTickedBeforeEnd);
-			Test.TestEqual(TEXT("Owned terminal world admitted no tick after the queued end"),
-				Probe->OwnedTicksAfterEnd, 0);
-
-			bool bForeignContextPresent = false;
-			bool bForeignWorldAlive = false;
-			for (const FWorldContext& Context : GEngine->GetWorldContexts())
-			{
-				if (Context.WorldType == EWorldType::PIE
-					&& Context.ContextHandle == Probe->ForeignContextHandle)
-				{
-					bForeignContextPresent = true;
-					bForeignWorldAlive = Context.World() != nullptr
-						&& Context.World() == Probe->ForeignWorld.Get();
-				}
-			}
-			Test.TestTrue(TEXT("Foreign PIE context survives an owned queued engine-wide end"),
-				bForeignContextPresent);
-			Test.TestTrue(TEXT("Exact foreign PIE world survives and remains the live world"),
-				bForeignWorldAlive);
-			Test.TestTrue(TEXT("Foreign world still admits ticks after the owned end"),
-				Probe->ForeignWorld.IsValid() && Probe->ForeignWorld->ShouldTick());
-
-			Test.TestTrue(TEXT("Engine clock provider identity is untouched by the foreign coexistence"),
-				Probe->SavedProvider != nullptr && GEngine->GetCustomTimeStep() == Probe->SavedProvider);
-			Test.TestEqual(TEXT("Original engine fixed-rate setting unchanged"),
-				!!GEngine->bUseFixedFrameRate, Probe->SavedFixedRate);
-			Test.TestEqual(TEXT("Original fixed-step setting unchanged"),
-				FApp::UseFixedTimeStep(), Probe->SavedFixedStep);
-			Test.TestEqual(TEXT("Original fixed delta unchanged"),
-				FApp::GetFixedDeltaTime(), Probe->SavedFixedDelta);
-
-			FCortexCommandResult EndError;
-			Test.TestFalse(TEXT("Ended session validates no foreign target"),
-				Fixture->Session->ValidateTarget(EndError));
-			Test.TestFalse(TEXT("Ended session binds no world"),
-				Fixture->Session->GetTargetBinding().World.IsValid());
-		}));
-
-	// Fixture-owned cleanup only, after the survival assertions.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexCleanupPIERequests(this));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			// Retain the fixture while the producer can still read its weak dependency.
-			(void)Fixture;
-			Test.TestTrue(TEXT("Owned clock releases after the foreign fixture is cleaned up"),
-				Probe->Clock.BeginHandoff().bSuccess);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Owned clock observed its completed handoff"),
-				Probe->Clock.IsHandoffComplete());
-		}));
-	return true;
-}
-
-// ===========================================================================
-// 2) Cortex.Editor.PhysicalInput.NativeClockRequestAuthority
-//    Byte-identical replacement of the still-queued accepted request must never be
-//    cancelled/ adopted by the old session.
-// ===========================================================================
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockRequestAuthorityTest,
-	"Cortex.Editor.PhysicalInput.NativeClockRequestAuthority",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockRequestAuthorityTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("exact engine-issued request identity"))) { return true; }
-	if (!GEditor || !GEngine) { AddError(TEXT("Editor engine missing")); return false; }
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
-
-	struct FRequestAuthorityProbe
-	{
-		ULevelEditorPlaySettings* ReplacementSettings = nullptr;
-		FDelegateHandle WorldTickStartHandle;
-		bool bForeignWorldTicked = false;
-		TWeakObjectPtr<UWorld> ForeignWorld;
-		void RemoveDelegates()
-		{
-			FWorldDelegates::OnWorldTickStart.Remove(WorldTickStartHandle);
-			WorldTickStartHandle.Reset();
-		}
-		~FRequestAuthorityProbe() { RemoveDelegates(); }
-	};
-	const auto Probe = MakeShared<FRequestAuthorityProbe>();
-	const TWeakPtr<FRequestAuthorityProbe> WeakProbe = Probe;
-	// No PIE world exists while the accepted request is only queued, so any PIE world tick the
-	// probe observes later is the actually-started foreign replacement.
-	Probe->WorldTickStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-		[WeakProbe](UWorld* World, ELevelTick, float)
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid() || World == nullptr || World->WorldType != EWorldType::PIE) { return; }
-			if (!P->ForeignWorld.IsValid()) { P->ForeignWorld = World; }
-			if (World == P->ForeignWorld.Get()) { P->bForeignWorldTicked = true; }
-		});
-
-	TestTrue(TEXT("PIE preparation admitted"),
-		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-
-	const TOptional<FRequestPlaySessionParams> OwnRequest = GEditor->GetPlaySessionRequest();
-	TestTrue(TEXT("Owned request is still queued"), OwnRequest.IsSet());
-	if (!OwnRequest.IsSet())
-	{
-		ADD_LATENT_AUTOMATION_COMMAND(FCortexCleanupPIERequests(this));
-		return true;
-	}
-	const ULevelEditorPlaySettings* AcceptedSettings = OwnRequest->EditorPlaySettings.Get();
-	TestNotNull(TEXT("Engine-queued request carries a duplicated settings object"), AcceptedSettings);
-
-	// Snapshot the engine-queued copy and re-issue it byte-for-byte through the public API.
-	// RequestPlaySession duplicates EditorPlaySettings again (PlayLevel 985-1000), so the new
-	// request has a different settings UObject with fingerprint-equivalent values.
-	FRequestPlaySessionParams Replacement = OwnRequest.GetValue();
-	TestTrue(TEXT("Copied request keeps the accepted destination"),
-		Replacement.SessionDestination == OwnRequest->SessionDestination);
-	TestTrue(TEXT("Copied request keeps the accepted world type"),
-		Replacement.WorldType == OwnRequest->WorldType);
-	TestEqual(TEXT("Copied request keeps the accepted map"),
-		Replacement.GlobalMapOverride, OwnRequest->GlobalMapOverride);
-	TestEqual(TEXT("Copied request keeps the accepted destination-viewport state"),
-		Replacement.DestinationSlateViewport.IsSet(), OwnRequest->DestinationSlateViewport.IsSet());
-	TestEqual(TEXT("Copied request keeps the accepted start-location state"),
-		Replacement.StartLocation.IsSet(), OwnRequest->StartLocation.IsSet());
-
-	GEditor->RequestPlaySession(Replacement);
-
-	const TOptional<FRequestPlaySessionParams> NewQueued = GEditor->GetPlaySessionRequest();
-	TestTrue(TEXT("Byte-identical replacement is queued"), NewQueued.IsSet());
-	ULevelEditorPlaySettings* ReplacementSettings =
-		NewQueued.IsSet() ? NewQueued->EditorPlaySettings.Get() : nullptr;
-	TestNotNull(TEXT("Replacement carries its own duplicated settings object"), ReplacementSettings);
-	TestTrue(TEXT("Replacement settings identity differs from the accepted request's object"),
-		ReplacementSettings != nullptr && ReplacementSettings != AcceptedSettings);
-
-	// Fingerprint-equivalent values: every field the lease fingerprint reads must match.
-	TestEqual(TEXT("Replacement map value equals the accepted map"),
-		NewQueued.IsSet() ? NewQueued->GlobalMapOverride : FString(), Fixture->RequestedMap);
-	TestTrue(TEXT("Replacement destination equals the accepted destination"),
-		NewQueued.IsSet() && NewQueued->SessionDestination == OwnRequest->SessionDestination);
-	TestEqual(TEXT("Replacement destination-viewport presence equals the accepted one"),
-		NewQueued.IsSet() && NewQueued->DestinationSlateViewport.IsSet(),
-		OwnRequest->DestinationSlateViewport.IsSet());
-	TestEqual(TEXT("Replacement start-location presence equals the accepted one"),
-		NewQueued.IsSet() && NewQueued->StartLocation.IsSet(), OwnRequest->StartLocation.IsSet());
-	if (ReplacementSettings != nullptr && AcceptedSettings != nullptr)
-	{
-		bool bAcceptedRunOne = false;
-		bool bReplacementRunOne = false;
-		AcceptedSettings->GetRunUnderOneProcess(bAcceptedRunOne);
-		ReplacementSettings->GetRunUnderOneProcess(bReplacementRunOne);
-		TestEqual(TEXT("Replacement RunUnderOneProcess value equals the accepted one"),
-			bReplacementRunOne, bAcceptedRunOne);
-
-		EPlayNetMode AcceptedNetMode = PIE_Standalone;
-		EPlayNetMode ReplacementNetMode = PIE_Standalone;
-		AcceptedSettings->GetPlayNetMode(AcceptedNetMode);
-		ReplacementSettings->GetPlayNetMode(ReplacementNetMode);
-		TestTrue(TEXT("Replacement play net mode equals the accepted one"),
-			ReplacementNetMode == AcceptedNetMode);
-
-		int32 AcceptedClients = 0;
-		int32 ReplacementClients = 0;
-		AcceptedSettings->GetPlayNumberOfClients(AcceptedClients);
-		ReplacementSettings->GetPlayNumberOfClients(ReplacementClients);
-		TestEqual(TEXT("Replacement local-client count equals the accepted one"),
-			ReplacementClients, AcceptedClients);
-		TestEqual(TEXT("Replacement separate-server flag equals the accepted one"),
-			!!ReplacementSettings->bLaunchSeparateServer, !!AcceptedSettings->bLaunchSeparateServer);
-	}
-
-	// Preserve the foreign identity across an engine-referenced GC.
-	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-	const TOptional<FRequestPlaySessionParams> AfterGC = GEditor->GetPlaySessionRequest();
-	TestTrue(TEXT("Replacement survived engine-referenced GC"), AfterGC.IsSet());
-	TestTrue(TEXT("Replacement settings identity is preserved across GC"),
-		AfterGC.IsSet() && AfterGC->EditorPlaySettings.Get() == ReplacementSettings);
-
-	// The old session must never cancel or adopt an otherwise identical foreign replacement.
-	// A weak-UObject identity guard is intentionally absent in the current API: this Red is
-	// behavioural, not a missing-API failure.
-	Probe->ReplacementSettings = ReplacementSettings;
-
-	Fixture->Session->EndOwnedPIE();
-
-	const TOptional<FRequestPlaySessionParams> Surviving = GEditor->GetPlaySessionRequest();
-	TestTrue(TEXT("Old session did not cancel the byte-identical foreign replacement"),
-		Surviving.IsSet());
-	if (Surviving.IsSet())
-	{
-		TestEqual(TEXT("Surviving replacement keeps its own map identity"),
-			Surviving->GlobalMapOverride, Fixture->RequestedMap);
-	}
-	FCortexCommandResult RelinquishError;
-	TestFalse(TEXT("Old session does not adopt the replacement"),
-		Fixture->Session->ValidateTarget(RelinquishError));
-	TestFalse(TEXT("Old session binds no world"),
-		Fixture->Session->GetTargetBinding().World.IsValid());
-
-	// The replacement must actually start as an independent foreign PIE session that keeps the
-	// engine-referenced settings identity, while the old session neither adopts nor binds it.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 8,
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
-			Test.TestTrue(TEXT("Byte-identical foreign request started a real PIE session"),
-				Info.IsSet());
-			Test.TestTrue(TEXT("Started foreign session retains the replacement settings identity"),
-				Info.IsSet() && Info->OriginalRequestParams.EditorPlaySettings.Get()
-					== Probe->ReplacementSettings);
-			Test.TestTrue(TEXT("Started foreign PIE world actually ticks"),
-				Probe->bForeignWorldTicked);
-
-			FCortexCommandResult AdoptError;
-			Test.TestFalse(TEXT("Old session never adopts the started foreign session"),
-				Fixture->Session->ValidateTarget(AdoptError));
-			Test.TestFalse(TEXT("Old session binds no world"),
-				Fixture->Session->GetTargetBinding().World.IsValid());
-		}));
-
-	// Fixture cleanup ends only the session this test started; the old session's own cleanup must
-	// still resolve without touching the foreign session.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexCleanupPIERequests(this));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 4,
-		[Fixture](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Old session's own cleanup resolves"),
-				Fixture->Session->IsOwnedPIEEnded());
-		}));
-	return true;
-}
-
-// ===========================================================================
-// 3) Cortex.Editor.PhysicalInput.NativeClockLossWorldBirth
-//    The actual consumed owned PIE context is observed World()==nullptr at the public
-//    OnPIEStarted boundary, the engine provider is then cleared, and the exact born world
-//    must admit zero ticks with a bounded real default transition.
-// ===========================================================================
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockLossWorldBirthTest,
-	"Cortex.Editor.PhysicalInput.NativeClockLossWorldBirth",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockLossWorldBirthTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease"))) { return true; }
-	if (!GEditor || !GEngine) { AddError(TEXT("Editor engine missing")); return false; }
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
-
-	struct FWorldBirthProbe
-	{
-		FCortexEditorEngineClockLease Clock;
-		FDelegateHandle PieStartedHandle;
-		FDelegateHandle PostPieStartedHandle;
-		FDelegateHandle WorldTickStartHandle;
-		FDelegateHandle WorldTickEndHandle;
-		FDelegateHandle SamplingHandle;
-
-		bool bActualWorldlessObserved = false;
-		FName WorldlessContextHandle = NAME_None;
-		double CleanupBaseCurrent = 0.0;
-		bool bCleared = false;
-
-		bool bPostPieStartedObserved = false;
-		bool bProviderNullAtPostPieStarted = false;
-
-		/** Exact born world resolved from the world-less context handle at the PostPIEStarted boundary. */
-		TWeakObjectPtr<UWorld> BornWorld;
-		bool bBornWorldCaptured = false;
-		int32 PreparationUpdates = 0;
-		int32 BornWorldTickStarts = 0;
-		int32 BornWorldTickEnds = 0;
-
-		/** Exact fixed cleanup frame signature, then the first genuine (non-fixed, null-provider) default. */
-		bool bFixedCleanupObserved = false;
-		double FixedCleanupCurrent = 0.0;
-		double FixedCleanupDelta = 0.0;
-
-		bool bFirstDefaultObserved = false;
-		double FirstDefaultDelta = 0.0;
-		double FirstDefaultCurrent = 0.0;
-		double FirstDefaultLast = 0.0;
-
-		void RemoveDelegates()
-		{
-			FWorldDelegates::OnPIEStarted.Remove(PieStartedHandle);
-			FEditorDelegates::PostPIEStarted.Remove(PostPieStartedHandle);
-			FWorldDelegates::OnWorldTickStart.Remove(WorldTickStartHandle);
-			FWorldDelegates::OnWorldTickEnd.Remove(WorldTickEndHandle);
-			FCoreDelegates::OnSamplingInput.Remove(SamplingHandle);
-			PieStartedHandle.Reset();
-			PostPieStartedHandle.Reset();
-			WorldTickStartHandle.Reset();
-			WorldTickEndHandle.Reset();
-			SamplingHandle.Reset();
-		}
-		~FWorldBirthProbe() { RemoveDelegates(); }
-	};
-
-	const auto Probe = MakeShared<FWorldBirthProbe>();
-	const TWeakPtr<FWorldBirthProbe> WeakProbe = Probe;
-	const TWeakPtr<FCortexEditorPhysicalInputTestFixture> WeakFixture = Fixture;
-
-	// Acquire BEFORE the owned request: the lease is the engine provider while the owned PIE
-	// is prepared. The producer paces so preparation timing is real wall-clock time.
-	const FCortexCommandResult Acquired = Probe->Clock.Acquire(*GEngine, 6,
-		[WeakProbe, WeakFixture](FCortexEditorAppClockStep& Step)
-		{
-			const auto P = WeakProbe.Pin();
-			const auto Owned = WeakFixture.Pin();
-			FCortexCommandResult Result;
-			if (!P.IsValid() || !Owned.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Native world-birth probe owner expired");
-				return Result;
-			}
-			++P->PreparationUpdates;
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 30.0;
-			Step.DeltaSeconds = 1.0 / 30.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			Result.bSuccess = true;
-			return Result;
-		});
-	if (!TestTrue(FString::Printf(TEXT("Native clock acquired before the owned request (%s: %s)"),
-		*Acquired.ErrorCode, *Acquired.ErrorMessage), Acquired.bSuccess))
-	{
-		return false;
-	}
-
-	// Independent source-grounded world-less injection: at the public OnPIEStarted boundary the
-	// consumed owned context exists but has no world (GameInstance.cpp:281 broadcasts before the
-	// context receives its world). Clear the actual engine provider there.
-	Probe->PieStartedHandle = FWorldDelegates::OnPIEStarted.AddLambda(
-		[WeakProbe](UGameInstance*)
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid() || P->bCleared || GEngine == nullptr)
-			{
-				return;
-			}
-			int32 WorldlessPIEContexts = 0;
-			FName Handle = NAME_None;
-			for (const FWorldContext& Context : GEngine->GetWorldContexts())
-			{
-				if (Context.WorldType == EWorldType::PIE && Context.World() == nullptr)
-				{
-					++WorldlessPIEContexts;
-					Handle = Context.ContextHandle;
-				}
-			}
-			P->bActualWorldlessObserved = WorldlessPIEContexts == 1;
-			if (P->bActualWorldlessObserved)
-			{
-				P->WorldlessContextHandle = Handle;
-				P->CleanupBaseCurrent = FApp::GetCurrentTime();
-				P->bCleared = true;
-				GEngine->SetCustomTimeStep(nullptr);
-			}
-		});
-	// Independent PostPIEStarted boundary observation (PlayLevel 2991). This is the subject's
-	// pre-census stop boundary, never the injection point.
-	Probe->PostPieStartedHandle = FEditorDelegates::PostPIEStarted.AddLambda(
-		[WeakProbe](const bool)
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid())
-			{
-				return;
-			}
-			P->bPostPieStartedObserved = true;
-			P->bProviderNullAtPostPieStarted = GEngine != nullptr
-				&& GEngine->GetCustomTimeStep() == nullptr;
-			// Resolve the EXACT born world from the recorded world-less context handle now that the
-			// instance has been created, BEFORE the engine's tick census. The world is never adopted
-			// from "first PIE world seen at tick start" (a correct zero-tick outcome would leave it absent).
-			if (P->WorldlessContextHandle != NAME_None && GEngine != nullptr)
-			{
-				for (const FWorldContext& Context : GEngine->GetWorldContexts())
-				{
-					if (Context.WorldType == EWorldType::PIE
-						&& Context.ContextHandle == P->WorldlessContextHandle)
-					{
-						P->BornWorld = Context.World();
-						P->bBornWorldCaptured = P->BornWorld.IsValid();
-					}
-				}
-			}
-		});
-	Probe->WorldTickStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-		[WeakProbe](UWorld* World, ELevelTick, float)
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid() || World == nullptr || !P->BornWorld.IsValid())
-			{
-				return;
-			}
-			if (World == P->BornWorld.Get())
-			{
-				++P->BornWorldTickStarts;
-			}
-		});
-	Probe->WorldTickEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
-		[WeakProbe](UWorld* World, ELevelTick, float)
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid() || World == nullptr || !P->BornWorld.IsValid())
-			{
-				return;
-			}
-			if (World == P->BornWorld.Get())
-			{
-				++P->BornWorldTickEnds;
-			}
-		});
-	// Observe the exact native fixed cleanup signature and the first genuine default update.
-	// A missing cleanup frame must not hide the actual first default frame from the oracle.
-	Probe->SamplingHandle = FCoreDelegates::OnSamplingInput.AddLambda(
-		[WeakProbe]()
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid() || !P->bCleared)
-			{
-				return;
-			}
-			if (!P->bFixedCleanupObserved)
-			{
-				const double CleanupDelta =
-					static_cast<double>(static_cast<float>(CortexEditorClockLease::CleanupDeltaSeconds));
-				if (GEngine != nullptr && GEngine->GetCustomTimeStep() == nullptr
-					&& FApp::UseFixedTimeStep() && FApp::GetDeltaTime() == CleanupDelta
-					&& FApp::GetLastTime() == P->CleanupBaseCurrent
-					&& FApp::GetCurrentTime() == P->CleanupBaseCurrent + CleanupDelta)
-				{
-					P->bFixedCleanupObserved = true;
-					P->FixedCleanupCurrent = FApp::GetCurrentTime();
-					P->FixedCleanupDelta = FApp::GetDeltaTime();
-					return;
-				}
-			}
-			if (!P->bFirstDefaultObserved
-				&& GEngine != nullptr && GEngine->GetCustomTimeStep() == nullptr
-				&& !FApp::UseFixedTimeStep())
-			{
-				P->bFirstDefaultObserved = true;
-				P->FirstDefaultDelta = FApp::GetDeltaTime();
-				P->FirstDefaultCurrent = FApp::GetCurrentTime();
-				P->FirstDefaultLast = FApp::GetLastTime();
-			}
-		});
-
-	// Sustain real native clock preparation BEFORE the owned request so the accumulated cache debt is
-	// actually exercised (an immediate Begin would only produce a single preparation step). The clock
-	// producer runs once per engine frame during these bounded latent frames.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 40,
-		[Fixture, Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("At least forty real preparation clock updates preceded the request"),
-				Probe->PreparationUpdates >= 40);
-			Test.TestTrue(TEXT("Owned PIE admitted after sustained clock preparation"),
-				Fixture->Session->BeginOwnedPIE(
-					Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-		}));
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 8,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Actual world-less owned PIE birth was observed"),
-				Probe->bActualWorldlessObserved);
-			Test.TestTrue(TEXT("The engine provider was actually cleared at world birth"),
-				Probe->bCleared);
-			Test.TestTrue(TEXT("PostPIEStarted boundary was observed independently"),
-				Probe->bPostPieStartedObserved);
-			Test.TestTrue(TEXT("Provider is null at the PostPIEStarted boundary"),
-				Probe->bProviderNullAtPostPieStarted);
-			Test.TestTrue(TEXT("The exact born owned world was captured from the world-less context"),
-				Probe->bBornWorldCaptured);
-			Test.TestEqual(TEXT("No tick reached the exact born owned world"),
-				Probe->BornWorldTickStarts, 0);
-			Test.TestEqual(TEXT("No tick end reached the exact born owned world"),
-				Probe->BornWorldTickEnds, 0);
-			Test.TestTrue(TEXT("Exact fixed cleanup frame signature was observed"),
-				Probe->bFixedCleanupObserved);
-			Test.TestTrue(TEXT("First genuine non-fixed null-provider default was observed"),
-				Probe->bFirstDefaultObserved);
-			Test.TestTrue(FString::Printf(
-				TEXT("First real default after world-birth loss is finite/positive/bounded: %.9f"),
-				Probe->FirstDefaultDelta),
-				FMath::IsFinite(Probe->FirstDefaultDelta)
-				&& Probe->FirstDefaultDelta > 0.0
-				&& Probe->FirstDefaultDelta <= CortexEditorClockLease::DefaultFrameMaxDeltaSeconds);
-			Test.TestTrue(TEXT("Default is non-backward from the fixed cleanup frame"),
-				Probe->FirstDefaultLast >= Probe->FixedCleanupCurrent
-				&& Probe->FirstDefaultCurrent >= Probe->FirstDefaultLast);
-			Test.TestNull(TEXT("Provider is not resurrected after the world-birth clear"),
-				GEngine->GetCustomTimeStep());
-		}));
-
-	// Fixture-owned cleanup only; Probe stays alive across it so the clock owner is not released
-	// while the born world still exists.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this,
-		[Fixture, Probe](FAutomationTestBase&)
-		{
-			(void)Probe;
-			Fixture->Session->EndOwnedPIE();
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexCleanupPIERequests(this));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 4,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("World-birth loss remained truthfully observed through cleanup"),
-				Probe->bActualWorldlessObserved);
-		}));
-	return true;
-}
-
-// ===========================================================================
-// 4) Cortex.Editor.PhysicalInput.NativeForeignBeforeQuiescenceLateJoin  (control)
-//    A foreign late-join context that appears while the owned session is still fully live
-//    must survive the later owned end.
-// ===========================================================================
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeForeignBeforeQuiescenceLateJoinTest,
-	"Cortex.Editor.PhysicalInput.NativeForeignBeforeQuiescenceLateJoin",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeForeignBeforeQuiescenceLateJoinTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("foreign-instance survival across an owned end"))) { return true; }
-	if (!GEditor || !GEngine) { AddError(TEXT("Editor engine missing")); return false; }
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
-
-	struct FBeforeQuiescenceProbe
-	{
-		FDelegateHandle PieStartedHandle;
-		FDelegateHandle WorldTickStartHandle;
-		bool bArmForeignCapture = false;
-		TWeakObjectPtr<UWorld> OwnedWorld;
-		bool bForeignWorldlessObserved = false;
-		FName ForeignContextHandle = NAME_None;
-		TWeakObjectPtr<UWorld> ForeignWorld;
-		bool bForeignTickedWhileOwnedLive = false;
-		void RemoveDelegates()
-		{
-			FWorldDelegates::OnPIEStarted.Remove(PieStartedHandle);
-			FWorldDelegates::OnWorldTickStart.Remove(WorldTickStartHandle);
-			PieStartedHandle.Reset();
-			WorldTickStartHandle.Reset();
-		}
-		~FBeforeQuiescenceProbe() { RemoveDelegates(); }
-	};
-
-	const auto Probe = MakeShared<FBeforeQuiescenceProbe>();
-	const TWeakPtr<FBeforeQuiescenceProbe> WeakProbe = Probe;
-
-	Probe->PieStartedHandle = FWorldDelegates::OnPIEStarted.AddLambda(
-		[WeakProbe](UGameInstance*)
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid() || !P->bArmForeignCapture || GEngine == nullptr) { return; }
-			int32 Worldless = 0;
-			FName Handle = NAME_None;
-			for (const FWorldContext& Context : GEngine->GetWorldContexts())
-			{
-				if (Context.WorldType == EWorldType::PIE && Context.World() == nullptr)
-				{
-					++Worldless;
-					Handle = Context.ContextHandle;
-				}
-			}
-			if (Worldless == 1)
-			{
-				P->bForeignWorldlessObserved = true;
-				P->ForeignContextHandle = Handle;
-			}
-		});
-	Probe->WorldTickStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-		[WeakProbe](UWorld* World, ELevelTick, float)
-		{
-			const auto P = WeakProbe.Pin();
-			if (!P.IsValid() || !P->bArmForeignCapture || World == nullptr) { return; }
-			if (World == P->OwnedWorld.Get()) { return; }
-			if (World->WorldType == EWorldType::PIE)
-			{
-				if (!P->ForeignWorld.IsValid()) { P->ForeignWorld = World; }
-				if (World == P->ForeignWorld.Get()) { P->bForeignTickedWhileOwnedLive = true; }
-			}
-		});
-
-	TestTrue(TEXT("Owned PIE admitted"),
-		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
-
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture,
-		TEXT("NativeForeignBeforeQuiescenceLateJoin.Request"),
-		[Probe, Fixture](FAutomationTestBase& Test)
-		{
-			Probe->OwnedWorld = Fixture->Session->GetTargetBinding().World;
-			Probe->bArmForeignCapture = true;
-			Test.TestTrue(TEXT("Owned session is still live before the late join"),
-				GEditor->IsPlayingSessionInEditor());
-			GEditor->RequestLateJoin();
-			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
-			Test.TestTrue(TEXT("Engine recorded the pre-quiescence late-join request"),
-				Info.IsSet() && Info->bLateJoinRequested);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Foreign context was born while the owned session was live"),
-				Probe->bForeignWorldlessObserved);
-			Test.TestTrue(TEXT("Foreign world ticked while the owned session was live"),
-				Probe->bForeignTickedWhileOwnedLive);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this,
-		[Fixture](FAutomationTestBase&)
-		{
-			Fixture->Session->EndOwnedPIE();
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 8,
-		[Probe](FAutomationTestBase& Test)
-		{
-			bool bForeignContextPresent = false;
-			for (const FWorldContext& Context : GEngine->GetWorldContexts())
-			{
-				if (Context.WorldType == EWorldType::PIE
-					&& Context.ContextHandle == Probe->ForeignContextHandle
-					&& Context.World() == Probe->ForeignWorld.Get())
-				{
-					bForeignContextPresent = true;
-				}
-			}
-			Test.TestTrue(TEXT("Pre-quiescence foreign context survives the owned end"),
-				bForeignContextPresent);
-			Test.TestTrue(TEXT("Pre-quiescence foreign world still admits ticks"),
-				Probe->ForeignWorld.IsValid() && Probe->ForeignWorld->ShouldTick());
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexCleanupPIERequests(this));
-	return true;
-}
-
 // ===========================================================================
 // 5) Cortex.Editor.PhysicalInput.NativeForeignStandardNewInProcessRequest  (control)
 //    The standard new in-process request takes a different engine path: it ends the old
@@ -9763,345 +6873,579 @@ bool FCortexPhysicalInputNativeForeignStandardNewInProcessRequestTest::RunTest(c
 	return true;
 }
 
-// ===========================================================================
-// 6) Cortex.Editor.PhysicalInput.NativeClockUnsupportedEngineAdmission
-//    Stock-only leaf: an engine that does not declare the scoped-PIE session
-//    capability must refuse recorded-frame clock admission before allocating a
-//    provider, attaching it, mutating the timing profile or submitting PIE work.
-//
-// The engine declares the capability with the compile-time macro below. On a
-// capability-enabled engine this leaf's premise (unsupported admission) does not
-// exist, so the leaf is compiled out instead of skipped at runtime: a runtime
-// skip would let an unestablished admission precondition pass silently. The leaf
-// deliberately stays on the current three-argument Acquire signature.
-// ===========================================================================
+
 // ---------------------------------------------------------------------------
-// A completed handoff must return the engine to a state that grants the clock again: a successor
-// acquisition in the same process has to attach AND actually drive the engine's application clock.
-// The earlier wiring attempts could not tell "attached" from "driving", which is exactly this gap.
+// Audit PIF-02 (red): an armed replay's absolute PointerMove must move the REAL OS cursor to the
+// dispatched screen position. FCortexEditorPhysicalInputSession::Dispatch (PointerMove/RelativeMove
+// branch) only builds a synthetic FPointerEvent and calls Slate.ProcessMouseMoveEvent; it never
+// calls FSlateApplication::SetCursorPos, so a parked real cursor stays where it was and any
+// cursor-position consumer (hover, GetMousePosition) sees the stale OS position.
+// FSlateApplication::GetCursorPos reads the platform cursor (SlateUser.cpp GetPointerPosition).
 // ---------------------------------------------------------------------------
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockSuccessionTest,
-	"Cortex.Editor.PhysicalInput.NativeClockSuccession",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockSuccessionTest::RunTest(const FString& Parameters)
+namespace
 {
-	(void)Parameters;
-	if (SkipWithoutScopedPIE(*this, TEXT("the parked engine-clock lease"))) { return true; }
-	if (!GEditor || !GEngine)
-	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	if (!Fixture->EditorWorldBefore.IsValid())
-	{
-		AddError(TEXT("Editor world missing"));
-		return false;
-	}
-
-	constexpr double FirstDeltaSeconds = 1.0 / 30.0;
-	constexpr double SecondDeltaSeconds = 1.0 / 40.0;
-
-	struct FSuccessionProbe
-	{
-		TUniquePtr<FCortexEditorEngineClockLease> First;
-		TUniquePtr<FCortexEditorEngineClockLease> Second;
-		IConsoleVariable* FrameCap = nullptr;
-		FString SavedFrameCap;
-		uint32 SavedSetBy = 0;
-		/** Application CurrentTime at the previous per-frame sample. */
-		double LastSampleSeconds = 0.0;
-
-		~FSuccessionProbe()
-		{
-			if (FrameCap)
-			{
-				FrameCap->Set(*SavedFrameCap, ECVF_SetByConsole);
-				FrameCap->ClearFlags(ECVF_SetByMask);
-				FrameCap->SetFlags(static_cast<EConsoleVariableFlags>(SavedSetBy));
-			}
-		}
-	};
-	const auto Probe = MakeShared<FSuccessionProbe>();
-	Probe->FrameCap = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
-	if (!TestNotNull(TEXT("Normal host FPS cap exists"), Probe->FrameCap))
-	{
-		return false;
-	}
-	Probe->SavedFrameCap = Probe->FrameCap->GetString();
-	Probe->SavedSetBy = Probe->FrameCap->GetFlags() & ECVF_SetByMask;
-	Probe->FrameCap->Set(120.0f, ECVF_SetByConsole);
-
-	const auto MakePacedStep = [](double DeltaSeconds)
-	{
-		return [DeltaSeconds](FCortexEditorAppClockStep& Step)
-		{
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.DeltaSeconds = DeltaSeconds;
-			Step.CurrentSeconds = Step.LastSeconds + DeltaSeconds;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			FCortexCommandResult Result;
-			Result.bSuccess = true;
-			return Result;
-		};
-	};
-
-	Probe->First = MakeUnique<FCortexEditorEngineClockLease>();
-	const FCortexCommandResult FirstAcquire =
-		Probe->First->Acquire(*GEngine, 1, MakePacedStep(FirstDeltaSeconds));
-	if (!TestTrue(FString::Printf(TEXT("First acquisition admitted (%s: %s)"),
-		*FirstAcquire.ErrorCode, *FirstAcquire.ErrorMessage), FirstAcquire.bSuccess))
-	{
-		return false;
-	}
-
-	// A lease that is attached but whose prepared steps are rejected keeps the PREVIOUS application
-	// delta (the engine's skip path advances GameTime without running its own clock), so reading
-	// FApp::GetDeltaTime() alone cannot separate "driving" from "attached" - an ordinary host frame of
-	// the same duration satisfies it. Each phase therefore also samples application CurrentTime one
-	// engine frame apart and requires the recorded delta to have been applied, which neither a
-	// rejected nor an absent step can produce, and requires no latched lease failure. The comparison
-	// allows 1e-4 for the engine's application-time precision: that is about 166x tighter than the
-	// 0.0166 gap to a host frame of the same order (0.0167 against 0.0333), and a frozen clock reads
-	// 0, so neither the retained-delta path nor a stopped clock can satisfy it.
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe, FirstDeltaSeconds](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(FString::Printf(
-				TEXT("First lease drives the application clock (observed %.4f)"),
-				FApp::GetDeltaTime()),
-				FMath::IsNearlyEqual(FApp::GetDeltaTime(),
-					static_cast<float>(FirstDeltaSeconds), 0.002f));
-			Test.TestTrue(TEXT("First lease latched no failure"),
-				Probe->First->GetLastFailure().ErrorCode.IsEmpty());
-			Probe->LastSampleSeconds = FApp::GetCurrentTime();
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 1,
-		[Probe, FirstDeltaSeconds](FAutomationTestBase& Test)
-		{
-			const double Now = FApp::GetCurrentTime();
-			Test.TestTrue(FString::Printf(
-				TEXT("First lease advances the application clock by the recorded delta (observed %.9f)"),
-				Now - Probe->LastSampleSeconds),
-				FMath::IsNearlyEqual(Now - Probe->LastSampleSeconds, FirstDeltaSeconds, 1e-4));
-			Probe->LastSampleSeconds = Now;
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 1,
-		[Probe, FirstDeltaSeconds](FAutomationTestBase& Test)
-		{
-			const double Now = FApp::GetCurrentTime();
-			Test.TestTrue(FString::Printf(
-				TEXT("First lease keeps advancing the application clock (observed %.9f)"),
-				Now - Probe->LastSampleSeconds),
-				FMath::IsNearlyEqual(Now - Probe->LastSampleSeconds, FirstDeltaSeconds, 1e-4));
-			Test.TestTrue(TEXT("First handoff admitted"), Probe->First->BeginHandoff().bSuccess);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("First handoff completed"), Probe->First->IsHandoffComplete());
-			Test.TestEqual(TEXT("First lease is released"), Probe->First->GetState(),
-				ECortexEditorClockState::Released);
-			Test.TestNull(TEXT("No provider remains after the first handoff"),
-				GEngine->GetCustomTimeStep());
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 0,
-		[Probe, MakePacedStep, SecondDeltaSeconds](FAutomationTestBase& Test)
-		{
-			Probe->Second = MakeUnique<FCortexEditorEngineClockLease>();
-			const FCortexCommandResult SecondAcquire =
-				Probe->Second->Acquire(*GEngine, 2, MakePacedStep(SecondDeltaSeconds));
-			Test.TestTrue(FString::Printf(TEXT("Successor acquisition admitted (%s: %s)"),
-				*SecondAcquire.ErrorCode, *SecondAcquire.ErrorMessage), SecondAcquire.bSuccess);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe, SecondDeltaSeconds](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(FString::Printf(
-				TEXT("Successor lease drives the application clock (observed %.4f)"),
-				FApp::GetDeltaTime()),
-				FMath::IsNearlyEqual(FApp::GetDeltaTime(),
-					static_cast<float>(SecondDeltaSeconds), 0.002f));
-			Test.TestTrue(TEXT("Successor lease latched no failure"),
-				Probe->Second->GetLastFailure().ErrorCode.IsEmpty());
-			Probe->LastSampleSeconds = FApp::GetCurrentTime();
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 1,
-		[Probe, SecondDeltaSeconds](FAutomationTestBase& Test)
-		{
-			const double Now = FApp::GetCurrentTime();
-			Test.TestTrue(FString::Printf(
-				TEXT("Successor lease advances the application clock by the recorded delta (observed %.9f)"),
-				Now - Probe->LastSampleSeconds),
-				FMath::IsNearlyEqual(Now - Probe->LastSampleSeconds, SecondDeltaSeconds, 1e-4));
-			Probe->LastSampleSeconds = Now;
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 1,
-		[Probe, SecondDeltaSeconds](FAutomationTestBase& Test)
-		{
-			const double Now = FApp::GetCurrentTime();
-			Test.TestTrue(FString::Printf(
-				TEXT("Successor lease keeps advancing the application clock (observed %.9f)"),
-				Now - Probe->LastSampleSeconds),
-				FMath::IsNearlyEqual(Now - Probe->LastSampleSeconds, SecondDeltaSeconds, 1e-4));
-			Test.TestTrue(TEXT("Successor handoff admitted"), Probe->Second->BeginHandoff().bSuccess);
-		}));
-	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 6,
-		[Probe](FAutomationTestBase& Test)
-		{
-			Test.TestTrue(TEXT("Successor handoff completed"), Probe->Second->IsHandoffComplete());
-			Test.TestTrue(TEXT("Successor lease latched no failure after handoff"),
-				Probe->Second->GetLastFailure().ErrorCode.IsEmpty());
-		}));
-	return true;
-}
-
-#if !(defined(UE_SCOPED_PIE_SESSION_API_VERSION) && UE_SCOPED_PIE_SESSION_API_VERSION == 1)
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputNativeClockUnsupportedEngineAdmissionTest,
-	"Cortex.Editor.PhysicalInput.NativeClockUnsupportedEngineAdmission",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FCortexPhysicalInputNativeClockUnsupportedEngineAdmissionTest::RunTest(const FString& Parameters)
+/** Restores the real OS cursor position on scope exit. */
+struct FCortexCursorPositionRestore
 {
-	(void)Parameters;
-	if (!GEditor || !GEngine)
+	FVector2D Saved;
+	FCortexCursorPositionRestore() : Saved(FSlateApplication::Get().GetCursorPos()) {}
+	~FCortexCursorPositionRestore()
 	{
-		AddError(TEXT("Editor engine missing"));
-		return false;
-	}
-	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
-	if (!Fixture->EditorWorldBefore.IsValid())
-	{
-		AddError(TEXT("Editor world missing"));
-		return false;
-	}
-
-	struct FUnsupportedAdmissionProbe
-	{
-		TUniquePtr<FCortexEditorEngineClockLease> Clock = MakeUnique<FCortexEditorEngineClockLease>();
-		int32 ReadCalls = 0;
-	};
-
-	// Mandatory preconditions: a normal timing profile and a clean owned candidate editor.
-	// They are asserted, never skipped: a runtime skip would let a missing admission
-	// precondition pass silently instead of failing this leaf. The checks mirror the exact
-	// profile the lease consumes: no foreign provider, no fixed application/engine timing,
-	// no explicit delta override and no live or queued PIE work.
-	UEngineCustomTimeStep* const SavedProvider = GEngine->GetCustomTimeStep();
-	const bool SavedFixedFrameRate = !!GEngine->bUseFixedFrameRate;
-	const float SavedFixedFrameRateValue = GEngine->FixedFrameRate;
-	const bool SavedUseFixedTimeStep = FApp::UseFixedTimeStep();
-	const double SavedFixedDeltaTime = FApp::GetFixedDeltaTime();
-	const bool SavedBenchmarking = FApp::IsBenchmarking();
-	TestNull(TEXT("Precondition: no foreign engine custom time step"), SavedProvider);
-	TestFalse(TEXT("Precondition: engine fixed framerate is off"), SavedFixedFrameRate);
-	TestFalse(TEXT("Precondition: application fixed-step mode is off"), SavedUseFixedTimeStep);
-	TestFalse(TEXT("Precondition: application benchmarking is off"), SavedBenchmarking);
-	const IConsoleVariable* const OverrideFps =
-		IConsoleManager::Get().FindConsoleVariable(TEXT("t.OverrideFPS"));
-	TestTrue(TEXT("Precondition: no explicit application delta override is active"),
-		OverrideFps == nullptr || OverrideFps->GetFloat() < 0.001f);
-	int32 PIEContextCount = 0;
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		if (Context.WorldType == EWorldType::PIE)
+		if (FSlateApplication::IsInitialized())
 		{
-			++PIEContextCount;
+			FSlateApplication::Get().SetCursorPos(Saved);
 		}
 	}
-	TestEqual(TEXT("Precondition: no PIE world context exists"), PIEContextCount, 0);
-	TestFalse(TEXT("Precondition: no PIE request is queued"), GEditor->IsPlaySessionRequestQueued());
-	TestFalse(TEXT("Precondition: no PIE session is running"), GEditor->IsPlayingSessionInEditor());
-	TestFalse(TEXT("Precondition: no queued PIE end"), GEditor->ShouldEndPlayMap());
+};
+} // namespace
 
-	const TSharedPtr<FUnsupportedAdmissionProbe> Probe = MakeShared<FUnsupportedAdmissionProbe>();
-	const TWeakPtr<FUnsupportedAdmissionProbe> WeakProbe = Probe;
-	const FCortexCommandResult Admission = Probe->Clock->Acquire(*GEngine, 1,
-		[WeakProbe](FCortexEditorAppClockStep& Step)
-		{
-			const TSharedPtr<FUnsupportedAdmissionProbe> Pinned = WeakProbe.Pin();
-			FCortexCommandResult Result;
-			if (!Pinned.IsValid())
-			{
-				Result.ErrorCode = CortexErrorCodes::InvalidOperation;
-				Result.ErrorMessage = TEXT("Unsupported-engine admission probe owner expired");
-				return Result;
-			}
-			++Pinned->ReadCalls;
-			// A recorded step that stays coherent with real application/wall time: if a buggy
-			// baseline unexpectedly accepts this acquisition, the attached clock can pace the
-			// engine without inventing time and the bounded cleanup below unwinds it safely.
-			Step.LastSeconds = FApp::GetCurrentTime();
-			Step.CurrentSeconds = Step.LastSeconds + 1.0 / 30.0;
-			Step.DeltaSeconds = 1.0 / 30.0;
-			while (FPlatformTime::Seconds() < Step.CurrentSeconds)
-			{
-				FPlatformProcess::SleepNoStats(0.001f);
-			}
-			Result.bSuccess = true;
-			return Result;
-		});
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayPointerMovesRealCursorTest,
+	"Cortex.Editor.PhysicalInput.ReplayPointerMovesRealCursor",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayPointerMovesRealCursorTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping replay real-cursor test"));
+		return true;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
 
-	// Unwanted real acceptance/attachment is the Red this leaf exists to observe: on a stock
-	// engine the current implementation has no capability preflight, so it attaches its own
-	// provider and leaves the lease in Preparing here.
-	TestFalse(TEXT("Unsupported engine admission is refused"), Admission.bSuccess);
-	TestEqual(TEXT("Unsupported engine admission uses the shared invalid-operation code"),
-		Admission.ErrorCode, FString(CortexErrorCodes::InvalidOperation));
-	TestTrue(TEXT("The refusal leaves no live recorded-frame lease"),
-		Probe->Clock->GetState() == ECortexEditorClockState::Released);
-	TestTrue(TEXT("Engine custom time step is the original provider after the refusal"),
-		GEngine->GetCustomTimeStep() == SavedProvider);
-	TestEqual(TEXT("Engine fixed-framerate setting is unchanged by the refusal"),
-		!!GEngine->bUseFixedFrameRate, SavedFixedFrameRate);
-	TestTrue(FString::Printf(
-		TEXT("Engine fixed framerate is bit-identical after the refusal (%.9g vs %.9g)"),
-		GEngine->FixedFrameRate, SavedFixedFrameRateValue),
-		GEngine->FixedFrameRate == SavedFixedFrameRateValue);
-	TestEqual(TEXT("Application fixed-step mode is unchanged by the refusal"),
-		FApp::UseFixedTimeStep(), SavedUseFixedTimeStep);
-	TestTrue(FString::Printf(
-		TEXT("Application fixed delta is bit-identical after the refusal (%.17g vs %.17g)"),
-		FApp::GetFixedDeltaTime(), SavedFixedDeltaTime),
-		FApp::GetFixedDeltaTime() == SavedFixedDeltaTime);
-	TestEqual(TEXT("Application benchmarking mode is unchanged by the refusal"),
-		FApp::IsBenchmarking(), SavedBenchmarking);
-	TestFalse(TEXT("The refusal queues no PIE request"), GEditor->IsPlaySessionRequestQueued());
-	TestFalse(TEXT("The refusal starts no PIE session"), GEditor->IsPlayingSessionInEditor());
-	TestEqual(TEXT("The refusal never invokes the recorded-step producer"), Probe->ReadCalls, 0);
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ReplayPointerMovesRealCursor"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {},
+		/*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
 
-	// Bounded latent cleanup. Destroying the probe's lease runs the owner's real native safety
-	// cleanup: it removes the lease's own engine observers and detaches only a provider it actually
-	// owns (never a fabricated Released state). The cleanup is bounded to two latent frames.
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
-		[Probe, SavedProvider, SavedFixedFrameRate, SavedFixedFrameRateValue, SavedUseFixedTimeStep, SavedFixedDeltaTime](FAutomationTestBase& Test)
+		[Fixture](FAutomationTestBase& Test)
 		{
-			Probe->Clock.Reset();
-			// Only an actual later producer call can show the consumer ran; after a real refusal
-			// nothing was ever attached, so the count must still be zero across the cleanup frames.
-			Test.TestEqual(TEXT("No recorded-step producer call occurred through this leaf"),
-				Probe->ReadCalls, 0);
-			Test.TestTrue(TEXT("Engine custom time step is the original provider after cleanup"),
-				GEngine != nullptr && GEngine->GetCustomTimeStep() == SavedProvider);
-			Test.TestEqual(TEXT("Engine fixed-framerate setting is unchanged after cleanup"),
-				GEngine != nullptr && !!GEngine->bUseFixedFrameRate, SavedFixedFrameRate);
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const TSharedPtr<SWidget> Viewport = F.Session->GetTargetBinding().ViewportWidget.Pin();
+			if (!Test.TestTrue(TEXT("Replay viewport widget resolvable"), Viewport.IsValid())) { return; }
+			const FGeometry Geometry = Viewport->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 100.0 || Size.Y <= 100.0)
+			{
+				Test.AddError(TEXT("Replay viewport has no usable geometry"));
+				return;
+			}
+
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			EnsureSelectedRouteWindowActive(*F.Session);
+			const FCortexCommandResult Armed = F.Session->BeginReplayEpoch();
+			Test.TestTrue(TEXT("Replay epoch armed"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return; }
+
+			const FVector2D TargetViewport(100.0, 100.0);
+			const FVector2D TargetScreen = Geometry.LocalToAbsolute(TargetViewport);
+
+			// Park the real cursor well away from the dispatch target (and outside the viewport).
+			FCortexCursorPositionRestore Restore;
+			const FVector2D RectMin = Geometry.LocalToAbsolute(FVector2D::ZeroVector);
+			const FVector2D RectMax = Geometry.LocalToAbsolute(Size);
+			FVector2D Parked = FVector2D::ZeroVector;
+			bool bParked = false;
+			const FVector2D Candidates[2] = { RectMax + FVector2D(40.0, 40.0), RectMin - FVector2D(40.0, 40.0) };
+			for (const FVector2D& Candidate : Candidates)
+			{
+				Slate.SetCursorPos(Candidate);
+				Parked = Slate.GetCursorPos();
+				if (FMath::Abs(Parked.X - TargetScreen.X) > 10.0 || FMath::Abs(Parked.Y - TargetScreen.Y) > 10.0)
+				{
+					bParked = true;
+					break;
+				}
+			}
+			if (!Test.TestTrue(TEXT("Real cursor parked away from the dispatch target"), bParked)) { return; }
+
+			FCortexEditorPhysicalInputEvent Move;
+			Move.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+			Move.Key = EKeys::Mouse2D;
+			Move.ViewportPosition = TargetViewport;
+			Test.TestTrue(TEXT("Absolute replay pointer move dispatched"), F.Session->Dispatch(Move).bSuccess);
+
+			const FVector2D After = Slate.GetCursorPos();
+			// The platform cursor is integral, so a fractional target may land up to one unit away.
 			Test.TestTrue(FString::Printf(
-				TEXT("Engine fixed framerate is bit-identical after cleanup (%.9g vs %.9g)"),
-				GEngine != nullptr ? GEngine->FixedFrameRate : 0.0f, SavedFixedFrameRateValue),
-				GEngine != nullptr && GEngine->FixedFrameRate == SavedFixedFrameRateValue);
-			Test.TestEqual(TEXT("Application fixed-step mode is unchanged after cleanup"),
-				FApp::UseFixedTimeStep(), SavedUseFixedTimeStep);
-			Test.TestTrue(FString::Printf(
-				TEXT("Application fixed delta is bit-identical after cleanup (%.17g vs %.17g)"),
-				FApp::GetFixedDeltaTime(), SavedFixedDeltaTime),
-				FApp::GetFixedDeltaTime() == SavedFixedDeltaTime);
+					TEXT("Real cursor moved to the dispatched screen position (target=%.2f,%.2f actual=%.2f,%.2f parked=%.2f,%.2f)"),
+					TargetScreen.X, TargetScreen.Y, After.X, After.Y, Parked.X, Parked.Y),
+				FMath::Abs(After.X - TargetScreen.X) < 1.0 && FMath::Abs(After.Y - TargetScreen.Y) < 1.0);
+			Test.TestEqual(TEXT("Replay was not interrupted by its own cursor move"), F.InterruptionCount, 0);
 		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;
 }
 
-#endif // Scoped-PIE session capability declared as version 1 on this engine
+// ---------------------------------------------------------------------------
+// Audit PIF-03 (red): replayed relative (high-precision) motion must keep the presented synthetic
+// pointer inside the viewport. Dispatch's RelativeMove branch (CortexEditorPhysicalInputSession.cpp)
+// does LastScreenPointerPosition + Event.Delta with no clamp/recentre, so 300 x dx=+10 walks the
+// presented pointer 3000 screen units to the right, far outside the viewport (the engine would
+// see mouse-leave); only the native MouseX total (exactly 3000) must stay unchanged.
+// Mouse-leave is not directly observable on the PIE scene viewport, so the position bound is asserted.
+// ---------------------------------------------------------------------------
+namespace
+{
+constexpr int32 CortexRelativeBoundsEventCount = 300;
+constexpr double CortexRelativeBoundsDeltaX = 10.0;
+constexpr double CortexRelativeBoundsTotalX = 3000.0;
+
+struct FCortexRelativeBoundsResult
+{
+	bool bRan = false;
+	FVector2D RectMin = FVector2D::ZeroVector;
+	FVector2D RectMax = FVector2D::ZeroVector;
+	FVector2D ViewportSize = FVector2D::ZeroVector;
+	int32 ScreenViolations = 0;
+	int32 ViewportViolations = 0;
+	int32 FirstViolationIndex = INDEX_NONE;
+	FVector2D FirstViolationScreen = FVector2D::ZeroVector;
+	FVector2D FirstViolationViewport = FVector2D::ZeroVector;
+	FVector2D FinalScreen = FVector2D::ZeroVector;
+	FVector2D FinalViewport = FVector2D::ZeroVector;
+};
+
+/** Owned-PIE variant of the fractional-motion driver: capture the viewport, then 300 relative moves. */
+class FCortexDriveRelativeBounds : public IAutomationLatentCommand
+{
+public:
+	FCortexDriveRelativeBounds(FAutomationTestBase* InTest,
+		TSharedRef<FCortexEditorPhysicalInputTestFixture> InFixture,
+		TSharedRef<FCortexFractionalMotionProbe> InProbe,
+		TSharedRef<FCortexRelativeBoundsResult> InResult)
+		: Test(InTest), Fixture(MoveTemp(InFixture)), Probe(MoveTemp(InProbe)), Result(MoveTemp(InResult)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const bool bWithinWatchdog =
+			FPlatformTime::Seconds() - StartTime <= CortexPhysicalInputReadyWatchdogSeconds;
+		FCortexEditorPhysicalInputSession& Session = *Fixture->Session;
+		UWorld* const World = Session.GetTargetBinding().World.Get();
+		APlayerController* const Controller = Session.GetTargetBinding().Controller.Get();
+		UPlayerInput* const PlayerInput = Controller ? Controller->PlayerInput : nullptr;
+		if (World == nullptr || PlayerInput == nullptr || World->GetGameViewport() == nullptr)
+		{
+			if (bWithinWatchdog) { return false; }
+			Test->AddError(TEXT("Owned PIE native consumer never resolved"));
+			return true;
+		}
+		if (!Probe->BoundInput.IsValid())
+		{
+			Probe->SelectedWorld = World;
+			Probe->BoundInput = PlayerInput;
+			const TWeakPtr<FCortexFractionalMotionProbe> WeakProbe = Probe;
+			Probe->WorldStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
+				[WeakProbe](UWorld* TickWorld, ELevelTick, float)
+				{
+					const TSharedPtr<FCortexFractionalMotionProbe> Pinned = WeakProbe.Pin();
+					if (!Pinned.IsValid() || !Pinned->bArmed || Pinned->bSawSamples
+						|| TickWorld != Pinned->SelectedWorld.Get())
+					{
+						return;
+					}
+					const UPlayerInput* const Input = Pinned->BoundInput.Get();
+					const FKeyState* const XState = Input ? Input->GetKeyState(EKeys::MouseX) : nullptr;
+					if (XState == nullptr || XState->SampleCountAccumulator <= 0) { return; }
+					Pinned->bSawSamples = true;
+					Pinned->SamplesX = XState->SampleCountAccumulator;
+					Pinned->RawAccX = XState->RawValueAccumulator.X;
+				});
+		}
+		FSlateApplication& Slate = FSlateApplication::Get();
+		const int32 RouteUserIndex = Session.GetTargetBinding().SlateUserIndex;
+		const TSharedPtr<SViewport> Route = ResolveOwnedRouteRoot(Session);
+		const TSharedPtr<SWindow> RouteWindow = Route.IsValid()
+			? Slate.FindWidgetWindow(Route.ToSharedRef()) : nullptr;
+		if (!Route.IsValid() || !RouteWindow.IsValid() || !Slate.IsActive())
+		{
+			EnsureSelectedRouteWindowActive(Session);
+			if (bWithinWatchdog) { return false; }
+			Test->AddError(TEXT("Owned PIE route root/window never became active"));
+			return true;
+		}
+		const FGeometry RouteGeometry = Route->GetCachedGeometry();
+		const FVector2D RouteLocalSize = RouteGeometry.GetLocalSize();
+		const FVector2D RouteLocalCenter = RouteLocalSize * 0.5;
+		const FVector2D RouteScreenCenter = RouteGeometry.LocalToAbsolute(RouteLocalCenter);
+		TArray<TSharedRef<SWindow>> RouteWindows;
+		RouteWindows.Add(RouteWindow.ToSharedRef());
+		const FWidgetPath HitPath = Slate.LocateWindowUnderMouse(
+			RouteScreenCenter, RouteWindows, false, RouteUserIndex);
+		if (RouteLocalSize.X <= 0.0 || !HitPath.IsValid() || !HitPath.ContainsWidget(Route.Get()))
+		{
+			if (bWithinWatchdog) { return false; }
+			Test->AddError(TEXT("Owned PIE route is not hit-testable at its centre"));
+			return true;
+		}
+		const FVector2D RectMin = RouteGeometry.LocalToAbsolute(FVector2D::ZeroVector);
+		const FVector2D RectMax = RouteGeometry.LocalToAbsolute(RouteLocalSize);
+		if (RectMax.X - RectMin.X >= 2.0 * CortexRelativeBoundsTotalX)
+		{
+			Test->AddError(TEXT("Viewport is wider than twice the recorded total; the bound cannot be exercised"));
+			return true;
+		}
+
+		FCortexEditorPhysicalInputEvent Down;
+		Down.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+		Down.Key = EKeys::LeftMouseButton;
+		Down.ViewportPosition = RouteLocalCenter;
+		Probe->DownViewportPosition = Down.ViewportPosition;
+		Test->TestTrue(TEXT("Pointer down dispatched"), Session.Dispatch(Down).bSuccess);
+		Test->TestTrue(TEXT("Viewport holds native mouse capture"), Route->HasMouseCapture());
+		Test->TestTrue(TEXT("High-precision mouse movement active"), Slate.IsUsingHighPrecisionMouseMovment());
+		if (!Route->HasMouseCapture()) { return true; }
+
+		Result->bRan = true;
+		Result->RectMin = RectMin;
+		Result->RectMax = RectMax;
+		Result->ViewportSize = RouteLocalSize;
+		Probe->bArmed = true;
+		for (int32 Index = 0; Index < CortexRelativeBoundsEventCount; ++Index)
+		{
+			FCortexEditorPhysicalInputEvent Move;
+			Move.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
+			Move.Key = EKeys::Mouse2D;
+			Move.Delta = FVector2D(CortexRelativeBoundsDeltaX, 0.0);
+			if (!Session.Dispatch(Move).bSuccess)
+			{
+				Test->AddError(FString::Printf(TEXT("Relative move %d was not dispatched"), Index));
+				return true;
+			}
+			FVector2D Screen, ViewportPos;
+			Session.GetReplayPointerPositionForTests(Screen, ViewportPos);
+			const double Eps = 1e-6;
+			const bool bScreenOut = Screen.X < RectMin.X - Eps || Screen.X > RectMax.X + Eps
+				|| Screen.Y < RectMin.Y - Eps || Screen.Y > RectMax.Y + Eps;
+			const bool bViewportOut = ViewportPos.X < -Eps || ViewportPos.X > RouteLocalSize.X + Eps
+				|| ViewportPos.Y < -Eps || ViewportPos.Y > RouteLocalSize.Y + Eps;
+			if (bScreenOut) { ++Result->ScreenViolations; }
+			if (bViewportOut) { ++Result->ViewportViolations; }
+			if ((bScreenOut || bViewportOut) && Result->FirstViolationIndex == INDEX_NONE)
+			{
+				Result->FirstViolationIndex = Index;
+				Result->FirstViolationScreen = Screen;
+				Result->FirstViolationViewport = ViewportPos;
+			}
+			Result->FinalScreen = Screen;
+			Result->FinalViewport = ViewportPos;
+		}
+		return true;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexEditorPhysicalInputTestFixture> Fixture;
+	TSharedRef<FCortexFractionalMotionProbe> Probe;
+	TSharedRef<FCortexRelativeBoundsResult> Result;
+	double StartTime = 0.0;
+};
+} // namespace
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputRelativeMotionStaysInsideViewportTest,
+	"Cortex.Editor.PhysicalInput.RelativeMotionStaysInsideViewport",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputRelativeMotionStaysInsideViewportTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	const auto Probe = MakeShared<FCortexFractionalMotionProbe>();
+	const auto Result = MakeShared<FCortexRelativeBoundsResult>();
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDriveRelativeBounds(this, Fixture, Probe, Result));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
+		[Fixture, Probe, Result](FAutomationTestBase& Test)
+		{
+			Test.TestTrue(TEXT("Relative motion was driven"), Result->bRan);
+			if (Result->bRan)
+			{
+				Test.TestEqual(FString::Printf(
+						TEXT("Presented screen pointer stayed inside the viewport rect [%.0f,%.0f]-[%.0f,%.0f] (first violation event %d at %.1f,%.1f; final %.1f,%.1f)"),
+						Result->RectMin.X, Result->RectMin.Y, Result->RectMax.X, Result->RectMax.Y,
+						Result->FirstViolationIndex, Result->FirstViolationScreen.X,
+						Result->FirstViolationScreen.Y, Result->FinalScreen.X, Result->FinalScreen.Y),
+					Result->ScreenViolations, 0);
+				Test.TestEqual(FString::Printf(
+						TEXT("Viewport-local pointer stayed inside [0,%.0f]x[0,%.0f] (first violation at %.1f,%.1f; final %.1f,%.1f)"),
+						Result->ViewportSize.X, Result->ViewportSize.Y, Result->FirstViolationViewport.X,
+						Result->FirstViolationViewport.Y, Result->FinalViewport.X, Result->FinalViewport.Y),
+					Result->ViewportViolations, 0);
+			}
+			Test.TestTrue(TEXT("Native pre-flush MouseX samples were observed"), Probe->bSawSamples);
+			Test.TestEqual(TEXT("Native MouseX total still equals the recorded total"),
+				Probe->RawAccX, CortexRelativeBoundsTotalX, 0.0);
+
+			Probe->RemoveHook();
+			FCortexEditorPhysicalInputEvent Up;
+			Up.Kind = ECortexEditorPhysicalInputKind::PointerUp;
+			Up.Key = EKeys::LeftMouseButton;
+			Up.ViewportPosition = Probe->DownViewportPosition;
+			Fixture->Session->Dispatch(Up);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit PIF-02: replay moves the real OS cursor to the recorded position, and the human's cursor
+// position captured at the epoch is restored when cleanup runs. Catches a ReleaseHeldInputs that
+// leaves the replayed cursor position in place after the run.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayCursorRestoredAtCleanupTest,
+	"Cortex.Editor.PhysicalInput.ReplayCursorRestoredAtCleanup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayCursorRestoredAtCleanupTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping replay cursor restore test"));
+		return true;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ReplayCursorRestoredAtCleanup"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {},
+		/*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const TSharedPtr<SWidget> Viewport = F.Session->GetTargetBinding().ViewportWidget.Pin();
+			if (!Test.TestTrue(TEXT("Replay viewport widget resolvable"), Viewport.IsValid())) { return; }
+			const FGeometry Geometry = Viewport->GetCachedGeometry();
+			const FVector2D Size = Geometry.GetLocalSize();
+			if (Size.X <= 100.0 || Size.Y <= 100.0)
+			{
+				Test.AddError(TEXT("Replay viewport has no usable geometry"));
+				return;
+			}
+
+			// The human's cursor is parked well away from the replay target before the epoch arms.
+			FCortexCursorPositionRestore Restore;
+			const FVector2D TargetViewport(100.0, 100.0);
+			const FVector2D TargetScreen = Geometry.LocalToAbsolute(TargetViewport);
+			const FVector2D RectMin = Geometry.LocalToAbsolute(FVector2D::ZeroVector);
+			const FVector2D RectMax = Geometry.LocalToAbsolute(Size);
+			FVector2D Parked = FVector2D::ZeroVector;
+			bool bParked = false;
+			const FVector2D Candidates[2] = { RectMax + FVector2D(40.0, 40.0), RectMin - FVector2D(40.0, 40.0) };
+			for (const FVector2D& Candidate : Candidates)
+			{
+				Slate.SetCursorPos(Candidate);
+				Parked = Slate.GetCursorPos();
+				if (FMath::Abs(Parked.X - TargetScreen.X) > 10.0 || FMath::Abs(Parked.Y - TargetScreen.Y) > 10.0)
+				{
+					bParked = true;
+					break;
+				}
+			}
+			if (!Test.TestTrue(TEXT("Human cursor parked away from the replay target"), bParked)) { return; }
+
+			EnsureSelectedRouteWindowActive(*F.Session);
+			const FCortexCommandResult Armed = F.Session->BeginReplayEpoch();
+			Test.TestTrue(TEXT("Replay epoch armed"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return; }
+
+			FCortexEditorPhysicalInputEvent Move;
+			Move.Kind = ECortexEditorPhysicalInputKind::PointerMove;
+			Move.Key = EKeys::Mouse2D;
+			Move.ViewportPosition = TargetViewport;
+			Test.TestTrue(TEXT("Absolute replay pointer move dispatched"), F.Session->Dispatch(Move).bSuccess);
+			const FVector2D Replayed = Slate.GetCursorPos();
+			Test.TestTrue(TEXT("Replay moved the real cursor away from the parked position"),
+				FMath::Abs(Replayed.X - Parked.X) > 10.0 || FMath::Abs(Replayed.Y - Parked.Y) > 10.0);
+
+			const FCortexCommandResult Released = F.Session->ReleaseHeldInputs();
+			Test.TestTrue(TEXT("Cleanup succeeded"), Released.bSuccess);
+			const FVector2D After = Slate.GetCursorPos();
+			Test.TestTrue(FString::Printf(
+					TEXT("Cleanup restored the human cursor (parked=%.2f,%.2f actual=%.2f,%.2f)"),
+					Parked.X, Parked.Y, After.X, After.Y),
+				FMath::Abs(After.X - Parked.X) < 1.0 && FMath::Abs(After.Y - Parked.Y) < 1.0);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// ReadViewportInputState reports the selected user's real viewport capture and high-precision mode.
+// Catches a reader that is hard-wired, reads another user's capture or ignores the live viewport.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputViewportInputStateReflectsCaptureTest,
+	"Cortex.Editor.PhysicalInput.ViewportInputStateReflectsCapture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputViewportInputStateReflectsCaptureTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ViewportInputStateReflectsCapture"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {},
+		/*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const TSharedPtr<SViewport> Route = ResolveOwnedRouteRoot(*F.Session);
+			if (!Test.TestTrue(TEXT("Owned route root resolvable"), Route.IsValid())) { return; }
+			const FVector2D Size = Route->GetCachedGeometry().GetLocalSize();
+			if (Size.X <= 0.0 || Size.Y <= 0.0)
+			{
+				Test.AddError(TEXT("Owned route has no usable geometry"));
+				return;
+			}
+			EnsureSelectedRouteWindowActive(*F.Session);
+
+			bool bCapture = false;
+			bool bHighPrecision = false;
+			Test.TestTrue(TEXT("Viewport input state is readable"),
+				F.Session->ReadViewportInputState(bCapture, bHighPrecision).bSuccess);
+			Test.TestEqual(TEXT("Reported capture matches the live viewport capture"),
+				bCapture, Route->HasMouseCaptureByUser(F.Session->GetTargetBinding().SlateUserIndex));
+
+			FCortexEditorPhysicalInputEvent Down;
+			Down.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+			Down.Key = EKeys::LeftMouseButton;
+			Down.ViewportPosition = Size * 0.5;
+			Test.TestTrue(TEXT("Capture-acquiring press dispatched"), F.Session->Dispatch(Down).bSuccess);
+			Test.TestTrue(TEXT("Viewport holds native mouse capture"), Route->HasMouseCapture());
+			Test.TestTrue(TEXT("Viewport input state is readable after the press"),
+				F.Session->ReadViewportInputState(bCapture, bHighPrecision).bSuccess);
+			Test.TestTrue(TEXT("Reported capture is true after the capture-acquiring press"), bCapture);
+			Test.TestEqual(TEXT("Reported high precision matches Slate's live mode"),
+				bHighPrecision, Slate.IsUsingHighPrecisionMouseMovment());
+
+			FCortexEditorPhysicalInputEvent Up = Down;
+			Up.Kind = ECortexEditorPhysicalInputKind::PointerUp;
+			Test.TestTrue(TEXT("Release dispatched"), F.Session->Dispatch(Up).bSuccess);
+			Test.TestTrue(TEXT("Cleanup succeeded"), F.Session->ReleaseHeldInputs().bSuccess);
+			Test.TestTrue(TEXT("Viewport input state is readable after cleanup"),
+				F.Session->ReadViewportInputState(bCapture, bHighPrecision).bSuccess);
+			Test.TestEqual(TEXT("Reported capture matches the live viewport capture after cleanup"),
+				bCapture, Route->HasMouseCaptureByUser(F.Session->GetTargetBinding().SlateUserIndex));
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit PIF-05: bEnableFOVScaling without a PlayerCameraManager is a valid engine configuration
+// (PlayerInput.cpp:2352 scales by 1.0), so it must not block readiness. Catches the readiness
+// refusal that turned it into INPUT_PREPARATION_TIMEOUT.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputFovScalingWithoutCameraManagerTest,
+	"Cortex.Editor.PhysicalInput.FovScalingWithoutCameraManager",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputFovScalingWithoutCameraManagerTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			UWorld* const World = F.Session->GetTargetBinding().World.Get();
+			APlayerController* const Controller = F.Session->GetTargetBinding().Controller.Get();
+			if (!Test.TestNotNull(TEXT("Owned world resolvable"), World)
+				|| !Test.TestNotNull(TEXT("Owned controller resolvable"), Controller))
+			{
+				return;
+			}
+
+			UInputSettings* const Settings = GetMutableDefault<UInputSettings>();
+			const bool bSavedFovScaling = Settings->bEnableFOVScaling;
+			APlayerCameraManager* const SavedCamera = Controller->PlayerCameraManager;
+			Settings->bEnableFOVScaling = true;
+
+			const TSharedRef<FCortexEditorPhysicalInputSession> WithCamera =
+				MakeShared<FCortexEditorPhysicalInputSession>();
+			const FCortexCommandResult BoundWithCamera = WithCamera->BindTarget(*World, 0);
+			const FString ShaWithCamera = WithCamera->GetTargetInfo().InputConfigSha256;
+			WithCamera->Shutdown();
+
+			Controller->PlayerCameraManager = nullptr;
+			const TSharedRef<FCortexEditorPhysicalInputSession> WithoutCamera =
+				MakeShared<FCortexEditorPhysicalInputSession>();
+			const FCortexCommandResult BoundWithoutCamera = WithoutCamera->BindTarget(*World, 0);
+			const FString ShaWithoutCamera = WithoutCamera->GetTargetInfo().InputConfigSha256;
+			WithoutCamera->Shutdown();
+
+			Controller->PlayerCameraManager = SavedCamera;
+			Settings->bEnableFOVScaling = bSavedFovScaling;
+
+			Test.TestTrue(TEXT("FOV scaling with a camera manager binds"), BoundWithCamera.bSuccess);
+			Test.TestTrue(TEXT("FOV scaling without a camera manager still binds"), BoundWithoutCamera.bSuccess);
+			Test.TestTrue(TEXT("Input-config identity is produced without a camera manager"),
+				FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(ShaWithoutCamera));
+			Test.TestNotEqual(TEXT("A missing camera manager is a distinct input configuration"),
+				ShaWithoutCamera, ShaWithCamera);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// TD-EDITOR-005: after a replay restores the real cursor, only that restore's own platform move is
+// swallowed during the next preparation: at the restored position, once, inside the grace window. A
+// genuine human move elsewhere is never swallowed, and an expired expectation swallows nothing.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputSelfCursorMoveExpectationTest,
+	"Cortex.Editor.PhysicalInputSelfCursorMoveExpectation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputSelfCursorMoveExpectationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexEditorSelfCursorMove;
+	const FVector2D Restored(640.0, 360.0);
+	const FVector2D Elsewhere(700.0, 360.0);
+	ON_SCOPE_EXIT { Reset(); };
+
+	Reset();
+	TestFalse(TEXT("Nothing is swallowed without a restore"), Consume(Restored, 0.0));
+
+	Expect(Restored, 10.0);
+	TestFalse(TEXT("A human move elsewhere is not swallowed"), Consume(Elsewhere, 10.1));
+	TestTrue(TEXT("The restore's own move is swallowed"), Consume(Restored + FVector2D(0.5, 0.0), 10.2));
+	TestFalse(TEXT("The expectation is consumed once"), Consume(Restored, 10.3));
+
+	Expect(Restored, 20.0);
+	TestFalse(TEXT("An expired expectation swallows nothing"), Consume(Restored, 20.0 + GraceSeconds + 0.01));
+	TestFalse(TEXT("An expired expectation is dropped"), Consume(Restored, 20.0));
+	return true;
+}

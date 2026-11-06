@@ -6,6 +6,8 @@
 #include "CortexEditorPhysicalInputCapture.h"
 #include "CortexEditorPhysicalInputDispatch.h"
 #include "CortexEditorPhysicalInputGuards.h"
+#include "CortexEditorPhysicalInputResults.h"
+#include "CortexEditorPhysicalInputSelfCursorMove.h"
 #include "Containers/Ticker.h"
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
@@ -32,6 +34,7 @@
 #include "KeyState.h"
 #include "Layout/WidgetPath.h"
 #include "Misc/PackageName.h"
+#include "Misc/ScopeExit.h"
 #include "Modules/ModuleManager.h"
 #include "PlayInEditorDataTypes.h"
 #include "GameFramework/InputSettings.h"
@@ -41,6 +44,7 @@
 #include "Templates/UnrealTemplate.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
+#include "Widgets/SViewport.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/SWindow.h"
 
@@ -52,98 +56,18 @@
 #include "Windows/WindowsHWrapper.h"
 #endif
 
+using CortexEditorPhysicalInputResults::MakeErrorResult;
+using CortexEditorPhysicalInputResults::MakeSuccessResult;
+
 namespace
 {
-/** The production preparation budget is fixed and is not caller-configurable. */
-constexpr double CortexOwnedPIEPreparationBudgetSeconds = 30.0;
-
 /** The declared pawn class must be observed on at least this many consecutive polls. */
 constexpr int32 CortexStablePawnClassObservationsRequired = 2;
-
-FCortexCommandResult MakeSuccessResult()
-{
-	FCortexCommandResult Result;
-	Result.bSuccess = true;
-	return Result;
-}
-
-FCortexCommandResult MakeErrorResult(const FString& ErrorCode, const FString& Message)
-{
-	return FCortexCommandRouter::Error(ErrorCode, Message);
-}
 
 FCortexCommandResult MakeInvalidTargetResult(const FString& Message)
 {
 	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message);
 }
-
-/**
- * Engine-visible identity of a play request. The engine overwrites its queued request
- * wholesale, so a matching fingerprint is the only way to know the queued request is
- * still the exact one this session accepted.
- *
- * DestinationSlateViewport is included only for the queued comparison. The engine keeps
- * it verbatim while the request is still merely queued, so a same-map successor that
- * differs only in its destination viewport is not mistaken for ours. Once the session
- * starts the engine nulls that field on the request it retains
- * (PlayLevel.cpp:3099-3105, reached through the by-reference
- * `PlayInEditorSessionInfo->OriginalRequestParams` at PlayLevel.cpp:1622), so the
- * consumed-session comparison must exclude it.
- */
-uint64 ComputeRequestFingerprint(const FRequestPlaySessionParams& Request, bool bIncludeDestinationSlateViewport)
-{
-	const FString StartLocation = Request.StartLocation.IsSet() ? Request.StartLocation->ToString() : FString();
-	const FString StartRotation = Request.StartRotation.IsSet() ? Request.StartRotation->ToString() : FString();
-	const FString GameModeOverride = Request.GameModeOverride ? Request.GameModeOverride->GetPathName() : FString();
-	const FString ExtraParameters = Request.AdditionalStandaloneCommandLineParameters.Get(TEXT(""));
-	const FString DestinationViewport = bIncludeDestinationSlateViewport
-		? FString::Printf(TEXT("%d:%p"),
-			Request.DestinationSlateViewport.IsSet() ? 1 : 0,
-			static_cast<const void*>(Request.DestinationSlateViewport.IsSet()
-				? Request.DestinationSlateViewport.GetValue().Pin().Get() : nullptr))
-		: FString(TEXT("excluded"));
-
-	const FString Canonical = FString::Printf(
-		TEXT("%s|%d|%d|%p|%d|%s|%d|%s|%d|%s|%s|%d|%s"),
-		*Request.GlobalMapOverride,
-		static_cast<int32>(Request.SessionDestination),
-		static_cast<int32>(Request.WorldType),
-		static_cast<const void*>(Request.CustomPIEWindow.Pin().Get()),
-		Request.StartLocation.IsSet() ? 1 : 0,
-		*StartLocation,
-		Request.StartRotation.IsSet() ? 1 : 0,
-		*StartRotation,
-		Request.bAllowOnlineSubsystem ? 1 : 0,
-		*ExtraParameters,
-		*GameModeOverride,
-		Request.SessionPreviewTypeOverride.IsSet() ? static_cast<int32>(Request.SessionPreviewTypeOverride.GetValue()) : -1,
-		*DestinationViewport);
-
-	return static_cast<uint64>(GetTypeHash(Canonical));
-}
-
-/**
- * True for a trustworthy lower-case 64-hex SHA-256 digest; the same validity predicate the
- * selector digest and the Replay library's `IsLowerHexSha256` use.
- */
-bool IsLowerHexSha256Digest(const FString& Digest)
-{
-	if (Digest.Len() != 64)
-	{
-		return false;
-	}
-	for (const TCHAR Character : Digest)
-	{
-		const bool bLowerHex = (Character >= TEXT('0') && Character <= TEXT('9'))
-			|| (Character >= TEXT('a') && Character <= TEXT('f'));
-		if (!bLowerHex)
-		{
-			return false;
-		}
-	}
-	return true;
-}
-
 
 /** Appends one labelled boolean to the canonical input-configuration encoding. */
 void AppendConfigBool(FString& Out, const TCHAR* Label, const bool bValue)
@@ -262,21 +186,24 @@ FCortexCommandResult ResolveLiveInputConfig(APlayerController& Controller,
 
 	if (bFovScaling)
 	{
-		// The actual consumer of FOV scaling is the player camera manager's current FOV angle
-		// (PlayerInput.cpp:2352); without it the prerequisite cannot be established.
-		APlayerCameraManager* const CameraManager = Controller.PlayerCameraManager;
+		// The consumer of FOV scaling is the player camera manager's current FOV angle; the engine
+		// itself scales by 1.0 when the controller has no camera manager (PlayerInput.cpp:2352), so
+		// a missing manager is a valid, distinct configuration and never blocks readiness.
+		const APlayerCameraManager* const CameraManager = Controller.PlayerCameraManager;
 		if (CameraManager == nullptr)
 		{
-			return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-				TEXT("FOV scaling is enabled but the selected controller has no player camera manager for the consumer FOV"));
+			AppendConfigText(Canonical, TEXT("fov.consumer_angle"), TEXT("no_camera_manager"));
 		}
-		const float ConsumerFov = CameraManager->GetFOVAngle();
-		if (!FMath::IsFinite(ConsumerFov))
+		else
 		{
-			return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-				TEXT("The selected player camera manager reported a non-finite FOV angle"));
+			const float ConsumerFov = CameraManager->GetFOVAngle();
+			if (!FMath::IsFinite(ConsumerFov))
+			{
+				return MakeErrorResult(CortexErrorCodes::InvalidOperation,
+					TEXT("The selected player camera manager reported a non-finite FOV angle"));
+			}
+			AppendConfigFloat(Canonical, TEXT("fov.consumer_angle"), ConsumerFov);
 		}
-		AppendConfigFloat(Canonical, TEXT("fov.consumer_angle"), ConsumerFov);
 	}
 	else
 	{
@@ -288,7 +215,7 @@ FCortexCommandResult ResolveLiveInputConfig(APlayerController& Controller,
 	FTCHARToUTF8 Utf8Canonical(*Canonical);
 	const FString ConfigSha256 = CortexEditorPhysicalInputSha256(
 		reinterpret_cast<const uint8*>(Utf8Canonical.Get()), Utf8Canonical.Length());
-	if (!IsLowerHexSha256Digest(ConfigSha256))
+	if (!FCortexEditorPhysicalInputSelectorBuilder::IsValidSelectorDigest(ConfigSha256))
 	{
 		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
 			TEXT("The platform SHA-256 provider is unavailable for the input-configuration identity"));
@@ -297,28 +224,6 @@ FCortexCommandResult ResolveLiveInputConfig(APlayerController& Controller,
 	OutPlayerInputClass = ClassPath;
 	OutInputConfigSha256 = ConfigSha256;
 	return MakeSuccessResult();
-}
-
-/**
- * True only for a usable native mouse-filter state: finite filter memory, strictly positive
- * sampling state (PlayerInput's smoothing divides by both, PlayerInput.cpp:1911-1916) and a
- * positive finite effective time dilation.
- */
-bool IsNativeMouseFilterStateUsable(const FCortexEditorNativeMouseFilterState& State)
-{
-	for (int32 Index = 0; Index < 2; ++Index)
-	{
-		if (!FMath::IsFinite(State.ZeroTimeSeconds[Index])
-			|| !FMath::IsFinite(State.SmoothedMouse[Index]))
-		{
-			return false;
-		}
-	}
-	return State.SampleCount > 0
-		&& FMath::IsFinite(State.SamplingTotalSeconds)
-		&& State.SamplingTotalSeconds > 0.0f
-		&& FMath::IsFinite(State.EffectiveTimeDilation)
-		&& State.EffectiveTimeDilation > 0.0f;
 }
 
 /**
@@ -401,6 +306,7 @@ FCortexEditorPhysicalInputSession::~FCortexEditorPhysicalInputSession()
 		RequestOwnedTermination();
 	}
 	RemoveTicker();
+	RemoveOwnedEndFlush();
 	++Generation;
 	bReadyCallbackInvoked = true;
 	ReadyCallback = nullptr;
@@ -486,630 +392,9 @@ bool FCortexEditorPhysicalInputSession::TickInternal(float DeltaTime)
 	return true;
 }
 
-UWorld* FCortexEditorPhysicalInputSession::ResolveOwnedContextWorld() const
-{
-	if (GEngine == nullptr)
-	{
-		return nullptr;
-	}
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		if (Context.WorldType != EWorldType::PIE)
-		{
-			continue;
-		}
-		if (OwnedContextHandle != NAME_None && Context.ContextHandle == OwnedContextHandle)
-		{
-			return Context.World();
-		}
-	}
-	return nullptr;
-}
-
-UWorld* FCortexEditorPhysicalInputSession::FindNewPIEWorld(FName& OutContextHandle, bool& bOutAmbiguous) const
-{
-	OutContextHandle = NAME_None;
-	bOutAmbiguous = false;
-	if (GEngine == nullptr)
-	{
-		return nullptr;
-	}
-
-	UWorld* Candidate = nullptr;
-	FName CandidateHandle = NAME_None;
-	bool bFoundCandidate = false;
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		if (Context.WorldType != EWorldType::PIE)
-		{
-			continue;
-		}
-		if (OwnedRequest.BaselinePIEContextHandles.Contains(Context.ContextHandle))
-		{
-			continue;
-		}
-		UWorld* ContextWorld = Context.World();
-		// Correlate with the accepted request by map when the world already exists. A PIE
-		// context can also exist before its world during deferred login
-		// (PlayLevel.cpp:1827-1875), so a world-less context is still a candidate.
-		if (ContextWorld != nullptr
-			&& !OwnedRequest.RequestedPackagePath.IsEmpty()
-			&& UWorld::RemovePIEPrefix(ContextWorld->GetPackage()->GetName()) != OwnedRequest.RequestedPackagePath)
-		{
-			continue;
-		}
-		if (bFoundCandidate)
-		{
-			bOutAmbiguous = true;
-			return nullptr;
-		}
-		bFoundCandidate = true;
-		Candidate = ContextWorld;
-		CandidateHandle = Context.ContextHandle;
-	}
-	OutContextHandle = CandidateHandle;
-	return Candidate;
-}
-
-void FCortexEditorPhysicalInputSession::PollPreparation()
-{
-	if (GEditor == nullptr)
-	{
-		CompletePreparationFailure(CortexErrorCodes::EditorNotReady, TEXT("Editor is no longer available"));
-		return;
-	}
-
-	// Captured so an invalidated generation cannot bind a successor or complete late.
-	const uint64 PreparationGeneration = Generation;
-
-	// Refresh the monotonic time before evaluating readiness; game time may be paused.
-	if (FPlatformTime::Seconds() >= OwnedRequest.DeadlineSeconds)
-	{
-		CompletePreparationFailure(CortexEditorPhysicalInputErrorCodes::PreparationTimeout,
-			TEXT("Owned PIE preparation exceeded the 30 second production deadline"));
-		return;
-	}
-
-	UWorld* PIEWorld = nullptr;
-	if (!bStartupResolved)
-	{
-		if (bOwnedRequestOutstanding)
-		{
-			if (IsOwnedRequestPending())
-			{
-				return; // Still queued; wait for the engine to start it.
-			}
-			// No longer queued: it must be the exact session we accepted, otherwise someone
-			// replaced our request and we must relinquish it without cancelling theirs.
-			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
-			if (!Info.IsSet() || ComputeRequestFingerprint(Info->OriginalRequestParams, false) != SubmittedRequestFingerprint)
-			{
-				RelinquishOwnedRequest();
-				CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
-					TEXT("The queued owned play request was replaced before it started"));
-				return;
-			}
-			bOwnedRequestOutstanding = false;
-		}
-
-		// The engine consumed the request; the started session must be exactly ours.
-		const TOptional<FPlayInEditorSessionInfo> SessionInfo = GEditor->GetPlayInEditorSessionInfo();
-		if (!SessionInfo.IsSet())
-		{
-			CompletePreparationFailure(CortexErrorCodes::EditorBusy,
-				TEXT("The queued owned play request did not start a PIE session"));
-			return;
-		}
-		if (ComputeRequestFingerprint(SessionInfo->OriginalRequestParams, false) != SubmittedRequestFingerprint)
-		{
-			RelinquishOwnedRequest();
-			CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
-				TEXT("The owned PIE session was replaced before its target was ready"));
-			return;
-		}
-
-		FName ContextHandle = NAME_None;
-		bool bAmbiguous = false;
-		PIEWorld = FindNewPIEWorld(ContextHandle, bAmbiguous);
-		if (bAmbiguous)
-		{
-			CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
-				TEXT("Owned PIE created more than one candidate world context"));
-			return;
-		}
-		if (PIEWorld == nullptr)
-		{
-			return; // The world has not been created yet; keep polling.
-		}
-
-		// Pin the exact owned context immediately so teardown can always end it.
-		OwnedWorld = PIEWorld;
-		OwnedContextHandle = ContextHandle;
-		bOwnedWorldObserved = true;
-		bOwnedContextObserved = true;
-		bOwnedRequestOutstanding = false;
-		bStartupResolved = true;
-	}
-	else
-	{
-		// Once pinned, never adopt a successor: poll only the captured context.
-		PIEWorld = ResolveOwnedContextWorld();
-		if (PIEWorld == nullptr)
-		{
-			CompletePreparationFailure(CortexErrorCodes::InvalidOperation,
-				TEXT("The owned PIE context disappeared before its target was ready"));
-			return;
-		}
-	}
-
-	FCortexEditorPhysicalInputTargetBinding ResolvedBinding;
-	FCortexEditorPhysicalInputTargetInfo ResolvedInfo;
-	FCortexCommandResult ResolutionError;
-	if (!ResolveTarget(*PIEWorld, OwnedRequest.LocalPlayerIndex, true, ResolvedBinding, ResolvedInfo, ResolutionError))
-	{
-		// Keep polling until the exact target is ready or the deadline expires.
-		return;
-	}
-
-	// Compare a fresh monotonic time again after the readiness work before accepting.
-	if (PreparationGeneration != Generation)
-	{
-		return; // The generation was invalidated during readiness; never bind it.
-	}
-	if (FPlatformTime::Seconds() >= OwnedRequest.DeadlineSeconds)
-	{
-		CompletePreparationFailure(CortexEditorPhysicalInputErrorCodes::PreparationTimeout,
-			TEXT("Owned PIE preparation exceeded the 30 second production deadline"));
-		return;
-	}
-
-	Binding = ResolvedBinding;
-	TargetInfo = ResolvedInfo;
-	BoundPawnClass = ResolvedBinding.Pawn.Get()->GetClass();
-	bBound = true;
-	bOwnsPIE = true;
-	OwnedState = EOwnedState::Ready;
-	AttachCaptureToBinding();
-	CompletePreparationSuccess();
-}
-
-void FCortexEditorPhysicalInputSession::PollTeardown()
-{
-	// Once this operation's teardown is resolved, no further engine/teardown call is ever made.
-	if (bOwnedTerminationResolved)
-	{
-		return;
-	}
-	if (!bOwnsPIE)
-	{
-		// Borrowed/foreign worlds are never observed or ended.
-		bStartupResolved = true;
-		return;
-	}
-	if (GEditor == nullptr)
-	{
-		bStartupResolved = true;
-		return;
-	}
-
-	if (bOwnedContextGone)
-	{
-		// The exact captured context was observed gone: never adopt or end a successor PIE.
-		bStartupResolved = true;
-		return;
-	}
-
-	if (!bStartupResolved)
-	{
-		if (bOwnedRequestOutstanding)
-		{
-			if (IsOwnedRequestPending())
-			{
-				// Still queued: nothing of ours was ever created; cancel the exact request. The
-				// fingerprint check above proves the queued copy is ours, so the public cancel can
-				// never discard a successor's request.
-				GEditor->CancelRequestPlaySession();
-				RelinquishOwnedRequest();
-				bStartupResolved = true;
-				return;
-			}
-			// No longer queued: it is only ours if the started session is the exact one accepted.
-			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
-			if (Info.IsSet() && ComputeRequestFingerprint(Info->OriginalRequestParams, false) == SubmittedRequestFingerprint)
-			{
-				bOwnedRequestOutstanding = false;
-			}
-			else
-			{
-				// Replaced/foreign: never cancel it, and nothing of ours exists to observe.
-				RelinquishOwnedRequest();
-				bStartupResolved = true;
-				return;
-			}
-		}
-
-		// The engine can hold our PIE context before its world exists during deferred startup
-		// (PlayLevel.cpp:1827-1875), so capture the exact context now, world or not, and keep
-		// observing it instead of claiming completion for a context that can still appear.
-		if (OwnedContextHandle == NAME_None)
-		{
-			const TOptional<FPlayInEditorSessionInfo> SessionInfo = GEditor->GetPlayInEditorSessionInfo();
-			if (!SessionInfo.IsSet()
-				|| ComputeRequestFingerprint(SessionInfo->OriginalRequestParams, false) != SubmittedRequestFingerprint)
-			{
-				// A different session owns the editor; nothing of ours will be created.
-				RelinquishOwnedRequest();
-				bStartupResolved = true;
-				return;
-			}
-			FName ContextHandle = NAME_None;
-			bool bAmbiguous = false;
-			UWorld* Created = FindNewPIEWorld(ContextHandle, bAmbiguous);
-			if (ContextHandle != NAME_None)
-			{
-				// Created may still be null until the deferred world appears; keep observing it.
-				OwnedWorld = Created;
-				OwnedContextHandle = ContextHandle;
-				bOwnedContextObserved = true;
-				if (Created != nullptr)
-				{
-					bOwnedWorldObserved = true;
-				}
-			}
-		}
-
-		if (OwnedContextHandle != NAME_None)
-		{
-			// The exact owned context is captured; observe it until it is gone.
-			bStartupResolved = true;
-		}
-		else if (FPlatformTime::Seconds() >= OwnedRequest.DeadlineSeconds)
-		{
-			// A consumed request that never produced any context is positively abandoned.
-			RelinquishOwnedRequest();
-			bStartupResolved = true;
-			return;
-		}
-	}
-
-	RequestOwnedTermination();
-
-	// Bounded diagnostic: an owned teardown should resolve within a frame or two, so a pending
-	// teardown lasting a full second is itself a defect worth reporting with its observations.
-	// It only prints while the teardown is genuinely unresolved (this function returns early once
-	// bOwnedTerminationResolved is set).
-	if (FPlatformTime::Seconds() - LastTeardownDiagnosticSeconds >= 1.0)
-	{
-		LastTeardownDiagnosticSeconds = FPlatformTime::Seconds();
-		UWorld* OwnedWorldPtr = OwnedWorld.Get();
-		UE_LOG(LogCortexEditor, Log,
-			TEXT("Owned PIE teardown still pending: startupResolved=%d requestPending=%d contextPresent=%d worldPresent=%d worldObserved=%d worldTearingDown=%d"),
-			bStartupResolved ? 1 : 0, IsOwnedRequestPending() ? 1 : 0,
-			IsOwnedContextPresent() ? 1 : 0, IsOwnedContextWorldPresent() ? 1 : 0,
-			bOwnedWorldObserved ? 1 : 0,
-			(OwnedWorldPtr != nullptr && OwnedWorldPtr->bIsTearingDown) ? 1 : 0);
-	}
-}
-
-namespace
-{
-	/**
-	 * The exact engine authority of the newest admitted owned request.
-	 *
-	 * Retained so a native terminal loss (a failed clock-producer read) can stop that consumer
-	 * without any caller, even after the weak caller backend retired. Only one owned session may
-	 * exist at a time, so one slot is exact rather than a registry.
-	 */
-	TSharedPtr<FCortexScopedPIEAuthority> GRetainedOwnedAuthority;
-}
-
-FCortexCommandResult FCortexEditorPhysicalInputSession::QuiesceRetainedOwnedAuthority()
-{
-	if (!GRetainedOwnedAuthority.IsValid())
-	{
-		FCortexCommandResult NoAuthority;
-		NoAuthority.bSuccess = true;
-		return NoAuthority;
-	}
-
-	// Quiesce, never end: this stops further owned world ticks and preserves both the
-	// held-provider clock state and the producer's own error, and never touches a foreign instance.
-	return CortexEngineCompat::QuiesceOwnedPIE(GRetainedOwnedAuthority.ToSharedRef());
-}
-
-FCortexCommandResult FCortexEditorPhysicalInputSession::ReadRetainedOwnedAuthority(FCortexScopedPIESnapshot& OutSnapshot)
-{
-	if (!GRetainedOwnedAuthority.IsValid())
-	{
-		FCortexCommandResult NoAuthority;
-		NoAuthority.bSuccess = false;
-		NoAuthority.ErrorCode = CortexErrorCodes::InvalidOperation;
-		NoAuthority.ErrorMessage = TEXT("No owned PIE authority is retained");
-		return NoAuthority;
-	}
-	return CortexEngineCompat::ReadOwnedPIE(GRetainedOwnedAuthority.ToSharedRef(), OutSnapshot);
-}
-
-void FCortexEditorPhysicalInputSession::RelinquishOwnedRequest()
-{
-	bOwnedRequestOutstanding = false;
-	SubmittedRequestFingerprint = 0;
-	SubmittedQueuedRequestFingerprint = 0;
-}
-
-void FCortexEditorPhysicalInputSession::CompletePreparationFailure(const FString& ErrorCode, const FString& Message)
-{
-	if (bReadyCallbackInvoked)
-	{
-		return;
-	}
-	bReadyCallbackInvoked = true;
-
-	// Invalidate the generation before teardown or callbacks so late readiness cannot bind.
-	++Generation;
-	OwnedState = EOwnedState::Ending;
-	RequestOwnedTermination();
-
-	if (ErrorCode == CortexErrorCodes::EditorNotReady)
-	{
-		// A missing editor is the only genuinely unexpected preparation failure.
-		UE_LOG(LogCortexEditor, Warning, TEXT("Owned physical input preparation failed: %s (%s)"), *ErrorCode, *Message);
-	}
-	else
-	{
-		// Every other preparation outcome is an explicit, caller-visible rejection.
-		UE_LOG(LogCortexEditor, Log, TEXT("Owned physical input preparation failed: %s (%s)"), *ErrorCode, *Message);
-	}
-
-	TFunction<void(const FCortexCommandResult&)> Callback = MoveTemp(ReadyCallback);
-	ReadyCallback = nullptr;
-	if (Callback)
-	{
-		Callback(MakeErrorResult(ErrorCode, Message));
-	}
-}
-
-void FCortexEditorPhysicalInputSession::CompletePreparationSuccess()
-{
-	if (bReadyCallbackInvoked)
-	{
-		return;
-	}
-	bReadyCallbackInvoked = true;
-	OwnedState = EOwnedState::Ready;
-
-	TFunction<void(const FCortexCommandResult&)> Callback = MoveTemp(ReadyCallback);
-	ReadyCallback = nullptr;
-	if (Callback)
-	{
-		Callback(MakeSuccessResult());
-	}
-}
-
-void FCortexEditorPhysicalInputSession::RequestOwnedTermination()
-{
-	if (GEditor == nullptr || bOwnedTerminationResolved)
-	{
-		return;
-	}
-	// Cancel only the queued request this session accepted while it is still outstanding.
-	if (bOwnedRequestOutstanding)
-	{
-		if (IsOwnedRequestPending())
-		{
-			// Our request is still queued: cancel it and drop ownership. The fingerprint check
-			// proves the queued copy is ours, so the public cancel never discards a successor.
-			GEditor->CancelRequestPlaySession();
-			RelinquishOwnedRequest();
-		}
-		else
-		{
-			// Not queued anymore. Keep the fingerprint so teardown can correlate and end
-			// the context the engine created for us; relinquish only for foreign requests.
-			const TOptional<FPlayInEditorSessionInfo> Info = GEditor->GetPlayInEditorSessionInfo();
-			if (Info.IsSet() && ComputeRequestFingerprint(Info->OriginalRequestParams, false) == SubmittedRequestFingerprint)
-			{
-				bOwnedRequestOutstanding = false;
-			}
-			else
-			{
-				RelinquishOwnedRequest();
-			}
-		}
-	}
-	// End only when the exact captured owned PIE context has a world to tear down, and only once
-	// per operation (the engine queues the request and ends the session exactly once). A world-less
-	// deferred context is left to PollTeardown, which issues the single request once the world
-	// exists; a world-less end request would be dropped by the engine and never retried.
-	if (IsOwnedContextWorldPresent() && !bOwnedEndPlayRequested)
-	{
-		// UEditorEngine processes a queued EndPlayMap after ticking PIE worlds. This exact
-		// owned world is terminal, not a playback timing workaround: prevent an unrecorded
-		// consumer tick while the engine performs its normal deferred destruction.
-		UWorld* EndingWorld = ResolveOwnedContextWorld();
-		if (EndingWorld == nullptr)
-		{
-			EndingWorld = OwnedWorld.Get();
-		}
-		check(EndingWorld != nullptr);
-		EndingWorld->SetShouldTick(false);
-
-		// Stock engines expose only the aggregate end. This session refuses to start while another
-		// PIE session is active, so the aggregate teardown is the exact owned session in practice; a
-		// late join during teardown is no longer protected from it.
-		GEditor->RequestEndPlayMap();
-		bOwnedEndPlayRequested = true;
-	}
-}
-
-bool FCortexEditorPhysicalInputSession::IsOwnedRequestPending() const
-{
-	if (!bOwnedRequestOutstanding || GEditor == nullptr || SubmittedQueuedRequestFingerprint == 0)
-	{
-		return false;
-	}
-	// Compare against the engine's queued copy, which still carries DestinationSlateViewport,
-	// so a same-map successor that differs only in its destination viewport is not ours.
-	const TOptional<FRequestPlaySessionParams> Pending = GEditor->GetPlaySessionRequest();
-	return Pending.IsSet()
-		&& ComputeRequestFingerprint(Pending.GetValue(), true) == SubmittedQueuedRequestFingerprint;
-}
-
-bool FCortexEditorPhysicalInputSession::IsOwnedContextPresent() const
-{
-	if (bOwnedContextGone || GEngine == nullptr)
-	{
-		// Once the exact captured context has been observed absent, no later context (including a
-		// successor PIE with an identical request) is ever ours again.
-		return false;
-	}
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		if (Context.WorldType != EWorldType::PIE)
-		{
-			continue;
-		}
-		if (OwnedContextHandle != NAME_None && Context.ContextHandle == OwnedContextHandle)
-		{
-			if (!bOwnedWorldObserved)
-			{
-				// Deferred startup: a world-less owned context is still ours and must stay observed
-				// until its world appears (PlayLevel deferred startup).
-				bOwnedContextObserved = true;
-				return true;
-			}
-			UWorld* ContextWorld = Context.World();
-			// Defensive: a context under our handle whose world is a different object is a
-			// successor, not ours.
-			if (ContextWorld != nullptr && OwnedWorld.IsValid() && ContextWorld != OwnedWorld.Get())
-			{
-				continue;
-			}
-			// Once this operation actually drove a world, its context is ours only while that world
-			// is still a live, non-tearing-down PIE world. A finished PIE world can stay alive (and
-			// renamed by CleanupWorld) until GC, and must not keep the operation open.
-			if (ContextWorld != nullptr && !ContextWorld->bIsTearingDown)
-			{
-				bOwnedContextObserved = true;
-				return true;
-			}
-			continue;
-		}
-		if (OwnedWorld.IsValid() && Context.World() == OwnedWorld.Get())
-		{
-			bOwnedContextObserved = true;
-			return true;
-		}
-	}
-
-	// The exact captured context is gone. Latch the loss so a successor can never be adopted or
-	// ended and this operation issues no further end-PIE request.
-	if (bOwnedContextObserved)
-	{
-		bOwnedContextGone = true;
-	}
-	return false;
-}
-
-bool FCortexEditorPhysicalInputSession::IsOwnedContextWorldPresent() const
-{
-	if (bOwnedContextGone || GEngine == nullptr)
-	{
-		return false;
-	}
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		if (Context.WorldType != EWorldType::PIE)
-		{
-			continue;
-		}
-		if (OwnedContextHandle != NAME_None && Context.ContextHandle == OwnedContextHandle)
-		{
-			UWorld* ContextWorld = Context.World();
-			// A successor context under our handle must never be treated as endable by this session.
-			if (ContextWorld != nullptr && bOwnedWorldObserved && OwnedWorld.IsValid()
-				&& ContextWorld != OwnedWorld.Get())
-			{
-				continue;
-			}
-			return ContextWorld != nullptr && !ContextWorld->bIsTearingDown;
-		}
-		if (OwnedWorld.IsValid() && Context.World() == OwnedWorld.Get())
-		{
-			return true;
-		}
-	}
-	return false;
-}
-
 // ---------------------------------------------------------------------------
 // Native owned-world authorization and pre-baseline preparation monitoring
 // ---------------------------------------------------------------------------
-
-bool FCortexEditorPhysicalInputSession::IsWorldThisOwnedRequest(UWorld& World, FName ContextHandle) const
-{
-	if (GEditor == nullptr || GEngine == nullptr || !bOwnsPIE || ContextHandle == NAME_None)
-	{
-		return false;
-	}
-	// Only a live owned request (preparing or ready) authorizes a world; a failed preparation or a
-	// resolved teardown invalidated the generation that accepted this request.
-	if (OwnedState != EOwnedState::Preparing && OwnedState != EOwnedState::Ready)
-	{
-		return false;
-	}
-	if (World.WorldType != EWorldType::PIE)
-	{
-		return false;
-	}
-	// A context that existed before the request was queued is never ours.
-	if (OwnedRequest.BaselinePIEContextHandles.Contains(ContextHandle))
-	{
-		return false;
-	}
-	// The world must be the map this operation requested.
-	if (!OwnedRequest.RequestedPackagePath.IsEmpty()
-		&& UWorld::RemovePIEPrefix(World.GetPackage()->GetName()) != OwnedRequest.RequestedPackagePath)
-	{
-		return false;
-	}
-	// Once this operation has pinned its exact identity, only that identity stays ours; a successor
-	// context under a different handle is never adopted.
-	if (OwnedContextHandle != NAME_None && ContextHandle != OwnedContextHandle)
-	{
-		return false;
-	}
-	if (OwnedWorld.IsValid() && &World != OwnedWorld.Get())
-	{
-		return false;
-	}
-	// A world cannot exist for a request that is still merely queued.
-	if (bOwnedRequestOutstanding && IsOwnedRequestPending())
-	{
-		return false;
-	}
-	// The engine's started session must still be the exact request this operation accepted.
-	const TOptional<FPlayInEditorSessionInfo> SessionInfo = GEditor->GetPlayInEditorSessionInfo();
-	if (!SessionInfo.IsSet() || SubmittedRequestFingerprint == 0
-		|| ComputeRequestFingerprint(SessionInfo->OriginalRequestParams, false) != SubmittedRequestFingerprint)
-	{
-		return false;
-	}
-	// Ambiguity: exactly one non-baseline PIE context may exist, and it must be the given one.
-	int32 NewContextCount = 0;
-	FName OnlyNewContext = NAME_None;
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		if (Context.WorldType != EWorldType::PIE
-			|| OwnedRequest.BaselinePIEContextHandles.Contains(Context.ContextHandle))
-		{
-			continue;
-		}
-		++NewContextCount;
-		OnlyNewContext = Context.ContextHandle;
-	}
-	return NewContextCount == 1 && OnlyNewContext == ContextHandle;
-}
 
 void FCortexEditorPhysicalInputSession::BeginNativeFramePreparationMonitoring()
 {
@@ -1344,261 +629,8 @@ void FCortexEditorPhysicalInputSession::ApplyNativeFramePreparationMonitoringRet
 }
 
 // ---------------------------------------------------------------------------
-// Admission helpers
+// Public surface (the owned-PIE entry points live in CortexEditorPhysicalInputOwnedPIE.cpp)
 // ---------------------------------------------------------------------------
-
-bool FCortexEditorPhysicalInputSession::HasUnrelatedPIESession() const
-{
-	if (GEditor == nullptr)
-	{
-		return true;
-	}
-	// Anything the engine would consume or tear down before our own request must be
-	// rejected, otherwise a fresh session could destroy an unrelated human PIE run.
-	if (GEditor->PlayWorld != nullptr)
-	{
-		return true;
-	}
-	if (GEditor->GetPlaySessionRequest().IsSet())
-	{
-		return true;
-	}
-	if (GEditor->ShouldEndPlayMap())
-	{
-		return true;
-	}
-	if (GEngine != nullptr)
-	{
-		for (const FWorldContext& Context : GEngine->GetWorldContexts())
-		{
-			if (Context.WorldType == EWorldType::PIE)
-			{
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-bool FCortexEditorPhysicalInputSession::ArePlaySettingsSupported(FString& OutReason)
-{
-	const ULevelEditorPlaySettings* PlaySettings = GetDefault<ULevelEditorPlaySettings>();
-	if (PlaySettings == nullptr)
-	{
-		OutReason = TEXT("Play in editor settings are not available");
-		return false;
-	}
-
-	bool bRunUnderOneProcess = false;
-	PlaySettings->GetRunUnderOneProcess(bRunUnderOneProcess);
-	if (!bRunUnderOneProcess)
-	{
-		OutReason = TEXT("Owned physical input PIE requires RunUnderOneProcess");
-		return false;
-	}
-	if (PlaySettings->bLaunchSeparateServer)
-	{
-		OutReason = TEXT("Owned physical input PIE does not support a separate server");
-		return false;
-	}
-
-	int32 ClientCount = 1;
-	PlaySettings->GetPlayNumberOfClients(ClientCount);
-	if (ClientCount != 1)
-	{
-		OutReason = TEXT("Owned physical input PIE supports exactly one local client");
-		return false;
-	}
-
-	EPlayNetMode NetMode = PIE_Standalone;
-	PlaySettings->GetPlayNetMode(NetMode);
-	if (NetMode != PIE_Standalone)
-	{
-		OutReason = TEXT("Owned physical input PIE supports the standalone play net mode only");
-		return false;
-	}
-	return true;
-}
-
-// ---------------------------------------------------------------------------
-// Owned termination
-// ---------------------------------------------------------------------------
-
-void FCortexEditorPhysicalInputSession::ReleaseReadyBinding()
-{
-	DetachCapture();
-	++Generation;
-	bBound = false;
-	Binding = FCortexEditorPhysicalInputTargetBinding();
-	TargetInfo = FCortexEditorPhysicalInputTargetInfo();
-	BoundPawnClass = nullptr;
-}
-
-void FCortexEditorPhysicalInputSession::BeginOwnedTermination()
-{
-	// A fully resolved owned teardown is never re-entered.
-	if (bOwnedTerminationResolved)
-	{
-		return;
-	}
-	// The usable target is invalid the moment termination starts; the separate owned
-	// world/context identity is retained to observe teardown.
-	ReleaseReadyBinding();
-
-	if (OwnedState == EOwnedState::Preparing)
-	{
-		// Invalidate readiness before teardown so no late callback can bind or dispatch.
-		bReadyCallbackInvoked = true;
-		ReadyCallback = nullptr;
-	}
-	OwnedState = EOwnedState::Ending;
-	// The bounded pending-teardown diagnostic window starts when teardown begins.
-	LastTeardownDiagnosticSeconds = FPlatformTime::Seconds();
-	EnsureTicker();
-	RequestOwnedTermination();
-}
-
-// ---------------------------------------------------------------------------
-// Public surface
-// ---------------------------------------------------------------------------
-
-FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
-	const FString& MapAssetPath,
-	int32 LocalPlayerIndex,
-	TFunction<void(const FCortexCommandResult&)>&& OnReady)
-{
-	if (GEditor == nullptr || GEngine == nullptr)
-	{
-		return MakeErrorResult(CortexErrorCodes::EditorNotReady, TEXT("Editor is not available"));
-	}
-	// Stock engines have no ownership-scoped PIE API. The owned end therefore uses the public
-	// aggregate end, and this session refuses to start while any unrelated PIE session, play
-	// request or pending teardown is active (checked below) so it never adopts or cancels one.
-	if (OwnedState == EOwnedState::Preparing)
-	{
-		return MakeErrorResult(CortexErrorCodes::EditorBusy, TEXT("Owned PIE preparation is already in progress"));
-	}
-	if (OwnedState == EOwnedState::Ending && !IsOwnedPIEEnded())
-	{
-		return MakeErrorResult(CortexErrorCodes::EditorBusy, TEXT("A previous owned PIE session is still ending"));
-	}
-	if (OwnedState == EOwnedState::Ready || bBound)
-	{
-		return MakeErrorResult(CortexErrorCodes::EditorBusy, TEXT("Session already owns a physical input target"));
-	}
-	// A fresh owned request would make the engine tear down whatever is already playing.
-	if (HasUnrelatedPIESession())
-	{
-		return MakeErrorResult(CortexErrorCodes::EditorBusy,
-			TEXT("An unrelated PIE session, play request or pending teardown is already active"));
-	}
-
-	FString UnsupportedSettingsReason;
-	if (!ArePlaySettingsSupported(UnsupportedSettingsReason))
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidOperation, UnsupportedSettingsReason);
-	}
-	// The neutral-state admission policy applies before preparation as well as again at arming:
-	// starting a PIE session from an unknown held state is never admitted.
-	FCortexCommandResult PreparationNeutralError;
-	if (!IsPhysicalInputNeutral(PreparationNeutralError))
-	{
-		return PreparationNeutralError;
-	}
-	if (LocalPlayerIndex < 0)
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidValue, TEXT("Local player index must be non-negative"));
-	}
-	if (MapAssetPath.IsEmpty())
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidValue, TEXT("Map asset path must not be empty"));
-	}
-
-	// Validate the map/package before requesting so unsaved editor state is never discarded.
-	const FString PackageName = FPackageName::ObjectPathToPackageName(MapAssetPath);
-	if (PackageName.IsEmpty() || !FPackageName::IsValidLongPackageName(PackageName))
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidValue,
-			FString::Printf(TEXT("Map asset path '%s' is not a valid package path"), *MapAssetPath));
-	}
-	if (!FPackageName::DoesPackageExist(PackageName))
-	{
-		return MakeErrorResult(CortexErrorCodes::AssetNotFound,
-			FString::Printf(TEXT("Map package '%s' does not exist"), *PackageName));
-	}
-
-	// Owned PIE runs in its own floating preview window (in-process, no destination Slate viewport).
-	// A stock editor does not guarantee that the level-editor viewport tab is the active, arranged
-	// and hit-testable route, and the owned session is automation/replay-facing: its input must
-	// reach the game viewport independently of the human's docking layout.
-	FRequestPlaySessionParams Request;
-	Request.SessionDestination = EPlaySessionDestinationType::InProcess;
-	Request.WorldType = EPlaySessionWorldType::PlayInEditor;
-	Request.GlobalMapOverride = MapAssetPath;
-	// StartLocation/StartRotation stay unset so the normal player start is used.
-
-	// Record the request generation, deadline and baseline before the request is queued.
-	OwnedRequest = FOwnedRequest();
-	OwnedRequest.MapAssetPath = MapAssetPath;
-	OwnedRequest.RequestedPackagePath = PackageName;
-	OwnedRequest.LocalPlayerIndex = LocalPlayerIndex;
-	OwnedRequest.DeadlineSeconds = FPlatformTime::Seconds() + CortexOwnedPIEPreparationBudgetSeconds;
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		if (Context.WorldType == EWorldType::PIE)
-		{
-			OwnedRequest.BaselinePIEContextHandles.Add(Context.ContextHandle);
-		}
-	}
-
-	ReadyCallback = MoveTemp(OnReady);
-	bReadyCallbackInvoked = false;
-	bOwnsPIE = true;
-	bOwnedRequestOutstanding = true;
-	bStartupResolved = false;
-	SubmittedRequestFingerprint = 0;
-	SubmittedQueuedRequestFingerprint = 0;
-	OwnedState = EOwnedState::Preparing;
-	OwnedContextHandle = NAME_None;
-	OwnedWorld = nullptr;
-	bOwnedWorldObserved = false;
-	bOwnedContextObserved = false;
-	bOwnedContextGone = false;
-	bOwnedTerminationResolved = false;
-	bOwnedEndPlayRequested = false;
-	LastTeardownDiagnosticSeconds = 0.0;
-	BoundPawnClass = nullptr;
-	LastObservedPawnClass = nullptr;
-	StablePawnClassObservations = 0;
-	// The native observer's opt-in pre-baseline monitoring survives this internal reset; only a
-	// stale provisional route from an earlier attempt is dropped, and the route is re-resolved at
-	// the new owned world's birth.
-	bNativePreparationRouteBound = false;
-	NativePreparationRoute = FCortexEditorPhysicalInputTargetBinding();
-	NativePreparationWorld = nullptr;
-	NativePreparationContextHandle = NAME_None;
-	++Generation;
-
-	EnsureTicker();
-
-	// Queue the request through the public engine API. Stock builds expose no per-request teardown
-	// authority, so the owned end uses the aggregate end; the exact queued copy is fingerprinted
-	// below so this session never cancels or adopts a successor.
-	GEditor->RequestPlaySession(Request);
-
-	// Capture the identity of the request the engine actually queued in this same tick.
-	// DestinationSlateViewport is still present on the queued copy, so the queued identity
-	// distinguishes a same-map successor that differs only in its destination viewport. The
-	// consumed identity excludes it because the engine nulls the field once the session starts.
-	if (const TOptional<FRequestPlaySessionParams> Queued = GEditor->GetPlaySessionRequest())
-	{
-		SubmittedRequestFingerprint = ComputeRequestFingerprint(Queued.GetValue(), false);
-		SubmittedQueuedRequestFingerprint = ComputeRequestFingerprint(Queued.GetValue(), true);
-	}
-
-	// The request is accepted; the session does not own a target until readiness succeeds.
-	return MakeSuccessResult();
-}
 
 FCortexCommandResult FCortexEditorPhysicalInputSession::BindTarget(UWorld& World, int32 LocalPlayerIndex)
 {
@@ -1832,165 +864,33 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::RestorePlayerPose(
 	return MakeSuccessResult();
 }
 
-FCortexCommandResult FCortexEditorPhysicalInputSession::ReadNativeMouseFilterState(
-	FCortexEditorNativeMouseFilterState& Out) const
+FCortexCommandResult FCortexEditorPhysicalInputSession::ReadViewportInputState(
+	bool& bOutMouseCapture, bool& bOutHighPrecision) const
 {
+	bOutMouseCapture = false;
+	bOutHighPrecision = false;
 	FCortexCommandResult TargetError;
 	if (!ValidateTarget(TargetError))
 	{
 		return TargetError;
 	}
-	// Only the exact PlayerInput instance this binding acquired is read; a replacement is never
-	// adopted and never supplies filter memory for this operation.
-	UPlayerInput* const PlayerInput = BoundPlayerInput.Get();
-	if (PlayerInput == nullptr || Binding.Controller.Get()->PlayerInput != PlayerInput)
+	if (!FSlateApplication::IsInitialized())
+	{
+		return MakeErrorResult(CortexErrorCodes::EditorNotReady, TEXT("Slate is not initialized"));
+	}
+	const TSharedPtr<SViewport> Viewport = Binding.ViewportWidget.Pin();
+	if (!Viewport.IsValid())
 	{
 		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("The original PlayerInput is no longer the bound controller's PlayerInput"));
+			TEXT("The bound target has no viewport widget to read the input state from"));
 	}
-
-	// Only the public filter memory and the public effective dilation are read. Private engine
-	// state (for example LastTimeDilation) is never inspected.
-	FCortexEditorNativeMouseFilterState State;
-	State.ZeroTimeSeconds[0] = PlayerInput->ZeroTime[0];
-	State.ZeroTimeSeconds[1] = PlayerInput->ZeroTime[1];
-	State.SmoothedMouse[0] = PlayerInput->SmoothedMouse[0];
-	State.SmoothedMouse[1] = PlayerInput->SmoothedMouse[1];
-	State.SampleCount = PlayerInput->MouseSamples;
-	State.SamplingTotalSeconds = PlayerInput->MouseSamplingTotal;
-
-	const AWorldSettings* const WorldSettings = Binding.World.Get()->GetWorldSettings();
-	if (WorldSettings == nullptr)
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("The bound world has no world settings for the effective time dilation"));
-	}
-	State.EffectiveTimeDilation = WorldSettings->GetEffectiveTimeDilation();
-
-	if (!IsNativeMouseFilterStateUsable(State))
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidValue,
-			TEXT("The bound PlayerInput mouse-filter state is not finite or has non-positive sampling state"));
-	}
-	Out = State;
+	// Relative gameplay motion reaches the game only while the viewport holds the selected user's
+	// mouse capture (FSceneViewport::OnMouseMove), and raw high-precision movement exists only for
+	// the cursor user's physical mouse (SlateApplication.cpp:3619).
+	bOutMouseCapture = Viewport->HasMouseCaptureByUser(Binding.SlateUserIndex);
+	bOutHighPrecision = Binding.SlateUserIndex == static_cast<int32>(FSlateApplicationBase::CursorUserIndex)
+		&& FSlateApplication::Get().IsUsingHighPrecisionMouseMovment();
 	return MakeSuccessResult();
-}
-
-FCortexCommandResult FCortexEditorPhysicalInputSession::RestoreNativeMouseFilterState(
-	const FCortexEditorNativeMouseFilterState& In)
-{
-	FCortexCommandResult TargetError;
-	if (!ValidateTarget(TargetError))
-	{
-		return TargetError;
-	}
-	UPlayerInput* const PlayerInput = BoundPlayerInput.Get();
-	if (PlayerInput == nullptr || Binding.Controller.Get()->PlayerInput != PlayerInput)
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("The original PlayerInput is no longer the bound controller's PlayerInput"));
-	}
-	// Reject unusable recorded data before any mutation: the engine's smoothing divides by both
-	// sampling values, and a non-finite filter memory would poison the live instance.
-	if (!IsNativeMouseFilterStateUsable(In))
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidValue,
-			TEXT("The recorded native mouse-filter state is not finite or has non-positive sampling state"));
-	}
-	const AWorldSettings* const WorldSettings = Binding.World.Get()->GetWorldSettings();
-	if (WorldSettings == nullptr)
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("The bound world has no world settings for the effective time dilation"));
-	}
-	const float CurrentDilation = WorldSettings->GetEffectiveTimeDilation();
-	if (!FMath::IsFinite(CurrentDilation) || CurrentDilation != In.EffectiveTimeDilation)
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("The effective time dilation changed since the native mouse-filter state was recorded"));
-	}
-
-	// The exact public-field mapping; no private field is written and no synthetic axis value is
-	// derived from the filter memory.
-	PlayerInput->ZeroTime[0] = In.ZeroTimeSeconds[0];
-	PlayerInput->ZeroTime[1] = In.ZeroTimeSeconds[1];
-	PlayerInput->SmoothedMouse[0] = In.SmoothedMouse[0];
-	PlayerInput->SmoothedMouse[1] = In.SmoothedMouse[1];
-	PlayerInput->MouseSamples = In.SampleCount;
-	PlayerInput->MouseSamplingTotal = In.SamplingTotalSeconds;
-
-	// Readback verification: the restore is only claimed when the live instance actually reports
-	// the recorded values and the same exact dilation.
-	FCortexEditorNativeMouseFilterState Readback;
-	const FCortexCommandResult ReadResult = ReadNativeMouseFilterState(Readback);
-	if (!ReadResult.bSuccess)
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("The restored native mouse-filter state could not be read back"));
-	}
-	if (Readback.EffectiveTimeDilation != In.EffectiveTimeDilation
-		|| Readback.SampleCount != In.SampleCount
-		|| Readback.SamplingTotalSeconds != In.SamplingTotalSeconds
-		|| Readback.ZeroTimeSeconds[0] != In.ZeroTimeSeconds[0]
-		|| Readback.ZeroTimeSeconds[1] != In.ZeroTimeSeconds[1]
-		|| Readback.SmoothedMouse[0] != In.SmoothedMouse[0]
-		|| Readback.SmoothedMouse[1] != In.SmoothedMouse[1])
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("The restored native mouse-filter state does not match the recorded state"));
-	}
-	return MakeSuccessResult();
-}
-
-FCortexCommandResult FCortexEditorPhysicalInputSession::ReadNativeInputConfig(
-	FString& OutPlayerInputClass, FString& OutInputConfigSha256) const
-{
-	OutPlayerInputClass.Reset();
-	OutInputConfigSha256.Reset();
-	FCortexCommandResult TargetError;
-	if (!ValidateTarget(TargetError))
-	{
-		return TargetError;
-	}
-	UPlayerInput* const PlayerInput = BoundPlayerInput.Get();
-	if (PlayerInput == nullptr || Binding.Controller.Get()->PlayerInput != PlayerInput)
-	{
-		return MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("The original PlayerInput is no longer the bound controller's PlayerInput"));
-	}
-	return ResolveLiveInputConfig(*Binding.Controller.Get(), *PlayerInput,
-		OutPlayerInputClass, OutInputConfigSha256);
-}
-
-void FCortexEditorPhysicalInputSession::EndOwnedPIE()
-{
-	if (!bOwnsPIE)
-	{
-		// Already-ended / non-owned sessions report complete without touching foreign PIE.
-		OwnedState = EOwnedState::Ending;
-		return;
-	}
-	BeginOwnedTermination();
-}
-
-bool FCortexEditorPhysicalInputSession::IsOwnedPIEEnded() const
-{
-	if (!bOwnsPIE)
-	{
-		return true;
-	}
-	// Startup must be resolved before completion can be claimed: a request the engine
-	// already consumed must not be mistaken for "nothing was ever created".
-	if (!bStartupResolved)
-	{
-		return false;
-	}
-	if (IsOwnedRequestPending())
-	{
-		return false;
-	}
-	// Complete only once the exact captured owned context is absent too.
-	return !IsOwnedContextPresent();
 }
 
 void FCortexEditorPhysicalInputSession::Shutdown()
@@ -2412,35 +1312,9 @@ namespace
 	}
 
 	/**
-	 * Slate applies a reply's mouse capture, mouse position and mouse lock only while the
-	 * application is active (SlateApplication.cpp:3494 gates on
-	 * `bHandleDeviceInputWhenApplicationNotActive || bAppIsActive || bIsVirtualInteraction`).
-	 * A programmatic dispatch must behave identically whether or not the editor window currently
-	 * holds OS focus, so inactive-input handling is enabled for the routing window and restored.
-	 */
-	class FCortexScopedInactivePhysicalInput : private FNoncopyable
-	{
-	public:
-		explicit FCortexScopedInactivePhysicalInput(FSlateApplication& InSlate)
-			: Slate(InSlate)
-			, bWasEnabled(InSlate.GetHandleDeviceInputWhenApplicationNotActive())
-		{
-			Slate.SetHandleDeviceInputWhenApplicationNotActive(true);
-		}
-
-		~FCortexScopedInactivePhysicalInput()
-		{
-			Slate.SetHandleDeviceInputWhenApplicationNotActive(bWasEnabled);
-		}
-
-	private:
-		FSlateApplication& Slate;
-		bool bWasEnabled = false;
-	};
-
-	/**
-	 * Resolves the actual topmost hit path and admits it only in the selected viewport's window.
-	 * Restricting the hit-test search to that window would look through unrelated popups.
+	 * Resolves the widget path under one coordinate, restricted to the selected viewport's own window.
+	 * Route admission follows Slate's real pointer routing: a real packet's coordinate is where the
+	 * OS pointer is, so the path is resolved through `LocateWindowUnderMouse` exactly like Slate does.
 	 */
 	bool ResolveSelectedRoutePath(FSlateApplication& Slate, int32 SlateUserIndex,
 		const TSharedPtr<SWidget>& Anchor, const FVector2D& ScreenSpacePosition, FWidgetPath& OutPath)
@@ -2602,7 +1476,6 @@ void FCortexEditorPhysicalInputSession::DetachCapture()
 		CaptureState->ForeignHeldKeys.Reset();
 		CaptureState->ForeignHeldButtons.Reset();
 		CaptureState->ForeignInFlight.Reset();
-		CaptureState->SyntheticFocusOwner.Reset();
 	}
 }
 
@@ -2665,6 +1538,8 @@ void FCortexEditorPhysicalInputSession::SetReplayPointerPosition(
 		GuardState->LastScreenPointerPosition = ScreenSpacePosition;
 		GuardState->LastViewportPointerPosition = ViewportPosition;
 		GuardState->bHasScreenPointerPosition = true;
+		// An observed or absolute position re-anchors the relative accumulator.
+		GuardState->bHasRelativeMotionAccumulator = false;
 	}
 }
 
@@ -2873,8 +1748,8 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorKey(const FKeyEvent& Key
 		CaptureState->ForeignHeldKeys.Remove(Key);
 	}
 
-	// Real selected-route input interrupts an armed replay epoch regardless of the recording's
-	// origin: the origin never suppresses an interruption.
+	// Any real packet from the selected user/device interrupts an armed replay epoch, whichever window
+	// it targets (device-wide, see BeginReplayEpoch); the recording's origin never suppresses it.
 	if (bReplayInProgress)
 	{
 		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
@@ -2962,8 +1837,8 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseButton(
 		CaptureState->ForeignHeldButtons.Remove(Button);
 	}
 
-	// Real selected-route input interrupts an armed replay epoch regardless of the recording's
-	// origin: the origin never suppresses an interruption.
+	// Any real packet from the selected user/device interrupts an armed replay epoch, whichever window
+	// it targets (device-wide, see BeginReplayEpoch); the recording's origin never suppresses it.
 	if (bReplayInProgress)
 	{
 		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
@@ -3023,8 +1898,8 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointer
 	const FVector2D ViewportPosition = ToViewportPosition(ScreenSpacePosition);
 	SetReplayPointerPosition(ScreenSpacePosition, ViewportPosition);
 
-	// Real selected-route input interrupts an armed replay epoch regardless of the recording's
-	// origin: the origin never suppresses an interruption.
+	// Any real packet from the selected user/device interrupts an armed replay epoch, whichever window
+	// it targets (device-wide, see BeginReplayEpoch); the recording's origin never suppresses it.
 	if (bReplayInProgress)
 	{
 		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
@@ -3035,6 +1910,12 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointer
 	// preparation through the interruption channel. Passive monitoring never records or consumes.
 	if (bNativeFramePreparationMonitoring)
 	{
+		// The restore move a previous operation's cursor restore caused is not human input
+		// (CortexEditorSelfCursorMove); a move anywhere else is.
+		if (CortexEditorSelfCursorMove::Consume(ScreenSpacePosition, FPlatformTime::Seconds()))
+		{
+			return;
+		}
 		if ((bBound || bNativePreparationRouteBound) && IsPointerEventOnSelectedRoute(MouseEvent))
 		{
 			SignalCaptureFault(TEXT("Real selected-route pointer motion arrived during owned preparation before the capture baseline"));
@@ -3081,8 +1962,8 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseWheel(const FPointe
 		CaptureState = MakeShared<FCortexEditorPhysicalInputCaptureState>();
 	}
 	const FVector2D ScreenSpacePosition = MouseEvent.GetScreenSpacePosition();
-	// Real selected-route input interrupts an armed replay epoch regardless of the recording's
-	// origin: the origin never suppresses an interruption.
+	// Any real packet from the selected user/device interrupts an armed replay epoch, whichever window
+	// it targets (device-wide, see BeginReplayEpoch); the recording's origin never suppresses it.
 	if (bReplayInProgress)
 	{
 		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
@@ -3223,12 +2104,6 @@ bool FCortexEditorPhysicalInputSession::BuildCaptureContext(const FCortexEditorP
 	FCortexEditorPhysicalInputCaptureContext& OutContext, FCortexCommandResult& OutError) const
 {
 	OutContext = FCortexEditorPhysicalInputCaptureContext();
-	UWorld* World = Binding.World.Get();
-	OutContext.FrameNumber = GFrameCounter;
-	OutContext.WorldTimeSeconds = World ? World->GetTimeSeconds() : 0.0;
-	OutContext.bWorldPaused = World ? World->IsPaused() : false;
-	OutContext.bTargetOwnsPointerCapture = CaptureState.IsValid()
-		&& (CaptureState->CapturedHeldButtons.Num() > 0 || CaptureState->OwnedSyntheticButtons.Num() > 0);
 
 	FCortexEditorPhysicalInputPlayerPose Pose;
 	const FCortexCommandResult PoseResult = ReadPlayerPose(Pose);
@@ -3320,11 +2195,6 @@ void FCortexEditorPhysicalInputSession::NotifyInterruption(const FCortexCommandR
 	}
 }
 
-bool FCortexEditorPhysicalInputSession::IsReplayEpochArmed() const
-{
-	return bReplayInProgress;
-}
-
 void FCortexEditorPhysicalInputSession::SignalCaptureFault(const FString& Message)
 {
 	if (!CaptureState.IsValid() || CaptureState->bFaulted)
@@ -3409,31 +2279,6 @@ bool FCortexEditorPhysicalInputSession::IsWidgetOnSelectedRoute(
 	{
 		if ((CoordinateRoot.IsValid() && Current.Get() == CoordinateRoot.Get())
 			|| (InputRoot.IsValid() && Current.Get() == InputRoot.Get()))
-		{
-			return true;
-		}
-	}
-	return false;
-}
-
-bool FCortexEditorPhysicalInputSession::IsPointerCaptureOnSelectedRoute() const
-{
-	if (!FSlateApplication::IsInitialized())
-	{
-		return false;
-	}
-	const TSharedPtr<FSlateUser> User = FSlateApplication::Get().GetUser(
-		GetObservedRouteBinding().SlateUserIndex);
-	if (!User.IsValid() || !User->HasAnyCapture())
-	{
-		return false;
-	}
-	// Slate routes movement to a live captor even when the pointer left its hit area, so a captor
-	// that belongs to the selected route still drives a selected consumer; a captor outside the
-	// route (ordinary editor input) is never admitted.
-	for (const TSharedRef<SWidget>& Captor : User->GetCaptorWidgets())
-	{
-		if (IsWidgetOnSelectedRoute(Captor))
 		{
 			return true;
 		}
@@ -3651,6 +2496,8 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginReplayEpoch()
 	// monitoring is retired here (it never breaks this or a later active epoch).
 	EndNativeFramePreparationMonitoring();
 	bReplayInProgress = true;
+	DispatchContext->HumanCursorPosition = FSlateApplication::Get().GetCursorPos();
+	DispatchContext->bRealCursorMoved = false;
 	UE_LOG(LogCortexEditor, Display, TEXT("Replay epoch armed"));
 	return MakeSuccessResult();
 }
@@ -3701,15 +2548,6 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	FSlateApplication& Slate = FSlateApplication::Get();
 	const FInputDeviceId Device = Binding.InputDevice;
 	const int32 UserIndex = Binding.SlateUserIndex;
-	// Inactive-application input handling is enabled only for capture/setup dispatch, where the
-	// editor window may not hold OS focus; it is never enabled during replay. Replay requires the
-	// selected route to be the actually-active route (checked above), and forcing input while the
-	// application is inactive would deliver into a route the host is not actually driving.
-	TUniquePtr<FCortexScopedInactivePhysicalInput> InactiveInputGuard;
-	if (!bReplayInProgress && !Slate.IsActive())
-	{
-		InactiveInputGuard = MakeUnique<FCortexScopedInactivePhysicalInput>(Slate);
-	}
 	// Snapshot the pre-dispatch state so only capture/high-precision/drag state this operation's own
 	// event establishes is ever attributed to it, and a foreign captor or drag is never released.
 	const bool bHadUserCaptureBefore = Slate.HasUserMouseCapture(UserIndex);
@@ -3726,6 +2564,22 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	// Stored portable coordinates are viewport-local; every engine event needs screen space.
 	FCortexEditorPhysicalInputEvent EngineEvent = Event;
 	EngineEvent.ViewportPosition = ToScreenSpacePosition(Event.ViewportPosition);
+
+	// While replay owns the target, an absolute pointer event moves the REAL OS cursor to the
+	// recorded position first: Slate's per-tick synthetic cursor move, GetMousePosition and every
+	// GetCursorPos consumer read the real cursor, so it must be where the recording had it.
+	// FSlateApplication::SetCursorPos refreshes LastPlatformCursorPosition (SlateApplication.cpp:1113),
+	// so Slate drops the resulting platform move (SlateApplication.cpp:6310) instead of reading it as
+	// foreign input. Relative (high-precision) motion leaves the real cursor alone. The human position
+	// is restored by ReleaseHeldInputs.
+	const auto MoveRealCursor = [this, &Slate](const FVector2D& ScreenSpacePosition)
+	{
+		if (bReplayInProgress)
+		{
+			Slate.SetCursorPos(ScreenSpacePosition);
+			DispatchContext->bRealCursorMoved = true;
+		}
+	};
 
 	switch (Event.Kind)
 	{
@@ -3753,13 +2607,11 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	case ECortexEditorPhysicalInputKind::PointerMove:
 	case ECortexEditorPhysicalInputKind::RelativeMove:
 	{
-		FVector2D ScreenSpacePosition;
 		FVector2D PresentedScreenSpacePosition;
 		if (Event.Kind == ECortexEditorPhysicalInputKind::RelativeMove)
 		{
-			// Relative gameplay motion advances the synthetic pointer in the consumed screen space
-			// by exactly the recorded delta. The accumulator stays fractional so the running sum is
-			// exact; no viewport<->screen scale round trip is used, so scale rounding cannot lose a
+			// Relative gameplay motion advances an exact accumulator by exactly the recorded delta;
+			// no viewport<->screen scale round trip is used, so scale rounding cannot lose a
 			// fraction of a pixel per event. The first relative move of an unseeded session anchors
 			// to the observed viewport pointer exactly as the previous accumulation did.
 			if (!GuardState->bHasScreenPointerPosition)
@@ -3768,31 +2620,54 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 					ToScreenSpacePosition(GuardState->LastViewportPointerPosition);
 				GuardState->bHasScreenPointerPosition = true;
 			}
+			if (!GuardState->bHasRelativeMotionAccumulator)
+			{
+				GuardState->RelativeMotionAccumulator = GuardState->LastScreenPointerPosition;
+			}
 			EngineEvent.Kind = ECortexEditorPhysicalInputKind::PointerMove;
-			const FVector2D PreviousScreenSpacePosition = GuardState->LastScreenPointerPosition;
-			ScreenSpacePosition = PreviousScreenSpacePosition + Event.Delta;
-			SetReplayPointerPosition(ScreenSpacePosition, ToViewportPosition(ScreenSpacePosition));
+			const FVector2D PreviousAccumulator = GuardState->RelativeMotionAccumulator;
+			const FVector2D Accumulator = PreviousAccumulator + Event.Delta;
 			// Present an integral cursor position and an equally integral delta: the PIE scene
 			// viewport accumulates GetCursorDelta() into an integer FIntPoint (SceneViewport.cpp
 			// OnMouseMove) and flushes it as the MouseX/MouseY axes, so a fractional per-event delta
-			// loses its fraction on every event. The exact accumulator above carries the remainder,
-			// so the whole-unit difference between the rounded positions transfers the recorded
-			// total instead of a truncated one. Consecutive relative events therefore present
-			// consecutive rounded positions and their deltas telescope; after an unrounded absolute
-			// or button position the first relative step rounds against the rounded previous
-			// position, so its last position differs from that event's exact position by under one
-			// screen unit.
-			PresentedScreenSpacePosition = FVector2D(
-				FMath::RoundToDouble(ScreenSpacePosition.X), FMath::RoundToDouble(ScreenSpacePosition.Y));
-			EngineEvent.Delta = PresentedScreenSpacePosition - FVector2D(
-				FMath::RoundToDouble(PreviousScreenSpacePosition.X),
-				FMath::RoundToDouble(PreviousScreenSpacePosition.Y));
+			// loses its fraction on every event. The exact accumulator carries the remainder, so the
+			// whole-unit difference between the rounded accumulators transfers the recorded total
+			// instead of a truncated one. The delta comes from the UNCLAMPED accumulator, so it stays
+			// exact even where the presented position is held at the viewport edge.
+			const FVector2D RoundedAccumulator(
+				FMath::RoundToDouble(Accumulator.X), FMath::RoundToDouble(Accumulator.Y));
+			EngineEvent.Delta = RoundedAccumulator - FVector2D(
+				FMath::RoundToDouble(PreviousAccumulator.X),
+				FMath::RoundToDouble(PreviousAccumulator.Y));
+			// During capture the real cursor was clipped to the viewport, so the recorded pointer
+			// never left it. Present the position inside the coordinate-root rect (the rect the
+			// engine clips to), otherwise the walk leaves the viewport and window and Slate sends
+			// mouse-leave to the captor path. The pointer event derives its previous position from
+			// the exact delta, so clamping never alters the transferred motion.
+			FVector2D ExactPosition = Accumulator;
+			PresentedScreenSpacePosition = RoundedAccumulator;
+			if (const TSharedPtr<SWidget> CoordinateRoot = GetCoordinateRootWidget())
+			{
+				const FGeometry RootGeometry = CoordinateRoot->GetCachedGeometry();
+				const FVector2D CornerA = RootGeometry.LocalToAbsolute(FVector2D::ZeroVector);
+				const FVector2D CornerB = RootGeometry.LocalToAbsolute(RootGeometry.GetLocalSize());
+				const FVector2D RectMin = FVector2D::Min(CornerA, CornerB);
+				const FVector2D RectMax = FVector2D::Max(CornerA, CornerB);
+				ExactPosition = FVector2D(FMath::Clamp(Accumulator.X, RectMin.X, RectMax.X),
+					FMath::Clamp(Accumulator.Y, RectMin.Y, RectMax.Y));
+				PresentedScreenSpacePosition = FVector2D(
+					FMath::Clamp(RoundedAccumulator.X, RectMin.X, RectMax.X),
+					FMath::Clamp(RoundedAccumulator.Y, RectMin.Y, RectMax.Y));
+			}
+			SetReplayPointerPosition(ExactPosition, ToViewportPosition(ExactPosition));
+			GuardState->RelativeMotionAccumulator = Accumulator;
+			GuardState->bHasRelativeMotionAccumulator = true;
 		}
 		else
 		{
-			ScreenSpacePosition = ToScreenSpacePosition(Event.ViewportPosition);
-			SetReplayPointerPosition(ScreenSpacePosition, Event.ViewportPosition);
-			PresentedScreenSpacePosition = ScreenSpacePosition;
+			PresentedScreenSpacePosition = ToScreenSpacePosition(Event.ViewportPosition);
+			SetReplayPointerPosition(PresentedScreenSpacePosition, Event.ViewportPosition);
+			MoveRealCursor(PresentedScreenSpacePosition);
 		}
 		EngineEvent.ViewportPosition = PresentedScreenSpacePosition;
 		FPointerEvent PointerEvent;
@@ -3815,6 +2690,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	case ECortexEditorPhysicalInputKind::PointerUp:
 	case ECortexEditorPhysicalInputKind::DoubleClick:
 	{
+		MoveRealCursor(EngineEvent.ViewportPosition);
 		TSet<FKey> PressedButtons = CaptureState->OwnedSyntheticButtons;
 		const bool bDownEdge = (Event.Kind != ECortexEditorPhysicalInputKind::PointerUp);
 		if (bDownEdge)
@@ -3858,6 +2734,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	}
 	case ECortexEditorPhysicalInputKind::Wheel:
 	{
+		MoveRealCursor(EngineEvent.ViewportPosition);
 		FPointerEvent PointerEvent;
 		if (!FCortexEditorPhysicalInputEventBuilder::BuildWheelEvent(EngineEvent, Device, UserIndex,
 			CaptureState->OwnedSyntheticButtons, PointerEvent))
@@ -3973,6 +2850,23 @@ void FCortexEditorPhysicalInputSession::RetainOwnedPointerState(FSlateApplicatio
 
 FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 {
+	// The human's real cursor is put back on every exit path, after the capture, cursor-lock and
+	// high-precision cleanup below has released any clip that would otherwise constrain it.
+	ON_SCOPE_EXIT
+	{
+		if (DispatchContext.IsValid() && DispatchContext->bRealCursorMoved)
+		{
+			DispatchContext->bRealCursorMoved = false;
+			if (FSlateApplication::IsInitialized())
+			{
+				// The platform message this restore causes can arrive a frame later, while the next
+				// operation prepares; only that exact move is expected (CortexEditorSelfCursorMove).
+				CortexEditorSelfCursorMove::Expect(DispatchContext->HumanCursorPosition, FPlatformTime::Seconds());
+				FSlateApplication::Get().SetCursorPos(DispatchContext->HumanCursorPosition);
+			}
+		}
+	};
+
 	// Step 1: freeze dispatch once and detach the capture callbacks.
 	bDispatchFrozen = true;
 	bReplayInProgress = false;
@@ -4086,17 +2980,6 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::ReleaseHeldInputs()
 	}
 
 	FSlateApplication& Slate = FSlateApplication::Get();
-
-	// Step 3: clear focus only when the exact synthetic keyboard-focus owner still holds it.
-	if (CaptureState.IsValid() && CaptureState->SyntheticFocusOwner.IsValid())
-	{
-		const TSharedPtr<SWidget> Focused = Slate.GetUserFocusedWidget(
-			static_cast<uint32>(Binding.SlateUserIndex));
-		if (Focused.IsValid() && Focused == CaptureState->SyntheticFocusOwner.Pin())
-		{
-			Slate.ClearUserFocus(static_cast<uint32>(Binding.SlateUserIndex), EFocusCause::SetDirectly);
-		}
-	}
 
 	// A foreign physical button held (or in flight) means the pointer is owned elsewhere: never
 	// release any capture then, and never release a capture this operation does not own.

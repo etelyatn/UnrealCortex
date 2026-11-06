@@ -1,8 +1,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "CortexEditorEngineFrameObserver.h"
 #include "CortexEditorPhysicalInput.h"
+#include "CortexTypes.h"
 
 enum class ECortexReplayOrigin : uint8 { Human, AI };
 
@@ -12,12 +12,20 @@ enum class ECortexReplayState : uint8
 	Completed, Cancelled, Interrupted, Error
 };
 
+/** Viewport input state the human had at the capture epoch (replay compares it before the epoch). */
+struct FCortexReplayViewportState
+{
+	bool bMouseCapture = false;
+	bool bHighPrecision = false;
+};
+
 struct FCortexReplayInitialState
 {
-	int32 SchemaVersion = 2;
+	int32 SchemaVersion = 3;
 	int32 RecordingId = 0;
 	FString PawnClassPath;
 	FCortexEditorPhysicalInputPlayerPose Pose;
+	FCortexReplayViewportState Viewport;
 };
 
 struct FCortexReplayGuardCoverage
@@ -37,20 +45,11 @@ struct FCortexReplayInteractionGuard
 	FVector2D ExpectedLocalPosition = FVector2D::ZeroVector;
 };
 
-struct FCortexReplayCaptureDiagnostics
-{
-	uint64 FrameNumber = 0;
-	double WorldTimeSeconds = 0.0;
-	bool bWorldPaused = false;
-	bool bTargetOwnsPointerCapture = false;
-};
-
 struct FCortexReplayEvent
 {
 	int32 Sequence = 0;
 	double TimeSeconds = 0.0;
 	FCortexEditorPhysicalInputEvent Input;
-	FCortexReplayCaptureDiagnostics CaptureContext;
 	TOptional<FCortexReplayInteractionGuard> Guard;
 };
 
@@ -63,35 +62,39 @@ enum class ECortexReplayFramePreparation : uint8
 	Waiting
 };
 
-/** Frame-ordinal timing identity of a format-2 recording. */
+/** Largest per-frame application delta a recording may carry (also bounds replay pacing sleeps). */
+constexpr double CortexReplayMaxFrameDeltaSeconds = 10.0;
+
+/** Frame-ordinal timing identity of a format-3 recording. */
 struct FCortexReplayTiming
 {
 	int32 FrameCount = 0;
-	int32 InputEpochFrame = INDEX_NONE;
+};
+
+/** World tick the consuming engine frame ran: the real delta handed to UWorld::Tick and the pause state. */
+struct FCortexReplayFrameTick
+{
+	float RealDeltaSeconds = 0.0f;
+	bool bPaused = false;
 };
 
 /**
- * One recorded frame. Every input event belongs to exactly one frame; a warmup frame admits no
- * input (EventCount == 0). Application offsets are relative to the first owned frame boundary, and
- * a frame with no observed world tick leaves WorldTick unset (distinct from a zero-delta tick).
+ * One engine frame that consumed input after the capture epoch, indexed from zero. Every input
+ * event belongs to exactly one frame. A frame with no observed world tick leaves WorldTick unset
+ * (distinct from a zero-delta tick); AppDeltaSeconds is always in (0, CortexReplayMaxFrameDeltaSeconds].
  */
 struct FCortexReplayFrame
 {
 	int32 FrameIndex = 0;
-	double InputDeadlineSeconds = 0.0;
 	double AppDeltaSeconds = 0.0;
-	double AppCurrentOffsetSeconds = 0.0;
-	double AppLastOffsetSeconds = 0.0;
-	TOptional<FCortexEditorObservedWorldTick> WorldTick;
+	TOptional<FCortexReplayFrameTick> WorldTick;
 	int32 FirstSequence = 0;
 	int32 EventCount = 0;
-	uint64 CaptureFrame = 0;
-	double FrameBeginSeconds = 0.0;
 };
 
 struct FCortexReplayMetadata
 {
-	int32 SchemaVersion = 2;
+	int32 SchemaVersion = 3;
 	int32 RecordingId = 0;
 	FString Name, Description, MapAssetPath, EngineVersion, PluginVersion;
 	FDateTime CreatedAtUtc;
@@ -111,4 +114,15 @@ struct FCortexReplaySnapshot
 	TArray<FCortexReplayEvent> Events;
 	TArray<FCortexReplayFrame> Frames;
 	FString RecordingSnapshotSha256;
+};
+
+/**
+ * One library directory as listed without loading its payload. Metadata is set when metadata.json
+ * parses; otherwise LoadError explains why the recording cannot be used.
+ */
+struct FCortexReplayLibraryEntry
+{
+	int32 RecordingId = 0;
+	TOptional<FCortexReplayMetadata> Metadata;
+	FCortexCommandResult LoadError;
 };

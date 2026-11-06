@@ -26,13 +26,7 @@ _LIMIT_RESERVED_FIELDS = frozenset(
     {"_error", "_message", "max_response_bytes", "response_bytes"}
 )
 
-# Total fallback when a value cannot be serialized to JSON at all.
-_REPLAY_REPLY_FORMAT_ERROR = "REPLAY_REPLY_FORMAT_ERROR"
-_REPLAY_REPLY_FORMAT_MESSAGE = (
-    "The Replay reply could not be serialized to JSON; no partial reply was emitted."
-)
-
-# One-shot start machine context must survive every overflow / formatting failure.
+# One-shot start machine context must survive every overflow.
 _START_NOT_DISPATCHED_FIELDS: dict[str, Any] = {
     "_command": "replay.start_replay",
     "outcome": "not_dispatched",
@@ -75,8 +69,8 @@ def _limit_exceeded_response(
 ) -> str:
     """The one explicit oversize contract error; never a silent truncation.
 
-    Machine context in ``overflow_fields`` is preserved but can never override
-    the budget contract fields themselves.
+    ``response_bytes`` is the measured size that broke the budget.  Machine context in
+    ``overflow_fields`` is preserved but can never override the budget contract fields themselves.
     """
     payload: dict[str, Any] = {
         "_error": "LIMIT_EXCEEDED",
@@ -90,39 +84,7 @@ def _limit_exceeded_response(
     for key, value in (overflow_fields or {}).items():
         if key not in _LIMIT_RESERVED_FIELDS:
             payload[key] = value
-    try:
-        return _encode_ascii(payload)
-    except Exception:
-        # Preserved context was unserializable; drop it rather than lose the contract.
-        return _encode_ascii(
-            {
-                "_error": "LIMIT_EXCEEDED",
-                "_message": payload["_message"],
-                "max_response_bytes": MAX_REPLAY_RESPONSE_BYTES,
-                "response_bytes": response_bytes,
-            }
-        )
-
-
-def _format_error_response(overflow_fields: dict[str, Any] | None = None) -> str:
-    """Fixed fallback envelope for a value that cannot be serialized at all."""
-    payload: dict[str, Any] = {
-        "_error": _REPLAY_REPLY_FORMAT_ERROR,
-        "_message": _REPLAY_REPLY_FORMAT_MESSAGE,
-    }
-    for key, value in (overflow_fields or {}).items():
-        if key not in _LIMIT_RESERVED_FIELDS:
-            payload[key] = value
-    try:
-        text = _encode_ascii(payload)
-        size = len(text.encode("utf-8"))
-    except Exception:
-        return _encode_ascii(
-            {"_error": _REPLAY_REPLY_FORMAT_ERROR, "_message": _REPLAY_REPLY_FORMAT_MESSAGE}
-        )
-    if size <= MAX_REPLAY_RESPONSE_BYTES:
-        return text
-    return _limit_exceeded_response(size, overflow_fields)
+    return _encode_ascii(payload)
 
 
 def _sdk_result_bytes(text: str) -> int:
@@ -143,24 +105,24 @@ def _finalize(value: Any, overflow_fields: dict[str, Any] | None = None) -> str:
     """Enforce the encoded UTF-8 budget on EVERY result path (the single gate).
 
     Both bound edges are checked here: the payload itself and the text-only SDK result envelope the
-    registered Replay router produces from it.  Total: this never raises for any input.  Unpaired
+    registered Replay router produces from it.  A reply that breaks either edge becomes a
+    ``LIMIT_EXCEEDED`` error reporting the size that was measured on the edge that failed.  Unpaired
     surrogates are re-serialized with ASCII escaping (``\\uXXXX``), which is always strict-UTF-8
-    encodable, so malformed text cannot escape as a router-level exception.  A value that cannot be
-    serialized at all yields a fixed envelope that still carries the supplied ``overflow_fields``
-    machine context.
+    encodable, so malformed text cannot escape as a router-level exception.  Every value reaching
+    this gate comes from ``json.loads`` or ``str``, so serialization itself cannot fail.
     """
     try:
-        try:
-            text = _encode(value)
-            size = len(text.encode("utf-8"))
-        except UnicodeEncodeError:
-            text = _encode_ascii(value)
-            size = len(text.encode("utf-8"))
-    except Exception:
-        return _format_error_response(overflow_fields)
-    if size <= MAX_REPLAY_RESPONSE_BYTES and _sdk_result_bytes(text) <= MAX_REPLAY_RESPONSE_BYTES:
-        return text
-    return _limit_exceeded_response(size, overflow_fields)
+        text = _encode(value)
+        size = len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        text = _encode_ascii(value)
+        size = len(text.encode("utf-8"))
+    if size > MAX_REPLAY_RESPONSE_BYTES:
+        return _limit_exceeded_response(size, overflow_fields)
+    envelope_size = _sdk_result_bytes(text)
+    if envelope_size > MAX_REPLAY_RESPONSE_BYTES:
+        return _limit_exceeded_response(envelope_size, overflow_fields)
+    return text
 
 
 def _error_envelope(
@@ -216,20 +178,6 @@ def _native_error(exc: UECommandError) -> str:
     # Never trim diagnostics: an over-budget native error is an explicit contract error
     # that still carries the failing command identity.
     return _finalize(payload, {"success": False, "_command": exc.command})
-
-
-def _response_error(response: dict[str, Any]) -> str | None:
-    if response.get("success") is not False:
-        return None
-    error = response.get("error", {})
-    return _native_error(
-        UECommandError(
-            "replay",
-            error.get("code", "UNKNOWN"),
-            error.get("message", "Unknown error"),
-            error.get("details", {}),
-        )
-    )
 
 
 def _not_dispatched(exc: ConnectionError) -> str:
@@ -362,7 +310,4 @@ def dispatch_replay_command(connection, command: str, params: dict | None = None
         except ConnectionError as exc:
             return _connection_error(exc)
 
-    error = _response_error(response)
-    if error is not None:
-        return error
     return _bounded_data(response.get("data", {}))

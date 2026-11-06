@@ -302,7 +302,7 @@ bool FCortexReplayLibraryInitialStateTest::RunTest(const FString& Parameters)
 
 	{
 		FCortexReplaySnapshot Snapshot = Fixture.MakeRecording(Id, false, {});
-		// The current recording format is 2, so a legacy 1 must be refused as mismatched.
+		// The current recording format is 3, so a legacy 1 must be refused as mismatched.
 		Snapshot.InitialState.SchemaVersion = 1;
 		TestFalse(TEXT("Mismatched initial-state schema rejected"), Library.Publish(Snapshot).bSuccess);
 	}
@@ -883,50 +883,6 @@ bool FCortexReplayLibrarySlateIdentityDigestRoundTripTest::RunTest(const FString
 		FCortexReplayGuardEvaluator::Evaluate(Loaded->Events[0], ActualPose, Observation, false);
 	TestTrue(TEXT("A live selector matching the loaded selector is Ready, not identity_mismatch"),
 		Decision.State == ECortexReplayGuardDecisionState::Ready);
-
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexReplayLibraryCaptureFrameOverflowTest,
-	"Cortex.Replay.Library.CaptureFrameOverflow",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-bool FCortexReplayLibraryCaptureFrameOverflowTest::RunTest(const FString& Parameters)
-{
-	FCortexReplayTestFixture Fixture;
-	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
-
-	int32 Id = 0;
-	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
-
-	{
-		FCortexReplayEvent Event = MakeKeyDownEvent(0, 0.0);
-		Event.CaptureContext.FrameNumber = MAX_uint64;
-		TestTrue(TEXT("Maximum frame publishes"), Library.Publish(Fixture.MakeRecording(Id, false, { Event })).bSuccess);
-	}
-
-	{
-		TSharedPtr<const FCortexReplaySnapshot> Snapshot;
-		FCortexReplayLibrary Reopened(Fixture.GetProjectRoot());
-		TestTrue(TEXT("Maximum frame loads"), Reopened.Load(Id, false, Snapshot).bSuccess);
-	}
-
-	const FString InputsPath = Fixture.GetInputsPath(Id);
-	TSharedPtr<FJsonObject> Row = LoadJsonObject(InputsPath);
-	TestTrue(TEXT("Read input row"), Row.IsValid());
-	if (Row.IsValid())
-	{
-		Row->SetStringField(TEXT("capture_frame"), TEXT("18446744073709551616"));
-		TestTrue(TEXT("Write overflowing frame"), SaveJsonLine(InputsPath, Row));
-	}
-
-	TSharedPtr<const FCortexReplaySnapshot> Snapshot;
-	FCortexReplayLibrary Reopened(Fixture.GetProjectRoot());
-	const FCortexCommandResult Result = Reopened.Load(Id, false, Snapshot);
-	TestFalse(TEXT("Overflowing frame denies load"), Result.bSuccess);
-	TestEqual(TEXT("Frame overflow is a format error"), Result.ErrorCode, FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
 
 	return true;
 }
@@ -1620,7 +1576,9 @@ bool FCortexReplayLibraryFramesStreamValidationTest::RunTest(const FString& Para
 		if (Loaded.IsValid())
 		{
 			TestEqual(TEXT("Loaded frames match the published frame count"), Loaded->Frames.Num(), Snapshot.Frames.Num());
-			TestEqual(TEXT("Loaded timing matches"), Loaded->Metadata.Timing.InputEpochFrame, Snapshot.Metadata.Timing.InputEpochFrame);
+			TestEqual(TEXT("Loaded timing matches"), Loaded->Metadata.Timing.FrameCount, Snapshot.Metadata.Timing.FrameCount);
+			TestEqual(TEXT("Loaded duration is the sum of the frame deltas"), Loaded->Metadata.DurationSeconds,
+				FMath::Abs(Snapshot.Metadata.DurationSeconds), 1e-9);
 		}
 	}
 
@@ -1647,15 +1605,15 @@ bool FCortexReplayLibraryFramesStreamValidationTest::RunTest(const FString& Para
 
 	const TArray<FFrameBoundaryCase> Cases = {
 		{ TEXT("Non-contiguous frame_index"), [](FCortexReplaySnapshot& S) { S.Frames[1].FrameIndex = 2; } },
-		{ TEXT("FirstSequence does not continue from the previous frame"), [](FCortexReplaySnapshot& S) { S.Frames[1].FirstSequence = 1; } },
+		{ TEXT("FirstSequence does not continue from the previous frame"), [](FCortexReplaySnapshot& S) { S.Frames[1].FirstSequence = 5; } },
 		{ TEXT("Frame attributes more events than the inputs stream"), [&](FCortexReplaySnapshot& S) { LastInputFrame(S).EventCount += 1; } },
 		{ TEXT("Frame attributes fewer events than the inputs stream"), [&](FCortexReplaySnapshot& S) { LastInputFrame(S).EventCount -= 1; } },
 		{ TEXT("timing.frame_count disagrees with the frame set"), [](FCortexReplaySnapshot& S) { S.Metadata.Timing.FrameCount = S.Frames.Num() + 1; } },
-		{ TEXT("input epoch frame is below 1"), [](FCortexReplaySnapshot& S) { S.Metadata.Timing.InputEpochFrame = 0; } },
-		{ TEXT("input epoch frame is not below frame_count"), [](FCortexReplaySnapshot& S) { S.Metadata.Timing.InputEpochFrame = S.Frames.Num(); } },
-		{ TEXT("Deadline moves backwards"), [](FCortexReplaySnapshot& S) { S.Frames[1].InputDeadlineSeconds = -1.0; } },
 		{ TEXT("Non-finite application delta"), [](FCortexReplaySnapshot& S) { S.Frames[1].AppDeltaSeconds = std::numeric_limits<double>::infinity(); } },
 		{ TEXT("Negative application delta"), [](FCortexReplaySnapshot& S) { S.Frames[1].AppDeltaSeconds = -0.5; } },
+		{ TEXT("Zero application delta"), [](FCortexReplaySnapshot& S) { S.Frames[1].AppDeltaSeconds = 0.0; } },
+		{ TEXT("Application delta above the documented cap"), [](FCortexReplaySnapshot& S) { S.Frames[1].AppDeltaSeconds = CortexReplayMaxFrameDeltaSeconds + 1.0; } },
+		{ TEXT("duration_seconds disagrees with the frame deltas"), [](FCortexReplaySnapshot& S) { S.Metadata.DurationSeconds += 1.0; } },
 		{ TEXT("Negative event count"), [](FCortexReplaySnapshot& S) { S.Frames[1].EventCount = -1; } },
 	};
 
@@ -1701,5 +1659,218 @@ bool FCortexReplayLibraryFramesStreamValidationTest::RunTest(const FString& Para
 			Result.ErrorCode, FString(CortexReplayErrorCodes::InvalidRecording));
 	}
 
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Format 3: frames are the engine frames that consumed input after the epoch. world_tick is an
+// object or an explicit null, the viewport state and input-config prerequisites round-trip, and
+// duration_seconds is the sum of the frame deltas. Catches any serializer/parser regression of the
+// frame row, initial_state.viewport or the new prerequisites.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryFormatThreeRoundTripTest,
+	"Cortex.Replay.Library.FormatThreeRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryFormatThreeRoundTripTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	if (!TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess))
+	{
+		return false;
+	}
+
+	FCortexReplaySnapshot Recording = Fixture.MakeRecording(Id, false, { MakeKeyDownEvent(0, 0.05) });
+	Recording.Frames[0].WorldTick.Reset();
+	Recording.Frames[1].WorldTick->bPaused = true;
+	Recording.Metadata.Prerequisites.PlayerInputClass = TEXT("/Script/Engine.PlayerInput");
+	Recording.Metadata.Prerequisites.InputConfigSha256 = FString::ChrN(64, TEXT('b'));
+	Recording.InitialState.Viewport.bMouseCapture = true;
+	Recording.InitialState.Viewport.bHighPrecision = true;
+	if (!TestTrue(TEXT("Publish"), Library.Publish(Recording).bSuccess))
+	{
+		return false;
+	}
+
+	TSharedPtr<const FCortexReplaySnapshot> Loaded;
+	if (!TestTrue(TEXT("Load"), Library.Load(Id, false, Loaded).bSuccess) || !Loaded.IsValid())
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Metadata schema is 3"), Loaded->Metadata.SchemaVersion, 3);
+	TestEqual(TEXT("Initial-state schema is 3"), Loaded->InitialState.SchemaVersion, 3);
+	TestFalse(TEXT("A frame without a world tick stays without one"), Loaded->Frames[0].WorldTick.IsSet());
+	if (TestTrue(TEXT("A ticked frame keeps its world tick"), Loaded->Frames[1].WorldTick.IsSet()))
+	{
+		TestTrue(TEXT("The paused flag round-trips"), Loaded->Frames[1].WorldTick->bPaused);
+		TestEqual(TEXT("The real delta round-trips"), Loaded->Frames[1].WorldTick->RealDeltaSeconds,
+			Recording.Frames[1].WorldTick->RealDeltaSeconds);
+	}
+	TestTrue(TEXT("Viewport mouse capture round-trips"), Loaded->InitialState.Viewport.bMouseCapture);
+	TestTrue(TEXT("Viewport high precision round-trips"), Loaded->InitialState.Viewport.bHighPrecision);
+	TestEqual(TEXT("Player input class round-trips"), Loaded->Metadata.Prerequisites.PlayerInputClass,
+		Recording.Metadata.Prerequisites.PlayerInputClass);
+	TestEqual(TEXT("Input config digest round-trips"), Loaded->Metadata.Prerequisites.InputConfigSha256,
+		Recording.Metadata.Prerequisites.InputConfigSha256);
+	TestEqual(TEXT("Duration is the sum of the frame deltas"), Loaded->Metadata.DurationSeconds,
+		Recording.Metadata.DurationSeconds, 1e-9);
+
+	FString FramesText;
+	FFileHelper::LoadFileToString(FramesText,
+		*FPaths::Combine(FPaths::GetPath(Fixture.GetInputsPath(Id)), TEXT("frames.jsonl")));
+	TestTrue(TEXT("An unticked frame is written as an explicit null"), FramesText.Contains(TEXT("\"world_tick\":null")));
+	TestFalse(TEXT("Retired frame fields are not written"), FramesText.Contains(TEXT("capture_frame")));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Format 2 recordings are refused as UNSUPPORTED_RECORDING_FORMAT by Load and reported by the
+// metadata-only listing with that load error.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryFormatTwoRefusedTest,
+	"Cortex.Replay.Library.FormatTwoRefused",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryFormatTwoRefusedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	Library.ReserveId(Id);
+	if (!TestTrue(TEXT("Publish"), Library.Publish(Fixture.MakeRecording(Id, false, {})).bSuccess))
+	{
+		return false;
+	}
+
+	const FString MetadataPath = FPaths::Combine(FPaths::GetPath(Fixture.GetInputsPath(Id)), TEXT("metadata.json"));
+	TSharedPtr<FJsonObject> Metadata = LoadJsonObject(MetadataPath);
+	if (!TestTrue(TEXT("metadata.json is readable"), Metadata.IsValid()))
+	{
+		return false;
+	}
+	Metadata->SetNumberField(TEXT("schema_version"), 2);
+	TestTrue(TEXT("Relabel to format 2"), SaveJsonObject(MetadataPath, Metadata));
+
+	TSharedPtr<const FCortexReplaySnapshot> Loaded;
+	const FCortexCommandResult LoadResult = Library.Load(Id, false, Loaded);
+	TestFalse(TEXT("A format-2 recording does not load"), LoadResult.bSuccess);
+	TestEqual(TEXT("It is refused as an unsupported format"), LoadResult.ErrorCode,
+		FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
+
+	TArray<FCortexReplayLibraryEntry> Entries;
+	TestTrue(TEXT("Listing succeeds"), Library.ListEntries(Entries).bSuccess);
+	if (TestEqual(TEXT("The recording is listed"), Entries.Num(), 1))
+	{
+		TestFalse(TEXT("It has no usable metadata"), Entries[0].Metadata.IsSet());
+		TestEqual(TEXT("It reports the unsupported format"), Entries[0].LoadError.ErrorCode,
+			FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The metadata-only listing neither parses nor hashes the payload: a recording whose inputs were
+// corrupted is still listed with its metadata, while a directory without metadata is listed with a
+// load error. Delete removes either kind. Catches a regression that makes the listing load payloads
+// (the per-refresh cost) or hide unloadable recordings, and one that refuses to delete them.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryEntriesAndDeleteUnloadableTest,
+	"Cortex.Replay.Library.EntriesAndDeleteUnloadable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryEntriesAndDeleteUnloadableTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Good = 0;
+	int32 Corrupt = 0;
+	int32 BadInitial = 0;
+	Library.ReserveId(Good);
+	Library.ReserveId(Corrupt);
+	Library.ReserveId(BadInitial);
+	TestTrue(TEXT("Publish good"), Library.Publish(Fixture.MakeRecording(Good, false, {})).bSuccess);
+	TestTrue(TEXT("Publish corrupt"), Library.Publish(Fixture.MakeRecording(Corrupt, false, {})).bSuccess);
+	TestTrue(TEXT("Publish bad initial state"), Library.Publish(Fixture.MakeRecording(BadInitial, false, {})).bSuccess);
+	TestTrue(TEXT("Corrupt the inputs payload"),
+		FFileHelper::SaveStringToFile(TEXT("not json\n"), *Fixture.GetInputsPath(Corrupt)));
+	TestTrue(TEXT("Truncate the initial state"),
+		FFileHelper::SaveStringToFile(TEXT("{"),
+			*FPaths::Combine(FPaths::GetPath(Fixture.GetInputsPath(BadInitial)), TEXT("initial_state.json"))));
+
+	const int32 Empty = BadInitial + 1;
+	IFileManager::Get().MakeDirectory(
+		*FPaths::GetPath(Fixture.GetInputsPath(Empty)), /*Tree=*/true);
+
+	TArray<FCortexReplayLibraryEntry> Entries;
+	TestTrue(TEXT("Listing succeeds"), Library.ListEntries(Entries).bSuccess);
+	if (!TestEqual(TEXT("Every directory is listed"), Entries.Num(), 4))
+	{
+		return false;
+	}
+	TestEqual(TEXT("Entries are in id order"), Entries[0].RecordingId, Good);
+	TestTrue(TEXT("The good recording has metadata"), Entries[0].Metadata.IsSet());
+	TestTrue(TEXT("A corrupt payload does not hide the recording from the metadata listing"),
+		Entries[1].Metadata.IsSet());
+	// The initial state is already parsed by the listing: a malformed one is known to be unloadable.
+	TestFalse(TEXT("A malformed initial state is not listed as playable"), Entries[2].Metadata.IsSet());
+	TestEqual(TEXT("A malformed initial state names the format error"), Entries[2].LoadError.ErrorCode,
+		FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
+	TestFalse(TEXT("A directory without metadata has none"), Entries[3].Metadata.IsSet());
+	TestFalse(TEXT("It explains why with a load error"), Entries[3].LoadError.bSuccess);
+
+	TSharedPtr<const FCortexReplaySnapshot> Loaded;
+	TestFalse(TEXT("The corrupt recording does not load"), Library.Load(Corrupt, false, Loaded).bSuccess);
+
+	const int64 RevisionBefore = Library.GetRevision();
+	TestTrue(TEXT("The corrupt recording deletes"), Library.Delete(Corrupt).bSuccess);
+	TestTrue(TEXT("The metadata-less directory deletes"), Library.Delete(Empty).bSuccess);
+	TestTrue(TEXT("Deleting bumps the revision"), Library.GetRevision() > RevisionBefore);
+	TestFalse(TEXT("The corrupt recording is gone"),
+		IFileManager::Get().DirectoryExists(*FPaths::GetPath(Fixture.GetInputsPath(Corrupt))));
+	TestFalse(TEXT("The metadata-less directory is gone"),
+		IFileManager::Get().DirectoryExists(*FPaths::GetPath(Fixture.GetInputsPath(Empty))));
+	TestTrue(TEXT("The good recording remains"),
+		IFileManager::Get().DirectoryExists(*FPaths::GetPath(Fixture.GetInputsPath(Good))));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Audit C7: an occupied recording path is environment state, so publication reports a retryable
+// storage failure, while content defects stay INVALID_RECORDING (see FramesStreamValidation).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryOccupiedPathRetryableTest,
+	"Cortex.Replay.Library.OccupiedPathIsRetryable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryOccupiedPathRetryableTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	Library.ReserveId(Id);
+	TestTrue(TEXT("First publish"), Library.Publish(Fixture.MakeRecording(Id, false, {})).bSuccess);
+	const FCortexCommandResult Second = Library.Publish(Fixture.MakeRecording(Id, false, {}));
+	TestFalse(TEXT("A second publish never overwrites"), Second.bSuccess);
+	TestEqual(TEXT("The occupied path is a storage failure"), Second.ErrorCode,
+		FString(CortexReplayErrorCodes::StorageFailure));
 	return true;
 }

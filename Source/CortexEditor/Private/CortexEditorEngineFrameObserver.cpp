@@ -5,8 +5,6 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
-#include "GameFramework/WorldSettings.h"
-#include "HAL/PlatformTime.h"
 #include "Misc/App.h"
 #include "Misc/CoreDelegates.h"
 
@@ -15,47 +13,6 @@ namespace
 FCortexCommandResult NativeFrameError(const TCHAR* Message)
 {
 	return FCortexCommandRouter::Error(TEXT("REPLAY_TIMING_ERROR"), Message);
-}
-
-FName NativeTickTypeName(ELevelTick TickType)
-{
-	static const FName TimeOnly(TEXT("LEVELTICK_TimeOnly"));
-	static const FName ViewportsOnly(TEXT("LEVELTICK_ViewportsOnly"));
-	static const FName All(TEXT("LEVELTICK_All"));
-	static const FName PauseTick(TEXT("LEVELTICK_PauseTick"));
-	FName Name = NAME_None;
-	switch (TickType)
-	{
-	case LEVELTICK_TimeOnly:
-		Name = TimeOnly;
-		break;
-	case LEVELTICK_ViewportsOnly:
-		Name = ViewportsOnly;
-		break;
-	case LEVELTICK_All:
-		Name = All;
-		break;
-	case LEVELTICK_PauseTick:
-		Name = PauseTick;
-		break;
-	default:
-		break;
-	}
-	return Name;
-}
-
-bool HasIdenticalNativeFilter(const FCortexEditorNativeMouseFilterState& Left,
-	const FCortexEditorNativeMouseFilterState& Right)
-{
-	return FMemory::Memcmp(Left.ZeroTimeSeconds, Right.ZeroTimeSeconds,
-		 sizeof(Left.ZeroTimeSeconds)) == 0
-		&& FMemory::Memcmp(Left.SmoothedMouse, Right.SmoothedMouse,
-			sizeof(Left.SmoothedMouse)) == 0
-		&& Left.SampleCount == Right.SampleCount
-		&& FMemory::Memcmp(&Left.SamplingTotalSeconds, &Right.SamplingTotalSeconds,
-			sizeof(Left.SamplingTotalSeconds)) == 0
-		&& FMemory::Memcmp(&Left.EffectiveTimeDilation, &Right.EffectiveTimeDilation,
-			sizeof(Left.EffectiveTimeDilation)) == 0;
 }
 }
 
@@ -69,28 +26,18 @@ struct FCortexEditorEngineFrameObserver::FState
 	FDelegateHandle WorldStartHandle;
 	FDelegateHandle WorldEndHandle;
 	FDelegateHandle EndFrameHandle;
-	FCortexEditorEngineFrameRecord Records[2];
+	/** The engine frame in flight; reset at every OnBeginFrame and handed out by reference. */
+	FCortexEditorEngineFrameRecord Record;
 	TWeakObjectPtr<UWorld> SelectedWorld;
 	FName SelectedContextHandle = NAME_None;
 	uint64 AcceptedGeneration = 0;
-	uint64 TotalSelectedTicks = 0;
-	double FirstWorldRealSeconds = 0.0;
-	double FirstWorldTimeSeconds = 0.0;
-	int32 CurrentIndex = 0;
-	int32 LastClosedIndex = INDEX_NONE;
 	int32 CallbackDepth = 0;
 	bool bInstalled = false;
 	bool bFrameOpen = false;
 	bool bGenerationPinned = false;
 	bool bEverSelectedWorld = false;
 	bool bWorldTickPending = false;
-	bool bSlateWaitInProgress = false;
 	bool bClearingCallbacks = false;
-
-	FCortexEditorEngineFrameRecord& Current()
-	{
-		return Records[CurrentIndex];
-	}
 
 	bool IsRequestCurrent()
 	{
@@ -112,9 +59,9 @@ struct FCortexEditorEngineFrameObserver::FState
 
 	void InvalidateCurrent()
 	{
-		Current().bBoundaryObserved = false;
-		Current().SelectedWorldTickCount = -1;
-		Current().WorldTick.Reset();
+		Record.bBoundaryObserved = false;
+		Record.SelectedWorldTickCount = -1;
+		Record.WorldTick.Reset();
 		bWorldTickPending = false;
 	}
 
@@ -134,10 +81,8 @@ struct FCortexEditorEngineFrameObserver::FState
 		{
 			return;
 		}
-		CurrentIndex = LastClosedIndex == 0 ? 1 : 0;
-		Current() = FCortexEditorEngineFrameRecord();
-		Current().CaptureFrameCounter = GFrameCounter;
-		Current().FrameBeginSeconds = FPlatformTime::Seconds();
+		Record = FCortexEditorEngineFrameRecord();
+		Record.CaptureFrameCounter = GFrameCounter;
 		bFrameOpen = true;
 		bWorldTickPending = false;
 		if (!IsRequestCurrent())
@@ -152,32 +97,26 @@ struct FCortexEditorEngineFrameObserver::FState
 		{
 			return;
 		}
-		FCortexEditorEngineFrameRecord& Record = Current();
 		if (Record.bBoundaryObserved || Record.SelectedWorldTickCount < 0
 			|| !IsRequestCurrent() || Record.CaptureFrameCounter != GFrameCounter)
 		{
 			InvalidateCurrent();
 			return;
 		}
-		Record.InputBoundarySeconds = FPlatformTime::Seconds();
 		Record.AppDeltaSeconds = FApp::GetDeltaTime();
-		Record.AppCurrentSeconds = FApp::GetCurrentTime();
-		Record.AppLastSeconds = FApp::GetLastTime();
 		Record.bBoundaryObserved = true;
 		++CallbackDepth;
 		OnInputBoundary(Record);
 		--CallbackDepth;
 		if (bInstalled && (Record.CaptureFrameCounter != GFrameCounter
-			|| Record.AppDeltaSeconds != FApp::GetDeltaTime()
-			|| Record.AppCurrentSeconds != FApp::GetCurrentTime()
-			|| Record.AppLastSeconds != FApp::GetLastTime()))
+			|| Record.AppDeltaSeconds != FApp::GetDeltaTime()))
 		{
 			InvalidateCurrent();
 		}
 		ClearCallbacksIfIdle();
 	}
 
-	void WorldStart(UWorld* World, ELevelTick TickType, float RealDeltaSeconds)
+	void WorldStart(UWorld* World, float RealDeltaSeconds)
 	{
 		if (!bInstalled || !World || World->WorldType != EWorldType::PIE)
 		{
@@ -215,8 +154,6 @@ struct FCortexEditorEngineFrameObserver::FState
 			SelectedWorld = World;
 			SelectedContextHandle = ContextHandle;
 			bEverSelectedWorld = true;
-			FirstWorldRealSeconds = World->GetRealTimeSeconds();
-			FirstWorldTimeSeconds = World->GetTimeSeconds();
 			// Authorization and frame attribution precede ordinary Pawn/readiness.
 			Session->BindNativeFramePreparationRoute(*World, ContextHandle);
 			if (!bInstalled || !Session || !IsRequestCurrent())
@@ -224,42 +161,31 @@ struct FCortexEditorEngineFrameObserver::FState
 				return;
 			}
 		}
-		FCortexEditorEngineFrameRecord& Record = Current();
 		if (!Record.bBoundaryObserved || Record.SelectedWorldTickCount != 0
 			|| bWorldTickPending || Record.CaptureFrameCounter != GFrameCounter)
 		{
 			InvalidateCurrent();
 			return;
 		}
-		++TotalSelectedTicks;
 		Record.SelectedWorldTickCount = 1;
 		Record.WorldTick.Emplace();
-		FCortexEditorObservedWorldTick& Tick = Record.WorldTick.GetValue();
-		Tick.TickType = NativeTickTypeName(TickType);
-		Tick.RealDeltaSeconds = RealDeltaSeconds;
-		Tick.bPaused = World->IsPaused();
+		Record.WorldTick->RealDeltaSeconds = RealDeltaSeconds;
+		Record.WorldTick->bPaused = World->IsPaused();
 		bWorldTickPending = true;
 	}
 
-	void WorldEnd(UWorld* World, ELevelTick TickType, float DeltaSeconds)
+	void WorldEnd(UWorld* World)
 	{
 		if (!bInstalled || !World || World != SelectedWorld.Get())
 		{
 			return;
 		}
-		FCortexEditorEngineFrameRecord& Record = Current();
 		if (!bFrameOpen || !bWorldTickPending || !Record.WorldTick.IsSet()
 			|| !IsRequestCurrent() || Record.CaptureFrameCounter != GFrameCounter)
 		{
 			InvalidateCurrent();
 			return;
 		}
-		FCortexEditorObservedWorldTick& Tick = Record.WorldTick.GetValue();
-		Tick.TickType = NativeTickTypeName(TickType);
-		Tick.DeltaSeconds = DeltaSeconds;
-		Tick.EffectiveTimeDilation = World->GetWorldSettings()->GetEffectiveTimeDilation();
-		Tick.RealTimeOffsetSeconds = World->GetRealTimeSeconds() - FirstWorldRealSeconds;
-		Tick.TimeOffsetSeconds = World->GetTimeSeconds() - FirstWorldTimeSeconds;
 		bWorldTickPending = false;
 	}
 
@@ -269,15 +195,12 @@ struct FCortexEditorEngineFrameObserver::FState
 		{
 			return;
 		}
-		FCortexEditorEngineFrameRecord& Record = Current();
 		if (!Record.bBoundaryObserved || bWorldTickPending || !IsRequestCurrent()
 			|| Record.CaptureFrameCounter != GFrameCounter)
 		{
 			InvalidateCurrent();
 		}
-		Record.bEndObserved = true;
 		bFrameOpen = false;
-		LastClosedIndex = CurrentIndex;
 		++CallbackDepth;
 		OnFrameClosed(Record);
 		--CallbackDepth;
@@ -357,19 +280,19 @@ FCortexCommandResult FCortexEditorEngineFrameObserver::Install(
 		}
 	});
 	NewState->WorldStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda(
-		[WeakState](UWorld* World, ELevelTick TickType, float DeltaSeconds)
+		[WeakState](UWorld* World, ELevelTick, float DeltaSeconds)
 		{
 			if (const TSharedPtr<FState> Pinned = WeakState.Pin())
 			{
-				Pinned->WorldStart(World, TickType, DeltaSeconds);
+				Pinned->WorldStart(World, DeltaSeconds);
 			}
 		});
 	NewState->WorldEndHandle = FWorldDelegates::OnWorldTickEnd.AddLambda(
-		[WeakState](UWorld* World, ELevelTick TickType, float DeltaSeconds)
+		[WeakState](UWorld* World, ELevelTick, float)
 		{
 			if (const TSharedPtr<FState> Pinned = WeakState.Pin())
 			{
-				Pinned->WorldEnd(World, TickType, DeltaSeconds);
+				Pinned->WorldEnd(World);
 			}
 		});
 	NewState->EndFrameHandle = FCoreDelegates::OnEndFrame.AddLambda([WeakState]()
@@ -399,103 +322,9 @@ void FCortexEditorEngineFrameObserver::Uninstall()
 	}
 }
 
-bool FCortexEditorEngineFrameObserver::HasSelectedWorld() const
+const FCortexEditorEngineFrameRecord* FCortexEditorEngineFrameObserver::GetOpenFrame() const
 {
 	check(IsInGameThread());
-	return State.IsValid() && State->bInstalled && State->SelectedWorld.IsValid();
-}
-
-UWorld* FCortexEditorEngineFrameObserver::GetSelectedWorld() const
-{
-	check(IsInGameThread());
-	return HasSelectedWorld() ? State->SelectedWorld.Get() : nullptr;
-}
-
-const FCortexEditorEngineFrameRecord* FCortexEditorEngineFrameObserver::GetLastClosedFrame() const
-{
-	check(IsInGameThread());
-	return State.IsValid() && State->LastClosedIndex != INDEX_NONE
-		? &State->Records[State->LastClosedIndex] : nullptr;
-}
-
-int32 FCortexEditorEngineFrameObserver::GetSelectedWorldTickCount() const
-{
-	check(IsInGameThread());
-	return State.IsValid() ? State->Current().SelectedWorldTickCount : 0;
-}
-
-FCortexCommandResult FCortexEditorEngineFrameObserver::RunSlateOnlyWaitWork()
-{
-	if (!IsInGameThread() || !FSlateApplication::IsInitialized())
-	{
-		return NativeFrameError(TEXT("Slate-only work requires the Game Thread and Slate"));
-	}
-	const TSharedPtr<FState> Pinned = State;
-	if (!Pinned.IsValid() || !Pinned->bInstalled || !Pinned->Session
-		|| !Pinned->SelectedWorld.IsValid() || Pinned->bSlateWaitInProgress
-		|| FSlateApplication::Get().IsTicking() || !Pinned->IsRequestCurrent())
-	{
-		return NativeFrameError(TEXT("Slate-only work requires the exact live owned route and no reentry"));
-	}
-	FCortexEditorPhysicalInputSession& Session = *Pinned->Session;
-	FString RouteReason;
-	if (!Session.IsSelectedRouteOwnershipIntact(RouteReason))
-	{
-		return FCortexCommandRouter::Error(TEXT("REPLAY_TIMING_ERROR"), RouteReason);
-	}
-	FCortexEditorNativeMouseFilterState FilterBefore;
-	const FCortexCommandResult FilterRead = Session.ReadNativeMouseFilterState(FilterBefore);
-	if (!FilterRead.bSuccess)
-	{
-		return FilterRead;
-	}
-	const TWeakObjectPtr<UWorld> WeakWorld = Pinned->SelectedWorld;
-	UWorld* World = WeakWorld.Get();
-	const double WorldRealBefore = World->GetRealTimeSeconds();
-	const double WorldTimeBefore = World->GetTimeSeconds();
-	const float WorldDeltaBefore = World->GetDeltaSeconds();
-	const bool bPausedBefore = World->IsPaused();
-	const float DilationBefore = World->GetWorldSettings()->GetEffectiveTimeDilation();
-	const uint64 CounterBefore = GFrameCounter;
-	const uint64 TicksBefore = Pinned->TotalSelectedTicks;
-	const double CurrentBefore = FApp::GetCurrentTime();
-	const double LastBefore = FApp::GetLastTime();
-	const double DeltaBefore = FApp::GetDeltaTime();
-	const FCortexEditorPhysicalInputTargetBinding BindingBefore = Session.GetTargetBinding();
-	{
-		TGuardValue<bool> WaitScope(Pinned->bSlateWaitInProgress, true);
-		FSlateApplication::Get().Tick(ESlateTickType::TimeAndWidgets);
-	}
-	if (!Pinned->bInstalled || !Pinned->Session || !Pinned->IsRequestCurrent()
-		|| WeakWorld.Get() != World || !WeakWorld.IsValid())
-	{
-		return NativeFrameError(TEXT("The owned route was cancelled or replaced during Slate-only work"));
-	}
-	const FCortexEditorPhysicalInputTargetBinding& BindingAfter = Pinned->Session->GetTargetBinding();
-	FCortexEditorNativeMouseFilterState FilterAfter;
-	const FCortexCommandResult FilterReadAfter = Pinned->Session->ReadNativeMouseFilterState(FilterAfter);
-	if (!FilterReadAfter.bSuccess)
-	{
-		return FilterReadAfter;
-	}
-	if (CounterBefore != GFrameCounter || TicksBefore != Pinned->TotalSelectedTicks
-		|| CurrentBefore != FApp::GetCurrentTime() || LastBefore != FApp::GetLastTime()
-		|| DeltaBefore != FApp::GetDeltaTime() || WorldRealBefore != World->GetRealTimeSeconds()
-		|| WorldTimeBefore != World->GetTimeSeconds() || WorldDeltaBefore != World->GetDeltaSeconds()
-		|| bPausedBefore != World->IsPaused()
-		|| DilationBefore != World->GetWorldSettings()->GetEffectiveTimeDilation()
-		|| !HasIdenticalNativeFilter(FilterBefore, FilterAfter)
-		|| BindingBefore.World != BindingAfter.World || BindingBefore.Controller != BindingAfter.Controller
-		|| BindingBefore.Pawn != BindingAfter.Pawn
-		|| BindingBefore.InputRoot != BindingAfter.InputRoot
-		|| BindingBefore.ViewportWidget != BindingAfter.ViewportWidget
-		|| BindingBefore.SlateUserIndex != BindingAfter.SlateUserIndex
-		|| BindingBefore.InputDevice != BindingAfter.InputDevice
-		|| !Pinned->Session->IsSelectedRouteOwnershipIntact(RouteReason))
-	{
-		return NativeFrameError(TEXT("Slate-only work changed native frame, world, filter or route state"));
-	}
-	FCortexCommandResult Result;
-	Result.bSuccess = true;
-	return Result;
+	return State.IsValid() && State->bInstalled && State->bFrameOpen && State->Record.bBoundaryObserved
+		? &State->Record : nullptr;
 }

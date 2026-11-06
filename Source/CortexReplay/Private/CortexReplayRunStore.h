@@ -36,10 +36,18 @@ struct FCortexReplayRunRecord
 	int32 CompletedFrames = 0;
 	int32 FrameCount = 0;
 	FString FramesSha256;
+	/**
+	 * How far the run's recorded timeline trailed wall-clock time at its last paced frame. A host
+	 * slower than the recording falls behind instead of failing; finite and >= 0.
+	 */
+	double BehindSeconds = 0.0;
 	/** True when the record was persisted before frame identity existed; full detail is unsupported. */
 	bool bLegacyFormat = false;
 	FCortexReplayGuardCoverage GuardCoverage;
-	/** Valid only when State == ECortexReplayState::Error. */
+	/**
+	 * The cause of the run's end: required for Error, retained for Cancelled and Interrupted whenever
+	 * one exists (revocation, target loss, service shutdown), empty for Completed.
+	 */
 	FCortexCommandResult ExecutionError;
 };
 

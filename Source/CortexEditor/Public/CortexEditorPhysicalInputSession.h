@@ -3,7 +3,6 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "CortexEditorPhysicalInput.h"
-#include "CortexEngineCompat.h"
 #include "CortexTypes.h"
 #include "Templates/Function.h"
 #include "UObject/WeakObjectPtrTemplates.h"
@@ -103,6 +102,15 @@ public:
 		TFunction<void(const FCortexCommandResult&)>&& OnReady);
 
 	/**
+	 * Every admission check BeginOwnedPIE performs before it mutates state or queues a request:
+	 * editor readiness, a busy/ending/ready session or an unrelated PIE session (EDITOR_BUSY),
+	 * unsupported play settings, a non-neutral physical state, an invalid local player index or
+	 * map path, and a missing map package (ASSET_NOT_FOUND). Callers use it to refuse before they
+	 * reserve any resource of their own; BeginOwnedPIE calls it first, so the two never diverge.
+	 */
+	FCortexCommandResult CheckOwnedPIEAdmission(const FString& MapAssetPath, int32 LocalPlayerIndex) const;
+
+	/**
 	 * Synchronously binds this session to an already running world's selected local
 	 * player. Performs the same target readiness validation without creating or owning
 	 * PIE. Fails immediately when the target is missing, ambiguous or unready.
@@ -130,29 +138,11 @@ public:
 	bool IsWorldThisOwnedRequest(UWorld& World, FName ContextHandle) const;
 
 	/**
-	 * Reads the bound player input's public mouse-filter memory plus the effective world time
-	 * dilation: the two ZeroTime/SmoothedMouse components, the native sample count and sampling
-	 * total, and the exact effective dilation. Never reads or infers private engine state, and
-	 * never derives a synthetic axis value.
+	 * Reads whether the bound viewport widget holds the selected Slate user's mouse capture and
+	 * whether raw high-precision mouse movement is active for that user. Relative motion reaches
+	 * the game only under viewport capture, so replay records and compares both at the epoch.
 	 */
-	FCortexCommandResult ReadNativeMouseFilterState(FCortexEditorNativeMouseFilterState& Out) const;
-
-	/**
-	 * Restores the recorded public mouse-filter fields on the still-original PlayerInput instance.
-	 *
-	 * Rejects non-finite or non-positive sampling state before any mutation, requires the exact
-	 * effective time dilation to still match, writes only the four public fields and verifies the
-	 * readback. Private engine state (for example LastTimeDilation) is never touched.
-	 */
-	FCortexCommandResult RestoreNativeMouseFilterState(const FCortexEditorNativeMouseFilterState& In);
-
-	/**
-	 * Live selected-route input-configuration identity: the bound PlayerInput class path and a
-	 * canonical lower-case SHA-256 over the live axis/config values (see the implementation for
-	 * the exact ordered field set). Both outputs are reset when this fails.
-	 */
-	FCortexCommandResult ReadNativeInputConfig(FString& OutPlayerInputClass,
-		FString& OutInputConfigSha256) const;
+	FCortexCommandResult ReadViewportInputState(bool& bOutMouseCapture, bool& bOutHighPrecision) const;
 
 	/** Reads the bound pawn's transform and the bound controller's control rotation. */
 	FCortexCommandResult ReadPlayerPose(FCortexEditorPhysicalInputPlayerPose& Out) const;
@@ -189,16 +179,17 @@ public:
 	 * Arms replay epoch interference ownership at epoch establishment, before the first event.
 	 *
 	 * While armed, any loss of the selected focus/window/route is always treated as interference,
-	 * including during the idle/wait window before the first dispatch. Real selected-route physical
-	 * input from either origin (human or AI) is interference too, so a foreign key/button/move/wheel
-	 * edge faults the epoch exactly like route loss; the recording's origin never suppresses an
-	 * interruption. Does not steal focus and does not enable inactive-application input handling.
+	 * including during the idle/wait window before the first dispatch. Any physical packet from the
+	 * selected Slate user/device (a key, button, move or wheel edge, whichever window it targets) is
+	 * interference too, so a foreign edge faults the epoch exactly like route loss; the recording's
+	 * origin never suppresses an interruption. The scope is deliberately the whole device rather
+	 * than the selected route: an extra packet can change native sample counts even when it never
+	 * reaches the route. Does not steal focus and does not enable inactive-application input
+	 * handling. While armed, absolute pointer events also move the real OS cursor to the recorded
+	 * position; the human's cursor position captured here is restored by ReleaseHeldInputs.
 	 * Requires the exact binding to still be valid; cleared by ReleaseHeldInputs/Shutdown.
 	 */
 	FCortexCommandResult BeginReplayEpoch();
-
-	/** True only while a replay epoch is armed. */
-	bool IsReplayEpochArmed() const;
 
 	/**
 	 * Non-blocking observation of the exact selected route for one guarded press. Returns the
@@ -226,10 +217,10 @@ public:
 		double, const FCortexEditorPhysicalInputCaptureContext&)>&& Callback);
 
 	/**
-	 * Registers the one interruption callback. It is invoked when real selected-route physical
-	 * input is observed during an armed replay epoch, or when the selected route loses ownership
-	 * during any replay; reentrant callbacks only record state and never re-enter dispatch.
-	 * Passing an empty callback clears it.
+	 * Registers the one interruption callback. It is invoked when any physical packet from the
+	 * selected Slate user/device is observed during an armed replay epoch, or when the selected
+	 * route loses ownership during any replay; reentrant callbacks only record state and never
+	 * re-enter dispatch. Passing an empty callback clears it.
 	 */
 	void SetInterruptionCallback(TFunction<void(const FCortexCommandResult&)>&& Callback);
 
@@ -258,6 +249,14 @@ public:
 	void Shutdown();
 
 	/**
+	 * Shuts the session down and, while its owned PIE teardown is still in flight, keeps it alive from
+	 * this module until the owned context is gone (its teardown observation and render flush must keep
+	 * running). Every callback supplied by the caller is dropped first, so the caller's code may be
+	 * unloaded immediately afterwards.
+	 */
+	static void ShutdownAndRetainUntilOwnedTeardown(TSharedPtr<FCortexEditorPhysicalInputSession>&& Session);
+
+	/**
 	 * Test-support override for the Windows physical-key snapshot (see IsPhysicalInputNeutral).
 	 *
 	 * Compiled only into automation-enabled builds: production must never be able to replace the
@@ -273,30 +272,14 @@ public:
 	 */
 	static TArray<FString> GetUnresolvedSupportedKeyNames();
 	/**
-	 * Test-support read-only snapshot of the replay pointer bookkeeping: the exact screen-space
-	 * accumulator the replayed motion advances and the viewport-local position derived from it.
-	 * Both are zero until a real observation or an absolute replay position seeds them.
+	 * Test-support read-only snapshot of the replay pointer bookkeeping: the exact (fractional)
+	 * screen-space pointer position the engine consumes, held inside the coordinate-root viewport
+	 * rect during relative motion, and the viewport-local position derived from it. Both are zero
+	 * until a real observation or an absolute replay position seeds them.
 	 */
 	void GetReplayPointerPositionForTests(
 		FVector2D& OutScreenSpacePosition, FVector2D& OutViewportPosition) const;
 #endif
-
-	/**
-	 * Terminal-loss ownership cleanup for the native clock.
-	 *
-	 * Quiesces the exact engine authority of the newest admitted owned request so no further owned
-	 * world tick is admitted, without ending PIE, flipping the aggregate end flag, or touching any
-	 * foreign instance. Used on a failed clock-producer read, where the weak caller backend may
-	 * already have retired. Preserves the producer's own error and the held-provider clock state.
-	 * Idempotent, and safe when nothing is retained.
-	 */
-	static FCortexCommandResult QuiesceRetainedOwnedAuthority();
-
-	/**
-	 * Reads the retained exact-session authority's snapshot (fails when nothing is retained).
-	 * Used to prove "no foreign play topology" before a cleanup-only cache reanchor.
-	 */
-	static FCortexCommandResult ReadRetainedOwnedAuthority(FCortexScopedPIESnapshot& OutSnapshot);
 
 private:
 	/** The non-consuming processor reports every observed engine input back to this session. */
@@ -382,6 +365,12 @@ private:
 	bool bReadyCallbackInvoked = false;
 	/** Handle returned by FTSTicker::AddTicker; exact type so RemoveTicker accepts it. */
 	FTSTicker::FDelegateHandle TickerHandle;
+	/**
+	 * While an owned end is queued, rendering commands are flushed at the start of each engine frame:
+	 * the editor destroys the owned floating PIE window on the game thread during EndPlayMap, and the
+	 * render thread must not still hold that window's FSceneViewport when it does (TD-EDITOR-004).
+	 */
+	FDelegateHandle OwnedEndFlushHandle;
 	FName OwnedContextHandle;
 	TWeakObjectPtr<UWorld> OwnedWorld;
 	/**
@@ -541,10 +530,14 @@ private:
 	/** The widget whose geometry maps screen space to the selected viewport-local space. */
 	TSharedPtr<SWidget> GetCoordinateRootWidget() const;
 
+	/** True when Widget is the coordinate root, the input root, or one of their descendants. */
+	bool IsWidgetOnSelectedRoute(const TSharedPtr<const SWidget>& Widget) const;
+
 	/**
 	 * Records the selected pointer's replay bookkeeping from one screen-space location: the exact
-	 * screen accumulator and the viewport-local position derived from it. Every real observation
-	 * and every absolute replay position goes through here, so the two never diverge.
+	 * screen position and the viewport-local position derived from it. Every real observation and
+	 * every absolute replay position goes through here, so the two never diverge, and it re-anchors
+	 * the relative-motion accumulator.
 	 */
 	void SetReplayPointerPosition(const FVector2D& ScreenSpacePosition, const FVector2D& ViewportPosition);
 
@@ -571,15 +564,6 @@ private:
 	 * route. A foreign focus or a different active window means replay no longer owns input.
 	 */
 	bool IsSelectedRouteOwnershipIntact(FString& OutReason) const;
-
-	/** True when the given widget (or one of its ancestors) is on the selected viewport route. */
-	bool IsWidgetOnSelectedRoute(const TSharedPtr<const SWidget>& Widget) const;
-
-	/**
-	 * True when the selected user's live pointer capture belongs to the selected viewport route,
-	 * so ongoing movement is routed to a selected consumer even outside its hit area.
-	 */
-	bool IsPointerCaptureOnSelectedRoute() const;
 
 	/**
 	 * Retains the exact captor/drag-drop/high-precision identities this operation's own dispatch
@@ -626,6 +610,10 @@ private:
 
 	/** Cancels/ends only the matching pending request or owned PIE context. */
 	void RequestOwnedTermination();
+
+	/** Installs the one-shot-per-frame render flush that protects the owned window teardown. */
+	void EnsureOwnedEndFlush();
+	void RemoveOwnedEndFlush();
 
 	/** True while the queued play-session request is still the one this session accepted. */
 	bool IsOwnedRequestPending() const;

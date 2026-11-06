@@ -27,9 +27,6 @@ public:
 	/** Tab id of the independent human recording-library window. */
 	static const FName ReplayTabId;
 
-	/** The backend owner shared with the human window; never owns window/socket lifetime. */
-	TSharedPtr<FCortexReplayService> GetReplayService() const;
-
 private:
 	TSharedRef<SDockTab> SpawnReplayTab(const FSpawnTabArgs& Args);
 	void OpenReplayWindow();
@@ -43,10 +40,6 @@ private:
 
 	/** Called before engine exit; drops menu/tab registrations while they are still valid. */
 	void HandlePreExit();
-
-	/** True only when module unload may safely call UToolMenus::UnregisterOwner. */
-	static bool ShouldTraverseToolMenusDuringShutdown(
-		bool bIsEngineExitRequested, bool bIsToolMenusAvailable);
 
 	/** Backend owner for the domain handler and the human window. */
 	TSharedPtr<FCortexReplayService> ReplayService;

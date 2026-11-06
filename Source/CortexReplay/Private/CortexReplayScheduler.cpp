@@ -7,13 +7,6 @@
 
 namespace
 {
-/** Fixed lateness allowance; there is no added tolerance and no configurable override. */
-constexpr double SCHEDULER_LATENESS_ALLOWANCE_SECONDS = 0.100;
-
-/** Fixed readiness budgets. */
-constexpr double SCHEDULER_MAX_WAIT_PER_PRESS_SECONDS = 1.0;
-constexpr double SCHEDULER_MAX_WAIT_TOTAL_SECONDS = 5.0;
-
 FCortexCommandResult SchedulerSuccess()
 {
 	return FCortexCommandRouter::Success(nullptr);
@@ -25,14 +18,12 @@ FCortexReplayScheduler::FCortexReplayScheduler(TSharedRef<const FCortexReplaySna
 {
 }
 
-FCortexCommandResult FCortexReplayScheduler::TimingError(int32 Sequence, double LatenessSeconds) const
+FCortexCommandResult FCortexReplayScheduler::ClockError(int32 Sequence) const
 {
 	TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
 	Details->SetNumberField(TEXT("sequence"), Sequence);
-	Details->SetNumberField(TEXT("lateness_ms"), LatenessSeconds * 1000.0);
 	return FCortexCommandRouter::Error(FString(CortexReplayErrorCodes::ReplayTimingError),
-		FString::Printf(TEXT("Replay event %d is overdue by %.3f ms"),
-			Sequence, LatenessSeconds * 1000.0),
+		FString::Printf(TEXT("The replay clock produced an invalid observation at event %d"), Sequence),
 		Details);
 }
 
@@ -44,26 +35,23 @@ FCortexCommandResult FCortexReplayScheduler::PrepareFrame(int32 FrameIndex,
 {
 	OutPreparation = ECortexReplayFramePreparation::Waiting;
 
-	// A rejected clock observation (non-finite, negative or backward) is a timing failure, never
-	// a wait.
-	auto ValidateObservation = [this](double Value) -> bool
+	// The clock only measures readiness waits and is read only when a wait is entered or polled. A
+	// rejected observation (non-finite, negative or backward) is a timing failure, never a wait.
+	auto ReadClock = [this, &ReadElapsedSeconds](int32 Sequence, double& OutElapsed) -> FCortexCommandResult
 	{
-		return FMath::IsFinite(Value) && Value >= 0.0 && Value >= LastObservedElapsed;
+		OutElapsed = ReadElapsedSeconds();
+		if (!FMath::IsFinite(OutElapsed) || OutElapsed < 0.0 || OutElapsed < LastObservedElapsed)
+		{
+			return ClockError(Sequence);
+		}
+		LastObservedElapsed = OutElapsed;
+		return SchedulerSuccess();
 	};
 	auto WaitTimeoutError = [](int32 Sequence)
 	{
 		return FCortexCommandRouter::Error(FString(CortexReplayErrorCodes::ReplayUIWaitTimeout),
 			FString::Printf(TEXT("UI readiness wait exceeded its budget at event %d"), Sequence));
 	};
-
-	double Elapsed = ReadElapsedSeconds();
-	if (!ValidateObservation(Elapsed))
-	{
-		return TimingError(
-			NextEvent < Snapshot->Events.Num() ? Snapshot->Events[NextEvent].Sequence : INDEX_NONE,
-			FMath::IsFinite(Elapsed) ? Elapsed - LastObservedElapsed : 0.0);
-	}
-	LastObservedElapsed = Elapsed;
 
 	if (CompletedFrames >= Snapshot->Frames.Num())
 	{
@@ -94,51 +82,46 @@ FCortexCommandResult FCortexReplayScheduler::PrepareFrame(int32 FrameIndex,
 	const int64 FrameEnd64 = static_cast<int64>(Frame.FirstSequence) + static_cast<int64>(Frame.EventCount);
 	const int32 FrameEnd = static_cast<int32>(FMath::Min<int64>(FrameEnd64, static_cast<int64>(Snapshot->Events.Num())));
 
+	// Frame-locked: the whole range belongs to the engine frame preparing it, so no event waits for a
+	// wall-clock timestamp and no amount of wall-clock delay is a failure.
 	while (NextEvent < FrameEnd)
 	{
 		const FCortexReplayEvent& Event = Snapshot->Events[NextEvent];
-		const double EffectiveDeadline = Event.TimeSeconds + AuthorizedWaitSeconds;
+		const bool bPolling = WaitingSequence != INDEX_NONE;
 
-		// Re-read the clock on every iteration so a slow dispatch cannot hide lateness.
-		Elapsed = ReadElapsedSeconds();
-		if (!ValidateObservation(Elapsed))
+		double BeforeEvaluation = 0.0;
+		if (bPolling)
 		{
-			return TimingError(Event.Sequence, 0.0);
+			const FCortexCommandResult Observed = ReadClock(Event.Sequence, BeforeEvaluation);
+			if (!Observed.bSuccess)
+			{
+				return Observed;
+			}
 		}
-		LastObservedElapsed = Elapsed;
-
-		if (WaitingSequence != INDEX_NONE)
+		const FCortexReplayGuardDecision Decision = EvaluateGuard(Event);
+		double AfterEvaluation = 0.0;
+		if (bPolling)
 		{
-			// Repeated polls re-evaluate only the blocked guard. The evaluation interval itself is
-			// never authorized wait time.
-			const double BeforeEvaluation = Elapsed;
-			const FCortexReplayGuardDecision Decision = EvaluateGuard(Event);
-			const double AfterEvaluation = ReadElapsedSeconds();
-			if (!ValidateObservation(AfterEvaluation))
+			const FCortexCommandResult Observed = ReadClock(Event.Sequence, AfterEvaluation);
+			if (!Observed.bSuccess)
 			{
-				return TimingError(Event.Sequence, 0.0);
+				return Observed;
 			}
-			Elapsed = AfterEvaluation;
-			LastObservedElapsed = Elapsed;
+		}
 
-			// Accidental evaluation latency over the fixed allowance is a timing failure, never a wait.
+		if (Decision.State == ECortexReplayGuardDecisionState::Error)
+		{
+			return Decision.Error;
+		}
+
+		if (bPolling)
+		{
+			// Repeated polls re-evaluate only the blocked guard. The wait duration excludes the
+			// evaluation intervals of every pending poll; the per-press limit is the lesser of the fixed
+			// per-press budget and the remaining cumulative run budget.
 			const double EvaluationSeconds = AfterEvaluation - BeforeEvaluation;
-			if (EvaluationSeconds > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
-			{
-				return TimingError(Event.Sequence,
-					EvaluationSeconds - SCHEDULER_LATENESS_ALLOWANCE_SECONDS);
-			}
-
-			if (Decision.State == ECortexReplayGuardDecisionState::Error)
-			{
-				return Decision.Error;
-			}
-
-			// The wait duration excludes the evaluation intervals of every pending poll, not only
-			// the current one; the per-press limit is the lesser of the fixed per-press budget and
-			// the remaining cumulative run budget.
-			const double RemainingRunBudget = SCHEDULER_MAX_WAIT_TOTAL_SECONDS - AuthorizedWaitSeconds;
-			const double PerPressLimit = FMath::Min(SCHEDULER_MAX_WAIT_PER_PRESS_SECONDS, RemainingRunBudget);
+			const double RemainingRunBudget = CortexReplayWaitBudget::MaxAuthorizedWaitSeconds - AuthorizedWaitSeconds;
+			const double PerPressLimit = FMath::Min(CortexReplayWaitBudget::MaxWaitPerPressSeconds, RemainingRunBudget);
 			const double Measured = FMath::Max(0.0,
 				(BeforeEvaluation - WaitStartElapsed) - WaitEvaluationSeconds);
 
@@ -160,113 +143,30 @@ FCortexCommandResult FCortexReplayScheduler::PrepareFrame(int32 FrameIndex,
 			{
 				return WaitTimeoutError(Event.Sequence);
 			}
-			AuthorizedWaitSeconds += FMath::Max(0.0, Measured);
+			AuthorizedWaitSeconds += Measured;
 			WaitingSequence = INDEX_NONE;
 			WaitReason = ECortexEditorUIObservationState::Ready;
-
-			// The shifted deadline uses the freshly committed offset.
-			const double ShiftedDeadline = Event.TimeSeconds + AuthorizedWaitSeconds;
-			if (Elapsed - ShiftedDeadline > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
-			{
-				return TimingError(Event.Sequence, Elapsed - ShiftedDeadline);
-			}
-
-			const double BeforeDispatch = ReadElapsedSeconds();
-			if (!ValidateObservation(BeforeDispatch))
-			{
-				return TimingError(Event.Sequence, 0.0);
-			}
-			// Dispatch latency after the ready observation is not authorized wait time either.
-			if (BeforeDispatch - AfterEvaluation > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
-			{
-				return TimingError(Event.Sequence, BeforeDispatch - AfterEvaluation);
-			}
-			if (BeforeDispatch - ShiftedDeadline > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
-			{
-				return TimingError(Event.Sequence, BeforeDispatch - ShiftedDeadline);
-			}
-			LastObservedElapsed = BeforeDispatch;
-
-			const FCortexCommandResult DispatchResult = Dispatch(Event);
-			if (!DispatchResult.bSuccess)
-			{
-				return DispatchResult;
-			}
-			++DispatchedCount;
-			++NextEvent;
-			continue;
 		}
-
-		// Not waiting: lateness is checked against the committed offset first.
-		if (Elapsed - EffectiveDeadline > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
-		{
-			return TimingError(Event.Sequence, Elapsed - EffectiveDeadline);
-		}
-
-		if (Elapsed < EffectiveDeadline)
-		{
-			// Not yet due: everything later is later still.
-			break;
-		}
-
-		const double BeforeEvaluation = ReadElapsedSeconds();
-		if (!ValidateObservation(BeforeEvaluation))
-		{
-			return TimingError(Event.Sequence, 0.0);
-		}
-		Elapsed = BeforeEvaluation;
-		LastObservedElapsed = Elapsed;
-
-		const FCortexReplayGuardDecision Decision = EvaluateGuard(Event);
-		const double AfterEvaluation = ReadElapsedSeconds();
-		if (!ValidateObservation(AfterEvaluation))
-		{
-			return TimingError(Event.Sequence, 0.0);
-		}
-		Elapsed = AfterEvaluation;
-		LastObservedElapsed = Elapsed;
-
-		// Slow evaluation is a timing failure before the run can enter a wait.
-		if (Elapsed - EffectiveDeadline > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
-		{
-			return TimingError(Event.Sequence, Elapsed - EffectiveDeadline);
-		}
-
-		if (Decision.State == ECortexReplayGuardDecisionState::Error)
-		{
-			return Decision.Error;
-		}
-
-		if (Decision.State == ECortexReplayGuardDecisionState::Wait)
+		else if (Decision.State == ECortexReplayGuardDecisionState::Wait)
 		{
 			// Admit a wait whenever positive cumulative budget remains; the per-press limit applied
 			// while waiting is the lesser of 1 s and the remaining run budget.
-			if (SCHEDULER_MAX_WAIT_TOTAL_SECONDS - AuthorizedWaitSeconds <= 0.0)
+			if (CortexReplayWaitBudget::MaxAuthorizedWaitSeconds - AuthorizedWaitSeconds <= 0.0)
 			{
 				return WaitTimeoutError(Event.Sequence);
 			}
+			double WaitStart = 0.0;
+			const FCortexCommandResult Observed = ReadClock(Event.Sequence, WaitStart);
+			if (!Observed.bSuccess)
+			{
+				return Observed;
+			}
 			WaitingSequence = Event.Sequence;
 			WaitReason = Decision.WaitReason;
-			WaitStartElapsed = Elapsed;
+			WaitStartElapsed = WaitStart;
 			WaitEvaluationSeconds = 0.0;
 			return SchedulerSuccess();
 		}
-
-		const double BeforeDispatch = ReadElapsedSeconds();
-		if (!ValidateObservation(BeforeDispatch))
-		{
-			return TimingError(Event.Sequence, 0.0);
-		}
-		// Accidental dispatch latency after the ready evaluation is not authorized wait time.
-		if (BeforeDispatch - AfterEvaluation > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
-		{
-			return TimingError(Event.Sequence, BeforeDispatch - AfterEvaluation);
-		}
-		if (BeforeDispatch - EffectiveDeadline > SCHEDULER_LATENESS_ALLOWANCE_SECONDS)
-		{
-			return TimingError(Event.Sequence, BeforeDispatch - EffectiveDeadline);
-		}
-		LastObservedElapsed = BeforeDispatch;
 
 		const FCortexCommandResult DispatchResult = Dispatch(Event);
 		if (!DispatchResult.bSuccess)
@@ -277,28 +177,8 @@ FCortexCommandResult FCortexReplayScheduler::PrepareFrame(int32 FrameIndex,
 		++NextEvent;
 	}
 
-	// The frame's event range is prepared, but the frame is Ready only once its own input deadline
-	// has passed as well: a frame with no events still occupies its recorded span, so completion
-	// follows the committed frame deadline rather than the last dispatched event.
-	if (NextEvent >= FrameEnd)
-	{
-		const double FrameElapsed = ReadElapsedSeconds();
-		if (!ValidateObservation(FrameElapsed))
-		{
-			const int32 LastFrameSequence =
-				(Frame.EventCount > 0 && Snapshot->Events.IsValidIndex(FrameEnd - 1))
-					? Snapshot->Events[FrameEnd - 1].Sequence
-					: INDEX_NONE;
-			return TimingError(LastFrameSequence, 0.0);
-		}
-		LastObservedElapsed = FrameElapsed;
-		if (FrameElapsed >= Frame.InputDeadlineSeconds + AuthorizedWaitSeconds)
-		{
-			bPreparationComplete = true;
-			OutPreparation = ECortexReplayFramePreparation::Ready;
-		}
-	}
-
+	bPreparationComplete = true;
+	OutPreparation = ECortexReplayFramePreparation::Ready;
 	return SchedulerSuccess();
 }
 

@@ -468,7 +468,7 @@ bool FCortexReplayGuardsSchedulerSuppressionTest::RunTest(const FString& Paramet
 	Actual.PawnTransform.AddToTranslation(FVector(1.0, 0.0, 0.0));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	int32 Dispatches = 0;
-	const FCortexCommandResult Result = AdvanceFrame(Scheduler, []() { return 0.0; },
+	const FCortexCommandResult Result = PrepareAndCommit(Scheduler, []() { return 0.0; },
 		[&Actual](const FCortexReplayEvent& Event)
 		{
 			const FCortexEditorPhysicalInputUIObservation UI;

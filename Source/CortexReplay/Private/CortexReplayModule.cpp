@@ -68,17 +68,14 @@ void FCortexReplayModule::ShutdownModule()
 	UnregisterMenuEntries();
 	UnregisterTabSpawner();
 
-	// The backend owner neutralizes owned input/PIE and finalizes its single terminal result.
+	// Module-unload barrier: no callback into this module may outlive it (an explicit unload or hot
+	// reload frees the code). Owned input/PIE is neutralized and the single terminal result is
+	// written now; an owned PIE still ending is kept alive by CortexEditor.
 	if (ReplayService.IsValid())
 	{
-		ReplayService->Shutdown();
+		ReplayService->ShutdownForModuleUnload();
 		ReplayService.Reset();
 	}
-}
-
-TSharedPtr<FCortexReplayService> FCortexReplayModule::GetReplayService() const
-{
-	return ReplayService;
 }
 
 void FCortexReplayModule::RegisterTabSpawner()
@@ -152,16 +149,10 @@ void FCortexReplayModule::UnregisterMenuEntries()
 	UToolMenus::UnRegisterStartupCallback(ToolbarStartupCallbackHandle);
 
 	// Never traverse destroyed menus once the engine exit has been requested.
-	if (ShouldTraverseToolMenusDuringShutdown(IsEngineExitRequested() || bHasHandledPreExit, true))
+	if (!IsEngineExitRequested() && !bHasHandledPreExit)
 	{
 		UToolMenus::UnregisterOwner(this);
 	}
-}
-
-bool FCortexReplayModule::ShouldTraverseToolMenusDuringShutdown(
-	bool bIsEngineExitRequested, bool bIsToolMenusAvailable)
-{
-	return !bIsEngineExitRequested && bIsToolMenusAvailable;
 }
 
 void FCortexReplayModule::HandlePreExit()

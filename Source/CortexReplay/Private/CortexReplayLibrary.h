@@ -9,7 +9,13 @@ class FCortexReplayLibrary
 public:
 	explicit FCortexReplayLibrary(const FString& ProjectRoot);
 	FCortexCommandResult ReserveId(int32& OutId);
+	/** Full-validation listing: recordings that fail to load (or AI eligibility) are omitted. */
 	FCortexCommandResult List(bool bAIOnly, TArray<FCortexReplayMetadata>& Out) const;
+	/**
+	 * Metadata-only listing of every numeric recording directory. No payload is parsed or hashed;
+	 * a directory whose metadata cannot be used is still reported, with LoadError explaining why.
+	 */
+	FCortexCommandResult ListEntries(TArray<FCortexReplayLibraryEntry>& Out) const;
 	FCortexCommandResult ListPage(bool bAIOnly, int32 AfterId, int32 PageSize,
 		TArray<FCortexReplayMetadata>& Out, bool& bHasMore) const;
 	FCortexCommandResult Load(int32 Id, bool bAIOnly,
@@ -17,6 +23,7 @@ public:
 	FCortexCommandResult Publish(const FCortexReplaySnapshot& Recording);
 	FCortexCommandResult SaveMetadata(int32 Id, const FString& Name,
 		const FString& Description, bool bAIEnabled);
+	/** Removes the recording directory under the authoring lock, whether or not it still loads. */
 	FCortexCommandResult Delete(int32 Id);
 
 	/**
