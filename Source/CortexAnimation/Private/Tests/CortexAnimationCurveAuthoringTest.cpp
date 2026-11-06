@@ -110,6 +110,11 @@ void CleanupCurveTestSequence(UAnimSequence*& Sequence)
 		return;
 	}
 
+	// An authored curve change queues asynchronous compression tasks that hold only a weak pointer to the sequence; finishing
+	// them before the sequence is released keeps the collection below from racing them (LogAnimationCompression: "Failed to
+	// apply compressed animation data ... previously been garbage collected").
+	UE::Anim::IAnimSequenceCompilingManager::FinishCompilation(MakeArrayView(&Sequence, 1));
+
 	UPackage* Package = Sequence->GetPackage();
 	const FString PackageName = Package != nullptr ? Package->GetName() : FString();
 	if (!PackageName.IsEmpty())

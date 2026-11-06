@@ -8,6 +8,7 @@
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "AnimationStateMachineGraph.h"
 #include "AnimStateNode.h"
+#include "AnimStateConduitNode.h"
 #include "AnimStateTransitionNode.h"
 #include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetData.h"
@@ -484,6 +485,7 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 	const int32 StateMachineLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("state_machine_limit"), 20, 100);
 	const int32 StateLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("state_limit"), 100, 200);
 	const int32 TransitionLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("transition_limit"), 100, 200);
+	const int32 ConduitLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("conduit_limit"), 100, 200);
 
 	TArray<TSharedPtr<FJsonValue>> StateMachines;
 	TArray<UEdGraph*> AllGraphs;
@@ -498,6 +500,7 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 
 		TArray<TSharedPtr<FJsonValue>> States;
 		TArray<TSharedPtr<FJsonValue>> Transitions;
+		TArray<TSharedPtr<FJsonValue>> Conduits;
 		for (UEdGraphNode* Node : StateMachineGraph->Nodes)
 		{
 			if (UAnimStateNode* StateNode = Cast<UAnimStateNode>(Node))
@@ -510,16 +513,27 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 				continue;
 			}
 
+			if (UAnimStateConduitNode* ConduitNode = Cast<UAnimStateConduitNode>(Node))
+			{
+				TSharedPtr<FJsonObject> Conduit = MakeShared<FJsonObject>();
+				Conduit->SetStringField(TEXT("name"), ConduitNode->GetStateName());
+				Conduit->SetStringField(TEXT("node_guid"), ConduitNode->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
+				Conduit->SetStringField(TEXT("graph_guid"), ConduitNode->BoundGraph != nullptr ? ConduitNode->BoundGraph->GraphGuid.ToString(EGuidFormats::DigitsWithHyphens) : FString());
+				Conduits.Add(MakeShared<FJsonValueObject>(Conduit));
+				continue;
+			}
+
 			if (UAnimStateTransitionNode* TransitionNode = Cast<UAnimStateTransitionNode>(Node))
 			{
-				UAnimStateNode* PreviousState = Cast<UAnimStateNode>(TransitionNode->GetPreviousState());
-				UAnimStateNode* NextState = Cast<UAnimStateNode>(TransitionNode->GetNextState());
+				UAnimStateNodeBase* PreviousState = TransitionNode->GetPreviousState();
+				UAnimStateNodeBase* NextState = TransitionNode->GetNextState();
 				TSharedPtr<FJsonObject> Transition = MakeShared<FJsonObject>();
 				Transition->SetStringField(TEXT("name"), TransitionNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
 				Transition->SetStringField(TEXT("from_state"), PreviousState != nullptr ? PreviousState->GetStateName() : FString());
 				Transition->SetStringField(TEXT("to_state"), NextState != nullptr ? NextState->GetStateName() : FString());
 				Transition->SetStringField(TEXT("node_guid"), TransitionNode->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
 				Transition->SetStringField(TEXT("graph_guid"), TransitionNode->BoundGraph != nullptr ? TransitionNode->BoundGraph->GraphGuid.ToString(EGuidFormats::DigitsWithHyphens) : FString());
+				Transition->SetStringField(TEXT("custom_transition_graph_guid"), TransitionNode->CustomTransitionGraph != nullptr ? TransitionNode->CustomTransitionGraph->GraphGuid.ToString(EGuidFormats::DigitsWithHyphens) : FString());
 				Transitions.Add(MakeShared<FJsonValueObject>(Transition));
 			}
 		}
@@ -529,6 +543,7 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 		Machine->SetStringField(TEXT("graph_guid"), StateMachineGraph->GraphGuid.ToString(EGuidFormats::DigitsWithHyphens));
 		Machine->SetObjectField(TEXT("states"), FCortexAnimAssetUtils::MakeLimitedArray(States, StateLimit));
 		Machine->SetObjectField(TEXT("transitions"), FCortexAnimAssetUtils::MakeLimitedArray(Transitions, TransitionLimit));
+		Machine->SetObjectField(TEXT("conduits"), FCortexAnimAssetUtils::MakeLimitedArray(Conduits, ConduitLimit));
 		StateMachines.Add(MakeShared<FJsonValueObject>(Machine));
 	}
 

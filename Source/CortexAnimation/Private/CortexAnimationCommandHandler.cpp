@@ -151,10 +151,11 @@ TArray<FCortexCommandInfo> FCortexAnimationCommandHandler::GetSupportedCommands(
 			.Optional(TEXT("virtual_bone_limit"), TEXT("number"), TEXT("Maximum virtual bones returned; default 100, max 200"))
 	);
 	Commands.Add(
-		FCortexCommandInfo{ TEXT("get_animbp_info"), TEXT("Inspect UAnimBlueprint skeleton, parent/generated classes, state machines, states, and transitions. Read-only.") }
+		FCortexCommandInfo{ TEXT("get_animbp_info"), TEXT("Inspect UAnimBlueprint skeleton, parent/generated classes, state machines, states, conduits, and transitions (graph_guid and node_guid of each; graph.get_subgraph reads a nested graph by graph_guid). Read-only.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("AnimBlueprint asset path"))
 			.Optional(TEXT("state_machine_limit"), TEXT("number"), TEXT("Maximum state machines returned; default 20, max 100"))
 			.Optional(TEXT("state_limit"), TEXT("number"), TEXT("Maximum states per state machine returned; default 100, max 200"))
+			.Optional(TEXT("conduit_limit"), TEXT("number"), TEXT("Maximum conduits per state machine returned; default 100, max 200"))
 			.Optional(TEXT("transition_limit"), TEXT("number"), TEXT("Maximum transitions per state machine returned; default 100, max 200"))
 	);
 	Commands.Add(

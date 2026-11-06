@@ -14,6 +14,7 @@ public class CortexAnimation : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
+			"CortexGraph",
 			"CoreUObject",
 			"Engine",
 			"Json",
