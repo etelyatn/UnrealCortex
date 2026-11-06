@@ -18,66 +18,32 @@
 #include "Algo/AnyOf.h"
 #include "Misc/SecureHash.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPCommandParams.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPMigrationGuard.h"
+#include "Operations/CortexBPSCSSupport.h"
 #include "Operations/CortexBPSnapshotOps.h"
 #include "UObject/CoreRedirects.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UnrealType.h"
 
-namespace
-{
 #if WITH_DEV_AUTOMATION_TESTS
+namespace CortexBPAdoptMemberPrivate
+{
 	TFunction<void(UBlueprint*)> GPostApplyHookForTest;
 	TFunction<void(UBlueprint*)> GPostWriteHookForTest;
+}
 #endif
 
+namespace
+{
 	using FOps = FCortexBPAdoptMemberOps;
 	using FValueSnap = FCortexBPAdoptMemberOps::FValueSnap;
 
-	const TSet<FString>& DeltaSections()
-	{
-		static const TSet<FString> Sections = {TEXT("variables"), TEXT("cdo")};
-		return Sections;
-	}
-
-	TArray<TSharedPtr<FJsonValue>> ToJsonStrings(const TArray<FString>& Values)
-	{
-		TArray<TSharedPtr<FJsonValue>> Array;
-		for (const FString& Value : Values)
-		{
-			Array.Add(MakeShared<FJsonValueString>(Value));
-		}
-		return Array;
-	}
-
-	bool ReadOptionalBool(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, bool Default, bool& OutValue, FCortexCommandResult& OutError)
-	{
-		OutValue = Default;
-		if (!Params->HasField(Field))
-		{
-			return true;
-		}
-		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-		if (!Value.IsValid() || Value->Type != EJson::Boolean || !Params->TryGetBoolField(Field, OutValue))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s must be a boolean"), Field));
-			return false;
-		}
-		return true;
-	}
-
-	bool ReadRequiredString(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, FString& OutValue, FCortexCommandResult& OutError)
-	{
-		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-		if (!Value.IsValid() || Value->Type != EJson::String || !Params->TryGetStringField(Field, OutValue) || OutValue.IsEmpty())
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Missing required param: %s (a non-empty string)"), Field));
-			return false;
-		}
-		return true;
-	}
+	using CortexBPParams::ReadOptionalBool;
+	using CortexBPParams::ReadRequiredString;
+	using CortexBPParams::ToJsonStrings;
 
 	bool IsFloatingPoint(const FProperty* Property)
 	{
@@ -138,40 +104,8 @@ namespace
 	//////////////////////////////////////////////////////////////////////////
 	// Lookup
 
-	UEdGraphNode* FindNodeByGuid(const UBlueprint* Blueprint, const FGuid& Guid)
-	{
-		TArray<UEdGraph*> Graphs;
-		Blueprint->GetAllGraphs(Graphs);
-		for (const UEdGraph* Graph : Graphs)
-		{
-			for (UEdGraphNode* Node : Graph->Nodes)
-			{
-				if (Node != nullptr && Node->NodeGuid == Guid)
-				{
-					return Node;
-				}
-			}
-		}
-		return nullptr;
-	}
-
-	TSet<FGuid> AllNodeGuids(const UBlueprint* Blueprint)
-	{
-		TSet<FGuid> Guids;
-		TArray<UEdGraph*> Graphs;
-		Blueprint->GetAllGraphs(Graphs);
-		for (const UEdGraph* Graph : Graphs)
-		{
-			for (const UEdGraphNode* Node : Graph->Nodes)
-			{
-				if (Node != nullptr)
-				{
-					Guids.Add(Node->NodeGuid);
-				}
-			}
-		}
-		return Guids;
-	}
+	using CortexBPSCSSupport::AllNodeGuids;
+	using CortexBPSCSSupport::FindNodeByGuid;
 
 	/** True when RenameVariableReferences retargets the node together with the variable. */
 	bool NodeFollows(const UBlueprint* Blueprint, const UEdGraphNode* Node)
@@ -395,7 +329,7 @@ namespace
 	}
 
 	/** State the capture, apply, verify and restore callbacks share. */
-	struct FApplyState
+	struct FAdoptMemberApplyState
 	{
 		TSet<FGuid> NodeGuidsBefore;
 		TMap<FGuid, FString> BindingsBefore;
@@ -1181,7 +1115,7 @@ namespace
 			return AckError;
 		}
 
-		const TSharedRef<FApplyState> State = MakeShared<FApplyState>();
+		const TSharedRef<FAdoptMemberApplyState> State = MakeShared<FAdoptMemberApplyState>();
 		UClass* Parent = Blueprint->ParentClass;
 		for (const FOps::FMappingPlan& Mapping : Plan->Mappings)
 		{
@@ -1215,7 +1149,7 @@ namespace
 			State->BindingsBefore = CollectBindingTexts(Target);
 			State->OldCompiledSuper = Target->GeneratedClass != nullptr ? Target->GeneratedClass->GetSuperClass() : nullptr;
 			State->NativeParent = Target->ParentClass;
-			State->SnapshotBefore = FCortexBPSnapshotOps::BuildSnapshot(Target, DeltaSections(), OutError);
+			State->SnapshotBefore = FCortexBPSnapshotOps::BuildSnapshot(Target, FCortexBPSnapshotOps::MemberDeltaSections(), OutError);
 			return State->SnapshotBefore.IsValid();
 		};
 
@@ -1267,9 +1201,9 @@ namespace
 			}
 
 #if WITH_DEV_AUTOMATION_TESTS
-			if (GPostApplyHookForTest)
+			if (CortexBPAdoptMemberPrivate::GPostApplyHookForTest)
 			{
-				GPostApplyHookForTest(Target);
+				CortexBPAdoptMemberPrivate::GPostApplyHookForTest(Target);
 			}
 #endif
 			return true;
@@ -1357,9 +1291,9 @@ namespace
 			}
 
 #if WITH_DEV_AUTOMATION_TESTS
-			if (GPostWriteHookForTest)
+			if (CortexBPAdoptMemberPrivate::GPostWriteHookForTest)
 			{
-				GPostWriteHookForTest(Target);
+				CortexBPAdoptMemberPrivate::GPostWriteHookForTest(Target);
 			}
 #endif
 
@@ -1445,14 +1379,14 @@ namespace
 			}
 
 			FString SnapshotError;
-			const TSharedPtr<FJsonObject> SnapshotAfter = FCortexBPSnapshotOps::BuildSnapshot(Target, DeltaSections(), SnapshotError);
+			const TSharedPtr<FJsonObject> SnapshotAfter = FCortexBPSnapshotOps::BuildSnapshot(Target, FCortexBPSnapshotOps::MemberDeltaSections(), SnapshotError);
 			if (!SnapshotAfter.IsValid())
 			{
 				OutError = FString::Printf(TEXT("Could not record the post-call snapshot: %s"), *SnapshotError);
 				return false;
 			}
 			State->Differences.Reset();
-			const FCortexCommandResult Diff = FCortexBPSnapshotOps::DiffSnapshots(State->SnapshotBefore, SnapshotAfter, DeltaSections(), State->Differences, State->Counts);
+			const FCortexCommandResult Diff = FCortexBPSnapshotOps::DiffSnapshots(State->SnapshotBefore, SnapshotAfter, FCortexBPSnapshotOps::MemberDeltaSections(), State->Differences, State->Counts);
 			if (!Diff.bSuccess)
 			{
 				OutError = Diff.ErrorMessage;
@@ -1645,21 +1579,21 @@ FCortexCommandResult FCortexBPAdoptMemberOps::Execute(const TSharedPtr<FJsonObje
 #if WITH_DEV_AUTOMATION_TESTS
 void FCortexBPAdoptMemberOps::SetPostApplyHookForTest(TFunction<void(UBlueprint*)> Hook)
 {
-	GPostApplyHookForTest = MoveTemp(Hook);
+	CortexBPAdoptMemberPrivate::GPostApplyHookForTest = MoveTemp(Hook);
 }
 
 void FCortexBPAdoptMemberOps::ClearPostApplyHookForTest()
 {
-	GPostApplyHookForTest = nullptr;
+	CortexBPAdoptMemberPrivate::GPostApplyHookForTest = nullptr;
 }
 
 void FCortexBPAdoptMemberOps::SetPostWriteHookForTest(TFunction<void(UBlueprint*)> Hook)
 {
-	GPostWriteHookForTest = MoveTemp(Hook);
+	CortexBPAdoptMemberPrivate::GPostWriteHookForTest = MoveTemp(Hook);
 }
 
 void FCortexBPAdoptMemberOps::ClearPostWriteHookForTest()
 {
-	GPostWriteHookForTest = nullptr;
+	CortexBPAdoptMemberPrivate::GPostWriteHookForTest = nullptr;
 }
 #endif

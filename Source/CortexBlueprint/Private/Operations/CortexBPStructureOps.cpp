@@ -1,8 +1,10 @@
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPRemoveGraphOps.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPCommandParams.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPSaveGameGuard.h"
+#include "Operations/CortexBPSCSSupport.h"
 #include "Operations/CortexBPTypeUtils.h"
 #include "CortexBlueprintModule.h"
 #include "CortexGraphMemberReferences.h"
@@ -27,37 +29,9 @@ using CortexBPTypeUtils::FriendlyTypeName;
 
 namespace
 {
-	/** The node with this GUID in any graph of the Blueprint, or null. */
-	UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid)
-	{
-		TArray<UEdGraph*> Graphs;
-		Blueprint->GetAllGraphs(Graphs);
-		for (UEdGraph* Graph : Graphs)
-		{
-			if (Graph == nullptr)
-			{
-				continue;
-			}
-			for (UEdGraphNode* Node : Graph->Nodes)
-			{
-				if (Node != nullptr && Node->NodeGuid == NodeGuid)
-				{
-					return Node;
-				}
-			}
-		}
-		return nullptr;
-	}
-
-	TArray<TSharedPtr<FJsonValue>> ToJsonStrings(const TArray<FString>& Values)
-	{
-		TArray<TSharedPtr<FJsonValue>> Array;
-		for (const FString& Value : Values)
-		{
-			Array.Add(MakeShared<FJsonValueString>(Value));
-		}
-		return Array;
-	}
+	using CortexBPParams::ReadOptionalBool;
+	using CortexBPParams::ToJsonStrings;
+	using CortexBPSCSSupport::FindNodeByGuid;
 
 	TArray<TSharedPtr<FJsonValue>> ReferencesToJson(const TArray<FCortexMemberReference>& References)
 	{
@@ -100,23 +74,6 @@ namespace
 		const FProperty* Property = Cdo != nullptr ? FindFProperty<FProperty>(Cdo->GetClass(), Name) : nullptr;
 		return Property != nullptr
 			&& FBlueprintEditorUtils::PropertyValueFromString(Property, Text, reinterpret_cast<uint8*>(Cdo), Cdo);
-	}
-
-	/** Presence and exact type: a string, a number for a boolean field, or null are all refused. */
-	bool ReadOptionalBool(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, bool Default, bool& OutValue, FCortexCommandResult& OutError)
-	{
-		OutValue = Default;
-		if (!Params->HasField(Field))
-		{
-			return true;
-		}
-		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-		if (!Value.IsValid() || Value->Type != EJson::Boolean || !Params->TryGetBoolField(Field, OutValue))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s must be a boolean"), Field));
-			return false;
-		}
-		return true;
 	}
 }
 

@@ -1,6 +1,7 @@
 #include "Operations/CortexBPReplaceInterfaceOps.h"
 
 #include "CortexGraphInterfaceMigration.h"
+#include "Operations/CortexBPCommandParams.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "IO/IoHash.h"
@@ -10,16 +11,7 @@
 
 namespace
 {
-bool ReadRequiredString(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, FString& OutValue, FCortexCommandResult& OutError)
-{
-	const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-	if (!Value.IsValid() || Value->Type != EJson::String || !Value->TryGetString(OutValue) || OutValue.IsEmpty())
-	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s is required and must be a non-empty string"), Field));
-		return false;
-	}
-	return true;
-}
+using CortexBPParams::ReadRequiredString;
 
 /** A strict JSON boolean: numeric and string values are refused, never coerced. */
 bool ReadStrictBool(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, const bool bRequired, const bool bDefault, bool& OutValue, FCortexCommandResult& OutError)

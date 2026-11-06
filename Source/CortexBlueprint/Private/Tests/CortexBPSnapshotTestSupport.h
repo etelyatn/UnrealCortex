@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CortexBPCommandHandler.h"
+#include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"

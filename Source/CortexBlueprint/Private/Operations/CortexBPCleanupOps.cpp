@@ -5,6 +5,7 @@
 #include "Operations/CortexBPParentRules.h"
 #include "Operations/CortexBPReparentOps.h"
 #include "Operations/CortexBPSaveGameGuard.h"
+#include "Operations/CortexBPCommandParams.h"
 #include "Operations/CortexBPSCSDiagnostics.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
@@ -282,36 +283,11 @@ namespace
 	}
 }
 
-// A named namespace keeps these helpers distinct inside a unity build (ReparentOps defines helpers of the same names).
+// A named namespace keeps these helpers distinct inside a unity build (other Operations files define anonymous helpers of similar names).
 namespace CortexCleanupOps
 {
-	bool CleanupReadOptionalBool(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, bool Default, bool& OutValue, FCortexCommandResult& OutError)
-	{
-		OutValue = Default;
-		if (!Params->HasField(Field))
-		{
-			return true;
-		}
-		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-		if (!Value.IsValid() || Value->Type != EJson::Boolean || !Params->TryGetBoolField(Field, OutValue))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s must be a boolean"), Field));
-			return false;
-		}
-		return true;
-	}
-
-	bool CleanupReadRequiredString(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, FString& OutValue, FCortexCommandResult& OutError)
-	{
-		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
-		if (!Value.IsValid() || Value->Type != EJson::String || !Params->TryGetStringField(Field, OutValue) || OutValue.IsEmpty())
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				FString::Printf(TEXT("Missing required param: %s (a non-empty string)"), Field));
-			return false;
-		}
-		return true;
-	}
+	using CortexBPParams::ReadOptionalBool;
+	using CortexBPParams::ReadRequiredString;
 
 	bool CleanupReadStringArray(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, TArray<FString>& OutValues, FCortexCommandResult& OutError)
 	{
@@ -560,11 +536,11 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 	TArray<FString> AcknowledgedLosses;
 	TSharedPtr<FJsonObject> Expected;
 	TSharedPtr<FJsonObject> ExpectedCdoValues;
-	if (!CleanupReadRequiredString(Params, TEXT("asset_path"), AssetPath, ParamError)
-		|| !CleanupReadOptionalBool(Params, TEXT("dry_run"), false, bDryRun, ParamError)
-		|| !CleanupReadOptionalBool(Params, TEXT("compile"), true, bCompile, ParamError)
-		|| !CleanupReadOptionalBool(Params, TEXT("save"), true, bSave, ParamError)
-		|| !CleanupReadOptionalBool(Params, TEXT("remove_referencing_nodes"), false, bRemoveReferencingNodes, ParamError)
+	if (!ReadRequiredString(Params, TEXT("asset_path"), AssetPath, ParamError)
+		|| !ReadOptionalBool(Params, TEXT("dry_run"), false, bDryRun, ParamError)
+		|| !ReadOptionalBool(Params, TEXT("compile"), true, bCompile, ParamError)
+		|| !ReadOptionalBool(Params, TEXT("save"), true, bSave, ParamError)
+		|| !ReadOptionalBool(Params, TEXT("remove_referencing_nodes"), false, bRemoveReferencingNodes, ParamError)
 		|| !CleanupReadStringArray(Params, TEXT("remove_variables"), RemoveVariables, ParamError)
 		|| !CleanupReadStringArray(Params, TEXT("remove_functions"), RemoveFunctions, ParamError)
 		|| !CleanupReadStringArray(Params, TEXT("acknowledged_collisions"), AcknowledgedCollisions, ParamError)
@@ -576,7 +552,7 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 	}
 	if (Params->HasField(TEXT("new_parent_class")))
 	{
-		if (!CleanupReadRequiredString(Params, TEXT("new_parent_class"), NewParentInput, ParamError))
+		if (!ReadRequiredString(Params, TEXT("new_parent_class"), NewParentInput, ParamError))
 		{
 			return ParamError;
 		}
