@@ -281,7 +281,7 @@ TSharedRef<FJsonObject> FCortexGraphTree::ToJson(const FCortexGraphTreeEntry& En
 	return Json;
 }
 
-void FCortexGraphTree::AppendTruncation(const TArray<FCortexGraphTreeEntry>& Entries, const TSharedPtr<FJsonObject>& Data)
+void FCortexGraphTree::AppendTruncation(const TArray<FCortexGraphTreeEntry>& Entries, const TSharedPtr<FJsonObject>& Data, const TCHAR* TruncatedField)
 {
 	TArray<TSharedPtr<FJsonValue>> CutParents;
 	for (const FCortexGraphTreeEntry& Entry : Entries)
@@ -295,7 +295,7 @@ void FCortexGraphTree::AppendTruncation(const TArray<FCortexGraphTreeEntry>& Ent
 	{
 		return;
 	}
-	Data->SetBoolField(TEXT("truncated"), true);
+	Data->SetBoolField(TruncatedField, true);
 	Data->SetArrayField(TEXT("truncated_parent_graph_guids"), CutParents);
 }
 

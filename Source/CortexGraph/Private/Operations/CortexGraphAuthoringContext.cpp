@@ -180,16 +180,19 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 		{
 			const TSharedPtr<FJsonObject>& GraphRef = *GraphRefPtr;
 			FString TargetGuidStr;
-			if (!GraphRef->TryGetStringField(TEXT("graph_guid"), TargetGuidStr) || TargetGuidStr.IsEmpty())
+			FString GraphPathStr;
+			GraphRef->TryGetStringField(TEXT("graph_guid"), TargetGuidStr);
+			GraphRef->TryGetStringField(TEXT("graph_path"), GraphPathStr);
+			if (TargetGuidStr.IsEmpty() && GraphPathStr.IsEmpty())
 			{
 				return FCortexCommandRouter::Error(
 					CortexErrorCodes::InvalidField,
-					TEXT("target.graph_ref requires graph_guid")
+					TEXT("target.graph_ref requires graph_guid or graph_path")
 				);
 			}
 
 			FGuid TargetGuid;
-			if (!FGuid::Parse(TargetGuidStr, TargetGuid))
+			if (!TargetGuidStr.IsEmpty() && !FGuid::Parse(TargetGuidStr, TargetGuid))
 			{
 				return FCortexCommandRouter::Error(
 					CortexErrorCodes::InvalidField,
@@ -226,14 +229,19 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 			// `graph_guid` names the target graph (a root graph or a bound composite child). The
 			// identity is the lookup; a supplied `subgraph_path` must equal that target's own
 			// root-relative path, so an omitted path resolves by identity alone and a pair that
-			// disagrees is refused instead of resolved to a different graph.
+			// disagrees is refused instead of resolved to a different graph. A `graph_path` (the path
+			// list_graphs publishes) selects among graphs that share a GraphGuid and is resolved by the
+			// shared tree rules below.
 			const FGraphChoiceEntry* FoundChoice = nullptr;
-			for (const FGraphChoiceEntry& Choice : Choices)
+			if (GraphPathStr.IsEmpty())
 			{
-				if (Choice.Graph->GraphGuid == TargetGuid)
+				for (const FGraphChoiceEntry& Choice : Choices)
 				{
-					FoundChoice = &Choice;
-					break;
+					if (Choice.Graph->GraphGuid == TargetGuid)
+					{
+						FoundChoice = &Choice;
+						break;
+					}
 				}
 			}
 
@@ -254,44 +262,41 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 			if (!FoundChoice)
 			{
 				FCortexGraphTree::Collect(Blueprint, Tree);
-				TArray<const FCortexGraphTreeEntry*> Matches;
-				for (const FCortexGraphTreeEntry& Entry : Tree)
+				TSharedPtr<FJsonObject> IdentityParams = MakeShared<FJsonObject>();
+				if (!TargetGuidStr.IsEmpty())
 				{
-					if (!Entry.bRoot && Entry.Graph->GraphGuid == TargetGuid)
-					{
-						Matches.Add(&Entry);
-					}
+					IdentityParams->SetStringField(TEXT("graph_guid"), TargetGuidStr);
+				}
+				if (!GraphPathStr.IsEmpty())
+				{
+					IdentityParams->SetStringField(TEXT("graph_path"), GraphPathStr);
+				}
+				if (!SubgraphPath.IsEmpty())
+				{
+					IdentityParams->SetStringField(TEXT("subgraph_path"), SubgraphPath);
 				}
 
-				if (Matches.IsEmpty())
+				// The shared resolver: unknown identity GRAPH_NOT_FOUND, a shared GUID INVALID_FIELD listing the paths,
+				// graph_guid/graph_path/subgraph_path must agree.
+				FCortexCommandResult ResolveError;
+				const FCortexGraphTreeEntry* Resolved = FCortexGraphTree::ResolveInTree(Tree, IdentityParams, ResolveError);
+				if (Resolved == nullptr)
 				{
-					return FCortexCommandRouter::Error(
-						CortexErrorCodes::GraphNotFound,
-						FString::Printf(TEXT("Graph with GUID %s not found on Blueprint"), *TargetGuidStr)
-					);
-				}
-				if (Matches.Num() > 1)
-				{
-					TArray<FString> Paths;
-					for (const FCortexGraphTreeEntry* Match : Matches)
-					{
-						Paths.Add(Match->Path);
-					}
-					return FCortexCommandRouter::Error(
-						CortexErrorCodes::InvalidField,
-						FString::Printf(TEXT("graph_guid %s is shared by %d nested graphs: %s"),
-							*TargetGuidStr, Matches.Num(), *FString::Join(Paths, TEXT(", ")))
-					);
+					return ResolveError;
 				}
 
-				FoundNested = Matches[0];
-				if (!SubgraphPath.IsEmpty() && FoundNested->SubgraphPath != SubgraphPath)
+				// A path can also name a root or composite authoring choice.
+				for (const FGraphChoiceEntry& Choice : Choices)
 				{
-					return FCortexCommandRouter::Error(
-						CortexErrorCodes::InvalidField,
-						FString::Printf(TEXT("subgraph_path '%s' does not name the graph identified by graph_guid %s; that graph's path is '%s'"),
-							*SubgraphPath, *TargetGuidStr, *FoundNested->SubgraphPath)
-					);
+					if (Choice.Graph == Resolved->Graph)
+					{
+						FoundChoice = &Choice;
+						break;
+					}
+				}
+				if (FoundChoice == nullptr)
+				{
+					FoundNested = Resolved;
 				}
 			}
 

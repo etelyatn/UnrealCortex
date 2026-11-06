@@ -50,6 +50,30 @@ TSharedPtr<FJsonObject> IdentityScopeParams(const TSharedPtr<FJsonObject>& Param
 }
 
 /**
+ * Params for the handler and call reads: without graph_guid/graph_path they stay unscoped (graph_name and subgraph_path were
+ * never a scope for these commands); with an identity, graph_name and subgraph_path ride along so the shared resolver validates
+ * that they agree with it.
+ */
+TSharedPtr<FJsonObject> HandlerScopeParams(const TSharedPtr<FJsonObject>& Params)
+{
+	TSharedPtr<FJsonObject> Scope = IdentityScopeParams(Params);
+	if (!FCortexGraphTree::HasGraphSelector(Scope))
+	{
+		return Scope;
+	}
+	FString Value;
+	if (Params->TryGetStringField(TEXT("graph_name"), Value))
+	{
+		Scope->SetStringField(TEXT("graph_name"), Value);
+	}
+	if (Params->TryGetStringField(TEXT("subgraph_path"), Value))
+	{
+		Scope->SetStringField(TEXT("subgraph_path"), Value);
+	}
+	return Scope;
+}
+
+/**
  * Params reduced to the selectors a trace honours: graph_guid, graph_path and graph_name, with subgraph_path only alongside
  * one of them (a bare subgraph_path never narrowed a trace).
  */
@@ -487,7 +511,7 @@ FCortexCommandResult FCortexGraphTraceOps::ListEventHandlers(const TSharedPtr<FJ
 
 	TArray<FCortexGraphTreeEntry> CandidateGraphs;
 	FCortexCommandResult ScopeError;
-	if (!FCortexGraphTree::ResolveReadScope(Blueprint, IdentityScopeParams(Params), CandidateGraphs, ScopeError))
+	if (!FCortexGraphTree::ResolveReadScope(Blueprint, HandlerScopeParams(Params), CandidateGraphs, ScopeError))
 	{
 		return ScopeError;
 	}
@@ -513,6 +537,7 @@ FCortexCommandResult FCortexGraphTraceOps::ListEventHandlers(const TSharedPtr<FJ
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetArrayField(TEXT("nodes"), MatchesArray);
 	Data->SetNumberField(TEXT("count"), MatchesArray.Num());
+	FCortexGraphTree::AppendTruncation(CandidateGraphs, Data);
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -538,7 +563,7 @@ FCortexCommandResult FCortexGraphTraceOps::FindEventHandler(const TSharedPtr<FJs
 
 	TArray<FCortexGraphTreeEntry> CandidateGraphs;
 	FCortexCommandResult ScopeError;
-	if (!FCortexGraphTree::ResolveReadScope(Blueprint, IdentityScopeParams(Params), CandidateGraphs, ScopeError))
+	if (!FCortexGraphTree::ResolveReadScope(Blueprint, HandlerScopeParams(Params), CandidateGraphs, ScopeError))
 	{
 		return ScopeError;
 	}
@@ -565,6 +590,7 @@ FCortexCommandResult FCortexGraphTraceOps::FindEventHandler(const TSharedPtr<FJs
 	Data->SetStringField(TEXT("event_name"), EventName);
 	Data->SetArrayField(TEXT("nodes"), MatchesArray);
 	Data->SetNumberField(TEXT("count"), MatchesArray.Num());
+	FCortexGraphTree::AppendTruncation(CandidateGraphs, Data);
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -590,7 +616,7 @@ FCortexCommandResult FCortexGraphTraceOps::FindFunctionCalls(const TSharedPtr<FJ
 
 	TArray<FCortexGraphTreeEntry> CandidateGraphs;
 	FCortexCommandResult ScopeError;
-	if (!FCortexGraphTree::ResolveReadScope(Blueprint, IdentityScopeParams(Params), CandidateGraphs, ScopeError))
+	if (!FCortexGraphTree::ResolveReadScope(Blueprint, HandlerScopeParams(Params), CandidateGraphs, ScopeError))
 	{
 		return ScopeError;
 	}
@@ -634,5 +660,6 @@ FCortexCommandResult FCortexGraphTraceOps::FindFunctionCalls(const TSharedPtr<FJ
 	Data->SetStringField(TEXT("function_name"), FunctionName);
 	Data->SetArrayField(TEXT("nodes"), MatchesArray);
 	Data->SetNumberField(TEXT("count"), MatchesArray.Num());
+	FCortexGraphTree::AppendTruncation(CandidateGraphs, Data);
 	return FCortexCommandRouter::Success(Data);
 }

@@ -902,6 +902,7 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("results"), ResultsArray);
 	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	FCortexGraphTree::AppendTruncation(Scope, Data);
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -947,6 +948,34 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	if (Blueprint == nullptr)
 	{
 		return LoadError;
+	}
+
+	// add_node addresses its graph by graph_name (+ subgraph_path). A graph_guid is never silently ignored, which would add
+	// the node to the default EventGraph: nested graphs are read-only (INVALID_OPERATION, as for apply_patch), and a root or
+	// composite graph is refused with the name-based addressing to use instead.
+	FString GraphGuidText;
+	Params->TryGetStringField(TEXT("graph_guid"), GraphGuidText);
+	if (!GraphGuidText.IsEmpty())
+	{
+		TSharedPtr<FJsonObject> IdentityParams = MakeShared<FJsonObject>();
+		IdentityParams->SetStringField(TEXT("graph_guid"), GraphGuidText);
+		UEdGraph* IdentifiedGraph = nullptr;
+		FCortexGraphTreeEntry Identified;
+		if (!FCortexGraphTree::ResolveReadTarget(Blueprint, IdentityParams, IdentifiedGraph, &Identified, LoadError))
+		{
+			return LoadError;
+		}
+		if (!Identified.bRoot && Identified.SubgraphPath.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Graph %s (%s) is a nested graph and is read-only; graph.add_node cannot add nodes to it"),
+					*Identified.Path, *Identified.Kind));
+		}
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("graph.add_node does not accept graph_guid; address graph '%s' with graph_name%s"),
+				*Identified.RootGraphName, Identified.SubgraphPath.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" and subgraph_path '%s'"), *Identified.SubgraphPath)));
 	}
 
 	UEdGraph* Graph = nullptr;
@@ -1243,6 +1272,7 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 	{
 		const TSharedPtr<FJsonObject>& TargetObj = *TargetObjPtr;
 		FString TargetGuidStr;
+		FString TargetPathStr;
 		FString SubgraphPath;
 		FString TargetKind;
 
@@ -1250,92 +1280,105 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 		if (TargetObj->TryGetObjectField(TEXT("graph_ref"), GraphRefPtr) && GraphRefPtr && (*GraphRefPtr).IsValid())
 		{
 			(*GraphRefPtr)->TryGetStringField(TEXT("graph_guid"), TargetGuidStr);
+			(*GraphRefPtr)->TryGetStringField(TEXT("graph_path"), TargetPathStr);
 			(*GraphRefPtr)->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
 			(*GraphRefPtr)->TryGetStringField(TEXT("graph_kind"), TargetKind);
 		}
 		else
 		{
 			TargetObj->TryGetStringField(TEXT("graph_guid"), TargetGuidStr);
+			TargetObj->TryGetStringField(TEXT("graph_path"), TargetPathStr);
 			TargetObj->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
 			TargetObj->TryGetStringField(TEXT("graph_kind"), TargetKind);
 		}
 
-		if (TargetGuidStr.IsEmpty())
+		if (TargetGuidStr.IsEmpty() && TargetPathStr.IsEmpty())
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
-				TEXT("target requires graph_guid or graph_ref with graph_guid"));
+				TEXT("target requires graph_guid or graph_path, or graph_ref with one of them"));
 		}
 
 		FGuid TargetGuid;
-		if (!FGuid::Parse(TargetGuidStr, TargetGuid))
+		if (!TargetGuidStr.IsEmpty() && !FGuid::Parse(TargetGuidStr, TargetGuid))
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
 				FString::Printf(TEXT("Invalid graph_guid format: '%s'"), *TargetGuidStr));
 		}
 
-		TArray<FCortexGraphEntry> Entries;
-		EnumerateUserGraphs(Blueprint, Entries);
-
 		UEdGraph* FoundGraph = nullptr;
 		ECortexGraphKind FoundKind = ECortexGraphKind::Function;
-		for (const FCortexGraphEntry& Entry : Entries)
+		if (TargetPathStr.IsEmpty())
 		{
-			if (Entry.Graph && Entry.Graph->GraphGuid == TargetGuid)
+			TArray<FCortexGraphEntry> Entries;
+			EnumerateUserGraphs(Blueprint, Entries);
+			for (const FCortexGraphEntry& Entry : Entries)
 			{
-				FoundGraph = Entry.Graph;
-				FoundKind = Entry.Kind;
-				break;
+				if (Entry.Graph && Entry.Graph->GraphGuid == TargetGuid)
+				{
+					FoundGraph = Entry.Graph;
+					FoundKind = Entry.Kind;
+					break;
+				}
 			}
 		}
 
 		if (FoundGraph == nullptr)
 		{
-			// Not a root graph: a nested graph (composite body, Animation Blueprint state, transition or conduit graph)
-			// resolves read-only; the identity is never guessed when several nested graphs share the GUID.
+			// Not a root graph chosen by GUID: resolve through the shared tree rules. A nested graph (composite body,
+			// Animation Blueprint state, transition or conduit graph) resolves read-only; graph_guid, graph_path and
+			// subgraph_path must agree, a shared GUID is never guessed (graph_path selects), and graph_kind must match.
 			TArray<FCortexGraphTreeEntry> Tree;
 			FCortexGraphTree::Collect(Blueprint, Tree);
-			TArray<const FCortexGraphTreeEntry*> Matches;
-			for (const FCortexGraphTreeEntry& Entry : Tree)
+			TSharedPtr<FJsonObject> IdentityParams = MakeShared<FJsonObject>();
+			if (!TargetGuidStr.IsEmpty())
 			{
-				if (!Entry.bRoot && Entry.Graph->GraphGuid == TargetGuid)
-				{
-					Matches.Add(&Entry);
-				}
+				IdentityParams->SetStringField(TEXT("graph_guid"), TargetGuidStr);
 			}
-			if (Matches.IsEmpty())
+			if (!TargetPathStr.IsEmpty())
 			{
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::GraphNotFound,
-					FString::Printf(TEXT("Graph with GUID %s not found on Blueprint"), *TargetGuidStr));
+				IdentityParams->SetStringField(TEXT("graph_path"), TargetPathStr);
 			}
-			if (Matches.Num() > 1)
+			if (!SubgraphPath.IsEmpty())
 			{
-				TArray<FString> Paths;
-				for (const FCortexGraphTreeEntry* Match : Matches)
-				{
-					Paths.Add(Match->Path);
-				}
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::InvalidField,
-					FString::Printf(TEXT("graph_guid %s is shared by %d nested graphs: %s"),
-						*TargetGuidStr, Matches.Num(), *FString::Join(Paths, TEXT(", "))));
+				IdentityParams->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+			}
+			FCortexCommandResult ResolveError;
+			const FCortexGraphTreeEntry* Resolved = FCortexGraphTree::ResolveInTree(Tree, IdentityParams, ResolveError);
+			if (Resolved == nullptr)
+			{
+				return ResolveError;
 			}
 
-			const FCortexGraphTreeEntry& Nested = *Matches[0];
-			ResolvedTargetObj = MakeShared<FJsonObject>();
-			ResolvedTargetObj->SetStringField(TEXT("graph_guid"), Nested.Graph->GraphGuid.ToString());
-			ResolvedTargetObj->SetStringField(TEXT("graph_name"), Nested.Graph->GetName());
-			ResolvedTargetObj->SetStringField(TEXT("graph_kind"), Nested.Kind);
-			ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), false);
-			ResolvedTargetObj->SetStringField(TEXT("graph_path"), Nested.Path);
-			if (!Nested.SubgraphPath.IsEmpty())
+			if (Resolved->bRoot)
 			{
-				ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), Nested.SubgraphPath);
+				FoundGraph = Resolved->Graph;
+				FoundKind = Resolved->RootKind;
+			}
+			else
+			{
+				if (!TargetKind.IsEmpty() && TargetKind != Resolved->Kind)
+				{
+					return FCortexCommandRouter::Error(
+						CortexErrorCodes::InvalidField,
+						FString::Printf(TEXT("Graph kind mismatch: specified '%s' but graph is '%s'"), *TargetKind, *Resolved->Kind));
+				}
+
+				ResolvedTargetObj = MakeShared<FJsonObject>();
+				ResolvedTargetObj->SetStringField(TEXT("graph_guid"), Resolved->Graph->GraphGuid.ToString());
+				ResolvedTargetObj->SetStringField(TEXT("graph_name"), Resolved->Graph->GetName());
+				ResolvedTargetObj->SetStringField(TEXT("graph_kind"), Resolved->Kind);
+				ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), false);
+				ResolvedTargetObj->SetStringField(TEXT("graph_path"), Resolved->Path);
+				if (!Resolved->SubgraphPath.IsEmpty())
+				{
+					ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), Resolved->SubgraphPath);
+				}
 			}
 		}
-		else
+
+		if (FoundGraph != nullptr)
 		{
 			if (FoundKind == ECortexGraphKind::Delegate || !IsMutableGraphKind(FoundKind))
 			{

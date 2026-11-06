@@ -113,6 +113,10 @@ public:
 	static bool ResolveReadScope(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Params,
 		TArray<FCortexGraphTreeEntry>& OutEntries, FCortexCommandResult& OutError);
 
-	/** Report truncation of the collected entries into Data: truncated=true and truncated_parent_graph_guids; no-op when nothing was cut. */
-	static void AppendTruncation(const TArray<FCortexGraphTreeEntry>& Entries, const TSharedPtr<FJsonObject>& Data);
+	/**
+	 * Report truncation of the collected entries into Data: TruncatedField (default `truncated`) = true and
+	 * truncated_parent_graph_guids; no-op when nothing was cut, so complete trees add no field. A caller whose response already
+	 * uses `truncated` for something else passes another flag name.
+	 */
+	static void AppendTruncation(const TArray<FCortexGraphTreeEntry>& Entries, const TSharedPtr<FJsonObject>& Data, const TCHAR* TruncatedField = TEXT("truncated"));
 };
