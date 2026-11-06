@@ -2,20 +2,12 @@
 
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
+#include "CortexGraphTree.h"
 
 class UBlueprint;
 class UEdGraph;
 class UEdGraphNode;
 class UEdGraphPin;
-
-enum class ECortexGraphKind : uint8
-{
-	Ubergraph,
-	Function,
-	Macro,
-	Delegate,
-	InterfaceImpl,
-};
 
 struct FCortexGraphEntry
 {
@@ -112,13 +104,4 @@ private:
 		const FString& SubgraphPath,
 		const FString& NodeId,
 		const FString& PinName);
-
-	/** Recursively collect composite subgraph entries for ListGraphs. */
-	static void CollectSubgraphsRecursive(
-		UEdGraph* Graph,
-		const FString& ParentGraphName,
-		const FString& CurrentSubgraphPath,
-		TArray<TSharedPtr<FJsonValue>>& OutArray,
-		int32 Depth
-	);
 };

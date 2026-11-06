@@ -506,9 +506,11 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 		FCortexCommandInfo{ TEXT("get_authoring_context"), TEXT("Inspect Blueprint authoring context, candidate graphs, and current authoring fingerprint") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("target"), TEXT("object"), TEXT("Optional target graph locator (graph_ref)")).RollbackSafe(),
-		FCortexCommandInfo{ TEXT("list_graphs"), TEXT("List user-visible Blueprint graphs with kind metadata and owning_interface for interface_impl graphs") }
+		FCortexCommandInfo{ TEXT("list_graphs"), TEXT("List user-visible Blueprint graphs with kind metadata, a stable graph_guid and root-relative path per graph, and owning_interface for interface_impl graphs. Nested graphs (composite bodies, Animation Blueprint state machine, state, transition and conduit graphs) are listed with include_subgraphs, are read-only and are addressed by graph_guid (or graph_path when graph_guid_unique is false)") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
-			.Optional(TEXT("include_subgraphs"), TEXT("boolean"), TEXT("Include composite subgraphs with parent_graph and subgraph_path fields")).RollbackSafe(),
+			.Optional(TEXT("include_subgraphs"), TEXT("boolean"), TEXT("Also list nested graphs below the root graphs with kind, parent_graph_guid, owner_node_guid and path; composite children keep parent_graph and subgraph_path. A tree deeper than 8 levels reports truncated and truncated_parent_graph_guids"))
+			.Optional(TEXT("kind"), TEXT("string"), TEXT("Only graphs of this kind (root: ubergraph, function, macro, delegate, interface_impl; nested: composite, anim_state_machine, anim_state, anim_transition_rule, anim_custom_transition, anim_conduit, anim_blend_space, anim_blend_space_sample, nested); implies include_subgraphs"))
+			.Optional(TEXT("parent_graph_guid"), TEXT("string"), TEXT("Only the nested graphs directly below the graph with this GraphGuid; implies include_subgraphs")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("search_nodes"), TEXT("Search nodes across graphs by class, function name, or display name; all filters are optional, and with none the full node inventory in scope is returned") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("node_class"), TEXT("string"), TEXT("Optional node class filter, case-insensitive; matches the node's class or any superclass (leading U optional, e.g. K2Node_Event also returns custom events); a trailing * is a prefix match on the class name (e.g. K2Node_Call*)"))

@@ -572,52 +572,6 @@ UEdGraph* FCortexGraphNodeOps::ResolveSubgraph(UEdGraph* RootGraph, const FStrin
 	return CurrentGraph;
 }
 
-void FCortexGraphNodeOps::CollectSubgraphsRecursive(
-	UEdGraph* Graph,
-	const FString& ParentGraphName,
-	const FString& CurrentSubgraphPath,
-	TArray<TSharedPtr<FJsonValue>>& OutArray,
-	int32 Depth)
-{
-	if (!Graph || Depth > MaxSubgraphDepth)
-	{
-		return;
-	}
-
-	for (UEdGraphNode* Node : Graph->Nodes)
-	{
-		if (!IsValid(Node))
-		{
-			continue;
-		}
-		UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
-		if (!CompositeNode || !CompositeNode->BoundGraph)
-		{
-			continue;
-		}
-
-		UEdGraph* Sub = CompositeNode->BoundGraph;
-		if (!IsValid(Sub))
-		{
-			continue;
-		}
-		FString SubPath = CurrentSubgraphPath.IsEmpty()
-			? Sub->GetName()
-			: FString::Printf(TEXT("%s.%s"), *CurrentSubgraphPath, *Sub->GetName());
-
-		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-		Entry->SetStringField(TEXT("name"), Sub->GetName());
-		Entry->SetStringField(TEXT("class"), Sub->GetClass()->GetName());
-		Entry->SetNumberField(TEXT("node_count"), Sub->Nodes.Num());
-		Entry->SetStringField(TEXT("parent_graph"), ParentGraphName);
-		Entry->SetStringField(TEXT("subgraph_path"), SubPath);
-		OutArray.Add(MakeShared<FJsonValueObject>(Entry));
-
-		// Recurse
-		CollectSubgraphsRecursive(Sub, Sub->GetName(), SubPath, OutArray, Depth + 1);
-	}
-}
-
 FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -629,6 +583,22 @@ FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObjec
 		);
 	}
 
+	bool bIncludeSubgraphs = false;
+	Params->TryGetBoolField(TEXT("include_subgraphs"), bIncludeSubgraphs);
+	FString KindFilter;
+	Params->TryGetStringField(TEXT("kind"), KindFilter);
+	FString ParentGuidText;
+	Params->TryGetStringField(TEXT("parent_graph_guid"), ParentGuidText);
+
+	FGuid ParentGuidFilter;
+	if (!ParentGuidText.IsEmpty() && !FGuid::Parse(ParentGuidText, ParentGuidFilter))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Invalid parent_graph_guid format: '%s'"), *ParentGuidText)
+		);
+	}
+
 	FCortexCommandResult LoadError;
 	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
@@ -636,45 +606,44 @@ FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObjec
 		return LoadError;
 	}
 
+	// A kind or parent filter addresses nested graphs, so either one lists them without a separate include_subgraphs.
+	const bool bListNested = bIncludeSubgraphs || !KindFilter.IsEmpty() || !ParentGuidText.IsEmpty();
+
+	TArray<FCortexGraphTreeEntry> Tree;
+	FCortexGraphTree::Collect(Blueprint, Tree);
+
+	const auto Matches = [&](const FCortexGraphTreeEntry& Entry)
+	{
+		return (KindFilter.IsEmpty() || Entry.Kind == KindFilter)
+			&& (ParentGuidText.IsEmpty() || Entry.ParentGraphGuid == ParentGuidFilter);
+	};
+
+	// Root graphs first, then every nested graph in collection order.
 	TArray<TSharedPtr<FJsonValue>> GraphsArray;
-
-	TArray<FCortexGraphEntry> Entries;
-	EnumerateUserGraphs(Blueprint, Entries);
-	for (const FCortexGraphEntry& GraphEntry : Entries)
+	for (const FCortexGraphTreeEntry& Entry : Tree)
 	{
-		UEdGraph* Graph = GraphEntry.Graph;
-		if (Graph == nullptr)
+		if (Entry.bRoot && Matches(Entry))
 		{
-			continue;
+			GraphsArray.Add(MakeShared<FJsonValueObject>(FCortexGraphTree::ToJson(Entry)));
 		}
-		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-		Entry->SetStringField(TEXT("name"), Graph->GetName());
-		Entry->SetStringField(TEXT("class"), Graph->GetClass()->GetName());
-		Entry->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
-		Entry->SetStringField(TEXT("kind"), GraphKindToString(GraphEntry.Kind));
-		if (GraphEntry.Kind == ECortexGraphKind::InterfaceImpl && GraphEntry.OwningInterface != NAME_None)
-		{
-			Entry->SetStringField(TEXT("owning_interface"), GraphEntry.OwningInterface.ToString());
-		}
-		GraphsArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
-
-	// Optionally include composite subgraphs
-	bool bIncludeSubgraphs = false;
-	Params->TryGetBoolField(TEXT("include_subgraphs"), bIncludeSubgraphs);
-	if (bIncludeSubgraphs)
+	if (bListNested)
 	{
-		for (const FCortexGraphEntry& GraphEntry : Entries)
+		for (const FCortexGraphTreeEntry& Entry : Tree)
 		{
-			if (GraphEntry.Graph)
+			if (!Entry.bRoot && Matches(Entry))
 			{
-				CollectSubgraphsRecursive(GraphEntry.Graph, GraphEntry.Graph->GetName(), TEXT(""), GraphsArray, 0);
+				GraphsArray.Add(MakeShared<FJsonValueObject>(FCortexGraphTree::ToJson(Entry)));
 			}
 		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("graphs"), GraphsArray);
+	if (bListNested)
+	{
+		FCortexGraphTree::AppendTruncation(Tree, Data);
+	}
 	return FCortexCommandRouter::Success(Data);
 }
 
