@@ -180,16 +180,19 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 		{
 			const TSharedPtr<FJsonObject>& GraphRef = *GraphRefPtr;
 			FString TargetGuidStr;
-			if (!GraphRef->TryGetStringField(TEXT("graph_guid"), TargetGuidStr) || TargetGuidStr.IsEmpty())
+			FString GraphPathStr;
+			GraphRef->TryGetStringField(TEXT("graph_guid"), TargetGuidStr);
+			GraphRef->TryGetStringField(TEXT("graph_path"), GraphPathStr);
+			if (TargetGuidStr.IsEmpty() && GraphPathStr.IsEmpty())
 			{
 				return FCortexCommandRouter::Error(
 					CortexErrorCodes::InvalidField,
-					TEXT("target.graph_ref requires graph_guid")
+					TEXT("target.graph_ref requires graph_guid or graph_path")
 				);
 			}
 
 			FGuid TargetGuid;
-			if (!FGuid::Parse(TargetGuidStr, TargetGuid))
+			if (!TargetGuidStr.IsEmpty() && !FGuid::Parse(TargetGuidStr, TargetGuid))
 			{
 				return FCortexCommandRouter::Error(
 					CortexErrorCodes::InvalidField,
@@ -226,14 +229,19 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 			// `graph_guid` names the target graph (a root graph or a bound composite child). The
 			// identity is the lookup; a supplied `subgraph_path` must equal that target's own
 			// root-relative path, so an omitted path resolves by identity alone and a pair that
-			// disagrees is refused instead of resolved to a different graph.
+			// disagrees is refused instead of resolved to a different graph. A `graph_path` (the path
+			// list_graphs publishes) selects among graphs that share a GraphGuid and is resolved by the
+			// shared tree rules below.
 			const FGraphChoiceEntry* FoundChoice = nullptr;
-			for (const FGraphChoiceEntry& Choice : Choices)
+			if (GraphPathStr.IsEmpty())
 			{
-				if (Choice.Graph->GraphGuid == TargetGuid)
+				for (const FGraphChoiceEntry& Choice : Choices)
 				{
-					FoundChoice = &Choice;
-					break;
+					if (Choice.Graph->GraphGuid == TargetGuid)
+					{
+						FoundChoice = &Choice;
+						break;
+					}
 				}
 			}
 
@@ -246,43 +254,107 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 				);
 			}
 
+			// A graph nested below a root graph that is not an authoring choice (Animation Blueprint state, transition and
+			// conduit graphs, or any graph a node publishes through GetSubGraphs) resolves read-only: its kind is reported
+			// and is_mutable is false. It is never a graph_choices entry and the patch route still refuses it.
+			TArray<FCortexGraphTreeEntry> Tree;
+			const FCortexGraphTreeEntry* FoundNested = nullptr;
 			if (!FoundChoice)
 			{
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::GraphNotFound,
-					FString::Printf(TEXT("Graph with GUID %s not found on Blueprint"), *TargetGuidStr)
-				);
-			}
-
-			FString SpecifiedKind;
-			if (GraphRef->TryGetStringField(TEXT("graph_kind"), SpecifiedKind) && !SpecifiedKind.IsEmpty())
-			{
-				FString ActualKind = FCortexGraphNodeOps::GraphKindToString(FoundChoice->Kind);
-				if (SpecifiedKind != ActualKind)
+				FCortexGraphTree::Collect(Blueprint, Tree);
+				TSharedPtr<FJsonObject> IdentityParams = MakeShared<FJsonObject>();
+				if (!TargetGuidStr.IsEmpty())
 				{
-					return FCortexCommandRouter::Error(
-						CortexErrorCodes::InvalidField,
-						FString::Printf(TEXT("Graph kind mismatch: specified '%s' but graph is '%s'"), *SpecifiedKind, *ActualKind)
-					);
+					IdentityParams->SetStringField(TEXT("graph_guid"), TargetGuidStr);
+				}
+				if (!GraphPathStr.IsEmpty())
+				{
+					IdentityParams->SetStringField(TEXT("graph_path"), GraphPathStr);
+				}
+				if (!SubgraphPath.IsEmpty())
+				{
+					IdentityParams->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+				}
+
+				// The shared resolver: unknown identity GRAPH_NOT_FOUND, a shared GUID INVALID_FIELD listing the paths,
+				// graph_guid/graph_path/subgraph_path must agree.
+				FCortexCommandResult ResolveError;
+				const FCortexGraphTreeEntry* Resolved = FCortexGraphTree::ResolveInTree(Tree, IdentityParams, ResolveError);
+				if (Resolved == nullptr)
+				{
+					return ResolveError;
+				}
+
+				// A path can also name a root or composite authoring choice.
+				for (const FGraphChoiceEntry& Choice : Choices)
+				{
+					if (Choice.Graph == Resolved->Graph)
+					{
+						FoundChoice = &Choice;
+						break;
+					}
+				}
+				if (FoundChoice == nullptr)
+				{
+					FoundNested = Resolved;
 				}
 			}
 
-			if (FoundChoice->Kind == ECortexGraphKind::Delegate || !FoundChoice->bIsMutable)
+			FString SpecifiedKind;
+			GraphRef->TryGetStringField(TEXT("graph_kind"), SpecifiedKind);
+			if (FoundNested != nullptr)
 			{
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::InvalidOperation,
-					TEXT("Delegate signature graphs are read-only and cannot be targeted for authoring")
-				);
-			}
+				if (!SpecifiedKind.IsEmpty() && SpecifiedKind != FoundNested->Kind)
+				{
+					return FCortexCommandRouter::Error(
+						CortexErrorCodes::InvalidField,
+						FString::Printf(TEXT("Graph kind mismatch: specified '%s' but graph is '%s'"), *SpecifiedKind, *FoundNested->Kind)
+					);
+				}
 
-			ResolvedTargetObj = MakeShared<FJsonObject>();
-			ResolvedTargetObj->SetStringField(TEXT("graph_guid"), FoundChoice->Graph->GraphGuid.ToString());
-			ResolvedTargetObj->SetStringField(TEXT("graph_name"), FoundChoice->Graph->GetName());
-			ResolvedTargetObj->SetStringField(TEXT("graph_kind"), FCortexGraphNodeOps::GraphKindToString(FoundChoice->Kind));
-			ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), FoundChoice->bIsMutable);
-			if (!FoundChoice->SubgraphPath.IsEmpty())
+				ResolvedTargetObj = MakeShared<FJsonObject>();
+				ResolvedTargetObj->SetStringField(TEXT("graph_guid"), FoundNested->Graph->GraphGuid.ToString());
+				ResolvedTargetObj->SetStringField(TEXT("graph_name"), FoundNested->Graph->GetName());
+				ResolvedTargetObj->SetStringField(TEXT("graph_kind"), FoundNested->Kind);
+				ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), false);
+				ResolvedTargetObj->SetStringField(TEXT("graph_path"), FoundNested->Path);
+				ResolvedTargetObj->SetStringField(TEXT("parent_graph_guid"), FoundNested->ParentGraphGuid.ToString());
+				if (!FoundNested->SubgraphPath.IsEmpty())
+				{
+					ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), FoundNested->SubgraphPath);
+				}
+			}
+			else
 			{
-				ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), FoundChoice->SubgraphPath);
+				if (!SpecifiedKind.IsEmpty())
+				{
+					FString ActualKind = FCortexGraphNodeOps::GraphKindToString(FoundChoice->Kind);
+					if (SpecifiedKind != ActualKind)
+					{
+						return FCortexCommandRouter::Error(
+							CortexErrorCodes::InvalidField,
+							FString::Printf(TEXT("Graph kind mismatch: specified '%s' but graph is '%s'"), *SpecifiedKind, *ActualKind)
+						);
+					}
+				}
+
+				if (FoundChoice->Kind == ECortexGraphKind::Delegate || !FoundChoice->bIsMutable)
+				{
+					return FCortexCommandRouter::Error(
+						CortexErrorCodes::InvalidOperation,
+						TEXT("Delegate signature graphs are read-only and cannot be targeted for authoring")
+					);
+				}
+
+				ResolvedTargetObj = MakeShared<FJsonObject>();
+				ResolvedTargetObj->SetStringField(TEXT("graph_guid"), FoundChoice->Graph->GraphGuid.ToString());
+				ResolvedTargetObj->SetStringField(TEXT("graph_name"), FoundChoice->Graph->GetName());
+				ResolvedTargetObj->SetStringField(TEXT("graph_kind"), FCortexGraphNodeOps::GraphKindToString(FoundChoice->Kind));
+				ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), FoundChoice->bIsMutable);
+				if (!FoundChoice->SubgraphPath.IsEmpty())
+				{
+					ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), FoundChoice->SubgraphPath);
+				}
 			}
 		}
 	}

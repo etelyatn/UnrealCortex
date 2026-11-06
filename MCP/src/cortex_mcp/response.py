@@ -184,6 +184,89 @@ def _bound_authoring_response(data: dict) -> str:
     return compact_json(bounded)
 
 
+# statetree.replace_node: the applied result embeds the full preview plan. Detail is dropped in this order, each step only
+# when the outcome still does not fit; the compact outcome (replaced, saved, compile status, fingerprint, binding counts)
+# is never dropped.
+_REPLACE_NODE_PLAN_KEYS = (
+    "property_plan",
+    "nodes",
+    "blueprint_only_members",
+    "required_acknowledgment",
+    "type_mismatches",
+    "unresolved_bindings",
+)
+_REPLACE_NODE_REFERRAL = (
+    "The replacement was applied; this is the authoritative outcome. Oversized plan detail was omitted. "
+    "Use statetree.get_node_bindings (paged) to read the resulting bindings."
+)
+
+
+def _bound_replace_node_outcome(data: dict) -> str:
+    """Bound an applied statetree.replace_node result without ever replacing it by an error.
+
+    A dry run is a plan, not an outcome, so it stays on the generic path.
+    """
+    text = compact_json(data)
+    if len(text) <= MAX_RESPONSE_CHARS:
+        return text
+
+    bounded = dict(data)
+    omitted: list[str] = []
+
+    def finalized(extra_omitted: tuple[str, ...] = ()) -> dict:
+        """The exact object that would be returned: the omission metadata counts against the budget."""
+        result = dict(bounded)
+        result["reader_complete"] = False
+        result["_outcome_detail_omitted"] = omitted + list(extra_omitted)
+        result["_suggestion"] = _REPLACE_NODE_REFERRAL
+        return result
+
+    def fits() -> bool:
+        return len(compact_json(finalized())) <= MAX_RESPONSE_CHARS
+
+    bindings = bounded.get("bindings")
+    if isinstance(bindings, dict) and isinstance(bindings.get("remapped"), list):
+        trimmed = dict(bindings)
+        trimmed["remapped_count"] = len(trimmed.pop("remapped"))
+        trimmed["_remapped_omitted"] = True
+        bounded["bindings"] = trimmed
+        omitted.append("bindings.remapped")
+    for key in _REPLACE_NODE_PLAN_KEYS:
+        if fits():
+            break
+        value = bounded.get(key)
+        if isinstance(value, list):
+            del bounded[key]
+            bounded[f"{key}_count"] = len(value)
+            omitted.append(key)
+    if not fits() and isinstance(bounded.get("compile"), dict):
+        del bounded["compile"]
+        bounded["_compile_omitted"] = True
+        omitted.append("compile")
+
+    replaced = bounded.get("replaced")
+    if not fits() and isinstance(replaced, list):
+        total = len(replaced)
+        lo, hi, best = 0, total, 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            trial = finalized(("replaced",))
+            trial["replaced"] = replaced[:mid]
+            trial["replaced_count"] = total
+            trial["replaced_truncated"] = True
+            if len(compact_json(trial)) <= MAX_RESPONSE_CHARS:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        bounded["replaced"] = replaced[:best]
+        bounded["replaced_count"] = total
+        bounded["replaced_truncated"] = True
+        omitted.append("replaced")
+
+    return compact_json(finalized())
+
+
 # Names a refusal field owns: context from the request or the native echo can never overwrite them.
 _RESERVED_REFUSAL_KEYS = frozenset({
     "success",
@@ -396,6 +479,8 @@ def format_response(
     Returns:
         JSON string, guaranteed under MAX_RESPONSE_CHARS.
     """
+    if qualified_command == "statetree.replace_node" and data.get("dry_run") is False and "replaced" in data:
+        return _bound_replace_node_outcome(data)
     if command in ANIMATION_AUTHORING_COMMANDS:
         return _bound_authoring_response(data)
     if detail:

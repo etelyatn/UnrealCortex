@@ -275,7 +275,7 @@ namespace CortexIssue122ReplaceInterfaceEntryTest
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPReplaceInterfaceTest,
-	"Cortex.Blueprint.ReplaceInterface",
+	"Cortex.Blueprint.ReplaceInterface.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexBPReplaceInterfaceTest::RunTest(const FString& Parameters)

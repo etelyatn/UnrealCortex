@@ -775,6 +775,10 @@ FCortexCommandResult FCortexSTTransitionOps::AddTransition(const TSharedPtr<FJso
 	{
 		return Error;
 	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
+	{
+		return Error;
+	}
 
 	FCortexSTAssetContext Context;
 	if (!CortexST::LoadAssetContext(AssetPath, Context, Error))
@@ -893,6 +897,10 @@ FCortexCommandResult FCortexSTTransitionOps::RemoveTransition(const TSharedPtr<F
 	{
 		return Error;
 	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
+	{
+		return Error;
+	}
 
 	FCortexSTAssetContext Context;
 	if (!CortexST::LoadAssetContext(AssetPath, Context, Error))
@@ -942,6 +950,10 @@ FCortexCommandResult FCortexSTTransitionOps::SetTransitionProperties(const TShar
 	FString AssetPath;
 	FCortexCommandResult Error;
 	if (!CortexST::GetRequiredString(Params, TEXT("asset_path"), AssetPath, Error))
+	{
+		return Error;
+	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
 	{
 		return Error;
 	}

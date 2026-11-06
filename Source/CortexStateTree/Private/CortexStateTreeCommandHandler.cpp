@@ -3,7 +3,10 @@
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 #include "Operations/CortexSTAssetOps.h"
+#include "Operations/CortexSTBindingOps.h"
 #include "Operations/CortexSTInspectOps.h"
+#include "Operations/CortexSTReplaceNodeOps.h"
+#include "Operations/CortexSTRuntimeOps.h"
 #include "Operations/CortexSTStateOps.h"
 #include "Operations/CortexSTTransitionOps.h"
 #include "Operations/CortexSTValidationOps.h"
@@ -82,6 +85,18 @@ FCortexCommandResult FCortexStateTreeCommandHandler::Execute(
 	if (Command == TEXT("set_transition_properties"))
 	{
 		return FCortexSTTransitionOps::SetTransitionProperties(Params);
+	}
+	if (Command == TEXT("get_node_bindings"))
+	{
+		return FCortexSTBindingOps::GetNodeBindings(Params);
+	}
+	if (Command == TEXT("replace_node"))
+	{
+		return FCortexSTReplaceNodeOps::ReplaceNode(Params);
+	}
+	if (Command == TEXT("get_runtime_state"))
+	{
+		return FCortexSTRuntimeOps::GetRuntimeState(Params);
 	}
 
 	return FCortexCommandRouter::Error(
@@ -207,5 +222,28 @@ TArray<FCortexCommandInfo> FCortexStateTreeCommandHandler::GetSupportedCommands(
 			.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after mutation"))
 			.Optional(TEXT("save"), TEXT("boolean"), TEXT("Persist package after mutation"))
 			.Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Required stale-write guard for transition mutation")),
+		FCortexCommandInfo{ TEXT("get_node_bindings"), TEXT("Report the stored property bindings of StateTree nodes (read-only; never validates, compiles or dirties the asset)") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path"))
+			.Optional(TEXT("node_id"), TEXT("string"), TEXT("Editor node ID (the binding struct ID); selects one node"))
+			.Optional(TEXT("state_id"), TEXT("string"), TEXT("State GUID; selects every node owned by the state, transition conditions included"))
+			.Optional(TEXT("state_path"), TEXT("string"), TEXT("State path; selects every node owned by the state"))
+			.Optional(TEXT("direction"), TEXT("string"), TEXT("target, source or both (default both)"))
+			.Optional(TEXT("limit"), TEXT("number"), TEXT("Nodes per page, default 50, maximum 200"))
+			.Optional(TEXT("offset"), TEXT("number"), TEXT("Nodes to skip, default 0")),
+		FCortexCommandInfo{ TEXT("replace_node"), TEXT("Replace Blueprint StateTree nodes by native ones in place, keeping the editor node ID and every binding keyed by it") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path"))
+			.Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Required stale-write guard"))
+			.Optional(TEXT("node_id"), TEXT("string"), TEXT("Editor node ID of the node to replace; mutually exclusive with blueprint_class"))
+			.Optional(TEXT("blueprint_class"), TEXT("string"), TEXT("Replace every node of this Blueprint class in one transaction"))
+			.Optional(TEXT("new_node_struct"), TEXT("string"), TEXT("Path of a native node struct deriving the slot's base; mutually exclusive with new_node_class"))
+			.Optional(TEXT("new_node_class"), TEXT("string"), TEXT("Path of a native (non-Blueprint, concrete) Blueprint-base class; the wrapper is kept"))
+			.Optional(TEXT("property_map"), TEXT("object"), TEXT("\"OldProperty\": \"NewProperty\" renames applied to the values and to the binding paths"))
+			.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("Keys of the dry run's required_acknowledgment to drop on purpose"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Plan only (default false)"))
+			.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the replacement (default true)"))
+			.Optional(TEXT("save"), TEXT("boolean"), TEXT("Persist the package only on full success (default false)")),
+		FCortexCommandInfo{ TEXT("get_runtime_state"), TEXT("Report the StateTree components of the running PIE world (read-only)") }
+			.Optional(TEXT("asset_path"), TEXT("string"), TEXT("Only components using this StateTree asset"))
+			.Optional(TEXT("actor"), TEXT("string"), TEXT("Only this actor's components")),
 	};
 }

@@ -2,6 +2,7 @@
 
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
+#include "CortexGraphBindingStorage.h"
 #include "CortexGraphMemberReferences.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
@@ -10,6 +11,7 @@
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "K2Node.h"
 #include "K2Node_ActorBoundEvent.h"
 #include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_Variable.h"
@@ -263,7 +265,30 @@ namespace
 	//////////////////////////////////////////////////////////////////////////
 	// AnimGraph bindings (reached by reflection; CortexBlueprint does not depend on the AnimGraph module)
 
-	/** Exported property bindings of every node that owns a `Binding` object with a `PropertyBindings` map. */
+	/**
+	 * Fails closed when an animation node's binding storage cannot be read: a restore the adoption could not verify would silently drop
+	 * bindings. The reflected fields belong to FCortexGraphBindingStorage, which names the missing one.
+	 */
+	bool CheckAnimBindingStorage(UBlueprint* Blueprint, FString& OutError)
+	{
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+		for (const UEdGraph* Graph : Graphs)
+		{
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				FString Missing;
+				if (FCortexGraphBindingStorage::IsAnimNode(Node) && !FCortexGraphBindingStorage::CheckBindingStorage(Missing))
+				{
+					OutError = FString::Printf(TEXT("This engine build does not expose the reflected field '%s' needed to journal anim-node bindings"), *Missing);
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/** Exported property bindings of every node whose binding storage the shared owner can read. */
 	TMap<FGuid, FString> CollectBindingTexts(UBlueprint* Blueprint)
 	{
 		TMap<FGuid, FString> Out;
@@ -273,13 +298,9 @@ namespace
 		{
 			for (UEdGraphNode* Node : Graph->Nodes)
 			{
-				const FObjectProperty* BindingProperty = Node != nullptr ? FindFProperty<FObjectProperty>(Node->GetClass(), TEXT("Binding")) : nullptr;
-				UObject* Binding = BindingProperty != nullptr ? BindingProperty->GetObjectPropertyValue_InContainer(Node) : nullptr;
-				const FProperty* Bindings = Binding != nullptr ? FindFProperty<FProperty>(Binding->GetClass(), TEXT("PropertyBindings")) : nullptr;
-				if (Bindings != nullptr)
+				FString Text;
+				if (FCortexGraphBindingStorage::ExportBindingText(Cast<UK2Node>(Node), Text))
 				{
-					FString Text;
-					Bindings->ExportText_InContainer(0, Text, Binding, nullptr, Binding, PPF_None);
 					Out.Add(Node->NodeGuid, Text);
 				}
 			}
@@ -297,17 +318,14 @@ namespace
 			{
 				continue;
 			}
-			UEdGraphNode* Node = FindNodeByGuid(Blueprint, Pair.Key);
-			const FObjectProperty* BindingProperty = Node != nullptr ? FindFProperty<FObjectProperty>(Node->GetClass(), TEXT("Binding")) : nullptr;
-			UObject* Binding = BindingProperty != nullptr ? BindingProperty->GetObjectPropertyValue_InContainer(Node) : nullptr;
-			const FProperty* Bindings = Binding != nullptr ? FindFProperty<FProperty>(Binding->GetClass(), TEXT("PropertyBindings")) : nullptr;
-			if (Bindings == nullptr)
+			UK2Node* Node = Cast<UK2Node>(FindNodeByGuid(Blueprint, Pair.Key));
+			FString Unused;
+			if (!FCortexGraphBindingStorage::ExportBindingText(Node, Unused))
 			{
 				OutError = FString::Printf(TEXT("Node %s lost its property bindings"), *Pair.Key.ToString());
 				return false;
 			}
-			Binding->Modify();
-			if (Bindings->ImportText_InContainer(*Pair.Value, Binding, Binding, PPF_None) == nullptr)
+			if (!FCortexGraphBindingStorage::ImportBindingText(Node, Pair.Value))
 			{
 				OutError = FString::Printf(TEXT("Could not restore the property bindings of node %s"), *Pair.Key.ToString());
 				return false;
@@ -1145,6 +1163,10 @@ namespace
 
 		Spec.Capture = [State, Plan](UBlueprint* Target, FString& OutError)
 		{
+			if (!CheckAnimBindingStorage(Target, OutError))
+			{
+				return false;
+			}
 			State->NodeGuidsBefore = AllNodeGuids(Target);
 			State->BindingsBefore = CollectBindingTexts(Target);
 			State->OldCompiledSuper = Target->GeneratedClass != nullptr ? Target->GeneratedClass->GetSuperClass() : nullptr;

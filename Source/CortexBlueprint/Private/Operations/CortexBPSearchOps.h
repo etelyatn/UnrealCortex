@@ -17,6 +17,8 @@ private:
 		FString Location;
 		FString NodeId;
 		FString GraphName;
+		/** Set only for a match inside a nested graph; root-graph matches keep their existing shape. */
+		FString GraphGuid;
 		FString Property;
 		FString Type;
 		FString Value;
@@ -29,7 +31,8 @@ private:
 		const FString& Query,
 		bool bCaseSensitive,
 		int32 MaxResults,
-		TArray<FSearchMatch>& OutMatches);
+		TArray<FSearchMatch>& OutMatches,
+		TArray<FString>& OutCutParentGuids);
 
 	static void SearchClassDefaults(
 		UBlueprint* Blueprint,

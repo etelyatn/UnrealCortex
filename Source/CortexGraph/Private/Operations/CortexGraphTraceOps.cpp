@@ -33,44 +33,63 @@ struct FCortexTraceOptions
 	bool bExecOnly = true;
 };
 
-void CollectGraphsRecursive(
-	UEdGraph* Graph,
-	const FString& CurrentSubgraphPath,
-	TArray<TPair<UEdGraph*, FString>>& OutGraphs,
-	int32 Depth)
+/** Params reduced to the graph identity selectors (graph_guid, graph_path), for commands that scope by identity only. */
+TSharedPtr<FJsonObject> IdentityScopeParams(const TSharedPtr<FJsonObject>& Params)
 {
-	if (!Graph || Depth > 5)
+	TSharedPtr<FJsonObject> Scope = MakeShared<FJsonObject>();
+	FString Value;
+	if (Params.IsValid() && Params->TryGetStringField(TEXT("graph_guid"), Value))
 	{
-		return;
+		Scope->SetStringField(TEXT("graph_guid"), Value);
 	}
-
-	OutGraphs.Emplace(Graph, CurrentSubgraphPath);
-
-	for (UEdGraphNode* Node : Graph->Nodes)
+	if (Params.IsValid() && Params->TryGetStringField(TEXT("graph_path"), Value))
 	{
-		const UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
-		if (!CompositeNode || !CompositeNode->BoundGraph)
-		{
-			continue;
-		}
-
-		const FString ChildPath = CurrentSubgraphPath.IsEmpty()
-			? CompositeNode->BoundGraph->GetName()
-			: FString::Printf(TEXT("%s.%s"), *CurrentSubgraphPath, *CompositeNode->BoundGraph->GetName());
-		CollectGraphsRecursive(CompositeNode->BoundGraph, ChildPath, OutGraphs, Depth + 1);
+		Scope->SetStringField(TEXT("graph_path"), Value);
 	}
+	return Scope;
 }
 
-void GetAllCandidateGraphs(
-	UBlueprint* Blueprint,
-	TArray<TPair<UEdGraph*, FString>>& OutGraphs)
+/**
+ * Params for the handler and call reads: without graph_guid/graph_path they stay unscoped (graph_name and subgraph_path were
+ * never a scope for these commands); with an identity, graph_name and subgraph_path ride along so the shared resolver validates
+ * that they agree with it.
+ */
+TSharedPtr<FJsonObject> HandlerScopeParams(const TSharedPtr<FJsonObject>& Params)
 {
-	TArray<FCortexGraphEntry> Entries;
-	FCortexGraphNodeOps::EnumerateUserGraphs(Blueprint, Entries);
-	for (const FCortexGraphEntry& Entry : Entries)
+	TSharedPtr<FJsonObject> Scope = IdentityScopeParams(Params);
+	if (!FCortexGraphTree::HasGraphSelector(Scope))
 	{
-		CollectGraphsRecursive(Entry.Graph, TEXT(""), OutGraphs, 0);
+		return Scope;
 	}
+	FString Value;
+	if (Params->TryGetStringField(TEXT("graph_name"), Value))
+	{
+		Scope->SetStringField(TEXT("graph_name"), Value);
+	}
+	if (Params->TryGetStringField(TEXT("subgraph_path"), Value))
+	{
+		Scope->SetStringField(TEXT("subgraph_path"), Value);
+	}
+	return Scope;
+}
+
+/**
+ * Params reduced to the selectors a trace honours: graph_guid, graph_path and graph_name, with subgraph_path only alongside
+ * one of them (a bare subgraph_path never narrowed a trace).
+ */
+TSharedPtr<FJsonObject> TraceSelectorParams(const TSharedPtr<FJsonObject>& Params)
+{
+	TSharedPtr<FJsonObject> Selector = IdentityScopeParams(Params);
+	FString Value;
+	if (Params.IsValid() && Params->TryGetStringField(TEXT("graph_name"), Value))
+	{
+		Selector->SetStringField(TEXT("graph_name"), Value);
+	}
+	if (FCortexGraphTree::HasGraphSelector(Selector) && Params->TryGetStringField(TEXT("subgraph_path"), Value))
+	{
+		Selector->SetStringField(TEXT("subgraph_path"), Value);
+	}
+	return Selector;
 }
 
 bool TryResolveTraceOptions(const TSharedPtr<FJsonObject>& Params, FCortexTraceOptions& OutOptions)
@@ -93,29 +112,15 @@ FCortexCommandResult ResolveGraphNode(
 	const FString& NodeId,
 	FCortexResolvedGraphNode& OutResolved)
 {
-	FCortexCommandResult Error;
-	FString GraphName;
-	FString SubgraphPath;
-	if (Params.IsValid())
+	const TSharedPtr<FJsonObject> Selector = TraceSelectorParams(Params);
+	if (FCortexGraphTree::HasGraphSelector(Selector))
 	{
-		Params->TryGetStringField(TEXT("graph_name"), GraphName);
-		Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
-	}
-
-	if (!GraphName.IsEmpty())
-	{
-		UEdGraph* Graph = FCortexGraphNodeOps::FindGraph(Blueprint, GraphName, Error);
-		if (!Graph)
+		FCortexCommandResult Error;
+		UEdGraph* Graph = nullptr;
+		FCortexGraphTreeEntry Target;
+		if (!FCortexGraphTree::ResolveReadTarget(Blueprint, Selector, Graph, &Target, Error))
 		{
 			return Error;
-		}
-		if (!SubgraphPath.IsEmpty())
-		{
-			Graph = FCortexGraphNodeOps::ResolveSubgraph(Graph, SubgraphPath, Error);
-			if (!Graph)
-			{
-				return Error;
-			}
 		}
 
 		UEdGraphNode* Node = FCortexGraphNodeOps::FindNode(Graph, NodeId, Error);
@@ -126,25 +131,24 @@ FCortexCommandResult ResolveGraphNode(
 
 		OutResolved.Graph = Graph;
 		OutResolved.Node = Node;
-		OutResolved.GraphName = GraphName.IsEmpty() ? Graph->GetName() : GraphName;
-		OutResolved.SubgraphPath = SubgraphPath;
+		OutResolved.GraphName = Graph->GetName();
+		OutResolved.SubgraphPath = Target.SubgraphPath;
 		return FCortexCommandRouter::Success(MakeShared<FJsonObject>());
 	}
 
-	TArray<TPair<UEdGraph*, FString>> CandidateGraphs;
-	GetAllCandidateGraphs(Blueprint, CandidateGraphs);
-
-	for (const TPair<UEdGraph*, FString>& Entry : CandidateGraphs)
+	// No graph named: the first node of that name in the tree, nested graphs included.
+	TArray<FCortexGraphTreeEntry> Tree;
+	FCortexGraphTree::Collect(Blueprint, Tree);
+	for (const FCortexGraphTreeEntry& Entry : Tree)
 	{
-		UEdGraph* Graph = Entry.Key;
-		for (UEdGraphNode* Node : Graph->Nodes)
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
 		{
 			if (Node && Node->GetName() == NodeId)
 			{
-				OutResolved.Graph = Graph;
+				OutResolved.Graph = Entry.Graph;
 				OutResolved.Node = Node;
-				OutResolved.GraphName = Graph->GetName();
-				OutResolved.SubgraphPath = Entry.Value;
+				OutResolved.GraphName = Entry.Graph->GetName();
+				OutResolved.SubgraphPath = Entry.SubgraphPath;
 				return FCortexCommandRouter::Success(MakeShared<FJsonObject>());
 			}
 		}
@@ -175,6 +179,11 @@ bool ShouldFollowPin(const UEdGraphPin* Pin, bool bExecOnly)
 
 	const bool bIsExecPin = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
 	return bExecOnly ? bIsExecPin : !bIsExecPin;
+}
+
+void AddGraphGuid(TSharedRef<FJsonObject> NodeJson, const UEdGraph* Graph)
+{
+	NodeJson->SetStringField(TEXT("graph_guid"), Graph->GraphGuid.ToString());
 }
 
 void AddTraceResponseMetadata(TSharedRef<FJsonObject> NodeJson, const FString& GraphName, const FString& SubgraphPath)
@@ -235,6 +244,7 @@ FCortexCommandResult RunTrace(const TSharedPtr<FJsonObject>& Params, bool bExecO
 
 		TSharedRef<FJsonObject> NodeJson = FCortexGraphNodeOps::SerializeNode(CurrentNode, true, true);
 		AddTraceResponseMetadata(NodeJson, CurrentNode->GetGraph()->GetName(), TEXT(""));
+		AddGraphGuid(NodeJson, CurrentNode->GetGraph());
 		NodesArray.Add(MakeShared<FJsonValueObject>(NodeJson));
 
 		if (CurrentDepth >= Options.MaxDepth)
@@ -344,23 +354,27 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 		return LoadError;
 	}
 
-	FString GraphName;
-	Params->TryGetStringField(TEXT("graph_name"), GraphName);
-	FString SubgraphPath;
-	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
-
-	UEdGraph* Graph = FCortexGraphNodeOps::FindGraph(Blueprint, GraphName, LoadError);
-	if (!Graph)
+	UEdGraph* Graph = nullptr;
+	FCortexGraphTreeEntry Target;
+	if (!FCortexGraphTree::ResolveReadTarget(Blueprint, Params, Graph, &Target, LoadError))
 	{
 		return LoadError;
 	}
-	if (!SubgraphPath.IsEmpty())
+
+	// A graph addressed by identity echoes graph_guid/graph_kind/graph_path; name-addressed callers keep their existing response.
+	FString IdentityGuid;
+	FString IdentityPath;
+	Params->TryGetStringField(TEXT("graph_guid"), IdentityGuid);
+	Params->TryGetStringField(TEXT("graph_path"), IdentityPath);
+	const bool bByIdentity = !IdentityGuid.IsEmpty() || !IdentityPath.IsEmpty();
+	FString SubgraphPath;
+	if (bByIdentity)
 	{
-		Graph = FCortexGraphNodeOps::ResolveSubgraph(Graph, SubgraphPath, LoadError);
-		if (!Graph)
-		{
-			return LoadError;
-		}
+		SubgraphPath = Target.SubgraphPath;
+	}
+	else
+	{
+		Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
 	}
 
 	bool bIncludeEdges = false;
@@ -418,6 +432,11 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 		const TSharedPtr<FJsonObject>* SingleNode = nullptr;
 		if (NodesArray[0].IsValid() && NodesArray[0]->TryGetObject(SingleNode) && SingleNode)
 		{
+			if (bByIdentity)
+			{
+				(*SingleNode)->SetStringField(TEXT("graph_guid"), Graph->GraphGuid.ToString());
+				(*SingleNode)->SetStringField(TEXT("graph_kind"), Target.Kind);
+			}
 			return FCortexCommandRouter::Success(*SingleNode);
 		}
 	}
@@ -456,6 +475,12 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("graph_name"), Graph->GetName());
+	if (bByIdentity)
+	{
+		Data->SetStringField(TEXT("graph_guid"), Graph->GraphGuid.ToString());
+		Data->SetStringField(TEXT("graph_kind"), Target.Kind);
+		Data->SetStringField(TEXT("graph_path"), Target.Path);
+	}
 	if (!SubgraphPath.IsEmpty())
 	{
 		Data->SetStringField(TEXT("subgraph_path"), SubgraphPath);
@@ -484,13 +509,17 @@ FCortexCommandResult FCortexGraphTraceOps::ListEventHandlers(const TSharedPtr<FJ
 		return LoadError;
 	}
 
-	TArray<TPair<UEdGraph*, FString>> CandidateGraphs;
-	GetAllCandidateGraphs(Blueprint, CandidateGraphs);
+	TArray<FCortexGraphTreeEntry> CandidateGraphs;
+	FCortexCommandResult ScopeError;
+	if (!FCortexGraphTree::ResolveReadScope(Blueprint, HandlerScopeParams(Params), CandidateGraphs, ScopeError))
+	{
+		return ScopeError;
+	}
 
 	TArray<TSharedPtr<FJsonValue>> MatchesArray;
-	for (const TPair<UEdGraph*, FString>& Entry : CandidateGraphs)
+	for (const FCortexGraphTreeEntry& Entry : CandidateGraphs)
 	{
-		for (UEdGraphNode* Node : Entry.Key->Nodes)
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
 		{
 			if (!IsSupportedEventHandlerNode(Node))
 			{
@@ -498,7 +527,8 @@ FCortexCommandResult FCortexGraphTraceOps::ListEventHandlers(const TSharedPtr<FJ
 			}
 
 			TSharedRef<FJsonObject> NodeJson = FCortexGraphNodeOps::SerializeNode(Node, true, true);
-			AddTraceResponseMetadata(NodeJson, Entry.Key->GetName(), Entry.Value);
+			AddTraceResponseMetadata(NodeJson, Entry.Graph->GetName(), Entry.SubgraphPath);
+			AddGraphGuid(NodeJson, Entry.Graph);
 			MatchesArray.Add(MakeShared<FJsonValueObject>(NodeJson));
 		}
 	}
@@ -507,6 +537,7 @@ FCortexCommandResult FCortexGraphTraceOps::ListEventHandlers(const TSharedPtr<FJ
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetArrayField(TEXT("nodes"), MatchesArray);
 	Data->SetNumberField(TEXT("count"), MatchesArray.Num());
+	FCortexGraphTree::AppendTruncation(CandidateGraphs, Data);
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -530,13 +561,17 @@ FCortexCommandResult FCortexGraphTraceOps::FindEventHandler(const TSharedPtr<FJs
 		return LoadError;
 	}
 
-	TArray<TPair<UEdGraph*, FString>> CandidateGraphs;
-	GetAllCandidateGraphs(Blueprint, CandidateGraphs);
+	TArray<FCortexGraphTreeEntry> CandidateGraphs;
+	FCortexCommandResult ScopeError;
+	if (!FCortexGraphTree::ResolveReadScope(Blueprint, HandlerScopeParams(Params), CandidateGraphs, ScopeError))
+	{
+		return ScopeError;
+	}
 
 	TArray<TSharedPtr<FJsonValue>> MatchesArray;
-	for (const TPair<UEdGraph*, FString>& Entry : CandidateGraphs)
+	for (const FCortexGraphTreeEntry& Entry : CandidateGraphs)
 	{
-		for (UEdGraphNode* Node : Entry.Key->Nodes)
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
 		{
 			if (!IsSupportedEventHandlerNode(Node) || !DoesEventNameMatch(Node, EventName))
 			{
@@ -544,7 +579,8 @@ FCortexCommandResult FCortexGraphTraceOps::FindEventHandler(const TSharedPtr<FJs
 			}
 
 			TSharedRef<FJsonObject> NodeJson = FCortexGraphNodeOps::SerializeNode(Node, true, true);
-			AddTraceResponseMetadata(NodeJson, Entry.Key->GetName(), Entry.Value);
+			AddTraceResponseMetadata(NodeJson, Entry.Graph->GetName(), Entry.SubgraphPath);
+			AddGraphGuid(NodeJson, Entry.Graph);
 			MatchesArray.Add(MakeShared<FJsonValueObject>(NodeJson));
 		}
 	}
@@ -554,6 +590,7 @@ FCortexCommandResult FCortexGraphTraceOps::FindEventHandler(const TSharedPtr<FJs
 	Data->SetStringField(TEXT("event_name"), EventName);
 	Data->SetArrayField(TEXT("nodes"), MatchesArray);
 	Data->SetNumberField(TEXT("count"), MatchesArray.Num());
+	FCortexGraphTree::AppendTruncation(CandidateGraphs, Data);
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -577,13 +614,17 @@ FCortexCommandResult FCortexGraphTraceOps::FindFunctionCalls(const TSharedPtr<FJ
 		return LoadError;
 	}
 
-	TArray<TPair<UEdGraph*, FString>> CandidateGraphs;
-	GetAllCandidateGraphs(Blueprint, CandidateGraphs);
+	TArray<FCortexGraphTreeEntry> CandidateGraphs;
+	FCortexCommandResult ScopeError;
+	if (!FCortexGraphTree::ResolveReadScope(Blueprint, HandlerScopeParams(Params), CandidateGraphs, ScopeError))
+	{
+		return ScopeError;
+	}
 
 	TArray<TSharedPtr<FJsonValue>> MatchesArray;
-	for (const TPair<UEdGraph*, FString>& Entry : CandidateGraphs)
+	for (const FCortexGraphTreeEntry& Entry : CandidateGraphs)
 	{
-		for (UEdGraphNode* Node : Entry.Key->Nodes)
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
 		{
 			const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
 			if (!CallNode)
@@ -608,7 +649,8 @@ FCortexCommandResult FCortexGraphTraceOps::FindFunctionCalls(const TSharedPtr<FJ
 
 			TSharedRef<FJsonObject> NodeJson = FCortexGraphNodeOps::SerializeNode(Node, true, true);
 			NodeJson->SetStringField(TEXT("function_name"), CandidateName);
-			AddTraceResponseMetadata(NodeJson, Entry.Key->GetName(), Entry.Value);
+			AddTraceResponseMetadata(NodeJson, Entry.Graph->GetName(), Entry.SubgraphPath);
+			AddGraphGuid(NodeJson, Entry.Graph);
 			MatchesArray.Add(MakeShared<FJsonValueObject>(NodeJson));
 		}
 	}
@@ -618,5 +660,6 @@ FCortexCommandResult FCortexGraphTraceOps::FindFunctionCalls(const TSharedPtr<FJ
 	Data->SetStringField(TEXT("function_name"), FunctionName);
 	Data->SetArrayField(TEXT("nodes"), MatchesArray);
 	Data->SetNumberField(TEXT("count"), MatchesArray.Num());
+	FCortexGraphTree::AppendTruncation(CandidateGraphs, Data);
 	return FCortexCommandRouter::Success(Data);
 }

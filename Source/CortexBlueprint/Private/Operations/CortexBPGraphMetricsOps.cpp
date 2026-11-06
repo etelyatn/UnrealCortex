@@ -1,6 +1,7 @@
 #include "Operations/CortexBPGraphMetricsOps.h"
 
 #include "CortexBlueprintModule.h"
+#include "CortexGraphTree.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -299,9 +300,12 @@ namespace
 		return MakeShared<FJsonValueString>(Value);
 	}
 
-	/** Appends one {graph[, subgraph], count, node_ids} row; no-op for an empty node list. */
+	/**
+	 * Appends one {graph[, graph_guid][, subgraph], count, node_ids} row; no-op for an empty node list. graph_guid is published
+	 * only for a graph nested below a root graph, so a Blueprint without nested graphs keeps its existing rows.
+	 */
 	void AddNodeRow(TArray<TSharedPtr<FJsonValue>>& Rows, int32& InOutTotal, const UEdGraph* Graph, const UEdGraph* Subgraph,
-		const TArray<const UEdGraphNode*>& Nodes)
+		const TSet<const UEdGraph*>& NestedGraphs, const TArray<const UEdGraphNode*>& Nodes)
 	{
 		if (Nodes.IsEmpty())
 		{
@@ -320,6 +324,10 @@ namespace
 
 		TSharedPtr<FJsonObject> Row = MakeShared<FJsonObject>();
 		Row->SetStringField(TEXT("graph"), Graph ? Graph->GetName() : FString());
+		if (Graph && NestedGraphs.Contains(Graph))
+		{
+			Row->SetStringField(TEXT("graph_guid"), Graph->GraphGuid.ToString());
+		}
 		if (Subgraph)
 		{
 			Row->SetStringField(TEXT("subgraph"), Subgraph->GetName());
@@ -420,7 +428,9 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 			&& !CortexBPGraphReachability::IsAnimationOrStateMachineGraph(Graph))
 		{
 			Graphs.Add(Graph);
+			return true;
 		}
+		return false;
 	};
 	for (const UEdGraph* Graph : Blueprint->UbergraphPages)
 	{
@@ -435,6 +445,36 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 		for (const UEdGraph* Graph : Interface.Graphs)
 		{
 			AddMeasurableGraph(Graph);
+		}
+	}
+
+	// Graphs nested below a measured root graph that a node publishes through GetSubGraphs(). Composite bodies are skipped: the
+	// reachability walk already follows a composite instance into its body.
+	TSet<const UEdGraph*> NestedGraphs;
+	// Entries whose nested graphs were not catalogued (depth limit): what lies below them was not measured.
+	TArray<FCortexGraphTreeEntry> CutEntries;
+	{
+		TArray<FCortexGraphTreeEntry> Tree;
+		FCortexGraphTree::Collect(Blueprint, Tree);
+		for (const FCortexGraphTreeEntry& TreeEntry : Tree)
+		{
+			if (TreeEntry.RootKind != ECortexGraphKind::Ubergraph && TreeEntry.RootKind != ECortexGraphKind::Function
+				&& TreeEntry.RootKind != ECortexGraphKind::InterfaceImpl)
+			{
+				continue;
+			}
+			if (TreeEntry.bChildrenTruncated)
+			{
+				CutEntries.Add(TreeEntry);
+			}
+			if (TreeEntry.bRoot || TreeEntry.Kind == TEXT("composite"))
+			{
+				continue;
+			}
+			if (AddMeasurableGraph(TreeEntry.Graph))
+			{
+				NestedGraphs.Add(TreeEntry.Graph);
+			}
 		}
 	}
 
@@ -523,8 +563,8 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 				UnreachableNodes.Add(Node);
 			}
 		}
-		AddNodeRow(UnreachableArray, TotalUnreachable, Graph, nullptr, UnreachableNodes);
-		AddNodeRow(DisabledArray, TotalDisabled, Graph, nullptr, DisabledNodes);
+		AddNodeRow(UnreachableArray, TotalUnreachable, Graph, nullptr, NestedGraphs, UnreachableNodes);
+		AddNodeRow(DisabledArray, TotalDisabled, Graph, nullptr, NestedGraphs, DisabledNodes);
 	}
 
 	// Macro and collapsed-graph contents: inner nodes that no entry tunnel reaches (or that are disabled) are reported
@@ -565,8 +605,8 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 					UnreachableNodes.Add(InnerNode);
 				}
 			}
-			AddNodeRow(UnreachableArray, TotalUnreachable, InnerReach.OuterGraph, InnerReach.Inner, UnreachableNodes);
-			AddNodeRow(DisabledArray, TotalDisabled, InnerReach.OuterGraph, InnerReach.Inner, DisabledNodes);
+			AddNodeRow(UnreachableArray, TotalUnreachable, InnerReach.OuterGraph, InnerReach.Inner, NestedGraphs, UnreachableNodes);
+			AddNodeRow(DisabledArray, TotalDisabled, InnerReach.OuterGraph, InnerReach.Inner, NestedGraphs, DisabledNodes);
 		}
 	}
 
@@ -587,6 +627,10 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 	{
 		TSharedPtr<FJsonObject> EntryObject = MakeShared<FJsonObject>();
 		EntryObject->SetStringField(TEXT("graph"), Metrics.Graph->GetName());
+		if (NestedGraphs.Contains(Metrics.Graph))
+		{
+			EntryObject->SetStringField(TEXT("graph_guid"), Metrics.Graph->GraphGuid.ToString());
+		}
 		EntryObject->SetStringField(TEXT("name"), Metrics.Name);
 		EntryObject->SetStringField(TEXT("kind"), KindToString(Metrics.Kind));
 		EntryObject->SetStringField(TEXT("node_id"), Metrics.Node->GetName());
@@ -602,6 +646,10 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 			++GhostCount;
 			TSharedPtr<FJsonObject> GhostObject = MakeShared<FJsonObject>();
 			GhostObject->SetStringField(TEXT("graph"), Metrics.Graph->GetName());
+			if (NestedGraphs.Contains(Metrics.Graph))
+			{
+				GhostObject->SetStringField(TEXT("graph_guid"), Metrics.Graph->GraphGuid.ToString());
+			}
 			GhostObject->SetStringField(TEXT("name"), Metrics.Name);
 			GhostObject->SetStringField(TEXT("node_id"), Metrics.Node->GetName());
 			GhostArray.Add(MakeShared<FJsonValueObject>(GhostObject));
@@ -618,6 +666,10 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 			TSharedPtr<FJsonObject> Violation = MakeShared<FJsonObject>();
 			Violation->SetStringField(TEXT("scope"), TEXT("entry"));
 			Violation->SetStringField(TEXT("graph"), Metrics.Graph->GetName());
+			if (NestedGraphs.Contains(Metrics.Graph))
+			{
+				Violation->SetStringField(TEXT("graph_guid"), Metrics.Graph->GraphGuid.ToString());
+			}
 			Violation->SetStringField(TEXT("name"), Metrics.Name);
 			Violation->SetNumberField(TEXT("functional_nodes"), Metrics.Counts.Functional);
 			Violation->SetNumberField(TEXT("limit"), MaxNodesPerEntry);
@@ -655,5 +707,6 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 	Data->SetArrayField(TEXT("ghost_entries"), GhostArray);
 	Data->SetObjectField(TEXT("thresholds"), ThresholdsOut);
 	Data->SetArrayField(TEXT("violations"), ViolationArray);
+	FCortexGraphTree::AppendTruncation(CutEntries, Data);
 	return Data;
 }

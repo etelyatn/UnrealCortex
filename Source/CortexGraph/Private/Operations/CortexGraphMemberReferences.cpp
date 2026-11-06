@@ -1,5 +1,6 @@
 #include "CortexGraphMemberReferences.h"
 
+#include "CortexGraphBindingStorage.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
@@ -13,6 +14,7 @@
 #include "K2Node_Variable.h"
 #include "UObject/Class.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
 
 namespace CortexGraphMemberReferencesPrivate
 {
@@ -188,6 +190,10 @@ namespace CortexGraphMemberReferencesPrivate
 				else if (bIsAnimNode)
 				{
 					Reference.Kind = Query == EMemberQuery::Function ? TEXT("anim_node_function") : TEXT("anim_node_binding");
+					// The engine-private binding storage and the function slots are read through the shared storage owner. A
+					// function hit names the slot that holds it, else the binding key whose path carries the function.
+					FString Slot = Query == EMemberQuery::Function ? FCortexGraphBindingStorage::FindFunctionSlotNaming(Node, Member) : FString();
+					Reference.Slot = !Slot.IsEmpty() ? Slot : FCortexGraphBindingStorage::FindBindingKeyNaming(Node, Member);
 				}
 				else if (bIsPropertyAccess)
 				{

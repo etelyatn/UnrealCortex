@@ -36,6 +36,14 @@ bool ValidateGameplayTagString(const FString& TagString, FGameplayTag& OutTag, F
 bool LoadAssetContext(const FString& AssetPath, FCortexSTAssetContext& OutContext, FCortexCommandResult& OutError);
 TSharedPtr<FJsonObject> MakeFingerprint(UObject* Asset);
 bool CheckExpectedFingerprint(UObject* Asset, const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError);
+/**
+ * Fail-closed quarantine: an asset whose recovery could not be verified refuses every side-effecting StateTree command
+ * (mutations, compile, validate, save, delete, create/duplicate targets), not only the command that blocked it.
+ * @return true when the path is blocked and OutError is set.
+ */
+bool CheckMutationBlocked(const FString& AssetPath, FCortexCommandResult& OutError);
+/** Reads a string field of Params and applies CheckMutationBlocked to it; true when blocked (OutError set). */
+bool CheckMutationBlockedField(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, FCortexCommandResult& OutError);
 TSharedPtr<FJsonObject> MakeValidationPayload(bool bValid, const TArray<FString>& Errors, const TArray<FString>& Warnings);
 TSharedPtr<FJsonObject> BuildValidationPayload(UStateTree* StateTree);
 void CollectStates(UStateTreeState* Root, TArray<FCortexSTStateRef>& OutStates);

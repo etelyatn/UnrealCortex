@@ -678,6 +678,10 @@ FCortexCommandResult FCortexSTStateOps::AddState(const TSharedPtr<FJsonObject>& 
 	{
 		return Error;
 	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
+	{
+		return Error;
+	}
 
 	FString Name;
 	if (!CortexST::GetRequiredString(Params, TEXT("name"), Name, Error))
@@ -808,6 +812,10 @@ FCortexCommandResult FCortexSTStateOps::RemoveState(const TSharedPtr<FJsonObject
 	{
 		return Error;
 	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
+	{
+		return Error;
+	}
 
 	FCortexSTAssetContext Context;
 	if (!CortexST::LoadAssetContext(AssetPath, Context, Error))
@@ -876,6 +884,10 @@ FCortexCommandResult FCortexSTStateOps::RenameState(const TSharedPtr<FJsonObject
 	{
 		return Error;
 	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
+	{
+		return Error;
+	}
 
 	FString Name;
 	if (!CortexST::GetRequiredString(Params, TEXT("name"), Name, Error))
@@ -918,6 +930,10 @@ FCortexCommandResult FCortexSTStateOps::MoveState(const TSharedPtr<FJsonObject>&
 	FString AssetPath;
 	FCortexCommandResult Error;
 	if (!CortexST::GetRequiredString(Params, TEXT("asset_path"), AssetPath, Error))
+	{
+		return Error;
+	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
 	{
 		return Error;
 	}
@@ -1024,6 +1040,10 @@ FCortexCommandResult FCortexSTStateOps::SetStateProperties(const TSharedPtr<FJso
 	FString AssetPath;
 	FCortexCommandResult Error;
 	if (!CortexST::GetRequiredString(Params, TEXT("asset_path"), AssetPath, Error))
+	{
+		return Error;
+	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
 	{
 		return Error;
 	}

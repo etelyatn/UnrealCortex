@@ -59,7 +59,8 @@ struct FMultiRootFixture
 
 		FirstRoot = Context.EditorData->SubTrees[0];
 		FirstChild = &FirstRoot->AddChildState(TEXT("Child"));
-		LaterRoot = &Context.EditorData->AddSubTree(TEXT("Second"), EStateTreeStateType::Subtree);
+		LaterRoot = &Context.EditorData->AddSubTree(TEXT("Second"));
+		LaterRoot->Type = EStateTreeStateType::Subtree;
 		LaterChild = &LaterRoot->AddChildState(TEXT("Child"));
 		Context.StateTree->MarkPackageDirty();
 

@@ -382,7 +382,7 @@ UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortex
 	return Blueprint;
 }
 
-void FCortexGraphNodeOps::EnumerateUserGraphs(UBlueprint* Blueprint, TArray<FCortexGraphEntry>& OutEntries)
+void FCortexGraphNodeOps::EnumerateUserGraphs(const UBlueprint* Blueprint, TArray<FCortexGraphEntry>& OutEntries)
 {
 	OutEntries.Reset();
 	if (Blueprint == nullptr)
@@ -572,52 +572,6 @@ UEdGraph* FCortexGraphNodeOps::ResolveSubgraph(UEdGraph* RootGraph, const FStrin
 	return CurrentGraph;
 }
 
-void FCortexGraphNodeOps::CollectSubgraphsRecursive(
-	UEdGraph* Graph,
-	const FString& ParentGraphName,
-	const FString& CurrentSubgraphPath,
-	TArray<TSharedPtr<FJsonValue>>& OutArray,
-	int32 Depth)
-{
-	if (!Graph || Depth > MaxSubgraphDepth)
-	{
-		return;
-	}
-
-	for (UEdGraphNode* Node : Graph->Nodes)
-	{
-		if (!IsValid(Node))
-		{
-			continue;
-		}
-		UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
-		if (!CompositeNode || !CompositeNode->BoundGraph)
-		{
-			continue;
-		}
-
-		UEdGraph* Sub = CompositeNode->BoundGraph;
-		if (!IsValid(Sub))
-		{
-			continue;
-		}
-		FString SubPath = CurrentSubgraphPath.IsEmpty()
-			? Sub->GetName()
-			: FString::Printf(TEXT("%s.%s"), *CurrentSubgraphPath, *Sub->GetName());
-
-		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-		Entry->SetStringField(TEXT("name"), Sub->GetName());
-		Entry->SetStringField(TEXT("class"), Sub->GetClass()->GetName());
-		Entry->SetNumberField(TEXT("node_count"), Sub->Nodes.Num());
-		Entry->SetStringField(TEXT("parent_graph"), ParentGraphName);
-		Entry->SetStringField(TEXT("subgraph_path"), SubPath);
-		OutArray.Add(MakeShared<FJsonValueObject>(Entry));
-
-		// Recurse
-		CollectSubgraphsRecursive(Sub, Sub->GetName(), SubPath, OutArray, Depth + 1);
-	}
-}
-
 FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -629,6 +583,22 @@ FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObjec
 		);
 	}
 
+	bool bIncludeSubgraphs = false;
+	Params->TryGetBoolField(TEXT("include_subgraphs"), bIncludeSubgraphs);
+	FString KindFilter;
+	Params->TryGetStringField(TEXT("kind"), KindFilter);
+	FString ParentGuidText;
+	Params->TryGetStringField(TEXT("parent_graph_guid"), ParentGuidText);
+
+	FGuid ParentGuidFilter;
+	if (!ParentGuidText.IsEmpty() && !FGuid::Parse(ParentGuidText, ParentGuidFilter))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Invalid parent_graph_guid format: '%s'"), *ParentGuidText)
+		);
+	}
+
 	FCortexCommandResult LoadError;
 	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
@@ -636,45 +606,44 @@ FCortexCommandResult FCortexGraphNodeOps::ListGraphs(const TSharedPtr<FJsonObjec
 		return LoadError;
 	}
 
+	// A kind or parent filter addresses nested graphs, so either one lists them without a separate include_subgraphs.
+	const bool bListNested = bIncludeSubgraphs || !KindFilter.IsEmpty() || !ParentGuidText.IsEmpty();
+
+	TArray<FCortexGraphTreeEntry> Tree;
+	FCortexGraphTree::Collect(Blueprint, Tree);
+
+	const auto Matches = [&](const FCortexGraphTreeEntry& Entry)
+	{
+		return (KindFilter.IsEmpty() || Entry.Kind == KindFilter)
+			&& (ParentGuidText.IsEmpty() || Entry.ParentGraphGuid == ParentGuidFilter);
+	};
+
+	// Root graphs first, then every nested graph in collection order.
 	TArray<TSharedPtr<FJsonValue>> GraphsArray;
-
-	TArray<FCortexGraphEntry> Entries;
-	EnumerateUserGraphs(Blueprint, Entries);
-	for (const FCortexGraphEntry& GraphEntry : Entries)
+	for (const FCortexGraphTreeEntry& Entry : Tree)
 	{
-		UEdGraph* Graph = GraphEntry.Graph;
-		if (Graph == nullptr)
+		if (Entry.bRoot && Matches(Entry))
 		{
-			continue;
+			GraphsArray.Add(MakeShared<FJsonValueObject>(FCortexGraphTree::ToJson(Entry)));
 		}
-		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-		Entry->SetStringField(TEXT("name"), Graph->GetName());
-		Entry->SetStringField(TEXT("class"), Graph->GetClass()->GetName());
-		Entry->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
-		Entry->SetStringField(TEXT("kind"), GraphKindToString(GraphEntry.Kind));
-		if (GraphEntry.Kind == ECortexGraphKind::InterfaceImpl && GraphEntry.OwningInterface != NAME_None)
-		{
-			Entry->SetStringField(TEXT("owning_interface"), GraphEntry.OwningInterface.ToString());
-		}
-		GraphsArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
-
-	// Optionally include composite subgraphs
-	bool bIncludeSubgraphs = false;
-	Params->TryGetBoolField(TEXT("include_subgraphs"), bIncludeSubgraphs);
-	if (bIncludeSubgraphs)
+	if (bListNested)
 	{
-		for (const FCortexGraphEntry& GraphEntry : Entries)
+		for (const FCortexGraphTreeEntry& Entry : Tree)
 		{
-			if (GraphEntry.Graph)
+			if (!Entry.bRoot && Matches(Entry))
 			{
-				CollectSubgraphsRecursive(GraphEntry.Graph, GraphEntry.Graph->GetName(), TEXT(""), GraphsArray, 0);
+				GraphsArray.Add(MakeShared<FJsonValueObject>(FCortexGraphTree::ToJson(Entry)));
 			}
 		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("graphs"), GraphsArray);
+	if (bListNested)
+	{
+		FCortexGraphTree::AppendTruncation(Tree, Data);
+	}
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -842,12 +811,6 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 	Params->TryGetStringField(TEXT("function_name"), FunctionName);
 	Params->TryGetStringField(TEXT("display_name"), DisplayName);
 
-	FString GraphName;
-	Params->TryGetStringField(TEXT("graph_name"), GraphName);
-
-	FString SubgraphPath;
-	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
-
 	FCortexCommandResult LoadError;
 	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
 	if (Blueprint == nullptr)
@@ -859,32 +822,23 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 	bool bCompact = true;
 	Params->TryGetBoolField(TEXT("compact"), bCompact);
 
-	TArray<TSharedPtr<FJsonValue>> ResultsArray;
-
-	// Lambda: search a single graph, optionally recursing into composites
-	TFunction<void(UEdGraph*, const FString&, int32)> SearchGraphRecursive;
-	SearchGraphRecursive = [&](UEdGraph* Graph, const FString& CurrentSubgraphPath, int32 Depth)
+	// The whole graph tree (nested graphs included) unless graph_guid/graph_path/graph_name/subgraph_path scope the search
+	// to one graph and the graphs nested below it.
+	TArray<FCortexGraphTreeEntry> Scope;
+	if (!FCortexGraphTree::ResolveReadScope(Blueprint, Params, Scope, LoadError))
 	{
-		if (Graph == nullptr || Depth > MaxSubgraphDepth)
-		{
-			return;
-		}
+		return LoadError;
+	}
 
+	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+	for (const FCortexGraphTreeEntry& GraphEntry : Scope)
+	{
+		UEdGraph* Graph = GraphEntry.Graph;
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (!IsValid(Node))
 			{
 				continue;
-			}
-
-			// Recurse into composites
-			UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
-			if (CompositeNode && CompositeNode->BoundGraph)
-			{
-				FString ChildPath = CurrentSubgraphPath.IsEmpty()
-					? CompositeNode->BoundGraph->GetName()
-					: FString::Printf(TEXT("%s.%s"), *CurrentSubgraphPath, *CompositeNode->BoundGraph->GetName());
-				SearchGraphRecursive(CompositeNode->BoundGraph, ChildPath, Depth + 1);
 			}
 
 			// Apply filters
@@ -936,51 +890,19 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 			}
 			Entry->SetStringField(TEXT("display_name"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
 			Entry->SetStringField(TEXT("graph_name"), Graph->GetName());
-			if (!CurrentSubgraphPath.IsEmpty())
+			Entry->SetStringField(TEXT("graph_guid"), Graph->GraphGuid.ToString());
+			if (!GraphEntry.SubgraphPath.IsEmpty())
 			{
-				Entry->SetStringField(TEXT("subgraph_path"), CurrentSubgraphPath);
+				Entry->SetStringField(TEXT("subgraph_path"), GraphEntry.SubgraphPath);
 			}
 			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
-		}
-	};
-
-	if (!GraphName.IsEmpty() || !SubgraphPath.IsEmpty())
-	{
-		// Restrict the search to one graph (and optionally one composite subgraph)
-		UEdGraph* RootGraph = FindGraph(Blueprint, GraphName, LoadError);
-		if (RootGraph == nullptr)
-		{
-			return LoadError;
-		}
-
-		if (SubgraphPath.IsEmpty())
-		{
-			SearchGraphRecursive(RootGraph, TEXT(""), 0);
-		}
-		else
-		{
-			UEdGraph* TargetGraph = ResolveSubgraph(RootGraph, SubgraphPath, LoadError);
-			if (TargetGraph == nullptr)
-			{
-				return LoadError;
-			}
-			SearchGraphRecursive(TargetGraph, SubgraphPath, 0);
-		}
-	}
-	else
-	{
-		// Search all top-level graphs, recursively descending into composites
-		TArray<FCortexGraphEntry> Entries;
-		EnumerateUserGraphs(Blueprint, Entries);
-		for (const FCortexGraphEntry& Entry : Entries)
-		{
-			SearchGraphRecursive(Entry.Graph, TEXT(""), 0);
 		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("results"), ResultsArray);
 	Data->SetNumberField(TEXT("count"), ResultsArray.Num());
+	FCortexGraphTree::AppendTruncation(Scope, Data);
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -1026,6 +948,34 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	if (Blueprint == nullptr)
 	{
 		return LoadError;
+	}
+
+	// add_node addresses its graph by graph_name (+ subgraph_path). A graph_guid is never silently ignored, which would add
+	// the node to the default EventGraph: nested graphs are read-only (INVALID_OPERATION, as for apply_patch), and a root or
+	// composite graph is refused with the name-based addressing to use instead.
+	FString GraphGuidText;
+	Params->TryGetStringField(TEXT("graph_guid"), GraphGuidText);
+	if (!GraphGuidText.IsEmpty())
+	{
+		TSharedPtr<FJsonObject> IdentityParams = MakeShared<FJsonObject>();
+		IdentityParams->SetStringField(TEXT("graph_guid"), GraphGuidText);
+		UEdGraph* IdentifiedGraph = nullptr;
+		FCortexGraphTreeEntry Identified;
+		if (!FCortexGraphTree::ResolveReadTarget(Blueprint, IdentityParams, IdentifiedGraph, &Identified, LoadError))
+		{
+			return LoadError;
+		}
+		if (!Identified.bRoot && Identified.SubgraphPath.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Graph %s (%s) is a nested graph and is read-only; graph.add_node cannot add nodes to it"),
+					*Identified.Path, *Identified.Kind));
+		}
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("graph.add_node does not accept graph_guid; address graph '%s' with graph_name%s"),
+				*Identified.RootGraphName, Identified.SubgraphPath.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" and subgraph_path '%s'"), *Identified.SubgraphPath)));
 	}
 
 	UEdGraph* Graph = nullptr;
@@ -1322,6 +1272,7 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 	{
 		const TSharedPtr<FJsonObject>& TargetObj = *TargetObjPtr;
 		FString TargetGuidStr;
+		FString TargetPathStr;
 		FString SubgraphPath;
 		FString TargetKind;
 
@@ -1329,68 +1280,122 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 		if (TargetObj->TryGetObjectField(TEXT("graph_ref"), GraphRefPtr) && GraphRefPtr && (*GraphRefPtr).IsValid())
 		{
 			(*GraphRefPtr)->TryGetStringField(TEXT("graph_guid"), TargetGuidStr);
+			(*GraphRefPtr)->TryGetStringField(TEXT("graph_path"), TargetPathStr);
 			(*GraphRefPtr)->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
 			(*GraphRefPtr)->TryGetStringField(TEXT("graph_kind"), TargetKind);
 		}
 		else
 		{
 			TargetObj->TryGetStringField(TEXT("graph_guid"), TargetGuidStr);
+			TargetObj->TryGetStringField(TEXT("graph_path"), TargetPathStr);
 			TargetObj->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
 			TargetObj->TryGetStringField(TEXT("graph_kind"), TargetKind);
 		}
 
-		if (TargetGuidStr.IsEmpty())
+		if (TargetGuidStr.IsEmpty() && TargetPathStr.IsEmpty())
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
-				TEXT("target requires graph_guid or graph_ref with graph_guid"));
+				TEXT("target requires graph_guid or graph_path, or graph_ref with one of them"));
 		}
 
 		FGuid TargetGuid;
-		if (!FGuid::Parse(TargetGuidStr, TargetGuid))
+		if (!TargetGuidStr.IsEmpty() && !FGuid::Parse(TargetGuidStr, TargetGuid))
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
 				FString::Printf(TEXT("Invalid graph_guid format: '%s'"), *TargetGuidStr));
 		}
 
-		TArray<FCortexGraphEntry> Entries;
-		EnumerateUserGraphs(Blueprint, Entries);
-
 		UEdGraph* FoundGraph = nullptr;
 		ECortexGraphKind FoundKind = ECortexGraphKind::Function;
-		for (const FCortexGraphEntry& Entry : Entries)
+		if (TargetPathStr.IsEmpty())
 		{
-			if (Entry.Graph && Entry.Graph->GraphGuid == TargetGuid)
+			TArray<FCortexGraphEntry> Entries;
+			EnumerateUserGraphs(Blueprint, Entries);
+			for (const FCortexGraphEntry& Entry : Entries)
 			{
-				FoundGraph = Entry.Graph;
-				FoundKind = Entry.Kind;
-				break;
+				if (Entry.Graph && Entry.Graph->GraphGuid == TargetGuid)
+				{
+					FoundGraph = Entry.Graph;
+					FoundKind = Entry.Kind;
+					break;
+				}
 			}
 		}
 
 		if (FoundGraph == nullptr)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::GraphNotFound,
-				FString::Printf(TEXT("Graph with GUID %s not found on Blueprint"), *TargetGuidStr));
+			// Not a root graph chosen by GUID: resolve through the shared tree rules. A nested graph (composite body,
+			// Animation Blueprint state, transition or conduit graph) resolves read-only; graph_guid, graph_path and
+			// subgraph_path must agree, a shared GUID is never guessed (graph_path selects), and graph_kind must match.
+			TArray<FCortexGraphTreeEntry> Tree;
+			FCortexGraphTree::Collect(Blueprint, Tree);
+			TSharedPtr<FJsonObject> IdentityParams = MakeShared<FJsonObject>();
+			if (!TargetGuidStr.IsEmpty())
+			{
+				IdentityParams->SetStringField(TEXT("graph_guid"), TargetGuidStr);
+			}
+			if (!TargetPathStr.IsEmpty())
+			{
+				IdentityParams->SetStringField(TEXT("graph_path"), TargetPathStr);
+			}
+			if (!SubgraphPath.IsEmpty())
+			{
+				IdentityParams->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+			}
+			FCortexCommandResult ResolveError;
+			const FCortexGraphTreeEntry* Resolved = FCortexGraphTree::ResolveInTree(Tree, IdentityParams, ResolveError);
+			if (Resolved == nullptr)
+			{
+				return ResolveError;
+			}
+
+			if (Resolved->bRoot)
+			{
+				FoundGraph = Resolved->Graph;
+				FoundKind = Resolved->RootKind;
+			}
+			else
+			{
+				if (!TargetKind.IsEmpty() && TargetKind != Resolved->Kind)
+				{
+					return FCortexCommandRouter::Error(
+						CortexErrorCodes::InvalidField,
+						FString::Printf(TEXT("Graph kind mismatch: specified '%s' but graph is '%s'"), *TargetKind, *Resolved->Kind));
+				}
+
+				ResolvedTargetObj = MakeShared<FJsonObject>();
+				ResolvedTargetObj->SetStringField(TEXT("graph_guid"), Resolved->Graph->GraphGuid.ToString());
+				ResolvedTargetObj->SetStringField(TEXT("graph_name"), Resolved->Graph->GetName());
+				ResolvedTargetObj->SetStringField(TEXT("graph_kind"), Resolved->Kind);
+				ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), false);
+				ResolvedTargetObj->SetStringField(TEXT("graph_path"), Resolved->Path);
+				if (!Resolved->SubgraphPath.IsEmpty())
+				{
+					ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), Resolved->SubgraphPath);
+				}
+			}
 		}
 
-		if (FoundKind == ECortexGraphKind::Delegate || !IsMutableGraphKind(FoundKind))
+		if (FoundGraph != nullptr)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidOperation,
-				TEXT("Delegate signature graphs are read-only and cannot be targeted for authoring"));
-		}
+			if (FoundKind == ECortexGraphKind::Delegate || !IsMutableGraphKind(FoundKind))
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidOperation,
+					TEXT("Delegate signature graphs are read-only and cannot be targeted for authoring"));
+			}
 
-		ResolvedTargetObj = MakeShared<FJsonObject>();
-		ResolvedTargetObj->SetStringField(TEXT("graph_guid"), FoundGraph->GraphGuid.ToString());
-		ResolvedTargetObj->SetStringField(TEXT("graph_name"), FoundGraph->GetName());
-		ResolvedTargetObj->SetStringField(TEXT("graph_kind"), GraphKindToString(FoundKind));
-		ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), IsMutableGraphKind(FoundKind));
-		if (!SubgraphPath.IsEmpty())
-		{
-			ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+			ResolvedTargetObj = MakeShared<FJsonObject>();
+			ResolvedTargetObj->SetStringField(TEXT("graph_guid"), FoundGraph->GraphGuid.ToString());
+			ResolvedTargetObj->SetStringField(TEXT("graph_name"), FoundGraph->GetName());
+			ResolvedTargetObj->SetStringField(TEXT("graph_kind"), GraphKindToString(FoundKind));
+			ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), IsMutableGraphKind(FoundKind));
+			if (!SubgraphPath.IsEmpty())
+			{
+				ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+			}
 		}
 	}
 

@@ -8,6 +8,7 @@
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "AnimationStateMachineGraph.h"
 #include "AnimStateNode.h"
+#include "AnimStateConduitNode.h"
 #include "AnimStateTransitionNode.h"
 #include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetData.h"
@@ -17,6 +18,9 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/SkeletalMeshSocket.h"
+#include "Operations/CortexAnimBindingReport.h"
+#include "Operations/CortexAnimLifecycleReport.h"
+#include "Operations/CortexAnimNotifyHandlerReport.h"
 #include "Operations/CortexAnimAssetUtils.h"
 
 namespace
@@ -75,6 +79,78 @@ bool TryReadStrictOptionalBool(
 	}
 
 	Params->TryGetBoolField(FieldName, bOutValue);
+	return true;
+}
+
+/** The opt-in sections of get_animbp_info (`include`). Absent or empty selects none, so the payload stays what it was. */
+struct FAnimBlueprintInfoIncludes
+{
+	bool bBindings = false;
+	bool bNodeFunctions = false;
+	bool bPropertyAccess = false;
+	bool bLifecycle = false;
+	bool bNotifyHandlers = false;
+};
+
+bool TryReadAnimBlueprintInfoIncludes(const TSharedPtr<FJsonObject>& Params, FAnimBlueprintInfoIncludes& OutIncludes, FCortexCommandResult& OutError)
+{
+	static const TCHAR* Allowed = TEXT("bindings, node_functions, property_access, lifecycle, notify_handlers");
+	if (!Params.IsValid() || !Params->HasField(TEXT("include")))
+	{
+		return true;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+	if (!Params->TryGetArrayField(TEXT("include"), Values) || Values == nullptr)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("include must be an array of strings; allowed entries: %s"), Allowed),
+			MakeInspectFieldDetails(TEXT("include")));
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *Values)
+	{
+		FString Entry;
+		if (!Value.IsValid() || !Value->TryGetString(Entry))
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("include must be an array of strings; allowed entries: %s"), Allowed),
+				MakeInspectFieldDetails(TEXT("include")));
+			return false;
+		}
+
+		if (Entry == TEXT("bindings"))
+		{
+			OutIncludes.bBindings = true;
+		}
+		else if (Entry == TEXT("node_functions"))
+		{
+			OutIncludes.bNodeFunctions = true;
+		}
+		else if (Entry == TEXT("property_access"))
+		{
+			OutIncludes.bPropertyAccess = true;
+		}
+		else if (Entry == TEXT("lifecycle"))
+		{
+			OutIncludes.bLifecycle = true;
+		}
+		else if (Entry == TEXT("notify_handlers"))
+		{
+			OutIncludes.bNotifyHandlers = true;
+		}
+		else
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Unknown include entry '%s'; allowed entries: %s"), *Entry, Allowed),
+				MakeInspectFieldDetails(TEXT("include")));
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -469,6 +545,11 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 {
 	FCortexAnimResolvedAsset Resolved;
 	FCortexCommandResult Error;
+	FAnimBlueprintInfoIncludes Includes;
+	if (!TryReadAnimBlueprintInfoIncludes(Params, Includes, Error))
+	{
+		return Error;
+	}
 	if (!FCortexAnimAssetUtils::ResolveRequiredAsset<UAnimBlueprint>(Params, TEXT("AnimBlueprint"), Resolved, Error))
 	{
 		return Error;
@@ -484,6 +565,7 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 	const int32 StateMachineLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("state_machine_limit"), 20, 100);
 	const int32 StateLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("state_limit"), 100, 200);
 	const int32 TransitionLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("transition_limit"), 100, 200);
+	const int32 ConduitLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("conduit_limit"), 100, 200);
 
 	TArray<TSharedPtr<FJsonValue>> StateMachines;
 	TArray<UEdGraph*> AllGraphs;
@@ -498,6 +580,7 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 
 		TArray<TSharedPtr<FJsonValue>> States;
 		TArray<TSharedPtr<FJsonValue>> Transitions;
+		TArray<TSharedPtr<FJsonValue>> Conduits;
 		for (UEdGraphNode* Node : StateMachineGraph->Nodes)
 		{
 			if (UAnimStateNode* StateNode = Cast<UAnimStateNode>(Node))
@@ -510,16 +593,27 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 				continue;
 			}
 
+			if (UAnimStateConduitNode* ConduitNode = Cast<UAnimStateConduitNode>(Node))
+			{
+				TSharedPtr<FJsonObject> Conduit = MakeShared<FJsonObject>();
+				Conduit->SetStringField(TEXT("name"), ConduitNode->GetStateName());
+				Conduit->SetStringField(TEXT("node_guid"), ConduitNode->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
+				Conduit->SetStringField(TEXT("graph_guid"), ConduitNode->BoundGraph != nullptr ? ConduitNode->BoundGraph->GraphGuid.ToString(EGuidFormats::DigitsWithHyphens) : FString());
+				Conduits.Add(MakeShared<FJsonValueObject>(Conduit));
+				continue;
+			}
+
 			if (UAnimStateTransitionNode* TransitionNode = Cast<UAnimStateTransitionNode>(Node))
 			{
-				UAnimStateNode* PreviousState = Cast<UAnimStateNode>(TransitionNode->GetPreviousState());
-				UAnimStateNode* NextState = Cast<UAnimStateNode>(TransitionNode->GetNextState());
+				UAnimStateNodeBase* PreviousState = TransitionNode->GetPreviousState();
+				UAnimStateNodeBase* NextState = TransitionNode->GetNextState();
 				TSharedPtr<FJsonObject> Transition = MakeShared<FJsonObject>();
 				Transition->SetStringField(TEXT("name"), TransitionNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
 				Transition->SetStringField(TEXT("from_state"), PreviousState != nullptr ? PreviousState->GetStateName() : FString());
 				Transition->SetStringField(TEXT("to_state"), NextState != nullptr ? NextState->GetStateName() : FString());
 				Transition->SetStringField(TEXT("node_guid"), TransitionNode->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
 				Transition->SetStringField(TEXT("graph_guid"), TransitionNode->BoundGraph != nullptr ? TransitionNode->BoundGraph->GraphGuid.ToString(EGuidFormats::DigitsWithHyphens) : FString());
+				Transition->SetStringField(TEXT("custom_transition_graph_guid"), TransitionNode->CustomTransitionGraph != nullptr ? TransitionNode->CustomTransitionGraph->GraphGuid.ToString(EGuidFormats::DigitsWithHyphens) : FString());
 				Transitions.Add(MakeShared<FJsonValueObject>(Transition));
 			}
 		}
@@ -529,10 +623,33 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 		Machine->SetStringField(TEXT("graph_guid"), StateMachineGraph->GraphGuid.ToString(EGuidFormats::DigitsWithHyphens));
 		Machine->SetObjectField(TEXT("states"), FCortexAnimAssetUtils::MakeLimitedArray(States, StateLimit));
 		Machine->SetObjectField(TEXT("transitions"), FCortexAnimAssetUtils::MakeLimitedArray(Transitions, TransitionLimit));
+		Machine->SetObjectField(TEXT("conduits"), FCortexAnimAssetUtils::MakeLimitedArray(Conduits, ConduitLimit));
 		StateMachines.Add(MakeShared<FJsonValueObject>(Machine));
 	}
 
 	Data->SetObjectField(TEXT("state_machines"), FCortexAnimAssetUtils::MakeLimitedArray(StateMachines, StateMachineLimit));
+
+	const int32 BindingLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("binding_limit"), 200, 1000);
+	if (Includes.bBindings && !FCortexAnimBindingReport::AppendBindings(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
+	if (Includes.bNodeFunctions && !FCortexAnimBindingReport::AppendNodeFunctions(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
+	if (Includes.bPropertyAccess && !FCortexAnimBindingReport::AppendPropertyAccess(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
+	if (Includes.bLifecycle && !FCortexAnimLifecycleReport::AppendLifecycle(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
+	if (Includes.bNotifyHandlers && !FCortexAnimNotifyHandlerReport::AppendNotifyHandlers(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
 	SetUnavailableFields(Data, {});
 	return FCortexCommandRouter::Success(Data);
 }

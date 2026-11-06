@@ -801,6 +801,9 @@ def test_editor_router_widens_receive_window_for_deferred_turnaround_commands(co
         ("reflect", "find_interface_implementers", {"interface": "/Game/Ripper/BPI_A", "path_prefixes": ["/Game/Ripper"]}),
         ("reflect", "find_name_lookups", {"path_prefixes": ["/Game/Ripper"]}),
         ("reflect", "find_type_usages", {"user_type": "/Game/Ripper/UDS_A", "path_prefixes": ["/Game/Ripper"]}),
+        ("statetree", "replace_node", {"asset_path": "/Game/ST_A", "node_id": "N", "expected_fingerprint": {"hash": "h"}}),
+        ("statetree", "get_runtime_state", {"asset_path": "/Game/ST_A"}),
+        ("anim", "rebind_function", {"asset_path": "/Game/ABP_A", "from": "F", "to": "G", "expected_fingerprint": {"hash": "h"}}),
     ],
 )
 def test_router_widens_receive_window_for_long_synchronous_commands(domain, command, params):
@@ -825,6 +828,9 @@ def test_router_widens_receive_window_for_long_synchronous_commands(domain, comm
         "reflect.find_interface_implementers",
         "reflect.find_name_lookups",
         "reflect.find_type_usages",
+        "statetree.replace_node",
+        "statetree.get_runtime_state",
+        "anim.rebind_function",
     ],
 )
 def test_dispatch_timeout_is_the_long_window_for_whole_project_scans(qualified):

@@ -1,6 +1,7 @@
 #include "Operations/CortexBPSearchOps.h"
 
 #include "CortexBlueprintModule.h"
+#include "CortexGraphTree.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "CortexCommandRouter.h"
 #include "Engine/Blueprint.h"
@@ -87,9 +88,11 @@ FCortexCommandResult FCortexBPSearchOps::Search(const TSharedPtr<FJsonObject>& P
 	const bool bSearchWidgets = SearchIn.Num() == 0 || SearchIn.Contains(TEXT("widgets"));
 
 	TArray<FSearchMatch> Matches;
+	// GraphGuids of the graphs whose nested graphs were not catalogued (depth limit): the pins below them were not searched.
+	TArray<FString> CutParentGuids;
 	if (bSearchPins)
 	{
-		SearchGraphPins(Blueprint, Query, bCaseSensitive, MaxResults, Matches);
+		SearchGraphPins(Blueprint, Query, bCaseSensitive, MaxResults, Matches, CutParentGuids);
 	}
 	if (bSearchCDO && Matches.Num() < MaxResults)
 	{
@@ -124,6 +127,10 @@ FCortexCommandResult FCortexBPSearchOps::Search(const TSharedPtr<FJsonObject>& P
 		{
 			MatchObject->SetStringField(TEXT("graph_name"), Match.GraphName);
 		}
+		if (!Match.GraphGuid.IsEmpty())
+		{
+			MatchObject->SetStringField(TEXT("graph_guid"), Match.GraphGuid);
+		}
 		if (!Match.TableId.IsEmpty())
 		{
 			TSharedPtr<FJsonObject> StringTable = MakeShared<FJsonObject>();
@@ -135,6 +142,17 @@ FCortexCommandResult FCortexBPSearchOps::Search(const TSharedPtr<FJsonObject>& P
 		MatchesArray.Add(MakeShared<FJsonValueObject>(MatchObject));
 	}
 	Data->SetArrayField(TEXT("matches"), MatchesArray);
+	if (!CutParentGuids.IsEmpty())
+	{
+		// `truncated` already means the max_results cap was reached; a cut graph tree is reported under its own flag.
+		TArray<TSharedPtr<FJsonValue>> CutGuids;
+		for (const FString& CutGuid : CutParentGuids)
+		{
+			CutGuids.Add(MakeShared<FJsonValueString>(CutGuid));
+		}
+		Data->SetBoolField(TEXT("graph_tree_truncated"), true);
+		Data->SetArrayField(TEXT("truncated_parent_graph_guids"), CutGuids);
+	}
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -144,21 +162,41 @@ void FCortexBPSearchOps::SearchGraphPins(
 	const FString& Query,
 	bool bCaseSensitive,
 	int32 MaxResults,
-	TArray<FSearchMatch>& OutMatches)
+	TArray<FSearchMatch>& OutMatches,
+	TArray<FString>& OutCutParentGuids)
 {
-	TArray<UEdGraph*> Graphs;
-	Graphs.Append(Blueprint->UbergraphPages);
-	Graphs.Append(Blueprint->FunctionGraphs);
-	Graphs.Append(Blueprint->MacroGraphs);
-
-	for (UEdGraph* Graph : Graphs)
+	// Ubergraph, function and macro graphs (delegate signature and interface graphs were never searched), each followed by the
+	// graphs nested below it: composite bodies and graphs nodes publish through GetSubGraphs().
+	TArray<FCortexGraphTreeEntry> Tree;
+	FCortexGraphTree::Collect(Blueprint, Tree);
+	for (const FCortexGraphTreeEntry& TreeEntry : Tree)
 	{
+		if (TreeEntry.bChildrenTruncated && (TreeEntry.RootKind == ECortexGraphKind::Ubergraph
+			|| TreeEntry.RootKind == ECortexGraphKind::Function || TreeEntry.RootKind == ECortexGraphKind::Macro))
+		{
+			OutCutParentGuids.Add(TreeEntry.Graph->GraphGuid.ToString());
+		}
+	}
+
+	for (const FCortexGraphTreeEntry& TreeEntry : Tree)
+	{
+		if (TreeEntry.RootKind != ECortexGraphKind::Ubergraph
+			&& TreeEntry.RootKind != ECortexGraphKind::Function
+			&& TreeEntry.RootKind != ECortexGraphKind::Macro)
+		{
+			continue;
+		}
+
+		UEdGraph* Graph = TreeEntry.Graph;
 		if (!Graph || OutMatches.Num() >= MaxResults)
 		{
 			break;
 		}
 
 		const FString GraphName = Graph->GetName();
+		// Root graphs keep their existing result shape; a nested graph is located by its root-relative path and its GraphGuid.
+		const FString GraphGuid = TreeEntry.bRoot ? FString() : Graph->GraphGuid.ToString();
+		const FString LocationGraph = TreeEntry.bRoot ? GraphName : TreeEntry.Path;
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (!Node || OutMatches.Num() >= MaxResults)
@@ -189,9 +227,10 @@ void FCortexBPSearchOps::SearchGraphPins(
 					{
 						FSearchMatch Match;
 						Match.Location = FString::Printf(TEXT("%s/%s/%s"),
-							*GraphName, *NodeId, *Pin->PinName.ToString());
+							*LocationGraph, *NodeId, *Pin->PinName.ToString());
 						Match.NodeId = NodeId;
 						Match.GraphName = GraphName;
+						Match.GraphGuid = GraphGuid;
 						Match.Property = Pin->PinName.ToString();
 						Match.Type = TEXT("pin");
 						Match.Value = ResolvedText;
@@ -209,9 +248,10 @@ void FCortexBPSearchOps::SearchGraphPins(
 				{
 					FSearchMatch Match;
 					Match.Location = FString::Printf(TEXT("%s/%s/%s"),
-						*GraphName, *NodeId, *Pin->PinName.ToString());
+						*LocationGraph, *NodeId, *Pin->PinName.ToString());
 					Match.NodeId = NodeId;
 					Match.GraphName = GraphName;
+					Match.GraphGuid = GraphGuid;
 					Match.Property = Pin->PinName.ToString();
 					Match.Type = TEXT("pin");
 					Match.Value = Pin->DefaultValue;
@@ -224,9 +264,10 @@ void FCortexBPSearchOps::SearchGraphPins(
 				{
 					FSearchMatch Match;
 					Match.Location = FString::Printf(TEXT("%s/%s/%s"),
-						*GraphName, *NodeId, *Pin->PinName.ToString());
+						*LocationGraph, *NodeId, *Pin->PinName.ToString());
 					Match.NodeId = NodeId;
 					Match.GraphName = GraphName;
+					Match.GraphGuid = GraphGuid;
 					Match.Property = Pin->PinName.ToString();
 					Match.Type = TEXT("pin");
 					Match.Value = Pin->DefaultObject->GetPathName();

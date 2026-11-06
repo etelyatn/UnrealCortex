@@ -12,7 +12,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexUMGAddWidgetTest,
-    "Cortex.UMG.AddWidget",
+    "Cortex.UMG.AddWidget.Basic",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

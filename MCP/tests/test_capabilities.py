@@ -549,6 +549,39 @@ def test_anim_docstrings_do_not_promote_incomplete_family():
         assert command_name not in docstring
 
 
+def test_anim_docstrings_advertise_the_function_rebind_family():
+    capabilities = {
+        "domains": {
+            "anim": {
+                "commands": [
+                    {
+                        "name": "rebind_function",
+                        "params": [
+                            {"name": "asset_path", "type": "string", "required": True},
+                            {"name": "from", "type": "string", "required": True},
+                            {"name": "to", "type": "string", "required": True},
+                            {"name": "expected_fingerprint", "type": "object", "required": True},
+                            {"name": "dry_run", "type": "boolean", "required": False},
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+    docstring = build_router_docstrings(capabilities)["anim"]
+    assert "rebind_function" in docstring
+    assert "function rebind" in docstring
+    assert "dry_run defaults to true" in docstring
+    # The old FUNCTION is retired with the guarded function-graph removal, never with remove_variable (variables only).
+    assert "remove_graph" in docstring
+    assert "dry_run=true" in docstring
+    function_sentence = docstring[docstring.index("rebind_function retargets") :]
+    function_sentence = function_sentence[: function_sentence.index(".") + 1] if "." in function_sentence else function_sentence
+    assert "remove_variable" not in function_sentence
+    assert "adopt_native_member" in docstring
+    assert "add_notify" not in docstring
+
+
 class TestFallbackDrift:
     """Detect drift between generated fallback and capabilities cache fixture.
 

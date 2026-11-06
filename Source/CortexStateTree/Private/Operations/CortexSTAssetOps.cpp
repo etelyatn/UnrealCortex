@@ -256,6 +256,10 @@ FCortexCommandResult FCortexSTAssetOps::CreateAsset(const TSharedPtr<FJsonObject
 	{
 		return Error;
 	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
+	{
+		return Error;
+	}
 
 	FString PackageName;
 	if (!CortexST::ValidateWritablePackage(AssetPath, PackageName, Error))
@@ -382,9 +386,18 @@ FCortexCommandResult FCortexSTAssetOps::DuplicateAsset(const TSharedPtr<FJsonObj
 	{
 		return Error;
 	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
+	{
+		return Error;
+	}
 
 	FString NewAssetPath;
 	if (!CortexST::GetRequiredString(Params, TEXT("new_asset_path"), NewAssetPath, Error))
+	{
+		return Error;
+	}
+	// The destination is a write target too: copying over a quarantined path must not resurrect it.
+	if (CortexST::CheckMutationBlocked(NewAssetPath, Error))
 	{
 		return Error;
 	}
@@ -452,6 +465,10 @@ FCortexCommandResult FCortexSTAssetOps::DeleteAsset(const TSharedPtr<FJsonObject
 	FString AssetPath;
 	FCortexCommandResult Error;
 	if (!CortexST::GetRequiredString(Params, TEXT("asset_path"), AssetPath, Error))
+	{
+		return Error;
+	}
+	if (CortexST::CheckMutationBlocked(AssetPath, Error))
 	{
 		return Error;
 	}
@@ -549,6 +566,12 @@ FCortexCommandResult FCortexSTAssetOps::DeleteAsset(const TSharedPtr<FJsonObject
 
 FCortexCommandResult FCortexSTAssetOps::SaveAsset(const FString& AssetPath)
 {
+	FCortexCommandResult Blocked;
+	if (CortexST::CheckMutationBlocked(AssetPath, Blocked))
+	{
+		return Blocked;
+	}
+
 	UStateTree* StateTree = LoadObject<UStateTree>(nullptr, *AssetPath);
 	if (!StateTree)
 	{

@@ -19,7 +19,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphAutoLayoutTest,
-	"Cortex.Graph.AutoLayout",
+	"Cortex.Graph.AutoLayout.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

@@ -4,6 +4,7 @@
 #include "Operations/CortexAnimCurveOps.h"
 #include "Operations/CortexAnimInspectOps.h"
 #include "Operations/CortexAnimMontageOps.h"
+#include "Operations/CortexAnimRebindOps.h"
 #include "Operations/CortexAnimObjectNotifyOps.h"
 #include "Operations/CortexAnimNotifyStateOps.h"
 #include "Operations/CortexAnimSocketOps.h"
@@ -34,6 +35,10 @@ FCortexCommandResult FCortexAnimationCommandHandler::Execute(
 	if (Command == TEXT("get_animbp_info"))
 	{
 		return FCortexAnimInspectOps::GetAnimBlueprintInfo(Params);
+	}
+	if (Command == TEXT("rebind_function"))
+	{
+		return FCortexAnimRebindOps::RebindFunction(Params);
 	}
 	if (Command == TEXT("add_named_notify"))
 	{
@@ -151,11 +156,24 @@ TArray<FCortexCommandInfo> FCortexAnimationCommandHandler::GetSupportedCommands(
 			.Optional(TEXT("virtual_bone_limit"), TEXT("number"), TEXT("Maximum virtual bones returned; default 100, max 200"))
 	);
 	Commands.Add(
-		FCortexCommandInfo{ TEXT("get_animbp_info"), TEXT("Inspect UAnimBlueprint skeleton, parent/generated classes, state machines, states, and transitions. Read-only.") }
+		FCortexCommandInfo{ TEXT("get_animbp_info"), TEXT("Inspect UAnimBlueprint skeleton, parent/generated classes, state machines, states, conduits, and transitions (graph_guid and node_guid of each; graph.get_subgraph reads a nested graph by graph_guid). Read-only.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("AnimBlueprint asset path"))
 			.Optional(TEXT("state_machine_limit"), TEXT("number"), TEXT("Maximum state machines returned; default 20, max 100"))
 			.Optional(TEXT("state_limit"), TEXT("number"), TEXT("Maximum states per state machine returned; default 100, max 200"))
+			.Optional(TEXT("conduit_limit"), TEXT("number"), TEXT("Maximum conduits per state machine returned; default 100, max 200"))
 			.Optional(TEXT("transition_limit"), TEXT("number"), TEXT("Maximum transitions per state machine returned; default 100, max 200"))
+			.Optional(TEXT("include"), TEXT("array"), TEXT("Opt-in sections: bindings (anim-node pin bindings with resolved paths and root_declared_in), node_functions (initial_update/become_relevant/update function slots), property_access (property-access nodes), lifecycle (implemented update hooks with thread safety, native equivalent and non-thread-safe calls; adds uses_multithreaded_update), notify_handlers (AnimNotify_* handlers mapped to native handlers with signature compatibility and conflicts). Unknown entries are INVALID_FIELD; absent returns the default payload"))
+			.Optional(TEXT("binding_limit"), TEXT("number"), TEXT("Maximum entries per opted-in section; default 200, max 1000"))
+	);
+	Commands.Add(
+		FCortexCommandInfo{ TEXT("rebind_function"), TEXT("Retarget a Blueprint function to a function the Blueprint or its parent classes declare, in anim-node function bindings and the three function slots. K2 call nodes are left untouched and listed. Mutating; inspect first, pass the current fingerprint; defaults dry_run=true, compile=true, save=false. Any failure after the first mutation restores the captured journal, runs one recovery compile and verifies by content readback.") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("AnimBlueprint asset path"))
+			.Required(TEXT("from"), TEXT("string"), TEXT("Function declared by this Blueprint that node references currently name"))
+			.Required(TEXT("to"), TEXT("string"), TEXT("Function to retarget to; must resolve on the Blueprint or a parent class with a compatible signature"))
+			.Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Shared Cortex asset fingerprint from anim.get_animbp_info"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview the retarget set without mutating or dirtying the asset; default true"))
+			.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile once after the retarget; default true"))
+			.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the mutated package; defaults false"))
 	);
 	Commands.Add(
 		FCortexCommandInfo{ TEXT("add_named_notify"), TEXT("Add one skeleton named notify to a UAnimSequence. Mutating; inspect first, pass current fingerprint, defaults save=false.") }

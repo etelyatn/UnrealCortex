@@ -94,11 +94,11 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 <br>
 
-**Inspection:** List and inspect animation sequences, montages, skeletons, and Animation Blueprints without opening their editors.
+**Inspection:** List and inspect animation sequences, montages, skeletons, and Animation Blueprints without opening their editors. `anim.get_animbp_info` reports state machines, states, conduits and transitions with the `graph_guid` of each (read any nested graph with `graph.get_subgraph`), and opt-in `include` sections for anim-node bindings, function slots, property-access nodes, update-lifecycle thread safety and `AnimNotify_*` handler readiness.
 
 **Guarded authoring:** Add, update, and remove sequence skeleton named notifies, editable float curves, montage sections, skeleton sockets, object notifies, and notify states. Every mutation requires a fresh `expected_fingerprint`, supports `dry_run`, and defaults `save` to `false`.
 
-**Boundary:** Object notifies and notify states are sequence-only and use canonical selectors. Animation Blueprint authoring, blendspaces, retargeting, runtime preview, Sequencer, and Control Rig are not supported. There is no `anim.save_asset` command; use a mutation's `save=true` option, or `core.save_asset` where appropriate.
+**Boundary:** Object notifies and notify states are sequence-only and use canonical selectors. The only Animation Blueprint mutation is `anim.rebind_function` (guarded function retarget, `dry_run` default `true`); variables move through `blueprint.adopt_native_member`. Blendspaces, retargeting, runtime preview, Sequencer, and Control Rig are not supported. There is no `anim.save_asset` command; use a mutation's `save=true` option, or `core.save_asset` where appropriate.
 
 **Example tasks:** *"Inspect a montage's sections and slots"* · *"Dry-run a curve-key update using the current fingerprint"* · *"Add a socket to the hand bone, then save only after the preview is correct"*
 
@@ -197,7 +197,9 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 **Validation and compile:** Run mutating StateTree validation fixups and explicit compile with structured diagnostics. `statetree_compose` creates or updates multi-state structures with fingerprint threading and cleanup on create failure.
 
-**Current boundary:** Structure-level authoring only. Task, condition, evaluator, parameter bag, and property binding authoring are intentionally not exposed yet.
+**Node migration:** `statetree.get_node_bindings` reports every stored property binding per node (source and target, with resolved paths and property GUIDs); `statetree.replace_node` swaps a Blueprint task, condition, evaluator or consideration for a native one in place, keeping the editor node ID so every binding survives, and refuses rather than drops a binding (UE 5.8+, `NOT_AVAILABLE` below). `statetree.get_runtime_state` reports the running components of the PIE world.
+
+**Current boundary:** Structure-level authoring plus Blueprint-to-native node replacement. Arbitrary task, condition, evaluator, parameter bag, and property binding authoring are intentionally not exposed; a replacement swaps data and bindings, never logic.
 
 **Example tasks:** *"Create ST_Guard with Patrol and Chase states and a SawTarget transition"* · *"Review all StateTrees for dangling transitions and invalid tags"* · *"Compile ST_BossBehavior and summarize diagnostics"*
 
@@ -539,12 +541,12 @@ void FMyDomainModule::StartupModule()
 | **CortexData** | CortexCore | `GameplayTags` · `AssetRegistry` · `UnrealEd` |
 | **CortexEditor** | CortexCore | `LevelEditor` · `Slate` · `SlateCore` · `EnhancedInput` · `ImageWrapper` · `RenderCore` · `PythonScriptPlugin` |
 | **CortexQA** | CortexCore · CortexEditor | `NavigationSystem` · `AIModule` · `GameplayTags` |
-| **CortexStateTree** | CortexCore | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `AssetRegistry` · `AssetTools` · `UnrealEd` · `GameplayTags` · `StateTreeModule` · `StateTreeEditorModule` |
+| **CortexStateTree** | CortexCore | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `AssetRegistry` · `AssetTools` · `UnrealEd` · `GameplayTags` · `StateTreeModule` · `StateTreeEditorModule` · `AIModule` · `BlueprintGraph` · `Kismet` |
 | **CortexLevel** | CortexCore | `LevelEditor` · `DataLayerEditor` |
 | **CortexUMG** | CortexCore | `UMG` · `UMGEditor` · `Slate` · `SlateCore` · `MovieScene` |
 | **CortexReflect** | CortexCore | `AssetRegistry` · `BlueprintGraph` · `Kismet` · `UMG` |
 | **CortexGen** | CortexCore | `HTTP` · `Json` · `JsonUtilities` · `AssetTools` · `DeveloperSettings` · `ImageWrapper` · `UnrealEd` |
-| **CortexAnimation** | CortexCore | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `UnrealEd` · `AssetRegistry` · `AnimGraph` · `BlueprintGraph` · `Kismet` |
+| **CortexAnimation** | CortexCore · CortexGraph (shared infrastructure) | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `UnrealEd` · `AssetRegistry` · `AnimGraph` · `BlueprintGraph` · `Kismet` · `SlateCore` |
 | **CortexFrontend** | CortexCore · CortexGen | `Slate` · `SlateCore` · `GraphEditor` · `BlueprintGraph` · `Kismet` · `ImageWrapper` · `EditorScriptingUtilities` · `DesktopPlatform` |
 | **CortexReplay** | CortexCore · CortexEditor | `Slate` · `SlateCore` · `InputCore` · `UnrealEd` · `LevelEditor` · `ToolMenus` · `Json` |
 

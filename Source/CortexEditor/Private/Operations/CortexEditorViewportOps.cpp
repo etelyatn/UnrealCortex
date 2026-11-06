@@ -443,37 +443,18 @@ FCortexCommandResult FCortexEditorViewportOps::SetViewportMode(const TSharedPtr<
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexEditorViewportOps::FocusNode(const TSharedPtr<FJsonObject>& Params)
+bool FCortexEditorViewportOps::ResolveFocusTarget(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Params,
+	UEdGraph*& OutGraph, UEdGraphNode*& OutNode, FCortexCommandResult& OutError)
 {
-	FString AssetPath;
+	OutGraph = nullptr;
+	OutNode = nullptr;
+
 	FString NodeId;
 	FString GraphName;
-	if (!Params.IsValid()
-		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-		|| !Params->TryGetStringField(TEXT("node_id"), NodeId))
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: asset_path and node_id"));
-	}
-
+	FString GraphGuidText;
+	Params->TryGetStringField(TEXT("node_id"), NodeId);
 	Params->TryGetStringField(TEXT("graph_name"), GraphName);
-
-	const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
-	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::AssetNotFound,
-			FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
-	}
-
-	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
-	if (Blueprint == nullptr)
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::AssetNotFound,
-			FString::Printf(TEXT("Could not load Blueprint: %s"), *AssetPath));
-	}
+	Params->TryGetStringField(TEXT("graph_guid"), GraphGuidText);
 
 	TArray<UEdGraph*> AllGraphs;
 	Blueprint->GetAllGraphs(AllGraphs);
@@ -481,7 +462,61 @@ FCortexCommandResult FCortexEditorViewportOps::FocusNode(const TSharedPtr<FJsonO
 	UEdGraph* TargetGraph = nullptr;
 	UEdGraphNode* TargetNode = nullptr;
 
-	if (GraphName.IsEmpty())
+	if (!GraphGuidText.IsEmpty())
+	{
+		// graph_guid names one graph anywhere in the tree (UEdGraph::GraphGuid over GetAllGraphs); it is the identity, so a
+		// graph_name must agree with it rather than pick a different graph of the same name.
+		FGuid GraphGuid;
+		if (!FGuid::Parse(GraphGuidText, GraphGuid))
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Invalid graph_guid format: '%s'"), *GraphGuidText));
+			return false;
+		}
+
+		TArray<UEdGraph*> Matches;
+		for (UEdGraph* Graph : AllGraphs)
+		{
+			if (Graph && Graph->GraphGuid == GraphGuid)
+			{
+				Matches.Add(Graph);
+			}
+		}
+
+		if (Matches.IsEmpty())
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::GraphNotFound,
+				FString::Printf(TEXT("Graph with GUID %s not found on Blueprint"), *GraphGuidText));
+			return false;
+		}
+		if (Matches.Num() > 1)
+		{
+			TArray<FString> Paths;
+			for (const UEdGraph* Match : Matches)
+			{
+				Paths.Add(Match->GetPathName(Blueprint));
+			}
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("graph_guid %s is shared by %d graphs and cannot identify one: %s"),
+					*GraphGuidText, Matches.Num(), *FString::Join(Paths, TEXT(", "))));
+			return false;
+		}
+
+		TargetGraph = Matches[0];
+		if (!GraphName.IsEmpty() && TargetGraph->GetName() != GraphName)
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("graph_name '%s' does not name the graph identified by graph_guid %s; that graph is '%s'"),
+					*GraphName, *GraphGuidText, *TargetGraph->GetName()));
+			return false;
+		}
+	}
+
+	if (GraphGuidText.IsEmpty() && GraphName.IsEmpty())
 	{
 		for (UEdGraph* Graph : AllGraphs)
 		{
@@ -507,27 +542,32 @@ FCortexCommandResult FCortexEditorViewportOps::FocusNode(const TSharedPtr<FJsonO
 
 		if (TargetNode == nullptr)
 		{
-			return FCortexCommandRouter::Error(
+			OutError = FCortexCommandRouter::Error(
 				CortexErrorCodes::NodeNotFound,
 				FString::Printf(TEXT("No graph contains node: %s"), *NodeId));
+			return false;
 		}
 	}
 	else
 	{
-		for (UEdGraph* Graph : AllGraphs)
-		{
-			if (Graph && Graph->GetName() == GraphName)
-			{
-				TargetGraph = Graph;
-				break;
-			}
-		}
-
 		if (TargetGraph == nullptr)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::NodeNotFound,
-				FString::Printf(TEXT("Graph not found: %s"), *GraphName));
+			for (UEdGraph* Graph : AllGraphs)
+			{
+				if (Graph && Graph->GetName() == GraphName)
+				{
+					TargetGraph = Graph;
+					break;
+				}
+			}
+
+			if (TargetGraph == nullptr)
+			{
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::NodeNotFound,
+					FString::Printf(TEXT("Graph not found: %s"), *GraphName));
+				return false;
+			}
 		}
 
 		for (UEdGraphNode* Node : TargetGraph->Nodes)
@@ -541,11 +581,54 @@ FCortexCommandResult FCortexEditorViewportOps::FocusNode(const TSharedPtr<FJsonO
 
 		if (TargetNode == nullptr)
 		{
-			return FCortexCommandRouter::Error(
+			OutError = FCortexCommandRouter::Error(
 				CortexErrorCodes::NodeNotFound,
 				FString::Printf(TEXT("Node not found in graph %s: %s"),
 					*TargetGraph->GetName(), *NodeId));
+			return false;
 		}
+	}
+
+	OutGraph = TargetGraph;
+	OutNode = TargetNode;
+	return true;
+}
+
+FCortexCommandResult FCortexEditorViewportOps::FocusNode(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	FString NodeId;
+	if (!Params.IsValid()
+		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
+		|| !Params->TryGetStringField(TEXT("node_id"), NodeId))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required params: asset_path and node_id"));
+	}
+
+	const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
+	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+	}
+
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+	if (Blueprint == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Could not load Blueprint: %s"), *AssetPath));
+	}
+
+	UEdGraph* TargetGraph = nullptr;
+	UEdGraphNode* TargetNode = nullptr;
+	FCortexCommandResult ResolveError;
+	if (!ResolveFocusTarget(Blueprint, Params, TargetGraph, TargetNode, ResolveError))
+	{
+		return ResolveError;
 	}
 
 	FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(TargetNode);
