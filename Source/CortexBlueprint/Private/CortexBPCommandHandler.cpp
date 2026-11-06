@@ -10,6 +10,8 @@
 #include "Operations/CortexBPComponentOps.h"
 #include "Operations/CortexBPGraphCleanupOps.h"
 #include "Operations/CortexBPAdoptMemberOps.h"
+#include "Operations/CortexBPAdoptSCSOps.h"
+#include "Operations/CortexBPSwapSCSClassOps.h"
 #include "Operations/CortexBPGraphMetricsOps.h"
 #include "Operations/CortexBPRedirectorOps.h"
 #include "Operations/CortexBPReparentOps.h"
@@ -253,6 +255,16 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	if (Command == TEXT("adopt_native_member"))
 	{
 		return FCortexBPAdoptMemberOps::Execute(Params);
+	}
+
+	if (Command == TEXT("adopt_scs_into_native"))
+	{
+		return FCortexBPAdoptSCSOps::Execute(Params);
+	}
+
+	if (Command == TEXT("swap_scs_component_class"))
+	{
+		return FCortexBPSwapSCSClassOps::Execute(Params);
 	}
 
 	if (Command == TEXT("add_interface"))
@@ -527,6 +539,27 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the adoption (default true; required for save, transfer_default=false and renames)"))
 		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default false; requires compile)"))
 		.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("save_game:<variable> keys equal to the dry run's required_acknowledgment, plus instance_values:<variable> for a rename without a property redirect"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("adopt_scs_into_native"), TEXT("Hand an SCS component of the Blueprint over to a component it inherits, with a dry_run plan and a fail-closed readback. A component of a native parent is a default subobject of the generated class CDO (route native_cdo); a component of a parent Blueprint's SCS is overridden through the InheritableComponentHandler (route ich). Copies the transform and properties that differ from the SCS template's archetype (instanced subobjects are duplicated), re-attaches the child SCS nodes, retargets every K2 variable node and component-bound event, and removes the SCS node on request (children promoted first). Refuses a missing or stale target (STALE_PRECONDITION: compile against the native parent first), a class that is not the target's class or a child of it (INVALID_FIELD), dependents that reference a renamed component (INVALID_OPERATION), a same-named SCS node unless remove_scs=true, and data loss (POTENTIAL_DATA_LOSS with required_acknowledgment: child_override:<blueprint>, property:<name>, instanced sub-object keys). A Blueprint in error is accepted only when every error is the duplicate-name collision of a mapped node. A compile error or readback mismatch restores the Blueprint.")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("mappings"), TEXT("array"), TEXT("[{scs_node, native_component}]: the Blueprint's SCS node and the inherited component (native default subobject or parent Blueprint SCS node) that takes over"))
+		.Optional(TEXT("copy"), TEXT("array"), TEXT("Any of transform, properties, attach (default all three)"))
+		.Optional(TEXT("remove_scs"), TEXT("boolean"), TEXT("Remove the SCS node after its data and children moved (default false; required when the node has the name of the inherited component)"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true = report the plan (route, per-property differences, instanced subobjects, children, referencing nodes, dependents, child overrides), mutate and dirty nothing (default false)"))
+		.OptionalExpectedFingerprint(TEXT("Stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}; read it from a dry run"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the adoption (default true; required for save)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default false; requires compile)"))
+		.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("Exactly the dry run's required_acknowledgment keys (child_override:<blueprint>, property:<name>, instanced sub-object property names)"))
+		.StrictParams());
+	Commands.Add(FCortexCommandInfo{TEXT("swap_scs_component_class"), TEXT("Replace the component class of one of the Blueprint's SCS nodes in place, with a dry_run plan and a fail-closed readback. The replacement node takes over the variable name, VariableGuid, category, metadata, attach name, parent link, children and position among its siblings; properties of the shared native ancestry are kept, Blueprint component variables with a same-named, same-typed property on the new class move their value, instanced subobjects are duplicated, and everything else is dropped. Refuses a class that is not an actor component or not derived from the old class's native ancestor (INVALID_FIELD), child Blueprints that override the node through an InheritableComponentHandler record, dependents that reference the component and component-bound events the new class cannot serve (INVALID_OPERATION), and dropped variables with a non-default value until acknowledged_losses carries property:<name> (POTENTIAL_DATA_LOSS). A compile error or readback mismatch restores the Blueprint.")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("component_name"), TEXT("string"), TEXT("SCS node (component variable) of this Blueprint"))
+		.Required(TEXT("new_class"), TEXT("string"), TEXT("New component class: Blueprint asset path, full class path or unique short name"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true = report the plan (kept, moved and dropped properties, instanced subobjects, children, referencing nodes, dependents, child overrides), mutate and dirty nothing (default false)"))
+		.OptionalExpectedFingerprint(TEXT("Stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}; read it from a dry run"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the swap (default true; required for save)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default false; requires compile)"))
+		.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("Exactly the dry run's required_acknowledgment keys (property:<name>)"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("add_interface"), TEXT("Add an interface implementation to a Blueprint")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))

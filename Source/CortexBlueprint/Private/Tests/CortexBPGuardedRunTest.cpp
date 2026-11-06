@@ -26,7 +26,7 @@
 
 namespace
 {
-	FEdGraphPinType BoolPin()
+	FEdGraphPinType GuardedRunBoolPin()
 	{
 		FEdGraphPinType PinType;
 		PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
@@ -102,7 +102,7 @@ namespace
 		const FName Name(VariableName);
 		Spec.Apply = [Name](UBlueprint* Target, FString&)
 		{
-			return FBlueprintEditorUtils::AddMemberVariable(Target, Name, BoolPin());
+			return FBlueprintEditorUtils::AddMemberVariable(Target, Name, GuardedRunBoolPin());
 		};
 		Spec.Verify = [](UBlueprint*, bool, FString&) { return true; };
 		return Spec;
@@ -124,7 +124,7 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 		UBlueprint* Blueprint = MakeBlueprint(Name, AActor::StaticClass());
 		if (Blueprint != nullptr)
 		{
-			FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("Existing"), BoolPin());
+			FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("Existing"), GuardedRunBoolPin());
 			FKismetEditorUtilities::CompileBlueprint(Blueprint);
 			Created.Add(Blueprint);
 		}
@@ -141,7 +141,7 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 		bool bMutated = false;
 		Spec.Apply = [&bMutated](UBlueprint* Target, FString&)
 		{
-			const bool bAdded = FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("Injected"), BoolPin());
+			const bool bAdded = FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("Injected"), GuardedRunBoolPin());
 			bMutated = Target->NewVariables.ContainsByPredicate([](const FBPVariableDescription& V) { return V.VarName == TEXT("Injected"); });
 			return bAdded;
 		};
@@ -172,7 +172,7 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 		Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
 		const FPostRestoreHookScope Hook([](UBlueprint* Target)
 		{
-			FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("CorruptedRestore"), BoolPin());
+			FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("CorruptedRestore"), GuardedRunBoolPin());
 		});
 		const FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
 		TestFalse(TEXT("Run fails"), Result.bSuccess);
@@ -268,7 +268,7 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 		FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("Half"));
 		Spec.Apply = [](UBlueprint* Target, FString& OutError)
 		{
-			FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("Half"), BoolPin());
+			FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("Half"), GuardedRunBoolPin());
 			OutError = TEXT("forced apply failure");
 			return false;
 		};
@@ -327,7 +327,7 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 		FCortexBPGuardedRun::FSpec Spec = AddVariableSpec(Blueprint, TEXT("JournalVar"));
 		Spec.Apply = [](UBlueprint* Target, FString&)
 		{
-			FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("JournalVar"), BoolPin());
+			FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("JournalVar"), GuardedRunBoolPin());
 			UEdGraph* EventGraph = Target->UbergraphPages[0];
 			UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(EventGraph);
 			Event->CreateNewGuid();
@@ -360,7 +360,7 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 			Spec.Apply = [&External](UBlueprint* Target, FString&)
 			{
 				External = 2;
-				return FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("Owned"), BoolPin());
+				return FBlueprintEditorUtils::AddMemberVariable(Target, TEXT("Owned"), GuardedRunBoolPin());
 			};
 			Spec.Verify = [](UBlueprint*, bool, FString& OutError) { OutError = TEXT("forced"); return false; };
 			Spec.DigestExtra = [&External](UBlueprint*) { return FString::FromInt(External); };
@@ -383,7 +383,7 @@ bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
 		{
 			const FScopedTransaction UserEdit(FText::FromString(TEXT("user edit")));
 			Blueprint->Modify();
-			FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("UserVar"), BoolPin());
+			FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("UserVar"), GuardedRunBoolPin());
 		}
 		TestTrue(TEXT("User undo leaves redo history"), GEditor != nullptr && GEditor->UndoTransaction(/*bCanRedo=*/true));
 		const TSharedPtr<FJsonObject> Before = Snapshot(Blueprint);
