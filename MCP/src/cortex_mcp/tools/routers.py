@@ -39,7 +39,8 @@ _CACHED_READ_TTL = 300
 # editor until the patch is built (native transport bound 1800 s). compile_all and export_class_instances
 # are synchronous natively and scale with the project (a 829-Blueprint compile_all measured 177 s), so
 # they get a long fixed window; the whole-project reads export_migration_analysis, export_dependency_graph,
-# find_duplicate_graphs and find_name_lookups load every Blueprint of their prefixes and share it.
+# find_duplicate_graphs and find_name_lookups load every Blueprint of their prefixes and share it;
+# find_interface_implementers and find_type_usages load every Blueprint that implements or references the type.
 _WAIT_READY_DEFAULT_SECONDS = 120.0
 _DEFERRED_TIMEOUT_MARGIN = 30.0
 _LIVE_CODING_COMPILE_WINDOW = 1830.0
@@ -50,7 +51,9 @@ _LONG_SYNCHRONOUS_COMMANDS = frozenset({
     "level.export_class_instances",
     "reflect.export_dependency_graph",
     "reflect.find_duplicate_graphs",
+    "reflect.find_interface_implementers",
     "reflect.find_name_lookups",
+    "reflect.find_type_usages",
 })
 
 

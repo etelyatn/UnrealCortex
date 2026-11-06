@@ -1169,7 +1169,9 @@ class TestNewReflectReadsCompleteOrRefuse:
         ("command", "selector"),
         [
             ("find_duplicate_graphs", "path_prefixes"),
+            ("find_interface_implementers", "path_prefixes"),
             ("find_name_lookups", "path_prefixes"),
+            ("find_type_usages", "path_prefixes"),
             ("find_broken_config_paths", "row selector"),
         ],
     )
@@ -1184,7 +1186,10 @@ class TestNewReflectReadsCompleteOrRefuse:
         assert "rows" not in payload
         assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
 
-    @pytest.mark.parametrize("command", ["find_duplicate_graphs", "find_name_lookups"])
+    @pytest.mark.parametrize(
+        "command",
+        ["find_duplicate_graphs", "find_interface_implementers", "find_name_lookups", "find_type_usages"],
+    )
     def test_refusal_suggests_out_path_for_the_full_result(self, command):
         router, _ = _router("reflect", {"rows": [{"blob": "x" * 500} for _ in range(200)]})
 

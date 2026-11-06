@@ -792,7 +792,9 @@ def test_editor_router_widens_receive_window_for_deferred_turnaround_commands(co
         ("level", "export_class_instances", {"class": "A", "maps": ["/Game/M"], "out_path": "x.json"}),
         ("reflect", "export_dependency_graph", {"path_prefixes": ["/Game/Ripper"], "out_path": "x.json"}),
         ("reflect", "find_duplicate_graphs", {"path_prefixes": ["/Game/Ripper"]}),
+        ("reflect", "find_interface_implementers", {"interface": "/Game/Ripper/BPI_A", "path_prefixes": ["/Game/Ripper"]}),
         ("reflect", "find_name_lookups", {"path_prefixes": ["/Game/Ripper"]}),
+        ("reflect", "find_type_usages", {"user_type": "/Game/Ripper/UDS_A", "path_prefixes": ["/Game/Ripper"]}),
     ],
 )
 def test_router_widens_receive_window_for_long_synchronous_commands(domain, command, params):
@@ -812,7 +814,9 @@ def test_router_widens_receive_window_for_long_synchronous_commands(domain, comm
         "blueprint.export_migration_analysis",
         "reflect.export_dependency_graph",
         "reflect.find_duplicate_graphs",
+        "reflect.find_interface_implementers",
         "reflect.find_name_lookups",
+        "reflect.find_type_usages",
     ],
 )
 def test_dispatch_timeout_is_the_long_window_for_whole_project_scans(qualified):

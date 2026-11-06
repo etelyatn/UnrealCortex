@@ -103,6 +103,15 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
         "'path_prefixes' to fewer content folders, raise 'min_nodes', or raise 'similarity' so fewer "
         "groups are reported."
     ),
+    "reflect.find_interface_implementers": (
+        "Pass 'out_path' to write the full result to a file and get a compact summary, or narrow "
+        "'path_prefixes' to fewer content folders, pass 'function' for one interface function, or "
+        "pass include_callers=false to list only the implementers."
+    ),
+    "reflect.find_type_usages": (
+        "Pass 'out_path' to write the full result to a file and get a compact summary, or narrow "
+        "'path_prefixes' to fewer content folders."
+    ),
     "reflect.find_name_lookups": (
         "Pass 'out_path' to write the full result to a file and get a compact summary, or narrow "
         "'path_prefixes' to fewer content folders, or pass 'symbols' to report only the names you "
