@@ -19,8 +19,8 @@ struct FCortexCommandResult;
  * default into the native property on the CDO, loaded instances and loaded child Blueprint CDOs, and reads everything back.
  *
  * Params: asset_path, mappings:[{bp_variable, native_property, default?}], transfer_default?=true, retarget_nodes?=true,
- * dry_run?, expected_fingerprint?, compile?=true, save?=false, acknowledged_losses? (`save_game:<variable>` and
- * `instance_values:<variable>` keys).
+ * dry_run?, expected_fingerprint?, compile?=true, save?=false, acknowledged_losses? (`save_game:<variable>`,
+ * `instance_values:<variable>` and `default_unverified:<variable>` keys).
  */
 class FCortexBPAdoptMemberOps
 {
@@ -68,8 +68,13 @@ public:
 		FString OldDefaultText;
 		/** Renamed mappings: the native property's value on the generated CDO before the adoption (restored by a rollback). */
 		FValueSnap NativeCdoBefore;
-		/** compiled_cdo | variable_default | current_cdo | default_param | none */
+		/** compiled_cdo | variable_default | current_cdo_unverified | default_param | none */
 		FString OldDefaultSource;
+		/**
+		 * engine_already_adopted without `default` while transfer_default: the engine conformed the variable before this call, so the
+		 * original default is gone and OldDefault only mirrors the current native value. Requires `default_unverified:<variable>`.
+		 */
+		bool bDefaultUnverified = false;
 		FValueSnap OldDefault;
 		/** Every node that names the variable. */
 		TArray<FCortexMemberReference> Nodes;

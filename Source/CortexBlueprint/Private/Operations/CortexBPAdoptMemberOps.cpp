@@ -458,6 +458,7 @@ TSharedRef<FJsonObject> FCortexBPAdoptMemberOps::FMappingPlan::ToJson() const
 	Json->SetStringField(TEXT("type_match"), TypeMatch);
 	Json->SetStringField(TEXT("old_default"), OldDefaultText);
 	Json->SetStringField(TEXT("old_default_source"), OldDefaultSource);
+	Json->SetBoolField(TEXT("default_verified"), !bDefaultUnverified);
 
 	TArray<TSharedPtr<FJsonValue>> NodeValues;
 	for (const FCortexMemberReference& Node : Nodes)
@@ -634,6 +635,20 @@ FCortexBPAdoptMemberOps::FAdoptPlan FCortexBPAdoptMemberOps::BuildPlan(
 				}
 				Mapping.OldDefaultSource = TEXT("default_param");
 			}
+			else if (bTransferDefault)
+			{
+				// The engine conformed the variable before this call: its Blueprint default is gone and the current CDO value is only the
+				// native one. Kept as a reference, never as verified evidence.
+				Mapping.bDefaultUnverified = true;
+				if (Current != nullptr)
+				{
+					Mapping.OldDefault = CaptureValue(Current, Cdo);
+					Mapping.OldDefaultSource = TEXT("current_cdo_unverified");
+				}
+				Mapping.Warnings.Add(FString::Printf(
+					TEXT("The engine conformed '%s' before this call, so its original Blueprint default cannot be recovered. Pass 'default' (from a pre-change snapshot or blueprint.get_class_defaults) or acknowledge default_unverified:%s to keep the native value"),
+					*Request.BpVariable, *Request.BpVariable));
+			}
 			else if (Current != nullptr)
 			{
 				Mapping.OldDefault = CaptureValue(Current, Cdo);
@@ -783,7 +798,16 @@ FCortexBPAdoptMemberOps::FAdoptPlan FCortexBPAdoptMemberOps::BuildPlan(
 		}
 	}
 
-	Plan.RequiredAcknowledgment = FCortexBPSaveGameGuard::RequiredAcknowledgment(AllFindings);
+	TArray<FString> AllRequired = FCortexBPSaveGameGuard::RequiredAcknowledgment(AllFindings);
+	for (const FMappingPlan& Mapping : Plan.Mappings)
+	{
+		if (Mapping.bDefaultUnverified)
+		{
+			AllRequired.Add(FString::Printf(TEXT("default_unverified:%s"), *Mapping.BpVariable));
+		}
+	}
+	AllRequired.Sort();
+	Plan.RequiredAcknowledgment = MoveTemp(AllRequired);
 	return Plan;
 }
 
@@ -882,10 +906,10 @@ namespace
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("acknowledged_losses must be an array of strings"));
 				return false;
 			}
-			if (!Key.StartsWith(TEXT("save_game:")) && !Key.StartsWith(TEXT("instance_values:")))
+			if (!Key.StartsWith(TEXT("save_game:")) && !Key.StartsWith(TEXT("instance_values:")) && !Key.StartsWith(TEXT("default_unverified:")))
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-					FString::Printf(TEXT("Unknown acknowledgment '%s' (allowed: save_game:<variable>, instance_values:<variable>)"), *Key));
+					FString::Printf(TEXT("Unknown acknowledgment '%s' (allowed: save_game:<variable>, instance_values:<variable>, default_unverified:<variable>)"), *Key));
 				return false;
 			}
 			OutAcknowledged.Add(Key);
@@ -1064,7 +1088,43 @@ namespace
 			AllFindings.Append(Mapping.SaveGameFindings);
 		}
 		FCortexCommandResult AckError;
-		const bool bAcknowledged = FCortexBPSaveGameGuard::Check(AllFindings, SaveGameAcknowledged, AckError);
+		bool bAcknowledged = FCortexBPSaveGameGuard::Check(AllFindings, SaveGameAcknowledged, AckError);
+
+		// default_unverified: an engine-conformed variable without `default` keeps the native value only when the caller says so.
+		TArray<FString> DefaultRequired;
+		TArray<FString> DefaultAcknowledged;
+		for (const FString& Key : Plan->RequiredAcknowledgment)
+		{
+			if (Key.StartsWith(TEXT("default_unverified:")))
+			{
+				DefaultRequired.Add(Key);
+			}
+		}
+		for (const FString& Key : Acknowledged)
+		{
+			if (Key.StartsWith(TEXT("default_unverified:")))
+			{
+				DefaultAcknowledged.Add(Key);
+			}
+		}
+		if (bAcknowledged && DefaultRequired != DefaultAcknowledged)
+		{
+			bAcknowledged = false;
+			AckError = FCortexCommandRouter::Error(CortexErrorCodes::PotentialDataLoss,
+				DefaultRequired.IsEmpty()
+					? TEXT("No unverifiable default is at risk; acknowledged_losses must not carry stale default_unverified keys")
+					: TEXT("The engine conformed a variable before this call, so its original default cannot be recovered; pass 'default' (from a pre-change snapshot or blueprint.get_class_defaults) or acknowledge exactly the required default_unverified keys to keep the native value"),
+				MakeShared<FJsonObject>());
+		}
+		if (!bAcknowledged)
+		{
+			if (!AckError.ErrorDetails.IsValid())
+			{
+				AckError.ErrorDetails = MakeShared<FJsonObject>();
+			}
+			AckError.ErrorDetails->SetArrayField(TEXT("required_acknowledgment"), ToJsonStrings(Plan->RequiredAcknowledgment));
+			AckError.ErrorDetails->SetArrayField(TEXT("acknowledged"), ToJsonStrings(Acknowledged));
+		}
 
 		// A conformed-but-uncompiled Blueprint cannot be restored by a recovery compile (the compile would conform it again), so a
 		// failure could not be rolled back exactly. State A (variable still declared) is restorable: the apply reverts the parent for the recovery.
@@ -1547,6 +1607,13 @@ namespace
 		DescribeInto(Data);
 		Data->SetBoolField(TEXT("adopted"), true);
 		Data->SetBoolField(TEXT("compiled"), bCompile);
+		// The readback proved the native property carries the current value, not that it equals the lost Blueprint default.
+		FString ReadbackStatus;
+		if (Data->TryGetStringField(TEXT("readback_status"), ReadbackStatus) && ReadbackStatus == TEXT("matched")
+			&& Algo::AnyOf(Plan->Mappings, [](const FOps::FMappingPlan& Mapping) { return Mapping.bDefaultUnverified; }))
+		{
+			Data->SetStringField(TEXT("readback_status"), TEXT("matched_acknowledged"));
+		}
 
 		const TSharedRef<FJsonObject> Delta = MakeShared<FJsonObject>();
 		Delta->SetBoolField(TEXT("compiled"), bCompile);

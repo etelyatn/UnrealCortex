@@ -346,7 +346,9 @@ bool FCortexBPAdoptMemberEngineAlreadyAdoptedTest::RunTest(const FString& Parame
 				Cdo->bPowerOn = !Cdo->bPowerOn;
 			}
 		});
-		const FCortexCommandResult Failed = FCortexBPAdoptMemberOps::Execute(AdoptParams(Second.Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))}));
+		TSharedPtr<FJsonObject> FailedParams = AdoptParams(Second.Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))});
+		SetStrings(FailedParams, TEXT("acknowledged_losses"), {TEXT("default_unverified:bPowerOn")});
+		const FCortexCommandResult Failed = FCortexBPAdoptMemberOps::Execute(FailedParams);
 		AddInfo(Explain(Failed));
 		TestFalse(TEXT("A diverging CDO fails"), Failed.bSuccess);
 		TestEqual(TEXT("READBACK_MISMATCH"), Failed.ErrorCode, CortexErrorCodes::ReadbackMismatch);
@@ -355,6 +357,138 @@ bool FCortexBPAdoptMemberEngineAlreadyAdoptedTest::RunTest(const FString& Parame
 		Discard(Second.Blueprint);
 	}
 	Discard(Fixture.Blueprint);
+	return true;
+}
+
+namespace
+{
+	TArray<FString> StringsOf(const TSharedPtr<FJsonObject>& Object, const TCHAR* Field)
+	{
+		TArray<FString> Out;
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (Object.IsValid() && Object->TryGetArrayField(Field, Values) && Values != nullptr)
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Values)
+			{
+				Out.Add(Value->AsString());
+			}
+		}
+		return Out;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAdoptMemberUnverifiedDefaultTest,
+	"Cortex.Blueprint.AdoptMember.UnverifiedDefault",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAdoptMemberUnverifiedDefaultTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	ExpectConformanceWarnings(*this);
+	const FString Key = TEXT("default_unverified:bPowerOn");
+
+	// The engine already conformed and compiled the Blueprint: the original default is unrecoverable unless the caller supplies it.
+	FStateAFixture Fixture = MakeStateA(TEXT("AdoptUnverified"), false, false, false);
+	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint))
+	{
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+	if (!TestFalse(TEXT("The engine already removed bPowerOn"), HasVariable(Fixture.Blueprint, TEXT("bPowerOn"))))
+	{
+		Discard(Fixture.Blueprint);
+		return false;
+	}
+	const ACortexBPAdoptParent* Defaults = Cast<ACortexBPAdoptParent>(Fixture.Blueprint->GeneratedClass->GetDefaultObject());
+	const bool bNativeValue = Defaults != nullptr && Defaults->bPowerOn;
+	const TSharedPtr<FJsonObject> SnapshotBefore = Snapshot(Fixture.Blueprint);
+
+	// Dry run: the plan marks the default unverifiable and requires the acknowledgment.
+	{
+		TSharedPtr<FJsonObject> Params = AdoptParams(Fixture.Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))});
+		Params->SetBoolField(TEXT("dry_run"), true);
+		const FCortexCommandResult Dry = FCortexBPAdoptMemberOps::Execute(Params);
+		if (TestTrue(TEXT("Dry run succeeds"), Dry.bSuccess) && Dry.Data.IsValid())
+		{
+			TestEqual(TEXT("old_default_source is current_cdo_unverified"), StringOf(FindMapping(Dry, TEXT("bPowerOn")), TEXT("old_default_source")), FString(TEXT("current_cdo_unverified")));
+			TestEqual(TEXT("The dry run requires exactly the default_unverified key"), StringsOf(Dry.Data, TEXT("required_acknowledgment")), TArray<FString>{Key});
+			TestFalse(TEXT("can_apply is false until acknowledged"), Dry.Data->GetBoolField(TEXT("can_apply")));
+		}
+		SetStrings(Params, TEXT("acknowledged_losses"), {Key});
+		const FCortexCommandResult Acked = FCortexBPAdoptMemberOps::Execute(Params);
+		if (TestTrue(TEXT("Acknowledged dry run succeeds"), Acked.bSuccess) && Acked.Data.IsValid())
+		{
+			TestTrue(TEXT("can_apply once acknowledged"), Acked.Data->GetBoolField(TEXT("can_apply")));
+		}
+	}
+
+	// Apply without the acknowledgment refuses and changes nothing.
+	{
+		const FCortexCommandResult Refused = FCortexBPAdoptMemberOps::Execute(AdoptParams(Fixture.Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))}));
+		TestFalse(TEXT("Apply without acknowledgment refuses"), Refused.bSuccess);
+		TestEqual(TEXT("POTENTIAL_DATA_LOSS"), Refused.ErrorCode, CortexErrorCodes::PotentialDataLoss);
+		TestEqual(TEXT("The refusal lists the key"), StringsOf(Refused.ErrorDetails, TEXT("required_acknowledgment")), TArray<FString>{Key});
+		TestTrue(TEXT("Nothing changed"), SnapshotsEqual(Fixture.Blueprint, SnapshotBefore));
+
+		TSharedPtr<FJsonObject> Stale = AdoptParams(Fixture.Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))});
+		SetStrings(Stale, TEXT("acknowledged_losses"), {Key, TEXT("default_unverified:Other")});
+		const FCortexCommandResult StaleResult = FCortexBPAdoptMemberOps::Execute(Stale);
+		TestFalse(TEXT("A stale extra key refuses"), StaleResult.bSuccess);
+		TestEqual(TEXT("Stale key code"), StaleResult.ErrorCode, CortexErrorCodes::PotentialDataLoss);
+	}
+
+	// Apply with the acknowledgment keeps the native value and never claims value equality.
+	{
+		TSharedPtr<FJsonObject> Params = AdoptParams(Fixture.Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))});
+		SetStrings(Params, TEXT("acknowledged_losses"), {Key});
+		const FCortexCommandResult Result = FCortexBPAdoptMemberOps::Execute(Params);
+		if (!Result.bSuccess)
+		{
+			AddInfo(Explain(Result));
+		}
+		if (TestTrue(TEXT("Acknowledged apply succeeds"), Result.bSuccess) && Result.Data.IsValid())
+		{
+			TestEqual(TEXT("readback_status is matched_acknowledged"), Result.Data->GetStringField(TEXT("readback_status")), FString(TEXT("matched_acknowledged")));
+			TestEqual(TEXT("old_default_source"), StringOf(FindMapping(Result, TEXT("bPowerOn")), TEXT("old_default_source")), FString(TEXT("current_cdo_unverified")));
+		}
+		if (const ACortexBPAdoptParent* After = Cast<ACortexBPAdoptParent>(Fixture.Blueprint->GeneratedClass->GetDefaultObject()))
+		{
+			TestEqual(TEXT("The native value is kept"), After->bPowerOn, bNativeValue);
+		}
+	}
+	Discard(Fixture.Blueprint);
+
+	// With a supplied default the requirement disappears and the readback claims equality; transfer_default=false needs none either.
+	FStateAFixture Supplied = MakeStateA(TEXT("AdoptUnverifiedSupplied"), false, false, false);
+	if (TestNotNull(TEXT("Supplied fixture"), Supplied.Blueprint))
+	{
+		FKismetEditorUtilities::CompileBlueprint(Supplied.Blueprint);
+		TSharedRef<FJsonObject> PowerMapping = Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"));
+		PowerMapping->SetBoolField(TEXT("default"), true);
+		TSharedPtr<FJsonObject> Params = AdoptParams(Supplied.Blueprint, {PowerMapping});
+		Params->SetBoolField(TEXT("dry_run"), true);
+		const FCortexCommandResult Dry = FCortexBPAdoptMemberOps::Execute(Params);
+		if (TestTrue(TEXT("Dry run with default succeeds"), Dry.bSuccess) && Dry.Data.IsValid())
+		{
+			TestTrue(TEXT("No acknowledgment is required"), StringsOf(Dry.Data, TEXT("required_acknowledgment")).IsEmpty());
+			TestEqual(TEXT("old_default_source"), StringOf(FindMapping(Dry, TEXT("bPowerOn")), TEXT("old_default_source")), FString(TEXT("default_param")));
+		}
+		TSharedPtr<FJsonObject> NoTransfer = AdoptParams(Supplied.Blueprint, {Mapping(TEXT("bPowerOn"), TEXT("bPowerOn"))});
+		NoTransfer->SetBoolField(TEXT("dry_run"), true);
+		NoTransfer->SetBoolField(TEXT("transfer_default"), false);
+		const FCortexCommandResult NoTransferDry = FCortexBPAdoptMemberOps::Execute(NoTransfer);
+		if (TestTrue(TEXT("transfer_default=false dry run succeeds"), NoTransferDry.bSuccess) && NoTransferDry.Data.IsValid())
+		{
+			TestTrue(TEXT("transfer_default=false requires no acknowledgment"), StringsOf(NoTransferDry.Data, TEXT("required_acknowledgment")).IsEmpty());
+		}
+		const FCortexCommandResult Applied = FCortexBPAdoptMemberOps::Execute(AdoptParams(Supplied.Blueprint, {PowerMapping}));
+		if (TestTrue(TEXT("Apply with default succeeds"), Applied.bSuccess) && Applied.Data.IsValid())
+		{
+			TestEqual(TEXT("readback_status stays matched"), Applied.Data->GetStringField(TEXT("readback_status")), FString(TEXT("matched")));
+		}
+		Discard(Supplied.Blueprint);
+	}
 	return true;
 }
 
