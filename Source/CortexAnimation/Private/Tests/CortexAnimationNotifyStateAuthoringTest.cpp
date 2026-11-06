@@ -31,7 +31,7 @@ UAnimSequence* CreateNotifyStateSequence(FAutomationTestBase& Test, FString& Out
 	{
 		return nullptr;
 	}
-	const FString PackageName = FString::Printf(TEXT("/Game/Temp/CortexAnimState_%s/AS_Test"), *FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(12));
+	const FString PackageName = FString::Printf(TEXT("/Game/Temp/CortexAnimState_%s/AS_Test"), *FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(12));
 	UPackage* Package = CreatePackage(*PackageName);
 	UAnimSequence* Sequence = NewObject<UAnimSequence>(Package, UAnimSequence::StaticClass(), TEXT("AS_Test"), RF_Public | RF_Standalone | RF_Transactional);
 	Test.TestNotNull(TEXT("scratch sequence exists"), Sequence);

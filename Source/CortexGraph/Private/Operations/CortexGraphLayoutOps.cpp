@@ -132,6 +132,79 @@ FCortexLayoutResult FCortexGraphLayoutOps::CalculateLayout(
 			Pair.Value.Y / static_cast<float>(CortexGraphLayout::GridSnapSize)) * CortexGraphLayout::GridSnapSize;
 	}
 
+	// Reserve immutable incremental nodes before placing any movable body. Group
+	// expansion and Y refinement can escape their proxy bounds, so separation
+	// must use the original bodies after the final grid snap.
+	struct FPlacedBody
+	{
+		FIntPoint Position;
+		int32 Width;
+		int32 Height;
+	};
+	TArray<FPlacedBody> Placed;
+	Placed.Reserve(Nodes.Num());
+	TArray<const FCortexLayoutNode*> Movable;
+	Movable.Reserve(Nodes.Num());
+	for (const FCortexLayoutNode& Node : Nodes)
+	{
+		const FIntPoint* Existing = ExistingPositions.Find(Node.Id);
+		if (Config.Mode == ECortexLayoutMode::Incremental && Existing && *Existing != FIntPoint::ZeroValue)
+		{
+			Placed.Add({ *Existing, Node.Width, Node.Height });
+		}
+		else if (FinalResult.Positions.Contains(Node.Id))
+		{
+			Movable.Add(&Node);
+		}
+	}
+	Movable.Sort([&FinalResult](const FCortexLayoutNode& A, const FCortexLayoutNode& B)
+	{
+		const FIntPoint& APosition = FinalResult.Positions[A.Id];
+		const FIntPoint& BPosition = FinalResult.Positions[B.Id];
+		if (APosition.X != BPosition.X)
+		{
+			return APosition.X < BPosition.X;
+		}
+		if (APosition.Y != BPosition.Y)
+		{
+			return APosition.Y < BPosition.Y;
+		}
+		return A.Id < B.Id;
+	});
+	for (const FCortexLayoutNode* Node : Movable)
+	{
+		FIntPoint& Position = FinalResult.Positions[Node->Id];
+		if (Position == FIntPoint::ZeroValue)
+		{
+			Position.Y = CortexGraphLayout::GridSnapSize;
+		}
+		bool bMoved;
+		do
+		{
+			bMoved = false;
+			for (const FPlacedBody& Body : Placed)
+			{
+				if (Position.X >= Body.Position.X + Body.Width + Config.HorizontalSpacing ||
+					Body.Position.X >= Position.X + Node->Width + Config.HorizontalSpacing ||
+					Position.Y >= Body.Position.Y + Body.Height + Config.VerticalSpacing ||
+					Body.Position.Y >= Position.Y + Node->Height + Config.VerticalSpacing)
+				{
+					continue;
+				}
+				const int32 MinimumY = Body.Position.Y + Body.Height + Config.VerticalSpacing;
+				Position.Y = FMath::CeilToInt(MinimumY / static_cast<double>(CortexGraphLayout::GridSnapSize))
+					* CortexGraphLayout::GridSnapSize;
+				if (Position == FIntPoint::ZeroValue)
+				{
+					Position.Y = CortexGraphLayout::GridSnapSize;
+				}
+				bMoved = true;
+			}
+		}
+		while (bMoved);
+		Placed.Add({ Position, Node->Width, Node->Height });
+	}
+
 	// Incremental mode: only keep positions for nodes that had default (0,0) position
 	if (Config.Mode == ECortexLayoutMode::Incremental)
 	{
@@ -604,7 +677,10 @@ FCortexLayoutResult FCortexGraphLayoutOps::CalculatePositions(
 
 		LayerX.Add(LayerIdx, CurrentX);
 		LayerMaxWidth.Add(LayerIdx, MaxWidth);
-		CurrentX += MaxWidth + Config.HorizontalSpacing;
+		// Round column advances outward so the final grid snap cannot consume
+		// horizontal clearance and force an otherwise straight chain downward.
+		CurrentX += FMath::CeilToInt((MaxWidth + Config.HorizontalSpacing)
+			/ static_cast<double>(CortexGraphLayout::GridSnapSize)) * CortexGraphLayout::GridSnapSize;
 	}
 
 	for (int32 LayerIdx : LayerKeys)

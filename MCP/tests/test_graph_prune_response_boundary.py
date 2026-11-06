@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cortex_mcp.response import MAX_RESPONSE_CHARS
+from cortex_mcp.response import MAX_RESPONSE_CHARS, compact_json
 from cortex_mcp.tcp_client import UECommandError
 
 
@@ -138,7 +138,7 @@ def test_prune_preview_at_supported_boundary_returns_every_guid_without_truncati
     assert payload["validation_hash"] == "token-123"
     assert payload["removable"] == _guids(100)
     assert "_truncated" not in payload
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
     connection.send_command.assert_called_once_with("graph.apply_patch", request)
 
 
@@ -158,7 +158,7 @@ def test_prune_preview_over_boundary_refuses_with_limit_exceeded():
     assert payload["approved_count"] == 0
     assert payload["complete"] is True
     assert "_truncated" not in payload
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
 
 
 def test_prune_partition_preview_with_omitted_dry_run_uses_native_preview_once():
@@ -268,7 +268,12 @@ def test_apply_refuses_prospective_response_that_exceeds_budget():
     connection = MagicMock()
     approved = _guids(400)
     request = _request(
-        patch_id="p" * 5000,
+        # The preview itself must still fit the budget, so the inflation lives only in the
+        # request field that the prospective apply envelope adds: with the compact
+        # representation a 5000-char patch_id only reaches 36922 chars, which fits and would
+        # let the apply proceed. 10000 chars makes the prospective envelope genuinely
+        # oversized (41922) while the 400-GUID preview stays at 31847.
+        patch_id="p" * 10_000,
         dry_run=False,
         expected_validation_hash="token-123",
         migration={"op": "prune_island", "source": SOURCE, "approved_node_guids": approved},
@@ -286,7 +291,7 @@ def test_apply_refuses_prospective_response_that_exceeds_budget():
     assert payload["max_response_chars"] == MAX_RESPONSE_CHARS
     assert payload["removable_count"] == 400
     assert payload["approved_count"] == 400
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
     connection.send_command.assert_called_once()
     connection.send_command_once.assert_not_called()
 
@@ -427,7 +432,7 @@ def test_oversized_native_error_is_bounded_with_explicit_truncation():
         "asset_path": ASSET,
         **details,
     }
-    original_size = len(json.dumps(original_envelope, indent=2))
+    original_size = len(compact_json(original_envelope))
     connection.send_command.return_value = {
         "success": True, "data": _preview(1, approved_guids=approved),
     }
@@ -452,7 +457,7 @@ def test_oversized_native_error_is_bounded_with_explicit_truncation():
     assert payload["_diagnostics_omitted"] == 3
     assert payload["reconciliation_required"] is True
     assert payload["_reconciliation_guidance"]
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
 
 
 
@@ -514,7 +519,7 @@ def test_error_compaction_does_not_claim_short_message_was_truncated():
     assert "original_message_chars" not in payload
     assert payload["_truncated"] is True
     assert payload["_diagnostics_omitted"] == 3
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
 def test_oversized_post_apply_future_field_is_bounded_and_outcomes_survive():
     connection = MagicMock()
     approved = _guids(1)
@@ -549,7 +554,7 @@ def test_oversized_post_apply_future_field_is_bounded_and_outcomes_survive():
     assert payload["_truncated"] is True
     assert payload["_omitted_fields"]
     assert payload["reconciliation_required"] is True
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
 
 def test_oversized_nested_fingerprints_are_omitted_from_success_envelope():
     connection = MagicMock()
@@ -570,7 +575,7 @@ def test_oversized_nested_fingerprints_are_omitted_from_success_envelope():
 
     payload = _payload(dispatch_graph_apply_patch(connection, request, tool_name="graph_cmd"))
 
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
     assert payload["_truncated"] is True
     assert payload["reconciliation_required"] is True
     assert payload["_reconciliation_guidance"]
@@ -601,7 +606,7 @@ def test_oversized_nested_fingerprints_are_omitted_from_error_envelope():
 
     assert payload["success"] is False
     assert payload["_error"] == "APPLY_FAILED"
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
     assert payload["_truncated"] is True
     assert payload["reconciliation_required"] is True
     assert payload["_reconciliation_guidance"]
@@ -629,7 +634,7 @@ def test_oversized_unknown_outcome_is_always_bounded():
     assert payload["_error"] == "UNKNOWN_OUTCOME"
     assert payload["reconciliation_required"] is True
     assert payload["_truncated"] is True
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
 
 
 def test_non_boolean_dry_run_is_forwarded_once_without_coercion():

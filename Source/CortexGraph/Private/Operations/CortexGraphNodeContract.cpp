@@ -714,6 +714,7 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 		if (FCortexGraphSymbolResolver::ResolveFunction(Blueprint, NodeParams, Symbol, Error))
 		{
 			CallNode->SetFromFunction(Symbol.Function);
+			CallNode->PostPlacedNewNode();
 		}
 		else
 		{

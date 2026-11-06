@@ -1855,3 +1855,118 @@ bool FCortexCliSessionLightweightConfigStaysMcpFreeTest::RunTest(const FString& 
     TestFalse(TEXT("Lightweight config should not include an MCP config path"), CommandLine.Contains(TEXT(".mcp.json")));
     return true;
 }
+
+// Task 16 RED: the default Codex instruction block states the access mode twice — once in the
+// prose sentence and once in the appended policy block. Exactly one current access policy allowed.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaResolutionCodexDefaultTurnAccessModeTest,
+    "Cortex.Frontend.InputArea.Resolution.CodexDefaultTurnStatesAccessModeOnce",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaResolutionCodexDefaultTurnAccessModeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("session-task16-default");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.bHasLaunchOptions = true;
+    Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
+    Config.LaunchOptions.WorkflowMode = ECortexWorkflowMode::Thorough;
+    Config.LaunchOptions.bProjectContext = true;
+    Config.LaunchOptions.bAutoContext = true;
+
+    FCortexCliSession Session(Config);
+    const FString Envelope = Session.BuildPromptEnvelope(TEXT("Inspect the current selection"), ECortexAccessMode::Guided);
+
+    TestEqual(TEXT("Default Codex turn states the access mode exactly once"),
+        CountOccurrences(Envelope, TEXT("Current access mode:")), 1);
+    TestTrue(TEXT("Default Codex turn keeps the current access mode value"),
+        Envelope.Contains(TEXT("Current access mode: Guided")));
+    TestTrue(TEXT("Default Codex turn keeps the appended access policy"),
+        Envelope.Contains(TEXT("Workflow mode: Thorough")));
+    TestTrue(TEXT("Default Codex turn keeps the project-context policy"),
+        Envelope.Contains(TEXT("Project context: Enabled")));
+    TestTrue(TEXT("Default Codex turn preserves the user prompt"),
+        Envelope.Contains(TEXT("Inspect the current selection")));
+    return true;
+}
+
+// Task 16: a custom system prompt keeps its own text and must not lose the appended access policy.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaResolutionCodexCustomTurnAccessModeTest,
+    "Cortex.Frontend.InputArea.Resolution.CodexCustomTurnKeepsAppendedAccessPolicy",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaResolutionCodexCustomTurnAccessModeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("session-task16-custom");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.SystemPrompt = TEXT("You are a QA test engineer agent.");
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.bHasLaunchOptions = true;
+    Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
+    Config.LaunchOptions.WorkflowMode = ECortexWorkflowMode::Thorough;
+    Config.LaunchOptions.bProjectContext = true;
+    Config.LaunchOptions.bAutoContext = true;
+
+    FCortexCliSession Session(Config);
+    const FString Envelope = Session.BuildPromptEnvelope(TEXT("Generate a scenario"), ECortexAccessMode::Guided);
+
+    TestEqual(TEXT("Custom Codex turn states the access mode exactly once"),
+        CountOccurrences(Envelope, TEXT("Current access mode:")), 1);
+    TestTrue(TEXT("Custom Codex turn keeps the custom system prompt"),
+        Envelope.Contains(TEXT("You are a QA test engineer agent.")));
+    TestTrue(TEXT("Custom Codex turn keeps the appended access policy"),
+        Envelope.Contains(TEXT("Workflow mode: Thorough")));
+    TestTrue(TEXT("Custom Codex turn keeps the project-context policy"),
+        Envelope.Contains(TEXT("Project context: Enabled")));
+    TestTrue(TEXT("Custom Codex turn preserves the user prompt"),
+        Envelope.Contains(TEXT("Generate a scenario")));
+    return true;
+}
+
+// Task 16: a resumed Codex turn must carry the same single access policy in the prompt
+// envelope and in the resumed launch command.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaResolutionCodexResumedTurnAccessModeTest,
+    "Cortex.Frontend.InputArea.Resolution.CodexResumedTurnKeepsAccessPolicy",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaResolutionCodexResumedTurnAccessModeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    FCortexSessionConfig Config;
+    Config.SessionId = TEXT("thread-task16-resumed");
+    Config.ProviderId = FName(TEXT("codex"));
+    Config.SystemPrompt = TEXT("You are a QA test engineer agent.");
+    Config.ResolvedOptions.ProviderId = FName(TEXT("codex"));
+    Config.ResolvedOptions.ProviderDisplayName = TEXT("Codex");
+    Config.bHasLaunchOptions = true;
+    Config.LaunchOptions.AccessMode = ECortexAccessMode::Guided;
+    Config.LaunchOptions.WorkflowMode = ECortexWorkflowMode::Thorough;
+    Config.LaunchOptions.bProjectContext = true;
+    Config.LaunchOptions.bAutoContext = true;
+    Config.LaunchOptions.bSkipPermissions = false;
+
+    FCortexCliSession Session(Config);
+
+    const FString Envelope = Session.BuildPromptEnvelope(TEXT("Continue"), ECortexAccessMode::Guided);
+    TestEqual(TEXT("Resumed Codex turn states the access mode exactly once"),
+        CountOccurrences(Envelope, TEXT("Current access mode:")), 1);
+    TestTrue(TEXT("Resumed Codex turn keeps the appended access policy"),
+        Envelope.Contains(TEXT("Workflow mode: Thorough")));
+
+    const FString ResumeCommand = Session.BuildLaunchCommandLine(true, ECortexAccessMode::Guided);
+    TestTrue(TEXT("Resumed Codex launch keeps the resume form"),
+        ResumeCommand.Contains(TEXT("exec resume --json")));
+    TestEqual(TEXT("Resumed Codex launch applies the access-mode sandbox exactly once"),
+        CountOccurrences(ResumeCommand, TEXT("sandbox_mode=")), 1);
+    TestTrue(TEXT("Resumed Codex launch applies the Guided sandbox"),
+        ResumeCommand.Contains(TEXT("workspace-write")));
+    return true;
+}

@@ -1,4 +1,5 @@
 #include "Operations/CortexUMGAnimationBindingUtils.h"
+#include "Operations/CortexUMGAnimationTrackUtils.h"
 #include "CortexUMGUtils.h"
 #include "Serialization/MemoryWriter.h"
 #include "Tracks/MovieSceneFloatTrack.h"
@@ -194,13 +195,26 @@ namespace
         SHA256Final(Ctx, Digest);
         return BytesToHex(Digest, sizeof(Digest)).ToLower();
     }
+
+    /**
+     * Renders a possibly-untrusted string for a diagnostic message without echoing unbounded input.
+     * Short values stay readable; oversized values are replaced by a length descriptor.
+     */
+    FString DescribeUntrustedValue(const FString& Value)
+    {
+        if (Value.Len() <= 64)
+        {
+            return FString::Printf(TEXT("'%s'"), *Value);
+        }
+        return FString::Printf(TEXT("<%d characters elided>"), Value.Len());
+    }
 }
 
 TSharedPtr<FJsonObject> FCortexUMGAnimationBindingFingerprint::ToJson() const
 {
     TSharedPtr<FJsonObject> Json = Base.ToJson();
     TSharedPtr<FJsonObject> DomainSig = MakeShared<FJsonObject>();
-    DomainSig->SetNumberField(TEXT("version"), 1);
+    DomainSig->SetNumberField(TEXT("version"), 2);
     DomainSig->SetStringField(TEXT("scope"), TEXT("umg.animation_binding"));
     DomainSig->SetStringField(TEXT("asset_path"), AssetPath);
     DomainSig->SetStringField(TEXT("animation_name"), AnimationName);
@@ -211,7 +225,7 @@ TSharedPtr<FJsonObject> FCortexUMGAnimationBindingFingerprint::ToJson() const
 
 namespace CortexUMGAnimationBindingUtils
 {
-    void SerializeSectionChannels(FArchive& Ar, UMovieSceneSection* Section)
+    void SerializeSectionChannels(FArchive& Ar, const UMovieSceneSection* Section)
     {
         if (!Section)
         {
@@ -228,6 +242,7 @@ namespace CortexUMGAnimationBindingUtils
         int32 RowIndex = Section->GetRowIndex();
         bool bActive = Section->IsActive();
         bool bLocked = Section->IsLocked();
+        int32 OverlapPriority = Section->GetOverlapPriority();
 
         Ar << bSecLowerOpen;
         Ar << bSecLowerInc;
@@ -238,6 +253,7 @@ namespace CortexUMGAnimationBindingUtils
         Ar << RowIndex;
         Ar << bActive;
         Ar << bLocked;
+        Ar << OverlapPriority;
 
         // Section pre/post roll frames (UC-1)
         int32 PreRollFrames = Section->GetPreRollFrames();
@@ -282,7 +298,19 @@ namespace CortexUMGAnimationBindingUtils
         Ar << EaseInType;
         Ar << EaseOutType;
 
-        if (UMovieScene2DTransformSection* TransSec = Cast<UMovieScene2DTransformSection>(Section))
+        // Authored easing-function identity (presence + class), independent of built-in type.
+        UObject* EaseInObject = Section->Easing.EaseIn.GetObject();
+        UObject* EaseOutObject = Section->Easing.EaseOut.GetObject();
+        bool bHasEaseInObject = EaseInObject != nullptr;
+        bool bHasEaseOutObject = EaseOutObject != nullptr;
+        FString EaseInClass = bHasEaseInObject ? EaseInObject->GetClass()->GetPathName() : FString();
+        FString EaseOutClass = bHasEaseOutObject ? EaseOutObject->GetClass()->GetPathName() : FString();
+        Ar << bHasEaseInObject;
+        Ar << bHasEaseOutObject;
+        Ar << EaseInClass;
+        Ar << EaseOutClass;
+
+        if (const UMovieScene2DTransformSection* TransSec = Cast<UMovieScene2DTransformSection>(Section))
         {
             uint32 MaskVal = (uint32)TransSec->GetMask().GetChannels();
             Ar << MaskVal;
@@ -507,6 +535,36 @@ namespace CortexUMGAnimationBindingUtils
         }
     }
 
+    void SerializeTrackState(FArchive& Ar, const UMovieSceneTrack* Track)
+    {
+        if (!Track)
+        {
+            return;
+        }
+        CortexUMGAnimationTrackUtils::SerializeTrackIdentity(Ar, Track);
+        TArray<UMovieSceneSection*> Sections = Track->GetAllSections();
+        Sections.Sort([](const UMovieSceneSection& A, const UMovieSceneSection& B)
+        {
+            const TRange<FFrameNumber> RangeA = A.GetRange();
+            const TRange<FFrameNumber> RangeB = B.GetRange();
+            const int32 StartA = RangeA.GetLowerBound().IsOpen() ? 0 : RangeA.GetLowerBoundValue().Value;
+            const int32 StartB = RangeB.GetLowerBound().IsOpen() ? 0 : RangeB.GetLowerBoundValue().Value;
+            if (StartA != StartB)
+            {
+                return StartA < StartB;
+            }
+            const int32 EndA = RangeA.GetUpperBound().IsOpen() ? 0 : RangeA.GetUpperBoundValue().Value;
+            const int32 EndB = RangeB.GetUpperBound().IsOpen() ? 0 : RangeB.GetUpperBoundValue().Value;
+            return EndA < EndB;
+        });
+        int32 SectionCount = Sections.Num();
+        Ar << SectionCount;
+        for (const UMovieSceneSection* Section : Sections)
+        {
+            SerializeSectionChannels(Ar, Section);
+        }
+    }
+
     FString ComputeAnimationDigest(
         const FString& AssetPath,
         const FString& AnimName,
@@ -685,6 +743,7 @@ namespace CortexUMGAnimationBindingUtils
                         FString TrackName = Track->GetTrackName().ToString();
                         Ar << TrackClass;
                         Ar << TrackName;
+                        CortexUMGAnimationTrackUtils::SerializeTrackIdentity(Ar, Track);
 
                         if (UMovieSceneEventTrack* EventTrack = Cast<UMovieSceneEventTrack>(Track))
                         {
@@ -737,6 +796,7 @@ namespace CortexUMGAnimationBindingUtils
                     FString TrackName = Track->GetTrackName().ToString();
                     Ar << TrackClass;
                     Ar << TrackName;
+                    CortexUMGAnimationTrackUtils::SerializeTrackIdentity(Ar, Track);
 
                     if (UMovieSceneEventTrack* EventTrack = Cast<UMovieSceneEventTrack>(Track))
                     {
@@ -796,18 +856,28 @@ namespace CortexUMGAnimationBindingUtils
 
         if (ExpectedFingerprint->HasField(TEXT("package_saved_hash")))
         {
-            FString ExpectedSavedHash = ExpectedFingerprint->GetStringField(TEXT("package_saved_hash"));
+            FString ExpectedSavedHash;
+            if (!ExpectedFingerprint->TryGetStringField(TEXT("package_saved_hash"), ExpectedSavedHash))
+            {
+                OutError = TEXT("package_saved_hash must be a string");
+                return false;
+            }
             if (ExpectedSavedHash != LiveFingerprint.Base.PackageSavedHash)
             {
-                OutError = FString::Printf(TEXT("package_saved_hash mismatch: expected '%s', live '%s'"),
-                    *ExpectedSavedHash, *LiveFingerprint.Base.PackageSavedHash);
+                OutError = FString::Printf(TEXT("package_saved_hash mismatch: expected %s, live '%s'"),
+                    *DescribeUntrustedValue(ExpectedSavedHash), *LiveFingerprint.Base.PackageSavedHash);
                 return false;
             }
         }
 
         if (ExpectedFingerprint->HasField(TEXT("is_dirty")))
         {
-            bool bExpectedDirty = ExpectedFingerprint->GetBoolField(TEXT("is_dirty"));
+            bool bExpectedDirty = false;
+            if (!ExpectedFingerprint->TryGetBoolField(TEXT("is_dirty"), bExpectedDirty))
+            {
+                OutError = TEXT("is_dirty must be a boolean");
+                return false;
+            }
             if (bExpectedDirty != LiveFingerprint.Base.bIsDirty)
             {
                 OutError = FString::Printf(TEXT("is_dirty mismatch: expected %d, live %d"),
@@ -818,12 +888,17 @@ namespace CortexUMGAnimationBindingUtils
 
         if (ExpectedFingerprint->HasField(TEXT("dirty_epoch")))
         {
-            FString ExpectedDirtyEpoch = ExpectedFingerprint->GetStringField(TEXT("dirty_epoch"));
-            FString LiveDirtyEpoch = FString::Printf(TEXT("%llu"), LiveFingerprint.Base.DirtyEpoch);
+            FString ExpectedDirtyEpoch;
+            if (!ExpectedFingerprint->TryGetStringField(TEXT("dirty_epoch"), ExpectedDirtyEpoch))
+            {
+                OutError = TEXT("dirty_epoch must be a string");
+                return false;
+            }
+            const FString LiveDirtyEpoch = FString::Printf(TEXT("%llu"), LiveFingerprint.Base.DirtyEpoch);
             if (ExpectedDirtyEpoch != LiveDirtyEpoch)
             {
-                OutError = FString::Printf(TEXT("dirty_epoch mismatch: expected '%s', live '%s'"),
-                    *ExpectedDirtyEpoch, *LiveDirtyEpoch);
+                OutError = FString::Printf(TEXT("dirty_epoch mismatch: expected %s, live '%s'"),
+                    *DescribeUntrustedValue(ExpectedDirtyEpoch), *LiveDirtyEpoch);
                 return false;
             }
         }
@@ -835,21 +910,37 @@ namespace CortexUMGAnimationBindingUtils
             return false;
         }
 
-        int32 Version = (*DomainSig)->GetIntegerField(TEXT("version"));
-        if (Version != 1)
+        int32 Version = 0;
+        if (!(*DomainSig)->TryGetNumberField(TEXT("version"), Version))
         {
-            OutError = FString::Printf(TEXT("Unsupported domain_signature version: %d (expected 1)"), Version);
+            OutError = TEXT("domain_signature.version must be an integer");
+            return false;
+        }
+        if (Version != 2)
+        {
+            OutError = FString::Printf(TEXT("Unsupported domain_signature version: %d (expected 2)"), Version);
             return false;
         }
 
-        FString Scope = (*DomainSig)->GetStringField(TEXT("scope"));
+        FString Scope;
+        if (!(*DomainSig)->TryGetStringField(TEXT("scope"), Scope))
+        {
+            OutError = TEXT("domain_signature.scope must be a string");
+            return false;
+        }
         if (Scope != TEXT("umg.animation_binding"))
         {
-            OutError = FString::Printf(TEXT("Invalid domain_signature scope: '%s' (expected 'umg.animation_binding')"), *Scope);
+            OutError = FString::Printf(TEXT("Invalid domain_signature scope %s (expected 'umg.animation_binding')"),
+                *DescribeUntrustedValue(Scope));
             return false;
         }
 
-        FString AssetPath = (*DomainSig)->GetStringField(TEXT("asset_path"));
+        FString AssetPath;
+        if (!(*DomainSig)->TryGetStringField(TEXT("asset_path"), AssetPath))
+        {
+            OutError = TEXT("domain_signature.asset_path must be a string");
+            return false;
+        }
         const FString CanonicalSig = FPackageName::ObjectPathToPackageName(AssetPath);
         const FString CanonicalExpected = FPackageName::ObjectPathToPackageName(ExpectedAssetPath);
         const FString CanonicalLive = FPackageName::ObjectPathToPackageName(LiveFingerprint.AssetPath);
@@ -857,24 +948,34 @@ namespace CortexUMGAnimationBindingUtils
         if (!CanonicalSig.Equals(CanonicalExpected, ESearchCase::CaseSensitive) ||
             !CanonicalLive.Equals(CanonicalExpected, ESearchCase::CaseSensitive))
         {
-            OutError = FString::Printf(TEXT("domain_signature asset_path mismatch: expected '%s', got '%s'"),
-                *ExpectedAssetPath, *AssetPath);
+            OutError = FString::Printf(TEXT("domain_signature asset_path mismatch: expected '%s', got %s"),
+                *ExpectedAssetPath, *DescribeUntrustedValue(AssetPath));
             return false;
         }
 
-        FString AnimName = (*DomainSig)->GetStringField(TEXT("animation_name"));
+        FString AnimName;
+        if (!(*DomainSig)->TryGetStringField(TEXT("animation_name"), AnimName))
+        {
+            OutError = TEXT("domain_signature.animation_name must be a string");
+            return false;
+        }
         if (!AnimName.Equals(ExpectedAnimName, ESearchCase::CaseSensitive))
         {
-            OutError = FString::Printf(TEXT("domain_signature animation_name mismatch: expected '%s', got '%s'"),
-                *ExpectedAnimName, *AnimName);
+            OutError = FString::Printf(TEXT("domain_signature animation_name mismatch: expected '%s', got %s"),
+                *ExpectedAnimName, *DescribeUntrustedValue(AnimName));
             return false;
         }
 
-        FString Digest = (*DomainSig)->GetStringField(TEXT("digest"));
+        FString Digest;
+        if (!(*DomainSig)->TryGetStringField(TEXT("digest"), Digest))
+        {
+            OutError = TEXT("domain_signature.digest must be a string");
+            return false;
+        }
         if (Digest != LiveFingerprint.Digest)
         {
-            OutError = FString::Printf(TEXT("Animation content has changed: expected digest '%s', live digest '%s'"),
-                *Digest, *LiveFingerprint.Digest);
+            OutError = FString::Printf(TEXT("Animation content has changed: expected digest %s, live digest '%s'"),
+                *DescribeUntrustedValue(Digest), *LiveFingerprint.Digest);
             return false;
         }
 
@@ -1241,8 +1342,8 @@ namespace CortexUMGAnimationBindingUtils
         const TSharedPtr<FJsonObject>* EarlyDomainSig = nullptr;
         if (ExpectedFingerprint->TryGetObjectField(TEXT("domain_signature"), EarlyDomainSig) && EarlyDomainSig && EarlyDomainSig->IsValid())
         {
-            const FString SigAssetPath = (*EarlyDomainSig)->GetStringField(TEXT("asset_path"));
-            if (!SigAssetPath.IsEmpty())
+            FString SigAssetPath;
+            if ((*EarlyDomainSig)->TryGetStringField(TEXT("asset_path"), SigAssetPath) && !SigAssetPath.IsEmpty())
             {
                 const FString CanonicalSig = FPackageName::ObjectPathToPackageName(SigAssetPath);
                 const FString CanonicalReq = FPackageName::ObjectPathToPackageName(AssetPath);
@@ -1250,16 +1351,19 @@ namespace CortexUMGAnimationBindingUtils
                 {
                     OutError = FCortexCommandRouter::Error(
                         CortexErrorCodes::StalePrecondition,
-                        FString::Printf(TEXT("domain_signature asset_path mismatch: expected '%s', got '%s'"), *AssetPath, *SigAssetPath));
+                        FString::Printf(TEXT("domain_signature asset_path mismatch: expected '%s', got %s"),
+                            *AssetPath, *DescribeUntrustedValue(SigAssetPath)));
                     return false;
                 }
             }
-            const FString SigAnimName = (*EarlyDomainSig)->GetStringField(TEXT("animation_name"));
-            if (!SigAnimName.IsEmpty() && !SigAnimName.Equals(AnimName, ESearchCase::CaseSensitive))
+            FString SigAnimName;
+            if ((*EarlyDomainSig)->TryGetStringField(TEXT("animation_name"), SigAnimName)
+                && !SigAnimName.IsEmpty() && !SigAnimName.Equals(AnimName, ESearchCase::CaseSensitive))
             {
                 OutError = FCortexCommandRouter::Error(
                     CortexErrorCodes::StalePrecondition,
-                    FString::Printf(TEXT("domain_signature animation_name mismatch: expected '%s', got '%s'"), *AnimName, *SigAnimName));
+                    FString::Printf(TEXT("domain_signature animation_name mismatch: expected '%s', got %s"),
+                        *AnimName, *DescribeUntrustedValue(SigAnimName)));
                 return false;
             }
         }

@@ -4,10 +4,11 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
+#include "Misc/Guid.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPAddVariableTest,
-	"Cortex.Blueprint.AddVariable",
+	"Cortex.Blueprint.AddVariable.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -20,17 +21,22 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
+	const FString FixtureName = TEXT("BP_AddVarTest_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString TestDirectory = TEXT("/Game/Temp/CortexBPTest_AddVar_") + FixtureName;
+	const FString TestBPPath = TestDirectory / FixtureName;
 
 	// Setup: create a Blueprint
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		Params->SetStringField(TEXT("name"), TEXT("BP_AddVarTest"));
-		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_AddVar"));
+		Params->SetStringField(TEXT("name"), FixtureName);
+		Params->SetStringField(TEXT("path"), TestDirectory);
 		Params->SetStringField(TEXT("type"), TEXT("Actor"));
-		Handler.Execute(TEXT("create"), Params);
+		if (!TestTrue(TEXT("Setup: create BP"), Handler.Execute(TEXT("create"), Params).bSuccess))
+		{
+			return false;
+		}
 	}
 
-	FString TestBPPath = TEXT("/Game/Temp/CortexBPTest_AddVar/BP_AddVarTest");
 
 	// Test: add a float variable
 	{
@@ -183,15 +189,11 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 			Result.ErrorCode, CortexErrorCodes::InvalidField);
 	}
 
-	// Cleanup: mark the entire package as garbage so the Blueprint, its
-	// GeneratedClass, and CDO are all collected together.  Marking only the
-	// UBlueprint object leaves the (dirty, uncompiled) GeneratedClass live,
-	// which causes a background GC worker crash on the next test.
-	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
-	if (CreatedBP)
-	{
-		CreatedBP->GetOutermost()->MarkAsGarbage();
-	}
+	// Use the asset owner to retire the Blueprint, generated classes and saved file together.
+	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+	DeleteParams->SetStringField(TEXT("asset_path"), TestBPPath);
+	DeleteParams->SetBoolField(TEXT("force"), true);
+	TestTrue(TEXT("Cleanup: delete owned Blueprint"), Handler.Execute(TEXT("delete"), DeleteParams).bSuccess);
 
 	return true;
 }

@@ -283,7 +283,7 @@ bool FCortexCapabilitiesSnapshotTest::RunTest(const FString& Parameters)
 	AssertCapabilityMatchesSnapshot(TEXT("data"), TEXT("query_datatable"), TEXT("query_datatable"),
 		{ TEXT("table_path"), TEXT("row_name_pattern"), TEXT("row_names"), TEXT("fields"), TEXT("limit"), TEXT("offset") });
 	AssertCapabilityMatchesSnapshot(TEXT("editor"), TEXT("get_recent_logs"), TEXT("get_recent_logs"),
-		{ TEXT("severity"), TEXT("since_seconds"), TEXT("since_cursor"), TEXT("category") });
+		{ TEXT("severity"), TEXT("since_seconds"), TEXT("since_cursor"), TEXT("until_cursor"), TEXT("limit"), TEXT("count_only"), TEXT("category") });
 	AssertCapabilityMatchesSnapshot(TEXT("blueprint"), TEXT("add_function"), TEXT("add_blueprint_function"),
 		{ TEXT("asset_path"), TEXT("name"), TEXT("is_pure"), TEXT("access"), TEXT("inputs"), TEXT("outputs") });
 	AssertCapabilityMatchesSnapshot(TEXT("material"), TEXT("set_parameter"), TEXT("set_parameter"),

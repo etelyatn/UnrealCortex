@@ -1,7 +1,12 @@
 #include "Operations/CortexBPAnalysisOps.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPGraphReachability.h"
 #include "Operations/CortexBPSCSDiagnostics.h"
 #include "Operations/CortexBPTypeUtils.h"
+#include "Operations/CortexBPWidgetUtils.h"
+#include "Components/Widget.h"
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
 #include "Curves/CurveFloat.h"
@@ -671,26 +676,10 @@ TArray<TSharedPtr<FJsonValue>> ExtractWidgetEntities(UBlueprint* BP, const TMap<
 		return Result;
 	}
 
-	const FObjectProperty* WidgetTreeProp = FindObjectProperty(BP->GetClass(), TEXT("WidgetTree"));
-	UObject* WidgetTreeObj = WidgetTreeProp ? WidgetTreeProp->GetObjectPropertyValue_InContainer(BP) : nullptr;
-	if (!WidgetTreeObj)
-	{
-		return Result;
-	}
-
-	const FArrayProperty* AllWidgetsProp = FindArrayProperty(WidgetTreeObj->GetClass(), TEXT("AllWidgets"));
-	const FObjectProperty* WidgetObjProp = AllWidgetsProp ? CastField<FObjectProperty>(AllWidgetsProp->Inner) : nullptr;
-	if (!AllWidgetsProp || !WidgetObjProp)
-	{
-		return Result;
-	}
-
-	FScriptArrayHelper WidgetsArray(AllWidgetsProp, AllWidgetsProp->ContainerPtrToValuePtr<void>(WidgetTreeObj));
 	static UClass* ListViewBaseClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.ListViewBase"));
 
-	for (int32 Index = 0; Index < WidgetsArray.Num(); ++Index)
+	for (UWidget* WidgetObject : CortexBPWidgetUtils::CollectWidgets(BP))
 	{
-		UObject* WidgetObject = WidgetObjProp->GetObjectPropertyValue(WidgetsArray.GetRawPtr(Index));
 		if (!WidgetObject)
 		{
 			continue;
@@ -709,11 +698,7 @@ TArray<TSharedPtr<FJsonValue>> ExtractWidgetEntities(UBlueprint* BP, const TMap<
 			}
 		}
 
-		if (!bIsVariable && BoundEventsArr.Num() == 0)
-		{
-			continue;
-		}
-
+		// Every widget of the tree is reported (pre-order); is_variable and bound_events_in_graph let consumers filter.
 		TSharedPtr<FJsonObject> WidgetObj = MakeShared<FJsonObject>();
 		WidgetObj->SetStringField(TEXT("name"), Name);
 		WidgetObj->SetStringField(TEXT("class"), WidgetObject->GetClass()->GetName());
@@ -944,11 +929,23 @@ TSharedPtr<FJsonObject> BuildWidgetDependencies(const TSharedPtr<FJsonObject>& D
 			for (const TSharedPtr<FJsonValue>& WidgetVal : *WidgetsArray)
 			{
 				const TSharedPtr<FJsonObject> WidgetObj = WidgetVal->AsObject();
-				if (!WidgetObj.IsValid() || !WidgetObj->HasField(TEXT("entry_widget_class")))
+				if (!WidgetObj.IsValid())
 				{
 					continue;
 				}
 
+				// A widget whose class is not a native /Script class is a Blueprint user widget placed in the tree.
+				FString WidgetClassPath;
+				if (WidgetObj->TryGetStringField(TEXT("class_path"), WidgetClassPath)
+					&& !WidgetClassPath.IsEmpty() && !WidgetClassPath.StartsWith(TEXT("/Script/")))
+				{
+					ReferencesWidgetPaths.Add(WidgetClassPath);
+				}
+
+				if (!WidgetObj->HasField(TEXT("entry_widget_class")))
+				{
+					continue;
+				}
 				const FString EntryWidgetClassPath = WidgetObj->GetStringField(TEXT("entry_widget_class"));
 				if (!EntryWidgetClassPath.IsEmpty())
 				{
@@ -981,10 +978,46 @@ TSharedPtr<FJsonObject> BuildWidgetDependencies(const TSharedPtr<FJsonObject>& D
 		}
 	}
 
+	TArray<FString> SortedReferences = ReferencesWidgetPaths.Array();
+	SortedReferences.Sort();
 	TArray<TSharedPtr<FJsonValue>> ReferencesWidgets;
-	for (const FString& Path : ReferencesWidgetPaths)
+	for (const FString& Path : SortedReferences)
 	{
 		ReferencesWidgets.Add(MakeShared<FJsonValueString>(Path));
+	}
+
+	// Widget Blueprint assets that reference this package (hard or soft), read from the Asset Registry without loading.
+	if (BP)
+	{
+		const IAssetRegistry& Registry = IAssetRegistry::GetChecked();
+		static UClass* WidgetBlueprintClass = FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint"));
+		TArray<FName> Referencers;
+		Registry.GetReferencers(BP->GetOutermost()->GetFName(), Referencers,
+			UE::AssetRegistry::EDependencyCategory::Package);
+		TSet<FString> ReferencedByPaths;
+		for (const FName& Referencer : Referencers)
+		{
+			if (Referencer == BP->GetOutermost()->GetFName())
+			{
+				continue;
+			}
+			TArray<FAssetData> ReferencerAssets;
+			Registry.GetAssetsByPackageName(Referencer, ReferencerAssets);
+			for (const FAssetData& ReferencerAsset : ReferencerAssets)
+			{
+				const UClass* AssetClass = ReferencerAsset.GetClass();
+				if (WidgetBlueprintClass && AssetClass && AssetClass->IsChildOf(WidgetBlueprintClass))
+				{
+					ReferencedByPaths.Add(ReferencerAsset.GetObjectPathString());
+				}
+			}
+		}
+		TArray<FString> SortedReferencedBy = ReferencedByPaths.Array();
+		SortedReferencedBy.Sort();
+		for (const FString& Path : SortedReferencedBy)
+		{
+			ReferencedByWidgets.Add(MakeShared<FJsonValueString>(Path));
+		}
 	}
 
 	Result->SetArrayField(TEXT("references_widgets"), ReferencesWidgets);
@@ -1000,7 +1033,7 @@ TArray<TSharedPtr<FJsonValue>> BuildEntitySummary(const TSharedPtr<FJsonObject>&
 		return Summary;
 	}
 
-	auto AddFromArray = [&Summary, &Data](const TCHAR* ArrayField, const TCHAR* EntityType)
+	auto AddFromArray = [&Summary, &Data](const TCHAR* ArrayField, const TCHAR* EntityType, const bool bBindableWidgetsOnly = false)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
 		if (!Data->TryGetArrayField(ArrayField, ArrayValues) || !ArrayValues)
@@ -1014,6 +1047,17 @@ TArray<TSharedPtr<FJsonValue>> BuildEntitySummary(const TSharedPtr<FJsonObject>&
 			if (!Obj.IsValid() || !Obj->HasField(TEXT("name")))
 			{
 				continue;
+			}
+			if (bBindableWidgetsOnly)
+			{
+				// entity_summary lists widgets a C++ migration must bind: variables and widgets with graph-bound events.
+				const TArray<TSharedPtr<FJsonValue>>* BoundEvents = nullptr;
+				const bool bHasBoundEvents = Obj->TryGetArrayField(TEXT("bound_events_in_graph"), BoundEvents)
+					&& BoundEvents && BoundEvents->Num() > 0;
+				if (!Obj->GetBoolField(TEXT("is_variable")) && !bHasBoundEvents)
+				{
+					continue;
+				}
 			}
 
 			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
@@ -1031,11 +1075,39 @@ TArray<TSharedPtr<FJsonValue>> BuildEntitySummary(const TSharedPtr<FJsonObject>&
 	AddFromArray(TEXT("dynamic_components"), TEXT("dynamic_component"));
 	AddFromArray(TEXT("timelines"), TEXT("timeline"));
 	AddFromArray(TEXT("event_dispatchers"), TEXT("event_dispatcher"));
-	AddFromArray(TEXT("widgets"), TEXT("widget"));
+	AddFromArray(TEXT("widgets"), TEXT("widget"), /*bBindableWidgetsOnly=*/true);
 	AddFromArray(TEXT("widget_animations"), TEXT("widget_animation"));
 	AddFromArray(TEXT("named_slots"), TEXT("named_slot"));
 
 	return Summary;
+}
+
+FString ResolveMemberDefaultValue(const UBlueprint* BP, const FBPVariableDescription& Variable)
+{
+	if (!Variable.DefaultValue.IsEmpty())
+	{
+		return Variable.DefaultValue;
+	}
+
+	const UClass* GeneratedClass = BP ? BP->GeneratedClass.Get() : nullptr;
+	const FProperty* Property = GeneratedClass ? FindFProperty<FProperty>(GeneratedClass, Variable.VarName) : nullptr;
+	const UObject* DefaultObject = GeneratedClass ? GeneratedClass->GetDefaultObject(false) : nullptr;
+	if (!Property || !DefaultObject)
+	{
+		return FString();
+	}
+
+	const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(DefaultObject);
+	if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
+	{
+		return BoolProperty->GetPropertyValue(ValuePtr) ? TEXT("true") : TEXT("false");
+	}
+
+	// Passing the value as its own delta makes ExportText_Direct take its `Data == Delta` branch (Property.cpp), which
+	// always exports; with a null delta, values identical to the type default (0, "", None) would export nothing.
+	FString Exported;
+	Property->ExportText_Direct(Exported, ValuePtr, ValuePtr, nullptr, PPF_None);
+	return Exported;
 }
 
 TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
@@ -1062,7 +1134,13 @@ TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
 		}
 	}
 
-	if (!EIAClass && !EIAEventClass) { return Bindings; }
+	static UClass* DebugKeyClass = nullptr;
+	if (!DebugKeyClass)
+	{
+		DebugKeyClass = FindObject<UClass>(nullptr, TEXT("/Script/InputBlueprintNodes.K2Node_InputDebugKey"));
+	}
+
+	if (!EIAClass && !EIAEventClass && !DebugKeyClass) { return Bindings; }
 
 	TArray<UEdGraph*> AllGraphs;
 	BP->GetAllGraphs(AllGraphs);
@@ -1134,6 +1212,44 @@ TArray<TSharedPtr<FJsonValue>> DetectInputBindings(UBlueprint* BP)
 					BindingObj->SetStringField(TEXT("trigger_event"), TriggerEvent);
 					Bindings.Add(MakeShared<FJsonValueObject>(BindingObj));
 				}
+			}
+			else if (DebugKeyClass && Node->IsA(DebugKeyClass))
+			{
+				TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
+				BindingObj->SetStringField(TEXT("kind"), TEXT("debug_key"));
+
+				FString KeyName;
+				if (const FProperty* KeyProp = Node->GetClass()->FindPropertyByName(TEXT("InputKey")))
+				{
+					KeyProp->ExportText_Direct(KeyName, KeyProp->ContainerPtrToValuePtr<void>(Node), nullptr, nullptr, PPF_None);
+				}
+				BindingObj->SetStringField(TEXT("key"), KeyName);
+
+				const auto ReadBool = [Node](const TCHAR* PropertyName)
+				{
+					const FBoolProperty* BoolProp = CastField<FBoolProperty>(Node->GetClass()->FindPropertyByName(PropertyName));
+					return BoolProp && BoolProp->GetPropertyValue_InContainer(Node);
+				};
+
+				TSharedPtr<FJsonObject> ModifiersObj = MakeShared<FJsonObject>();
+				ModifiersObj->SetBoolField(TEXT("ctrl"), ReadBool(TEXT("bControl")));
+				ModifiersObj->SetBoolField(TEXT("shift"), ReadBool(TEXT("bShift")));
+				ModifiersObj->SetBoolField(TEXT("alt"), ReadBool(TEXT("bAlt")));
+				ModifiersObj->SetBoolField(TEXT("cmd"), ReadBool(TEXT("bCommand")));
+				BindingObj->SetObjectField(TEXT("modifiers"), ModifiersObj);
+				BindingObj->SetBoolField(TEXT("execute_when_paused"), ReadBool(TEXT("bExecuteWhenPaused")));
+
+				TArray<TSharedPtr<FJsonValue>> TriggerEvents;
+				for (const TCHAR* PinName : { TEXT("Pressed"), TEXT("Released") })
+				{
+					const UEdGraphPin* ExecPin = Node->FindPin(PinName, EGPD_Output);
+					if (ExecPin && ExecPin->LinkedTo.Num() > 0)
+					{
+						TriggerEvents.Add(MakeShared<FJsonValueString>(PinName));
+					}
+				}
+				BindingObj->SetArrayField(TEXT("trigger_events"), TriggerEvents);
+				Bindings.Add(MakeShared<FJsonValueObject>(BindingObj));
 			}
 		}
 	}
@@ -1247,11 +1363,6 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	bool bHasInterfaces = BP && BP->ImplementedInterfaces.Num() > 0;
 
 	TSet<FString> UnsupportedNodeClasses;
-	TSet<FString> KnownNodePrefixes = {
-		TEXT("K2Node_"),
-		TEXT("EdGraphNode_Comment"),
-		TEXT("MaterialGraphNode_"),
-	};
 
 	TArray<UEdGraph*> AllGraphs;
 	BP->GetAllGraphs(AllGraphs);
@@ -1308,7 +1419,7 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
 			{
 				const FName EventName = EventNode->EventReference.GetMemberName();
-				if (EventName == TEXT("ReceiveTick") || EventName == TEXT("Tick"))
+				if ((EventName == TEXT("ReceiveTick") || EventName == TEXT("Tick")) && CortexBPGraphReachability::IsLiveEntry(EventNode))
 				{
 					bHasTick = true;
 				}
@@ -1320,16 +1431,15 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 			}
 
 			const FString NodeClassName = Node->GetClass()->GetName();
-			bool bKnownPrefix = false;
-			for (const FString& Prefix : KnownNodePrefixes)
-			{
-				if (NodeClassName.StartsWith(Prefix))
-				{
-					bKnownPrefix = true;
-					break;
-				}
-			}
-			if (!bKnownPrefix)
+			// K2 nodes are supported except anim graph nodes (UAnimGraphNode_Base derives from UK2Node too), which keep
+			// counting as unsupported so they still lower the migration confidence. K2 nodes placed in anim-schema graphs
+			// (transition rules, state graphs) are ordinary K2 nodes and stay supported.
+			const UClass* AnimGraphNodeBase = FindObject<UClass>(nullptr, TEXT("/Script/AnimGraph.AnimGraphNode_Base"));
+			const bool bAnimGraphNode = AnimGraphNodeBase ? Node->IsA(AnimGraphNodeBase) : NodeClassName.StartsWith(TEXT("AnimGraphNode_"));
+			const bool bSupportedNode = (Node->IsA<UK2Node>() && !bAnimGraphNode)
+				|| Node->IsA<UEdGraphNode_Comment>()
+				|| NodeClassName.StartsWith(TEXT("MaterialGraphNode_"));
+			if (!bSupportedNode)
 			{
 				UnsupportedNodeClasses.Add(NodeClassName);
 				++UnsupportedNodeOccurrences;
@@ -1360,10 +1470,13 @@ TSharedPtr<FJsonObject> BuildComplexityMetrics(UBlueprint* BP)
 	const UClass* DelegateClass = BP->SkeletonGeneratedClass ? BP->SkeletonGeneratedClass : BP->GeneratedClass;
 	if (DelegateClass)
 	{
-		for (TFieldIterator<FMulticastDelegateProperty> It(DelegateClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		// Presence test only: the previous for-loop broke unconditionally, so its ++It was
+		// unreachable (-Wunreachable-code -Werror on clang). Only ever SET the flag, never
+		// clear it — an earlier pass may already have found dispatchers.
+		TFieldIterator<FMulticastDelegateProperty> DelegateIt(DelegateClass, EFieldIteratorFlags::ExcludeSuper);
+		if (DelegateIt)
 		{
 			bHasDispatchers = true;
-			break;
 		}
 	}
 
@@ -1442,6 +1555,80 @@ FString BuildRenameSuggestion(UBlueprint* Blueprint, const FString& Name)
 }
 } // namespace
 
+TConstArrayView<const TCHAR*> FCortexBPAnalysisOps::GetMigrationSectionNames()
+{
+	static const TCHAR* const Names[] = {
+		TEXT("is_compiled"), TEXT("variables"), TEXT("functions"), TEXT("scs_components"),
+		TEXT("scs_collisions"), TEXT("dynamic_components"), TEXT("graphs"), TEXT("per_graph_elements"),
+		TEXT("latent_nodes"), TEXT("timelines"), TEXT("event_dispatchers"), TEXT("interfaces_implemented"),
+		TEXT("input_bindings"), TEXT("construction_script"), TEXT("widgets"), TEXT("named_slots"),
+		TEXT("widget_animations"), TEXT("widget_bindings"), TEXT("referenced_user_types"),
+		TEXT("cdo_overrides"), TEXT("instanced_subobjects"), TEXT("widget_dependencies"),
+		TEXT("entity_summary"), TEXT("complexity_metrics")};
+	return MakeArrayView(Names);
+}
+
+bool FCortexBPAnalysisOps::ParseMigrationSections(
+	const TSharedPtr<FJsonObject>& Params,
+	TSet<FString>& OutSections,
+	FCortexCommandResult& OutError,
+	const bool bAcceptGraphMetrics)
+{
+	OutSections.Reset();
+	if (!Params->HasField(TEXT("sections")))
+	{
+		return true;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* SectionsArray = nullptr;
+	if (!Params->TryGetArrayField(TEXT("sections"), SectionsArray))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField, TEXT("'sections' must be an array of strings"));
+		return false;
+	}
+
+	TArray<FString> ValidNames;
+	for (const TCHAR* Valid : GetMigrationSectionNames())
+	{
+		ValidNames.Add(Valid);
+	}
+	if (bAcceptGraphMetrics)
+	{
+		ValidNames.Add(GraphMetricsSectionName);
+	}
+
+	TArray<FString> BadEntries;
+	for (const TSharedPtr<FJsonValue>& SectionValue : *SectionsArray)
+	{
+		FString SectionName;
+		if (!SectionValue.IsValid() || !SectionValue->TryGetString(SectionName))
+		{
+			BadEntries.Add(TEXT("<non-string entry>"));
+			continue;
+		}
+		if (!ValidNames.Contains(SectionName))
+		{
+			BadEntries.Add(FString::Printf(TEXT("'%s'"), *SectionName));
+			continue;
+		}
+		OutSections.Add(SectionName);
+	}
+
+	if (BadEntries.Num() > 0)
+	{
+		OutSections.Reset();
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(
+				TEXT("Invalid 'sections' entries (unknown name or non-string): %s. Valid sections: %s"),
+				*FString::Join(BadEntries, TEXT(", ")),
+				*FString::Join(ValidNames, TEXT(", "))));
+		return false;
+	}
+	return true;
+}
+
 FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -1452,6 +1639,14 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 			TEXT("Missing required param: asset_path"));
 	}
 
+	// Optional section selector: validated before any work so a bad request yields no partial output.
+	TSet<FString> SelectedSections;
+	FCortexCommandResult SectionError;
+	if (!ParseMigrationSections(Params, SelectedSections, SectionError, /*bAcceptGraphMetrics=*/false))
+	{
+		return SectionError;
+	}
+
 	FString LoadError;
 	UBlueprint* BP = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (BP == nullptr)
@@ -1459,17 +1654,28 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
+	FString BuildError;
+	const TSharedPtr<FJsonObject> Data = BuildMigrationAnalysis(BP, AssetPath, SelectedSections, BuildError);
+	if (!Data.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, BuildError);
+	}
+	return FCortexCommandRouter::Success(Data);
+}
+
+TSharedPtr<FJsonObject> FCortexBPAnalysisOps::BuildFullMigrationAnalysis(UBlueprint* BP, const FString& AssetPath)
+{
 	// Force inner sub-objects (UTimelineTemplate, delegates, etc.) to load.
 	// LoadObject<UBlueprint> loads the outer but leaves inner sub-objects unresident.
 	FBlueprintEditorUtils::PreloadMembers(BP);
-
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	const bool bIsWidgetBP = IsWidgetBlueprint(BP);
-	const FString BlueprintType = bIsWidgetBP ? TEXT("WidgetBlueprint") : FCortexBPAssetOps::DetermineBlueprintType(BP);
+	const FString BlueprintType = FCortexBPAssetOps::DetermineBlueprintType(BP);
 	Data->SetStringField(TEXT("name"), BP->GetName());
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("type"), BlueprintType);
-	Data->SetStringField(TEXT("parent_class"), BP->ParentClass ? BP->ParentClass->GetName() : TEXT(""));
+	Data->SetStringField(TEXT("parent_class"), FCortexBPAssetOps::ParentClassDisplayName(BP->ParentClass));
+	Data->SetStringField(TEXT("native_parent_class"), FCortexBPAssetOps::NativeParentClassName(BP->ParentClass));
 	Data->SetStringField(TEXT("parent_class_path"), BP->ParentClass ? BP->ParentClass->GetPathName() : TEXT(""));
 	Data->SetBoolField(TEXT("is_compiled"), BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings);
 	const TMap<FString, TSet<FString>> BoundEventsMap = DiscoverBoundEvents(BP);
@@ -1480,7 +1686,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		TSharedPtr<FJsonObject> VarObj = MakeShared<FJsonObject>();
 		VarObj->SetStringField(TEXT("name"), Variable.VarName.ToString());
 		VarObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Variable.VarType));
-		VarObj->SetStringField(TEXT("default_value"), Variable.DefaultValue);
+		VarObj->SetStringField(TEXT("default_value"), ResolveMemberDefaultValue(BP, Variable));
 		VarObj->SetBoolField(TEXT("is_exposed"), (Variable.PropertyFlags & CPF_BlueprintVisible) != 0);
 		VarObj->SetBoolField(TEXT("is_replicated"), (Variable.PropertyFlags & CPF_Net) != 0);
 		VarObj->SetBoolField(TEXT("is_instanced"), (Variable.PropertyFlags & CPF_PersistentInstance) != 0);
@@ -1584,6 +1790,7 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 		TArray<TSharedPtr<FJsonValue>> OutputsArr;
 		TArray<TSharedPtr<FJsonValue>> LocalVariablesArr;
 		FString AccessSpec = TEXT("public");
+		TSet<FString> SeenOutputNames;
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (const UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node))
@@ -1611,7 +1818,13 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 					TSharedPtr<FJsonObject> LocalObj = MakeShared<FJsonObject>();
 					LocalObj->SetStringField(TEXT("name"), LocalVar.VarName.ToString());
 					LocalObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(LocalVar.VarType));
-					LocalObj->SetStringField(TEXT("default_value"), LocalVar.DefaultValue);
+					FString LocalDefault = LocalVar.DefaultValue;
+					if (LocalDefault.IsEmpty() && LocalVar.VarType.PinCategory == UEdGraphSchema_K2::PC_Boolean &&
+						LocalVar.VarType.ContainerType == EPinContainerType::None)
+					{
+						LocalDefault = TEXT("false");
+					}
+					LocalObj->SetStringField(TEXT("default_value"), LocalDefault);
 					LocalVariablesArr.Add(MakeShared<FJsonValueObject>(LocalObj));
 				}
 			}
@@ -1619,10 +1832,15 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 			{
 				for (const TSharedPtr<FUserPinInfo>& Pin : ResultNode->UserDefinedPins)
 				{
-					TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
-					PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
-					PinObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Pin->PinType));
-					OutputsArr.Add(MakeShared<FJsonValueObject>(PinObj));
+					const FString OutputName = Pin->PinName.ToString();
+					if (!SeenOutputNames.Contains(OutputName))
+					{
+						SeenOutputNames.Add(OutputName);
+						TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+						PinObj->SetStringField(TEXT("name"), OutputName);
+						PinObj->SetStringField(TEXT("type"), CortexBPTypeUtils::FriendlyTypeName(Pin->PinType));
+						OutputsArr.Add(MakeShared<FJsonValueObject>(PinObj));
+					}
 				}
 			}
 		}
@@ -1805,12 +2023,26 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 
 			if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
 			{
-				const FString EventName = EventNode->EventReference.GetMemberName().ToString();
+				FString EventName;
+				if (const UK2Node_ComponentBoundEvent* BoundEventNode = Cast<UK2Node_ComponentBoundEvent>(EventNode))
+				{
+					EventName = FString::Printf(TEXT("%s.%s"),
+						*BoundEventNode->ComponentPropertyName.ToString(),
+						*BoundEventNode->DelegatePropertyName.ToString());
+				}
+				else
+				{
+					const FName MemberName = EventNode->EventReference.GetMemberName();
+					if (!MemberName.IsNone())
+					{
+						EventName = MemberName.ToString();
+					}
+				}
 				if (!EventName.IsEmpty())
 				{
 					EventsArr.Add(MakeShared<FJsonValueString>(EventName));
 				}
-				if (EventName == TEXT("ReceiveTick") || EventName == TEXT("Tick"))
+				if ((EventName == TEXT("ReceiveTick") || EventName == TEXT("Tick")) && CortexBPGraphReachability::IsLiveEntry(EventNode))
 				{
 					bGraphHasTick = true;
 				}
@@ -2121,6 +2353,39 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 				InterfaceFunctions.Add(MakeShared<FJsonValueString>(InterfaceGraph->GetName()));
 			}
 		}
+		for (const UEdGraph* UberGraph : BP->UbergraphPages)
+		{
+			if (!UberGraph)
+			{
+				continue;
+			}
+			for (const UEdGraphNode* UberNode : UberGraph->Nodes)
+			{
+				const UK2Node_Event* InterfaceEvent = Cast<UK2Node_Event>(UberNode);
+				if (!InterfaceEvent || Cast<UK2Node_ComponentBoundEvent>(InterfaceEvent))
+				{
+					continue;
+				}
+				const UClass* EventParent = InterfaceEvent->EventReference.GetMemberParentClass();
+				if (!EventParent || EventParent != InterfaceDesc.Interface)
+				{
+					continue;
+				}
+				const FString EventFunctionName = InterfaceEvent->EventReference.GetMemberName().ToString();
+				if (EventFunctionName.IsEmpty() || EventFunctionName == TEXT("None"))
+				{
+					continue;
+				}
+				const bool bAlreadyListed = InterfaceFunctions.ContainsByPredicate([&EventFunctionName](const TSharedPtr<FJsonValue>& Existing)
+				{
+					return Existing.IsValid() && Existing->AsString() == EventFunctionName;
+				});
+				if (!bAlreadyListed)
+				{
+					InterfaceFunctions.Add(MakeShared<FJsonValueString>(EventFunctionName));
+				}
+			}
+		}
 		InterfaceObj->SetArrayField(TEXT("functions"), InterfaceFunctions);
 		InterfacesArray.Add(MakeShared<FJsonValueObject>(InterfaceObj));
 	}
@@ -2156,7 +2421,39 @@ FCortexCommandResult FCortexBPAnalysisOps::AnalyzeForMigration(const TSharedPtr<
 	Data->SetArrayField(TEXT("entity_summary"), BuildEntitySummary(Data));
 	Data->SetObjectField(TEXT("complexity_metrics"), BuildComplexityMetrics(BP));
 
-	return FCortexCommandRouter::Success(Data);
+	return Data;
+}
+
+void FCortexBPAnalysisOps::TrimMigrationAnalysis(const TSharedPtr<FJsonObject>& Analysis, const TSet<FString>& Sections)
+{
+	// Later sections read earlier ones (widgets, entity summary), so everything is built and then trimmed.
+	static const TSet<FString> IdentityFields = {
+		TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("native_parent_class"),
+		TEXT("parent_class_path")};
+	for (auto It = Analysis->Values.CreateIterator(); It; ++It)
+	{
+		const FString KeyName(*It.Key());
+		if (!IdentityFields.Contains(KeyName) && !Sections.Contains(KeyName))
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+TSharedPtr<FJsonObject> FCortexBPAnalysisOps::BuildMigrationAnalysis(
+	UBlueprint* BP, const FString& AssetPath, const TSet<FString>& Sections, FString& OutError)
+{
+	if (BP == nullptr)
+	{
+		OutError = TEXT("Cannot analyze a null Blueprint");
+		return nullptr;
+	}
+	const TSharedPtr<FJsonObject> Data = BuildFullMigrationAnalysis(BP, AssetPath);
+	if (Sections.Num() > 0)
+	{
+		TrimMigrationAnalysis(Data, Sections);
+	}
+	return Data;
 }
 
 // ── Pre-scan and metadata helpers ────────────────────────────────────────────

@@ -224,7 +224,16 @@ def test_get_recent_logs(editor_connection):
     assert result["success"] is True
     data = result["data"]
     assert isinstance(data["entries"], list)
-    assert isinstance(data["cursor"], (int, float))
+    assert isinstance(data["next_cursor"], (int, float))
+    assert isinstance(data["latest_cursor"], (int, float))
+    assert isinstance(data["window_end_cursor"], (int, float))
+    assert isinstance(data["oldest_available_cursor"], (int, float))
+    assert isinstance(data["matched_count"], (int, float))
+    assert isinstance(data["has_more"], bool)
+    assert isinstance(data["lost_before_cursor"], bool)
+    # The stale duplicate array and scalar cursor alias are gone.
+    assert "logs" not in data
+    assert "cursor" not in data
 
 
 # ================================================================

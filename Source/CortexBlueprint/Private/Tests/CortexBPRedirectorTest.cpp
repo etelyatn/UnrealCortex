@@ -36,7 +36,7 @@ bool FCortexBPFixupRedirectorsTest::RunTest(const FString& Parameters)
 	AddExpectedError(TEXT("package was marked as deleted in editor"), EAutomationExpectedErrorFlags::Contains, 1);
 
 	FCortexBPCommandHandler Handler;
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString FolderPath = FString::Printf(TEXT("/Game/Temp/BPRedirector_%s"), *Suffix);
 	const FString SourcePath = FString::Printf(TEXT("%s/BP_Source_%s"), *FolderPath, *Suffix);
 	const FString DestPath = FString::Printf(TEXT("%s/BP_Dest_%s"), *FolderPath, *Suffix);

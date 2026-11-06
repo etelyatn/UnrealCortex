@@ -541,7 +541,10 @@ def test_update_oversized_prune_apply_never_mutates():
         for index in range(400)
     ]
     mcp, tool, connection = _register(MagicMock())
-    patch = _prune_patch(dry_run=False, approved_guids=approved, patch_id="p" * 5000)
+    # The 400-GUID preview stays inside the budget (31563 compact chars); the prospective
+    # apply envelope only adds this request field, so it must be long enough to exceed the
+    # budget in the emitted compact representation (10000 -> 41836).
+    patch = _prune_patch(dry_run=False, approved_guids=approved, patch_id="p" * 10_000)
     connection.send_command.return_value = {
         "success": True,
         "data": _prune_preview(approved_guids=approved, removable=approved),

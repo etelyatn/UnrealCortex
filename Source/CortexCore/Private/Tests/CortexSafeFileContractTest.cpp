@@ -212,15 +212,14 @@ bool FCortexSafeFileContractRejectsSymlinkParentTest::RunTest(const FString& Par
 		AddInfo(FString::Printf(TEXT("Skipping symlink/junction parent test; mklink /J failed with code %d: %s %s"), MklinkExitCode, *StdOut, *StdErr));
 		return true;
 	}
-#else
-	AddInfo(TEXT("Skipping symlink/junction parent test on this platform"));
-	return true;
-#endif
-
 	return ExpectResolveWriteInvalid(
 		*this,
 		TEXT("Symlink/junction parent"),
 		FPaths::Combine(TEXT("Saved"), TEXT("CortexSafeFileContract"), TEXT("LinkedParent"), TEXT("report.json")));
+#else
+	AddInfo(TEXT("Skipping symlink/junction parent test on this platform"));
+	return true;
+#endif
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -260,11 +259,6 @@ bool FCortexSafeFileContractRejectsSymlinkTargetFileTest::RunTest(const FString&
 		AddInfo(FString::Printf(TEXT("Skipping symlink target file test; mklink failed with code %d: %s %s"), MklinkExitCode, *StdOut, *StdErr));
 		return true;
 	}
-#else
-	AddInfo(TEXT("Skipping symlink target file test on this platform"));
-	return true;
-#endif
-
 	ExpectResolveReadFailure(
 		*this,
 		TEXT("Symlink target read path"),
@@ -275,4 +269,64 @@ bool FCortexSafeFileContractRejectsSymlinkTargetFileTest::RunTest(const FString&
 		*this,
 		TEXT("Symlink target write path"),
 		LinkedFile);
+#else
+	AddInfo(TEXT("Skipping symlink target file test on this platform"));
+	return true;
+#endif
+}
+
+// ReadHashAndSameFile proves the hash is stable, not that it is SHA-256: two identical wrong answers
+// would pass it. This pins the digest itself against the FIPS 180-2 test vectors, so every platform
+// branch of HashFileBytesSha256 is held to the same known answer.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSafeFileContractHashKnownAnswerTest,
+	"Cortex.Core.SafeFileContract.HashKnownAnswer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSafeFileContractHashKnownAnswerTest::RunTest(const FString& Parameters)
+{
+	CleanupSafeFileContractTestRoot();
+	ON_SCOPE_EXIT
+	{
+		CleanupSafeFileContractTestRoot();
+	};
+
+	struct FKnownAnswer
+	{
+		const TCHAR* FileName;
+		TArray<uint8> Bytes;
+		const TCHAR* ExpectedHex;
+	};
+	const FKnownAnswer Vectors[] = {
+		{ TEXT("abc.bin"), { 'a', 'b', 'c' }, TEXT("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") },
+		{ TEXT("empty.bin"), {}, TEXT("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") },
+	};
+
+	IFileManager::Get().MakeDirectory(*GetSafeFileContractTestRoot(), true);
+	for (const FKnownAnswer& Vector : Vectors)
+	{
+		const FString FilePath = FPaths::Combine(GetSafeFileContractTestRoot(), Vector.FileName);
+
+		// Premise: the fixture holds exactly the bytes the vector is defined over.
+		if (!TestTrue(FString::Printf(TEXT("%s fixture is written"), Vector.FileName), FFileHelper::SaveArrayToFile(Vector.Bytes, *FilePath)))
+		{
+			return false;
+		}
+		TestEqual(FString::Printf(TEXT("%s fixture size"), Vector.FileName), IFileManager::Get().FileSize(*FilePath), static_cast<int64>(Vector.Bytes.Num()));
+
+		FCortexResolvedFilePath ReadPath;
+		FString ErrorCode;
+		FString ErrorMessage;
+		if (!TestTrue(FString::Printf(TEXT("%s resolves for read"), Vector.FileName), FCortexSafeFileContract::ResolveReadPath(FilePath, ReadPath, ErrorCode, ErrorMessage)))
+		{
+			return false;
+		}
+
+		FString Hash;
+		const bool bHashed = FCortexSafeFileContract::HashFileBytesSha256(ReadPath, Hash, ErrorCode, ErrorMessage);
+		TestTrue(FString::Printf(TEXT("%s hashes (%s %s)"), Vector.FileName, *ErrorCode, *ErrorMessage), bHashed);
+		TestEqual(FString::Printf(TEXT("%s SHA-256"), Vector.FileName), Hash, FString(Vector.ExpectedHex));
+	}
+	return true;
 }

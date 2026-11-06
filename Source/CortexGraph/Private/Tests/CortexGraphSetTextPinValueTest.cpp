@@ -83,7 +83,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexGraphSetTextPinValueStringTableTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString TablePackageName = FString::Printf(TEXT("/Game/Temp/TestGraphTable_%s"), *Suffix);
 	UPackage* TablePackage = CreatePackage(*TablePackageName);
 	UStringTable* TestTable = NewObject<UStringTable>(

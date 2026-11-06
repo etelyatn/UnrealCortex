@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult
 from cortex_mcp.server import _register_explicit_tools
 from cortex_mcp.operation_schema import reset_operation_schema_budget
 from cortex_mcp.tcp_client import UEConnection
@@ -396,6 +397,10 @@ def mcp_client(tcp_connection):
                 response = tcp_connection.send_command(mapped_args["command"], mapped_args.get("params"))
                 return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(response.get("data", {})))])
             result = await test_mcp.call_tool(mapped_name, mapped_args)
+            if isinstance(result, CallToolResult):
+                # Public tools are registered through the output adapter and return a
+                # CallToolResult; keep the mock client's text-block view for existing tests.
+                return SimpleNamespace(content=list(result.content))
             content = result[0] if isinstance(result, tuple) else result
             if isinstance(content, (list, tuple)):
                 blocks = list(content)

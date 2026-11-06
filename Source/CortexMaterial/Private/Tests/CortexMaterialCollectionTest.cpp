@@ -12,7 +12,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialCreateCollectionTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString CollName = FString::Printf(TEXT("MPC_TestCreate_%s"), *Suffix);
 	const FString CollDir = FString::Printf(TEXT("/Game/Temp/CortexCollTest_%s"), *Suffix);
 	const FString CollPath = FString::Printf(TEXT("%s/%s"), *CollDir, *CollName);
@@ -49,13 +49,13 @@ bool FCortexMaterialCreateCollectionTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialGetCollectionTest,
-	"Cortex.Material.Collection.GetCollection",
+	"Cortex.Material.Collection.GetCollection.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 bool FCortexMaterialGetCollectionTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString CollName = FString::Printf(TEXT("MPC_TestGet_%s"), *Suffix);
 	const FString CollDir = FString::Printf(TEXT("/Game/Temp/CortexCollTest_Get_%s"), *Suffix);
 	const FString CollPath = FString::Printf(TEXT("%s/%s"), *CollDir, *CollName);
@@ -126,7 +126,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialDeleteCollectionTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString CollName = FString::Printf(TEXT("MPC_TestDelete_%s"), *Suffix);
 	const FString CollDir = FString::Printf(TEXT("/Game/Temp/CortexCollTest_Delete_%s"), *Suffix);
 	const FString CollPath = FString::Printf(TEXT("%s/%s"), *CollDir, *CollName);
@@ -185,7 +185,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAddCollectionParamTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString CollName = FString::Printf(TEXT("MPC_TestAddParam_%s"), *Suffix);
 	const FString CollDir = FString::Printf(TEXT("/Game/Temp/CortexCollTest_AddParam_%s"), *Suffix);
 	const FString CollPath = FString::Printf(TEXT("%s/%s"), *CollDir, *CollName);
@@ -252,7 +252,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialSetCollectionParamTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString CollName = FString::Printf(TEXT("MPC_TestSetParam_%s"), *Suffix);
 	const FString CollDir = FString::Printf(TEXT("/Game/Temp/CortexCollTest_SetParam_%s"), *Suffix);
 	const FString CollPath = FString::Printf(TEXT("%s/%s"), *CollDir, *CollName);
@@ -334,7 +334,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialRemoveCollectionParamTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString CollName = FString::Printf(TEXT("MPC_TestRemoveParam_%s"), *Suffix);
 	const FString CollDir = FString::Printf(TEXT("/Game/Temp/CortexCollTest_RemoveParam_%s"), *Suffix);
 	const FString CollPath = FString::Printf(TEXT("%s/%s"), *CollDir, *CollName);

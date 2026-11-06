@@ -14,6 +14,10 @@
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <bcrypt.h>
 #include "Windows/HideWindowsPlatformTypes.h"
+#elif CORTEX_SHA256_OPENSSL
+THIRD_PARTY_INCLUDES_START
+#include <openssl/sha.h>
+THIRD_PARTY_INCLUDES_END
 #endif
 
 namespace
@@ -594,6 +598,23 @@ bool FCortexSafeFileContract::HashFileBytesSha256(
 		OutHash += FString::Printf(TEXT("%02x"), static_cast<int32>(Byte));
 	}
 	return true;
+#elif CORTEX_SHA256_OPENSSL
+	uint8 Digest[SHA256_DIGEST_LENGTH];
+	if (SHA256(Bytes.GetData(), static_cast<size_t>(Bytes.Num()), Digest) == nullptr)
+	{
+		OutErrorCode = CortexErrorCodes::InvalidOperation;
+		OutErrorMessage = FString::Printf(TEXT("Failed to hash file: %s"), *VerifiedPath.AbsolutePath);
+		return false;
+	}
+
+	OutHash.Reset(static_cast<int32>(sizeof(Digest)) * 2);
+	constexpr TCHAR HexDigits[] = TEXT("0123456789abcdef");
+	for (const uint8 Byte : Digest)
+	{
+		OutHash.AppendChar(HexDigits[Byte >> 4]);
+		OutHash.AppendChar(HexDigits[Byte & 0x0f]);
+	}
+	return true;
 #else
 	OutErrorCode = CortexErrorCodes::InvalidOperation;
 	OutErrorMessage = FString::Printf(TEXT("SHA-256 hashing is not implemented on this platform: %s"), *VerifiedPath.AbsolutePath);
@@ -615,6 +636,14 @@ FCortexJsonFileWriteResult FCortexSafeFileContract::WriteJsonReportAtomic(
 	const FCortexResolvedFilePath& Path,
 	const TSharedRef<FJsonObject>& Payload)
 {
+	return WriteTextReportAtomic(Path, SerializeCanonicalJson(Payload), TEXT("JSON file"));
+}
+
+FCortexJsonFileWriteResult FCortexSafeFileContract::WriteTextReportAtomic(
+	const FCortexResolvedFilePath& Path,
+	const FString& Contents,
+	const TCHAR* FileNoun)
+{
 	FCortexJsonFileWriteResult Result;
 
 	FString ErrorCode;
@@ -626,7 +655,6 @@ FCortexJsonFileWriteResult FCortexSafeFileContract::WriteJsonReportAtomic(
 		return Result;
 	}
 
-	const FString Contents = SerializeCanonicalJson(Payload);
 	const FString ParentDirectory = FPaths::GetPath(Path.AbsolutePath);
 	const FString TempPath = FPaths::Combine(
 		ParentDirectory,
@@ -638,7 +666,7 @@ FCortexJsonFileWriteResult FCortexSafeFileContract::WriteJsonReportAtomic(
 	if (!FFileHelper::SaveStringToFile(Contents, *TempPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 	{
 		Result.ErrorCode = CortexErrorCodes::SaveFailed;
-		Result.ErrorMessage = FString::Printf(TEXT("Failed to write temporary JSON file: %s"), *TempPath);
+		Result.ErrorMessage = FString::Printf(TEXT("Failed to write temporary %s: %s"), FileNoun, *TempPath);
 		return Result;
 	}
 
@@ -646,7 +674,7 @@ FCortexJsonFileWriteResult FCortexSafeFileContract::WriteJsonReportAtomic(
 	{
 		IFileManager::Get().Delete(*TempPath);
 		Result.ErrorCode = CortexErrorCodes::SaveFailed;
-		Result.ErrorMessage = FString::Printf(TEXT("Failed to replace JSON file: %s"), *Path.AbsolutePath);
+		Result.ErrorMessage = FString::Printf(TEXT("Failed to replace %s: %s"), FileNoun, *Path.AbsolutePath);
 		return Result;
 	}
 

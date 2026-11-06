@@ -166,7 +166,7 @@ bool FCortexBPMountedCreateListInfoTest::RunTest(const FString& Parameters)
 {
 	using namespace CortexBPMountedPathTest;
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString Root = FString::Printf(TEXT("/CortexTestMount%s"), *Suffix);
 	FScopedMountedRoot Mount(Root);
 
@@ -292,7 +292,7 @@ bool FCortexBPMountedWriteRootRejectionTest::RunTest(const FString& Parameters)
 	using namespace CortexBPMountedPathTest;
 
 	FCortexBPCommandHandler Handler;
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString UnknownRootName = FString::Printf(TEXT("BP_ShouldFail_Missing_%s"), *Suffix);
 	const FString EngineName = FString::Printf(TEXT("BP_ShouldFail_Engine_%s"), *Suffix);
 	const FString RewrittenUnknownRootPath = TEXT("/Game/MissingPlugin/Blueprints/") + UnknownRootName;
@@ -343,7 +343,7 @@ bool FCortexBPMountedRenameDuplicateTest::RunTest(const FString& Parameters)
 {
 	using namespace CortexBPMountedPathTest;
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString Root = FString::Printf(TEXT("/CortexTestMount%s"), *Suffix);
 	FScopedMountedRoot Mount(Root);
 
@@ -417,7 +417,7 @@ bool FCortexBPMountedRedirectorFixupTest::RunTest(const FString& Parameters)
 {
 	using namespace CortexBPMountedPathTest;
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString Root = FString::Printf(TEXT("/CortexTestMount%s"), *Suffix);
 	FScopedMountedRoot Mount(Root);
 
@@ -481,7 +481,7 @@ bool FCortexBPMountedCacheRootsTest::RunTest(const FString& Parameters)
 {
 	using namespace CortexBPMountedPathTest;
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString Root = FString::Printf(TEXT("/CortexTestMount%s"), *Suffix);
 	FScopedMountedRoot Mount(Root);
 

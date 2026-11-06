@@ -1,6 +1,7 @@
 """TCP client for communicating with the UnrealCortex plugin's TCP server."""
 
 import ctypes
+import contextvars
 import dataclasses
 import functools
 import os
@@ -24,6 +25,15 @@ logger = logging.getLogger(__name__)
 _CONNECT_TIMEOUT = 5.0
 _RECV_TIMEOUT = 60.0
 _RECONNECT_DELAY = 0.5
+
+# Invocation-local command attribution. The public output adapter opens one scope per public
+# invocation; `record_tool_invocation` records the qualified command routed inside that scope.
+# A ContextVar keeps concurrent awaitable invocations isolated and is reset per invocation, so a
+# call that never routes a command (e.g. a strict refusal) reports the explicit unknown state ""
+# instead of inheriting a previous invocation's command.
+INVOCATION_COMMAND: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "cortex_invocation_command", default=""
+)
 
 
 class UECommandError(RuntimeError):
@@ -287,6 +297,11 @@ class UEConnection:
         }
         self._metric_events: list[dict] = []
         self._seen_read_keys: set[str] = set()
+        self._response_sizes: dict = {
+            "total": {"json_chars": 0, "utf8_bytes": 0, "calls": 0},
+            "by_tool": {},
+            "by_command": {},
+        }
 
     @property
     def connected(self) -> bool:
@@ -480,17 +495,64 @@ class UEConnection:
         *,
         parallel: bool = False,
     ) -> None:
-        """Record one logical MCP tool invocation."""
+        """Record one logical MCP tool invocation.
+
+        The routed command is recorded in the invocation-local attribution scope opened by the
+        public output adapter, so it describes this invocation only. A refusal that never reaches
+        the router leaves the scope's explicit unknown state in place.
+        """
         self._telemetry["logical_tool_calls"] += 1
         key = "parallel_tool_calls" if parallel else "sequential_tool_calls"
         self._telemetry[key] += 1
+        INVOCATION_COMMAND.set(command)
         self._record_metric(
             "tool_invocation",
             {"tool": tool_name, "command": command, "parallel": parallel},
         )
 
+    def record_response_size(
+        self,
+        tool_name: str,
+        qualified_command: str,
+        json_chars: int,
+        utf8_bytes: int,
+    ) -> None:
+        """Aggregate one public return's emitted body size.
+
+        `json_chars` and `utf8_bytes` count the emitted compact JSON body only, excluding
+        `_meta.cortex` telemetry itself. Totals and per-tool/command aggregates are exposed
+        through :meth:`get_call_metrics` as a stable `response_sizes` object. An empty
+        `qualified_command` is the explicit unknown/refused state: the return is still counted in
+        `total` and `by_tool`, but it is not attributed to a command.
+        """
+        total = self._response_sizes["total"]
+        total["calls"] += 1
+        total["json_chars"] += json_chars
+        total["utf8_bytes"] += utf8_bytes
+        self._accumulate_response_size(self._response_sizes["by_tool"], tool_name or "", json_chars, utf8_bytes)
+        if qualified_command:
+            self._accumulate_response_size(
+                self._response_sizes["by_command"], qualified_command, json_chars, utf8_bytes
+            )
+
+    @staticmethod
+    def _accumulate_response_size(bucket: dict, key: str, json_chars: int, utf8_bytes: int) -> None:
+        entry = bucket.setdefault(key, {"json_chars": 0, "utf8_bytes": 0, "calls": 0})
+        entry["calls"] += 1
+        entry["json_chars"] += json_chars
+        entry["utf8_bytes"] += utf8_bytes
+
     def get_call_metrics(self) -> dict:
-        """Return aggregated session call-count telemetry."""
+        """Return aggregated session call-count and response-size telemetry.
+
+        `response_sizes` is a stable object owned by this method:
+        `{"total": {...}, "by_tool": {name: {...}}, "by_command": {qualified: {...}}}`
+        where each entry is `{"json_chars": int, "utf8_bytes": int, "calls": int}`.
+        Sizes count the emitted compact JSON body only, excluding `_meta.cortex`.
+        `total` and `by_tool` count every recorded return; `by_command` only holds returns whose
+        invocation actually routed a known qualified command, so refusals and other
+        unattributed returns appear in the first two but in no command bucket.
+        """
         parallel_total = (
             self._telemetry["parallel_tool_calls"] + self._telemetry["sequential_tool_calls"]
         )
@@ -509,6 +571,16 @@ class UEConnection:
                 if observed_reads > 0
                 else 0.0
             ),
+            "response_sizes": {
+                "total": dict(self._response_sizes["total"]),
+                "by_tool": {
+                    tool: dict(entry) for tool, entry in self._response_sizes["by_tool"].items()
+                },
+                "by_command": {
+                    command: dict(entry)
+                    for command, entry in self._response_sizes["by_command"].items()
+                },
+            },
         }
 
     def _record_metric(self, name: str, payload: dict) -> None:

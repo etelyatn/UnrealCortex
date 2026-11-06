@@ -5,6 +5,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,9 +18,17 @@ from cortex_mcp.capabilities import (
     minimal_router_docstrings,
 )
 from cortex_mcp._fallback_generated import FALLBACK_COMMANDS as _FALLBACK_STRUCTURED
+from cortex_mcp.tools.routers import make_router
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+# Public descriptions publish the routing envelope plus complete command *names*. Parameter
+# signatures (``dry_run: boolean = optional``) are not part of that contract any more, so this
+# pattern must never appear in a cache or fallback description.
+_PARAMETER_SIGNATURE = re.compile(
+    r"\b[a-z_][a-z0-9_]*: (?:string|boolean|number|integer|array|object|any)\b"
+)
 
 
 def _command(domain: str, name: str, source):
@@ -41,23 +50,6 @@ def test_remove_graph_fallback_contract_is_explicit():
     }
     assert params["expected_fingerprint"]["type"] == "object"
     assert params["expected_validation_hash"]["type"] == "string"
-
-
-def test_remove_graph_fixture_docstring_marks_guards_optional_only():
-    fixture = json.loads(
-        (FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8")
-    )
-    docstring = build_router_docstrings(fixture)["blueprint"]
-    signature = next(
-        line for line in docstring.splitlines() if line.startswith("- remove_graph(")
-    )
-
-    for name in ("dry_run: boolean", "compile: boolean", "save: boolean"):
-        assert f"{name} = optional" not in signature
-        assert name in signature
-    assert "cascade_exec_chain: boolean = optional" in signature
-    assert "expected_fingerprint: object = optional" in signature
-    assert "expected_validation_hash: string = optional" in signature
 
 
 def test_capabilities_fixture_reports_current_plugin_version():
@@ -89,19 +81,15 @@ def test_load_capabilities_cache_reads_saved_cortex_file(tmp_path):
 
 
 def test_build_router_docstring_lists_all_commands():
-    """Generated router docstrings should list every command with signature-style params."""
+    """Generated router docstrings should list every command name for the domain."""
     capabilities = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
 
     docstrings = build_router_docstrings(capabilities)
 
     assert "core" in docstrings
     assert "core_cmd(command, params)" in docstrings["core"]
-    assert (
-        "- save_asset(items: array = optional, expected_fingerprint: object = optional, "
-        "asset_path: string, force: boolean = optional, dry_run: boolean = optional)"
-    ) in docstrings["core"]
+    assert "save_asset" in docstrings["core"]
     assert "query_datatable" in docstrings["data"]
-    assert "table_path: string" in docstrings["data"]
     assert "For large raw DataTable, StringTable, or DataAsset reads" in docstrings["data"]
     assert "export_schema_json" in docstrings["data"]
     assert "export_bulk_json" in docstrings["data"]
@@ -156,15 +144,6 @@ def test_editor_capabilities_include_python_and_cvars():
     assert "high-trust escape hatch" in description
     assert "prefer structured Cortex commands" in description
     assert "mutate assets/files" in description
-
-
-def test_editor_docstrings_include_python_signature():
-    """Editor router docs should list run_python with run_next_tick and no defer alias."""
-    capabilities = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
-    docstrings = build_router_docstrings(capabilities)
-
-    assert "- run_python(code: string, run_next_tick: boolean = optional)" in docstrings["editor"]
-    assert "defer" not in docstrings["editor"]
 
 
 def test_fallback_editor_has_python_and_cvars_without_defer():
@@ -228,7 +207,8 @@ def test_missing_cache_uses_minimal_fallback_and_logs_warning(caplog, tmp_path):
         assert docstrings == minimal
         for domain in CORE_DOMAINS:
             assert domain in docstrings
-            assert "Available commands:" in docstrings[domain]
+            for command in _FALLBACK_STRUCTURED[domain]:
+                assert command["name"] in docstrings[domain]
         assert "capabilities cache" in caplog.text.lower()
     finally:
         if old_project_dir is None:
@@ -290,40 +270,39 @@ DOMAINS_WITH_COMMANDS = list(CORE_DOMAINS)
 
 
 class TestMinimalRouterDocstrings:
-    """All domains must have command lists in fallback docstrings."""
+    """Fallback descriptions publish the router envelope plus every valid command name."""
 
     @pytest.mark.parametrize("domain", DOMAINS_WITH_COMMANDS)
     def test_domain_has_command_list(self, domain: str):
         docstrings = minimal_router_docstrings()
         assert domain in docstrings, f"Missing docstring for domain '{domain}'"
-        assert "Available commands:" in docstrings[domain], (
-            f"Domain '{domain}' fallback docstring missing 'Available commands:' section"
+        assert f"{domain}_cmd(command, params)" in docstrings[domain], (
+            f"Domain '{domain}' fallback docstring must publish the canonical router envelope"
         )
 
     @pytest.mark.parametrize("domain", DOMAINS_WITH_COMMANDS)
-    def test_domain_has_at_least_one_command(self, domain: str):
-        docstrings = minimal_router_docstrings()
-        text = docstrings[domain]
-        idx = text.index("Available commands:")
-        commands_section = text[idx:]
-        command_lines = [l for l in commands_section.splitlines() if l.strip().startswith("- ")]
-        assert len(command_lines) >= 1, (
-            f"Domain '{domain}' fallback has no command entries"
-        )
+    def test_domain_lists_every_fallback_command_name(self, domain: str):
+        text = minimal_router_docstrings()[domain]
+        names = {command["name"] for command in _FALLBACK_STRUCTURED[domain]}
+        assert names, f"Domain '{domain}' has no fallback command metadata"
+        for name in names:
+            assert name in text, f"Domain '{domain}' fallback omits command '{name}'"
+
+    @pytest.mark.parametrize("domain", DOMAINS_WITH_COMMANDS)
+    def test_domain_drops_parameter_signatures(self, domain: str):
+        text = minimal_router_docstrings()[domain]
+        assert " = optional" not in text
+        assert _PARAMETER_SIGNATURE.search(text) is None
 
 
 class TestBuildRouterDocstringsNoneCache:
-    """build_router_docstrings with None cache should use minimal fallback."""
+    """A missing/empty capabilities cache uses the minimal fallback descriptions verbatim."""
 
     def test_none_cache_returns_minimal_with_commands(self):
-        docstrings = build_router_docstrings(None)
-        for domain in DOMAINS_WITH_COMMANDS:
-            assert "Available commands:" in docstrings[domain]
+        assert build_router_docstrings(None) == minimal_router_docstrings()
 
     def test_empty_cache_returns_minimal_with_commands(self):
-        docstrings = build_router_docstrings({})
-        for domain in DOMAINS_WITH_COMMANDS:
-            assert "Available commands:" in docstrings[domain]
+        assert build_router_docstrings({}) == minimal_router_docstrings()
 
 
 # --- gen-enabled registration path tests ---
@@ -350,7 +329,7 @@ def test_anim_docstrings_excluded_when_cache_missing():
 
 
 def test_anim_docstrings_included_when_cache_has_anim():
-    """A live capabilities cache with anim should expose anim_cmd and exact live command signatures."""
+    """A live capabilities cache with anim should expose anim_cmd and its live command names."""
     capabilities = {
         "domains": {
             "anim": {
@@ -399,16 +378,13 @@ def test_anim_docstrings_included_when_cache_has_anim():
     assert "anim" in get_registered_domains(capabilities)
     assert "anim" in docstrings
     assert "anim_cmd(command, params)" in docstrings["anim"]
-    assert "- get_sequence_info(asset_path: string, notify_limit: number = optional)" in docstrings["anim"]
-    assert (
-        "- add_named_notify(asset_path: string, notify_name: string, time: number, "
-        "expected_fingerprint: object, dry_run: boolean = optional, save: boolean = optional)"
-    ) in docstrings["anim"]
+    assert "get_sequence_info" in docstrings["anim"]
+    assert "add_named_notify" in docstrings["anim"]
     assert "sequence named-notify authoring" in docstrings["anim"]
     assert "Only call animation authoring commands that appear in live capabilities" in docstrings["anim"]
     for authoring_name in ("add_notify", "update_notify", "remove_notify", "set_curve_keys"):
         assert authoring_name not in docstrings["anim"]
-    assert "- save_asset(" not in docstrings["anim"]
+    assert "save_asset" not in docstrings["anim"]
 
 
 def _fake_anim_capabilities(command_names: list[str]) -> dict:
@@ -529,15 +505,8 @@ def test_anim_docstrings_advertise_only_complete_phase_b2_families():
     ]
     docstring = build_router_docstrings(_fake_anim_capabilities(command_names))["anim"]
 
-    for signature in (
-        "- add_curve(asset_path: string, curve_name: string, expected_fingerprint: object, dry_run: boolean = optional, save: boolean = optional)",
-        "- set_curve_keys(asset_path: string, curve_name: string, keys: array, expected_fingerprint: object, dry_run: boolean = optional, save: boolean = optional)",
-        "- add_montage_section(asset_path: string, name: string, start_time: number, expected_fingerprint: object, next_section: string = optional, dry_run: boolean = optional, save: boolean = optional)",
-        "- update_montage_section(asset_path: string, selector: object, expected_fingerprint: object, new_name: string = optional, new_start_time: number = optional, new_next_section: string = optional, dry_run: boolean = optional, save: boolean = optional)",
-        "- add_socket(asset_path: string, socket_name: string, bone_name: string, expected_fingerprint: object, location: object = optional, rotation: object = optional, scale: object = optional, dry_run: boolean = optional, save: boolean = optional)",
-        "- set_socket_transform(asset_path: string, selector: object, expected_fingerprint: object, location: object = optional, rotation: object = optional, scale: object = optional, dry_run: boolean = optional, save: boolean = optional)",
-    ):
-        assert signature in docstring
+    for command_name in command_names:
+        assert command_name in docstring
     assert "save defaults to false" in docstring
     assert "selector { index, socket_name, bone_name }" in docstring
     assert "Do not invent later-stage AnimBP authoring" in docstring
@@ -550,8 +519,8 @@ def test_anim_docstrings_advertise_only_complete_phase_c_families():
         "add_notify_state", "update_notify_state", "remove_notify_state",
     ]
     docstring = build_router_docstrings(_fake_anim_capabilities(commands))["anim"]
-    assert "- add_notify(asset_path: string, notify_class_path: string, time: number, expected_fingerprint: object, dry_run: boolean = optional, save: boolean = optional)" in docstring
-    assert "- add_notify_state(asset_path: string, notify_state_class_path: string, start_time: number, duration: number, expected_fingerprint: object, dry_run: boolean = optional, save: boolean = optional)" in docstring
+    assert "add_notify" in docstring
+    assert "add_notify_state" in docstring
     assert "set_curve_keys" not in docstring
     assert "save_asset" not in docstring
 
@@ -723,6 +692,172 @@ def test_core_router_hint_requires_live_editor_proof():
     docstrings = build_router_docstrings(capabilities)
     assert "never proves a command is executable" in docstrings["core"]
     assert "graph.describe_node before graph.add_node" in docstrings["core"]
+
+
+# --- cached description rendering (names-only) ---
+
+
+def _full_cache() -> dict:
+    return json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+
+
+def test_cached_router_descriptions_list_every_command_name():
+    """Cache-backed descriptions must still advertise every registered command name."""
+    capabilities = _full_cache()
+    docstrings = build_router_docstrings(capabilities)
+    for domain, domain_info in capabilities["domains"].items():
+        for command in domain_info.get("commands", []):
+            assert command["name"] in docstrings[domain], (domain, command["name"])
+
+
+def test_cached_router_descriptions_drop_parameter_signatures():
+    """Cache-backed descriptions carry names only; the signature metadata stays in the cache."""
+    capabilities = _full_cache()
+    docstrings = build_router_docstrings(capabilities)
+    for domain, text in docstrings.items():
+        assert " = optional" not in text, domain
+        assert _PARAMETER_SIGNATURE.search(text) is None, domain
+    # The cache itself keeps the parameter metadata the short description omits.
+    core_save_asset = next(
+        command
+        for command in capabilities["domains"]["core"]["commands"]
+        if command["name"] == "save_asset"
+    )
+    assert core_save_asset["params"], "signature metadata must not be stripped from the cache"
+
+
+# --- agent-facing capability inventory (names-only projection) ---
+
+
+def _capability_document() -> dict:
+    """Fixture-derived capability document that fits the MCP response budget.
+
+    The complete live document (~118k compact characters) exceeds MAX_RESPONSE_CHARS, so the
+    facade regressions use the fixture's real records for two domains: that exercises the names
+    projection and the full inventory instead of the size refusal.
+    """
+    full = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+    return {
+        "plugin_version": full["plugin_version"],
+        "domains": {name: full["domains"][name] for name in ("core", "data")},
+    }
+
+
+def test_core_names_view_never_truncates_the_saved_capabilities_cache(tmp_path, monkeypatch):
+    """core_cmd(get_capabilities) detail=names is a response projection only.
+
+    UEConnection's handshake and the Saved cache keep the complete signature inventory, so the
+    projected read cannot leave the process without the full capability data.
+    """
+    capabilities = _capability_document()
+    cache_dir = tmp_path / "Saved" / "Cortex"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "capabilities-cache.json").write_text(json.dumps(capabilities), encoding="utf-8")
+
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": capabilities}
+    connection.send_command_cached.return_value = {"success": True, "data": capabilities}
+    router = make_router("core", connection, "core docs")
+
+    monkeypatch.setenv("CORTEX_PROJECT_DIR", str(tmp_path))
+
+    names_view = json.loads(router("get_capabilities", {"detail": "names"}))
+    assert names_view.get("_error") is None, names_view
+    assert sorted(names_view["domains"]) == sorted(capabilities["domains"])
+    assert all(
+        "params" not in command
+        for domain in names_view["domains"].values()
+        for command in domain["commands"]
+    )
+
+    # The projected read is never written back: the Saved cache stays complete.
+    cached = load_capabilities_cache()
+    assert cached == capabilities
+    cached_save_asset = next(
+        command
+        for command in cached["domains"]["core"]["commands"]
+        if command["name"] == "save_asset"
+    )
+    assert cached_save_asset["params"], "the Saved cache keeps the full signature inventory"
+
+    full_view = json.loads(router("get_capabilities", {"detail": "full"}))
+    assert full_view.get("_error") is None, full_view
+    core_commands = {
+        command["name"]: command for command in full_view["domains"]["core"]["commands"]
+    }
+    assert core_commands["save_asset"]["params"], "detail=full must keep the signature inventory"
+
+
+# --- startup toolset presets (design §2.2) ---
+
+REFLECT_STANDALONE_TOOL_NAMES = frozenset({
+    "scan_project",
+    "reflect_cache_status",
+    "rebuild_graph_cache",
+    "query_class_context",
+    "get_dependencies",
+    "query_class_detail",
+    "query_class_hierarchy",
+    "impact_analysis",
+    "query_overrides",
+    "get_referencers",
+    "query_usages",
+})
+
+# ui: core/data/blueprint/graph/umg/editor routers; blueprint_compose, widget_compose;
+# profile_operation_schema, schema_generate, editor_restart.
+UI_TOOLSET = frozenset({
+    "core_cmd", "data_cmd", "blueprint_cmd", "graph_cmd", "umg_cmd", "editor_cmd",
+    "blueprint_compose", "widget_compose",
+    "profile_operation_schema", "schema_generate", "editor_restart",
+})
+
+# blueprint: core/data/blueprint/graph/editor/reflect routers; blueprint_compose; all 11
+# Reflect standalone tools; profile_operation_schema, schema_generate, editor_restart.
+BLUEPRINT_TOOLSET = frozenset({
+    "core_cmd", "data_cmd", "blueprint_cmd", "graph_cmd", "editor_cmd", "reflect_cmd",
+    "blueprint_compose",
+    "profile_operation_schema", "schema_generate", "editor_restart",
+}) | REFLECT_STANDALONE_TOOL_NAMES
+
+# data: core/data/editor routers; apply_import_ops_json, schema_generate, editor_restart.
+DATA_TOOLSET = frozenset({
+    "core_cmd", "data_cmd", "editor_cmd",
+    "apply_import_ops_json", "schema_generate", "editor_restart",
+})
+
+# ``all`` (the default) is the full registered surface for a project without optional domains.
+DEFAULT_TOOLSET_SURFACE = frozenset(
+    {f"{domain}_cmd" for domain in CORE_DOMAINS}
+    | {
+        "blueprint_compose", "material_compose", "material_instance_compose",
+        "widget_compose", "level_compose", "scenario_compose", "statetree_compose",
+        "editor_restart", "profile_operation_schema", "qa_test_step", "schema_generate",
+        "apply_import_ops_json",
+    }
+    | REFLECT_STANDALONE_TOOL_NAMES
+)
+
+
+def _resolve_toolset(name, registered_domains):
+    from cortex_mcp.capabilities import resolve_toolset
+
+    return resolve_toolset(name, registered_domains)
+
+
+def test_resolve_toolset_all_is_no_filter():
+    assert _resolve_toolset("all", CORE_DOMAINS) is None
+
+
+def test_resolve_toolset_returns_the_exact_design_presets():
+    assert _resolve_toolset("ui", CORE_DOMAINS) == UI_TOOLSET
+    assert _resolve_toolset("blueprint", CORE_DOMAINS) == BLUEPRINT_TOOLSET
+    assert _resolve_toolset("data", CORE_DOMAINS) == DATA_TOOLSET
+
+
+def test_resolve_toolset_refuses_an_unknown_name():
+    with pytest.raises(ValueError):
+        _resolve_toolset("bogus", CORE_DOMAINS)
 
 
 class TestCompositeHints:

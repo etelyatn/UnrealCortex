@@ -86,22 +86,14 @@ def register_reflect_impact_tools(mcp, connection: UEConnection):
     ) -> str:
         """Use when you need a complete risk assessment before a breaking change.
 
-        Prefer this over manually calling get_referencers + query_usages because
-        it orchestrates discovery and applies risk scoring. For simple asset
-        dependency checks, use get_referencers instead.
+        Prefer this over manually calling get_referencers + query_usages: it orchestrates discovery
+        and applies risk scoring. `change_type` is 'removed_function', 'removed_class',
+        'changed_property', 'removed_interface' or 'changed_hierarchy'; `deep_scan=true` loads
+        unloaded Blueprints for fuller coverage; `path_filter` scopes the analysis. For simple asset
+        dependency checks use `get_referencers` instead.
 
-        Args:
-            target_class: The C++ or Blueprint class being changed.
-            symbol: The property or function being changed.
-            change_type: 'removed_function', 'removed_class', 'changed_property',
-                'removed_interface', or 'changed_hierarchy'.
-            deep_scan: If true, loads unloaded Blueprints for fuller coverage.
-            path_filter: Only analyze Blueprints under this path.
-            max_blueprints: Maximum number of Blueprints to scan (default 50).
-
-        Returns:
-            Summary + affected Blueprints grouped by risk with usage details,
-            and not_scanned metadata if coverage is partial.
+        Returns a summary plus affected Blueprints grouped by risk with usage details, and
+        not_scanned metadata when coverage is partial.
         """
         try:
             usages_response = connection.send_command_cached(

@@ -3,6 +3,7 @@
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/CurveIdentifier.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/IAnimationSequenceCompiler.h"
 #include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CortexAnimationCommandHandler.h"
@@ -12,6 +13,7 @@
 #include "Dom/JsonValue.h"
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
+#include "HAL/ThreadSafeCounter.h"
 #include "Misc/Guid.h"
 #include "Misc/OutputDevice.h"
 #include "Misc/PackageName.h"
@@ -25,7 +27,7 @@ constexpr const TCHAR* CurveSourceSkeletonPath = TEXT("/Game/Characters/Mannequi
 class FCortexCurveWarningCapture final : public FOutputDevice
 {
 public:
-	int32 WarningCount = 0;
+	FThreadSafeCounter WarningCount;
 
 	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override
 	{
@@ -36,7 +38,7 @@ public:
 			static_cast<ELogVerbosity::Type>(Verbosity & ELogVerbosity::VerbosityMask);
 		if (VerbosityLevel == ELogVerbosity::Warning)
 		{
-			++WarningCount;
+			WarningCount.Increment();
 		}
 	}
 
@@ -55,7 +57,7 @@ FCortexCommandRouter CreateCurveRouter()
 
 FString MakeCurveSuffix()
 {
-	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(12);
+	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(12);
 }
 
 UAnimSequence* CreateCurveTestSequence(FAutomationTestBase& Test, FString& OutAssetPath)
@@ -93,6 +95,8 @@ UAnimSequence* CreateCurveTestSequence(FAutomationTestBase& Test, FString& OutAs
 	Controller.SetFrameRate(FFrameRate(30, 1), false);
 	Controller.SetNumberOfFrames(FFrameNumber(30), false);
 	Controller.NotifyPopulated();
+	// Complete the empty model's cache before the first authored curve changes it.
+	UE::Anim::IAnimSequenceCompilingManager::FinishCompilation(MakeArrayView(&Sequence, 1));
 	FAssetRegistryModule::AssetCreated(Sequence);
 	Package->SetDirtyFlag(false);
 	OutAssetPath = Sequence->GetPathName();
@@ -301,6 +305,9 @@ bool FCortexAnimationCurveAuthoringAddSetRemoveTest::RunTest(const FString& Para
 		return false;
 	}
 
+	FCortexCurveWarningCapture Capture;
+	GLog->AddOutputDevice(&Capture);
+
 	FCortexCommandRouter Router = CreateCurveRouter();
 	FCortexCommandResult Add = Router.Execute(
 		TEXT("anim.add_curve"),
@@ -358,6 +365,8 @@ bool FCortexAnimationCurveAuthoringAddSetRemoveTest::RunTest(const FString& Para
 	{
 		TestFalse(TEXT("remove after no longer exists"), Remove.Data->GetObjectField(TEXT("after"))->GetBoolField(TEXT("exists")));
 	}
+	GLog->RemoveOutputDevice(&Capture);
+	TestEqual(TEXT("curve authoring readback fixture is warning-clean"), Capture.WarningCount.GetValue(), 0);
 	return true;
 }
 
@@ -541,38 +550,58 @@ bool FCortexAnimationCurveAuthoringUndoRedoTest::RunTest(const FString& Paramete
 		return false;
 	}
 
+	FCortexCurveWarningCapture Capture;
+	GLog->AddOutputDevice(&Capture);
+	const auto FinishCompression = [Sequence]()
+	{
+		// A DDC result validates against the live model. Finish this asset's work
+		// before the next undo/redo transition changes that model.
+		UE::Anim::IAnimSequenceCompilingManager::FinishCompilation(MakeArrayView(&Sequence, 1));
+	};
+
 	FCortexCommandRouter Router = CreateCurveRouter();
 	FCortexCommandResult Add = Router.Execute(
 		TEXT("anim.add_curve"),
 		AddCurveParams(AssetPath, TEXT("Cortex_UndoCurve"), CurveFingerprintFor(Sequence)));
 	TestTrue(TEXT("add succeeds"), Add.bSuccess);
 	TestEqual(TEXT("add created curve"), Sequence->GetDataModel()->GetNumberOfFloatCurves(), 1);
+	FinishCompression();
 	TestTrue(TEXT("undo add succeeds"), GEditor->UndoTransaction());
 	TestEqual(TEXT("undo add removes curve"), Sequence->GetDataModel()->GetNumberOfFloatCurves(), 0);
+	FinishCompression();
 	TestTrue(TEXT("redo add succeeds"), GEditor->RedoTransaction());
 	TestEqual(TEXT("redo add restores curve"), Sequence->GetDataModel()->GetNumberOfFloatCurves(), 1);
+	FinishCompression();
 
 	FCortexCommandResult Set = Router.Execute(
 		TEXT("anim.set_curve_keys"),
 		CurveKeysParams(AssetPath, TEXT("Cortex_UndoCurve"), { CurveKey(0.0, 0.0), CurveKey(0.5, 1.0) }, CurveFingerprintFor(Sequence)));
 	TestTrue(TEXT("set succeeds"), Set.bSuccess);
 	TestEqual(TEXT("set creates two keys"), FloatCurveKeyCount(Sequence, TEXT("Cortex_UndoCurve")), 2);
+	FinishCompression();
 	TestTrue(TEXT("undo set succeeds"), GEditor->UndoTransaction());
 	TestEqual(TEXT("undo set restores empty key state"), FloatCurveKeyCount(Sequence, TEXT("Cortex_UndoCurve")), 0);
+	FinishCompression();
 	TestTrue(TEXT("redo set succeeds"), GEditor->RedoTransaction());
 	TestEqual(TEXT("redo set restores two-key state"), FloatCurveKeyCount(Sequence, TEXT("Cortex_UndoCurve")), 2);
+	FinishCompression();
 
 	FCortexCommandResult Remove = Router.Execute(
 		TEXT("anim.remove_curve"),
 		RemoveCurveParams(AssetPath, TEXT("Cortex_UndoCurve"), CurveFingerprintFor(Sequence)));
 	TestTrue(TEXT("remove succeeds"), Remove.bSuccess);
 	TestEqual(TEXT("remove deletes curve"), Sequence->GetDataModel()->GetNumberOfFloatCurves(), 0);
+	FinishCompression();
 	TestTrue(TEXT("undo remove succeeds"), GEditor->UndoTransaction());
 	TestEqual(TEXT("undo remove restores curve"), Sequence->GetDataModel()->GetNumberOfFloatCurves(), 1);
+	FinishCompression();
 	TestTrue(TEXT("redo remove succeeds"), GEditor->RedoTransaction());
 	TestEqual(TEXT("redo remove deletes curve"), Sequence->GetDataModel()->GetNumberOfFloatCurves(), 0);
+	FinishCompression();
 
 	GEditor->ResetTransaction(FText::FromString(TEXT("Cortex Animation Curve Undo Cleanup")));
+	GLog->RemoveOutputDevice(&Capture);
+	TestEqual(TEXT("curve authoring undo/redo is warning-clean"), Capture.WarningCount.GetValue(), 0);
 	return true;
 }
 
@@ -647,6 +676,6 @@ bool FCortexAnimationCurveInspectionKeyBudgetTest::RunTest(const FString& Parame
 		}
 	}
 	GLog->RemoveOutputDevice(&Capture);
-	TestEqual(TEXT("curve inspection fixture is warning-clean"), Capture.WarningCount, 0);
+	TestEqual(TEXT("curve inspection fixture is warning-clean"), Capture.WarningCount.GetValue(), 0);
 	return true;
 }

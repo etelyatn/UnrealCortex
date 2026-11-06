@@ -5,6 +5,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Editor.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -118,6 +119,74 @@ namespace
         }
 
         return false;
+    }
+
+    TSharedPtr<FJsonObject> LevelComponentRootObject(const TArray<TSharedPtr<FJsonValue>>& Components)
+    {
+        for (const TSharedPtr<FJsonValue>& Value : Components)
+        {
+            const TSharedPtr<FJsonObject>* Obj = nullptr;
+            if (!Value->TryGetObject(Obj) || !Obj || !(*Obj).IsValid())
+            {
+                continue;
+            }
+
+            bool bIsRoot = false;
+            if ((*Obj)->TryGetBoolField(TEXT("is_root"), bIsRoot) && bIsRoot)
+            {
+                return *Obj;
+            }
+        }
+
+        return nullptr;
+    }
+
+    int32 LevelComponentRootCount(const TArray<TSharedPtr<FJsonValue>>& Components)
+    {
+        int32 RootCount = 0;
+        for (const TSharedPtr<FJsonValue>& Value : Components)
+        {
+            const TSharedPtr<FJsonObject>* Obj = nullptr;
+            if (!Value->TryGetObject(Obj) || !Obj || !(*Obj).IsValid())
+            {
+                continue;
+            }
+
+            bool bIsRoot = false;
+            if ((*Obj)->TryGetBoolField(TEXT("is_root"), bIsRoot) && bIsRoot)
+            {
+                ++RootCount;
+            }
+        }
+
+        return RootCount;
+    }
+
+    bool LevelComponentArray(const FCortexCommandResult& Result, const TArray<TSharedPtr<FJsonValue>>*& OutComponents)
+    {
+        OutComponents = nullptr;
+        return Result.bSuccess
+            && Result.Data.IsValid()
+            && Result.Data->TryGetArrayField(TEXT("components"), OutComponents)
+            && OutComponents != nullptr;
+    }
+
+    void LevelComponentAdmittedProperties(const UStruct* ComponentStruct, TArray<FString>& OutAdmittedNames)
+    {
+        OutAdmittedNames.Reset();
+        if (!ComponentStruct)
+        {
+            return;
+        }
+
+        for (TFieldIterator<FProperty> It(ComponentStruct); It; ++It)
+        {
+            FProperty* Property = *It;
+            if (Property->HasAnyPropertyFlags(CPF_Edit | CPF_BlueprintVisible))
+            {
+                OutAdmittedNames.Add(Property->GetName());
+            }
+        }
     }
 }
 
@@ -522,6 +591,245 @@ bool FCortexLevelSetComponentPropertyScaleTest::RunTest(const FString& Parameter
             TestEqual(TEXT("X should be 2.0"), X, 2.0);
             TestEqual(TEXT("Y should be 3.0"), Y, 3.0);
             TestEqual(TEXT("Z should be 0.5"), Z, 0.5);
+        }
+    }
+
+    DeleteActor(Router, ActorName);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelListComponentsPropertyMetadataTest,
+    "Cortex.Level.Component.ListComponentsPropertyMetadata",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelListComponentsPropertyMetadataTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterComponent();
+    const FString ActorName = SpawnActor(Router, TEXT("StaticMeshActor"));
+    if (!TestFalse(TEXT("Spawn should succeed"), ActorName.IsEmpty()))
+    {
+        return true;
+    }
+
+    // Default list_components: identity/metadata only, no reflected property expansion.
+    TSharedPtr<FJsonObject> DefaultParams = MakeShared<FJsonObject>();
+    DefaultParams->SetStringField(TEXT("actor"), ActorName);
+    const FCortexCommandResult DefaultResult = Router.Execute(TEXT("level.list_components"), DefaultParams);
+
+    const TArray<TSharedPtr<FJsonValue>>* DefaultComponents = nullptr;
+    if (!TestTrue(TEXT("default list_components should succeed with components"),
+        LevelComponentArray(DefaultResult, DefaultComponents)))
+    {
+        DeleteActor(Router, ActorName);
+        return true;
+    }
+
+    TestEqual(TEXT("default list should expose exactly one root component"),
+        LevelComponentRootCount(*DefaultComponents), 1);
+
+    const TSharedPtr<FJsonObject> DefaultRoot = LevelComponentRootObject(*DefaultComponents);
+    if (!TestTrue(TEXT("default list should expose the actor root component"), DefaultRoot.IsValid()))
+    {
+        DeleteActor(Router, ActorName);
+        return true;
+    }
+
+    FString DefaultRootName;
+    TestTrue(TEXT("default root should expose its name"), DefaultRoot->TryGetStringField(TEXT("name"), DefaultRootName));
+    TestEqual(TEXT("default root identity should be the fixture StaticMeshActor root"),
+        DefaultRootName, FString(TEXT("StaticMeshComponent0")));
+
+    FString DefaultRootClass;
+    TestTrue(TEXT("default root should expose its class"), DefaultRoot->TryGetStringField(TEXT("class"), DefaultRootClass));
+    TestEqual(TEXT("default root class should remain exact"), DefaultRootClass, FString(TEXT("StaticMeshComponent")));
+
+    bool bDefaultIsRoot = false;
+    TestTrue(TEXT("default root should expose is_root"), DefaultRoot->TryGetBoolField(TEXT("is_root"), bDefaultIsRoot));
+    TestTrue(TEXT("default root should be reported as the root"), bDefaultIsRoot);
+
+    FString DefaultCreationMethod;
+    TestTrue(TEXT("default root should expose creation_method"), DefaultRoot->TryGetStringField(TEXT("creation_method"), DefaultCreationMethod));
+    TestEqual(TEXT("default root creation_method should remain exact"), DefaultCreationMethod, FString(TEXT("Native")));
+
+    TestFalse(TEXT("default list_components must not expand reflected component properties"),
+        DefaultRoot->HasField(TEXT("properties")));
+
+    // Explicit detail window for the same root component.
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("actor"), ActorName);
+    Params->SetBoolField(TEXT("include_properties"), true);
+    const auto Detail = Router.Execute(TEXT("level.list_components"), Params);
+    if (!TestTrue(TEXT("detailed list_components should succeed"), Detail.bSuccess) || !Detail.Data.IsValid())
+    {
+        DeleteActor(Router, ActorName);
+        return true;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* DetailComponents = nullptr;
+    if (!TestTrue(TEXT("detailed list_components should expose components"),
+        LevelComponentArray(Detail, DetailComponents) && DetailComponents->Num() > 0))
+    {
+        DeleteActor(Router, ActorName);
+        return true;
+    }
+
+    TestTrue(TEXT("detail declares property completeness"),
+        Detail.Data->GetArrayField(TEXT("components"))[0]->AsObject()->HasField(TEXT("properties_complete")));
+
+    TestEqual(TEXT("detailed list should expose exactly one root component"),
+        LevelComponentRootCount(*DetailComponents), 1);
+    TestEqual(TEXT("detailed list should expose the same component set as the default read"),
+        DetailComponents->Num(), DefaultComponents->Num());
+
+    const TSharedPtr<FJsonObject> DetailRoot = LevelComponentRootObject(*DetailComponents);
+    if (!TestTrue(TEXT("detailed list should expose the actor root component"), DetailRoot.IsValid()))
+    {
+        DeleteActor(Router, ActorName);
+        return true;
+    }
+
+    FString DetailRootName;
+    TestTrue(TEXT("detailed root should expose its name"), DetailRoot->TryGetStringField(TEXT("name"), DetailRootName));
+    TestEqual(TEXT("detailed root identity should match the default read"), DetailRootName, DefaultRootName);
+
+    FString DetailRootClass;
+    TestTrue(TEXT("detailed root should expose its class"), DetailRoot->TryGetStringField(TEXT("class"), DetailRootClass));
+    TestEqual(TEXT("detailed root class should match the default read"), DetailRootClass, DefaultRootClass);
+
+    bool bDetailIsRoot = false;
+    TestTrue(TEXT("detailed root should expose is_root"), DetailRoot->TryGetBoolField(TEXT("is_root"), bDetailIsRoot));
+    TestTrue(TEXT("detailed root should be reported as the root"), bDetailIsRoot);
+
+    FString DetailCreationMethod;
+    TestTrue(TEXT("detailed root should expose creation_method"), DetailRoot->TryGetStringField(TEXT("creation_method"), DetailCreationMethod));
+    TestEqual(TEXT("detailed root creation_method should match the default read"), DetailCreationMethod, DefaultCreationMethod);
+
+    double TotalPropertyCount = 0.0;
+    double ReturnedPropertyCount = 0.0;
+    bool bPropertiesComplete = true;
+    TestTrue(TEXT("detailed root should declare total_property_count"),
+        DetailRoot->TryGetNumberField(TEXT("total_property_count"), TotalPropertyCount));
+    TestTrue(TEXT("detailed root should declare returned_property_count"),
+        DetailRoot->TryGetNumberField(TEXT("returned_property_count"), ReturnedPropertyCount));
+    TestTrue(TEXT("detailed root should declare properties_complete"),
+        DetailRoot->TryGetBoolField(TEXT("properties_complete"), bPropertiesComplete));
+
+    const TSharedPtr<FJsonObject>* DetailProperties = nullptr;
+    const bool bHasPropertyObject = DetailRoot->TryGetObjectField(TEXT("properties"), DetailProperties)
+        && DetailProperties != nullptr && (*DetailProperties).IsValid();
+    TestTrue(TEXT("detailed root should expose editable component properties"), bHasPropertyObject);
+
+    TSharedPtr<FJsonObject> PropertiesObject;
+    if (bHasPropertyObject)
+    {
+        PropertiesObject = *DetailProperties;
+    }
+
+    FString OmittedPropertyName;
+    if (PropertiesObject.IsValid())
+    {
+        // Mirror the admitted editable set exactly as the existing property window admits it.
+        UClass* RootComponentClass = FindObject<UClass>(nullptr, *FString::Printf(TEXT("/Script/Engine.%s"), *DetailRootClass));
+        TestTrue(TEXT("the reported root component class should resolve for reflection"), RootComponentClass != nullptr);
+
+        TArray<FString> AdmittedNames;
+        LevelComponentAdmittedProperties(RootComponentClass, AdmittedNames);
+        TestTrue(TEXT("the reported root component class should expose admitted editable properties"), AdmittedNames.Num() > 0);
+        TestTrue(TEXT("the fixture root should expose more admitted properties than the cap"), AdmittedNames.Num() > 20);
+
+        const int32 ReturnedFieldCount = PropertiesObject->Values.Num();
+        const int32 ExpectedWindowSize = FMath::Min(20, AdmittedNames.Num());
+        TestEqual(TEXT("the detail window should retain the first 20 admitted editable properties"),
+            ReturnedFieldCount, ExpectedWindowSize);
+        TestEqual(TEXT("returned_property_count should match the returned property fields"),
+            static_cast<int32>(ReturnedPropertyCount), ReturnedFieldCount);
+        TestEqual(TEXT("total_property_count should count every admitted editable property"),
+            static_cast<int32>(TotalPropertyCount), AdmittedNames.Num());
+        TestTrue(TEXT("total_property_count should cover the returned properties"), TotalPropertyCount >= ReturnedPropertyCount);
+
+        if (ReturnedFieldCount == AdmittedNames.Num())
+        {
+            TestTrue(TEXT("properties_complete should be true only when every admitted property was returned"), bPropertiesComplete);
+        }
+        else
+        {
+            TestFalse(TEXT("properties_complete must be false when the property window is capped"), bPropertiesComplete);
+        }
+
+        // Selected editable properties retained in the established detail window.
+        double ForcedLodModelValue = -1.0;
+        TestTrue(TEXT("the first admitted editable property should be retained in the detail window"),
+            PropertiesObject->TryGetNumberField(TEXT("ForcedLodModel"), ForcedLodModelValue));
+        TestEqual(TEXT("ForcedLodModel should carry the live component value"), ForcedLodModelValue, 0.0);
+
+        bool bUseDefaultCollision = false;
+        TestTrue(TEXT("the fixture collision flag should be retained in the detail window"),
+            PropertiesObject->TryGetBoolField(TEXT("bUseDefaultCollision"), bUseDefaultCollision));
+        TestTrue(TEXT("bUseDefaultCollision should carry the fixture component value"), bUseDefaultCollision);
+
+        TArray<FString> MissingWindowProperties;
+        for (int32 Index = 0; Index < ExpectedWindowSize; ++Index)
+        {
+            if (!PropertiesObject->HasField(AdmittedNames[Index]))
+            {
+                MissingWindowProperties.Add(AdmittedNames[Index]);
+            }
+        }
+
+        TestTrue(FString::Printf(TEXT("the detail window should retain the first %d admitted editable property names (missing: %s)"),
+            ExpectedWindowSize, *FString::Join(MissingWindowProperties, TEXT(", "))), MissingWindowProperties.Num() == 0);
+
+        for (const FString& AdmittedName : AdmittedNames)
+        {
+            if (!PropertiesObject->HasField(AdmittedName))
+            {
+                OmittedPropertyName = AdmittedName;
+                break;
+            }
+        }
+
+        TestFalse(TEXT("a capped detail window must omit at least one admitted editable property"),
+            OmittedPropertyName.IsEmpty());
+    }
+
+    // Targeted get_component_property stays the full leaf retrieval path.
+    TSharedPtr<FJsonObject> SelectedGetParams = MakeShared<FJsonObject>();
+    SelectedGetParams->SetStringField(TEXT("actor"), ActorName);
+    SelectedGetParams->SetStringField(TEXT("component"), DetailRootName);
+    SelectedGetParams->SetStringField(TEXT("property"), TEXT("ForcedLodModel"));
+
+    const FCortexCommandResult SelectedGetResult = Router.Execute(TEXT("level.get_component_property"), SelectedGetParams);
+    TestTrue(TEXT("targeted get_component_property should read the selected editable property"), SelectedGetResult.bSuccess);
+    if (SelectedGetResult.bSuccess && SelectedGetResult.Data.IsValid())
+    {
+        double TargetedValue = -1.0;
+        TestTrue(TEXT("targeted get should return the full selected property value"),
+            SelectedGetResult.Data->TryGetNumberField(TEXT("value"), TargetedValue));
+        TestEqual(TEXT("targeted get should agree with the detail window value"), TargetedValue, 0.0);
+    }
+
+    if (!OmittedPropertyName.IsEmpty())
+    {
+        TSharedPtr<FJsonObject> OmittedGetParams = MakeShared<FJsonObject>();
+        OmittedGetParams->SetStringField(TEXT("actor"), ActorName);
+        OmittedGetParams->SetStringField(TEXT("component"), DetailRootName);
+        OmittedGetParams->SetStringField(TEXT("property"), OmittedPropertyName);
+
+        const FCortexCommandResult OmittedGetResult = Router.Execute(TEXT("level.get_component_property"), OmittedGetParams);
+        TestTrue(FString::Printf(TEXT("targeted get_component_property should recover the omitted property %s"), *OmittedPropertyName),
+            OmittedGetResult.bSuccess);
+        if (OmittedGetResult.bSuccess && OmittedGetResult.Data.IsValid())
+        {
+            TestTrue(TEXT("targeted get should return the full omitted property value"),
+                OmittedGetResult.Data->HasField(TEXT("value")));
         }
     }
 

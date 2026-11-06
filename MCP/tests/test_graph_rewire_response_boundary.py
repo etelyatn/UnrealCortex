@@ -4,7 +4,7 @@ import json
 from unittest.mock import MagicMock
 
 from cortex_mcp.graph_patch_boundary import dispatch_graph_apply_patch
-from cortex_mcp.response import MAX_RESPONSE_CHARS
+from cortex_mcp.response import MAX_RESPONSE_CHARS, compact_json
 
 
 EDGE = {"far_node_guid": "11111111-1111-1111-1111-111111111111", "far_pin": "Condition"}
@@ -30,14 +30,14 @@ def preview(*, long_path=False):
         "complete": True,
         "validation_hash": "token",
         "edges": [{**EDGE, "far_pin_signature": "bool", "far_direction": 0, "response": "MAKE"}],
-        "locators": {"subgraph_path": "界" * 8_000 if long_path else "Small"},
+        "locators": {"subgraph_path": "界" * 41_000 if long_path else "Small"},
     }
 
 
 def test_long_unicode_locator_refuses_whole_preview_instead_of_clipping_edges():
     connection = MagicMock()
     native = preview(long_path=True)
-    assert len(json.dumps(native, indent=2)) > MAX_RESPONSE_CHARS
+    assert len(compact_json(native)) > MAX_RESPONSE_CHARS
     connection.send_command.return_value = {"success": True, "data": native}
 
     text = dispatch_graph_apply_patch(connection, request(dry_run=True), tool_name="graph_cmd")
@@ -58,7 +58,7 @@ def test_oversized_consumer_array_refuses_without_a_partial_approval():
          "far_pin_signature": "bool", "far_direction": 0, "response": "MAKE"}
         for i in range(400)
     ]
-    assert len(json.dumps(native, indent=2)) > MAX_RESPONSE_CHARS
+    assert len(compact_json(native)) > MAX_RESPONSE_CHARS
     connection.send_command.return_value = {"success": True, "data": native}
 
     result = json.loads(dispatch_graph_apply_patch(

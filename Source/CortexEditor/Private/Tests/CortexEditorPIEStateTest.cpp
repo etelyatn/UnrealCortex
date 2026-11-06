@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "CortexEditorPIEState.h"
 #include "Containers/Ticker.h"
+#include "Editor.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexEditorPIEStateInitTest,
@@ -232,6 +233,202 @@ bool FCortexEditorPIEStateCancelInputTickerDoesNotCancelGeneralCallbacksTest::Ru
 	return true;
 }
 
+// UEditorEngine::EndPlayMap() broadcasts FEditorDelegates::CancelPIE unconditionally after EndPIE
+// (PlayLevel.cpp), so every completed stop leaves a deferred OnPIEEnded() queued by HandleCancelPIE().
+// A start_pie request admitted before that cleanup runs must not be terminated by it: the tracker has
+// to stay Starting, keep the new caller pending, and leave the successor session's input untouched.
+// Before the fix the stale cleanup completed the new callback with PIE_TERMINATED and forced the
+// tracker to Stopped while the engine went on to start PIE (post/start response contradiction).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorPIEStateStaleCancelKeepsNewRequestTest,
+	"Cortex.Editor.PIEState.StaleCancelDoesNotTerminateNewStartRequest",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorPIEStateStaleCancelKeepsNewRequestTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// Captured results are declared before the tracker so that a callback still pending on any
+	// failure path is completed by ~FCortexEditorPIEState() while these locals are still alive.
+	bool bStartCallbackFired = false;
+	int32 StartCallbackCount = 0;
+	FString StartErrorCode;
+
+	FCortexEditorPIEState PIEState;
+	PIEState.BindDelegates();
+
+	// Cancellation of the previous session, deferred exactly as EndPlayMap leaves it.
+	FEditorDelegates::CancelPIE.Broadcast();
+
+	// A new start request is admitted before the deferred cleanup runs. start_pie registers its
+	// deferred caller and then enters Starting (see FCortexEditorPIEOps::StartPIE).
+	const uint32 CallbackId = PIEState.RegisterPendingCallback(
+		[&bStartCallbackFired, &StartCallbackCount, &StartErrorCode](FCortexCommandResult Result)
+		{
+			bStartCallbackFired = true;
+			++StartCallbackCount;
+			StartErrorCode = Result.ErrorCode;
+		});
+	(void)CallbackId;
+	PIEState.SetState(ECortexPIEState::Starting);
+
+	const TSharedRef<FThreadSafeBool> SuccessorInputToken = PIEState.GetInputCancelToken();
+
+	FTSTicker::GetCoreTicker().Tick(0.0f);
+
+	TestFalse(TEXT("Stale cancel must not complete the new start request"), bStartCallbackFired);
+	TestEqual(TEXT("New request must stay Starting"), PIEState.GetState(), ECortexPIEState::Starting);
+	// Identity, not value: a replacement token would also read false, so compare the objects.
+	TestTrue(TEXT("Successor input token must not be replaced"),
+		&PIEState.GetInputCancelToken().Get() == &SuccessorInputToken.Get());
+	TestFalse(TEXT("Successor input token must not be cancelled"), *SuccessorInputToken);
+
+	// The request still completes normally, which is what HandlePostPIEStarted does on success.
+	PIEState.SetState(ECortexPIEState::Playing);
+	FCortexCommandResult SuccessResult;
+	SuccessResult.bSuccess = true;
+	PIEState.CompletePendingCallbacks(SuccessResult);
+
+	TestEqual(TEXT("Start callback should complete exactly once"), StartCallbackCount, 1);
+	TestTrue(TEXT("Start callback should succeed"), StartErrorCode.IsEmpty());
+	TestEqual(TEXT("Tracked state should be Playing"), PIEState.GetState(), ECortexPIEState::Playing);
+
+	return true;
+}
+
+// A cancellation that still belongs to the request in flight must terminate it, both when it arrives
+// before the engine's PreBeginPIE (queued Cortex start, rejected while dequeuing: PlayLevel.cpp save
+// failure path) and after it (authorizer/compilation rejection). PreBeginPIE for the same request
+// repeats Starting without beginning a new request, so it must not invalidate the cancellation.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorPIEStateCancelTerminatesPendingStartRequestTest,
+	"Cortex.Editor.PIEState.CancelTerminatesPendingStartRequest",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorPIEStateCancelTerminatesPendingStartRequestTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	bool bStartCallbackFired = false;
+	FString StartErrorCode;
+
+	FCortexEditorPIEState PIEState;
+	PIEState.BindDelegates();
+
+	PIEState.RegisterPendingCallback([&bStartCallbackFired, &StartErrorCode](FCortexCommandResult Result)
+	{
+		bStartCallbackFired = true;
+		StartErrorCode = Result.ErrorCode;
+	});
+	// start_pie boundary, then the engine's PreBeginPIE for that same request.
+	PIEState.SetState(ECortexPIEState::Starting);
+	PIEState.SetState(ECortexPIEState::Starting);
+
+	FEditorDelegates::CancelPIE.Broadcast();
+
+	TestFalse(TEXT("Cancellation stays deferred out of the broadcast stack"), bStartCallbackFired);
+	TestEqual(TEXT("Tracker is still Starting until the deferred cleanup runs"),
+		PIEState.GetState(), ECortexPIEState::Starting);
+
+	FTSTicker::GetCoreTicker().Tick(0.0f);
+
+	TestTrue(TEXT("Pending start request should be terminated"), bStartCallbackFired);
+	TestEqual(TEXT("Error code should be PIE_TERMINATED"), StartErrorCode, TEXT("PIE_TERMINATED"));
+	TestEqual(TEXT("Tracker should be Stopped"), PIEState.GetState(), ECortexPIEState::Stopped);
+
+	return true;
+}
+
+// Duplicate cancellations must collapse onto one cleanup: an armed ticker is removed before the new
+// one is armed, so no raw-this ticker is leaked, and destroying the tracker removes the single
+// pending cleanup instead of leaving it to run against freed state.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorPIEStateDuplicateCancelCoalescesTest,
+	"Cortex.Editor.PIEState.DuplicateCancelCoalesces",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorPIEStateDuplicateCancelCoalescesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	int32 TerminatedCount = 0;
+	FString LastErrorCode;
+
+	{
+		FCortexEditorPIEState PIEState;
+		PIEState.BindDelegates();
+
+		PIEState.RegisterPendingCallback([&TerminatedCount, &LastErrorCode](FCortexCommandResult Result)
+		{
+			++TerminatedCount;
+			LastErrorCode = Result.ErrorCode;
+		});
+		PIEState.SetState(ECortexPIEState::Starting);
+
+		// EndPlayMap cancels once, but a stop and an engine-side start rejection can both arrive.
+		FEditorDelegates::CancelPIE.Broadcast();
+		FEditorDelegates::CancelPIE.Broadcast();
+
+		TestEqual(TEXT("Duplicate cancellation stays deferred until the tick"), TerminatedCount, 0);
+	}
+	// Destruction removes the single pending cleanup and flushes the pending caller once.
+
+	TestEqual(TEXT("Pending cancellation should be completed exactly once"), TerminatedCount, 1);
+	TestEqual(TEXT("Destruction flush should report PIE_TERMINATED"), LastErrorCode, TEXT("PIE_TERMINATED"));
+
+	FTSTicker::GetCoreTicker().Tick(0.0f);
+	TestEqual(TEXT("No leaked cleanup may run against the destroyed tracker"), TerminatedCount, 1);
+
+	return true;
+}
+
+// A cancellation armed for a request that has already ended must not swallow a later, genuine
+// cancellation of the request that replaced it: the newer generation re-arms the single cleanup.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorPIEStateLaterCancelStillAppliesTest,
+	"Cortex.Editor.PIEState.LaterCancelStillAppliesAfterNewRequest",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorPIEStateLaterCancelStillAppliesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	int32 TerminatedCount = 0;
+	FString LastErrorCode;
+
+	FCortexEditorPIEState PIEState;
+	PIEState.BindDelegates();
+
+	PIEState.RegisterPendingCallback([&TerminatedCount, &LastErrorCode](FCortexCommandResult Result)
+	{
+		++TerminatedCount;
+		LastErrorCode = Result.ErrorCode;
+	});
+	PIEState.SetState(ECortexPIEState::Starting);
+
+	// Cancellation of the first request stays pending...
+	FEditorDelegates::CancelPIE.Broadcast();
+
+	// ...and a replacement request begins before that cleanup runs (end of session, then start_pie).
+	PIEState.SetState(ECortexPIEState::Stopped);
+	PIEState.SetState(ECortexPIEState::Starting);
+
+	// The replacement request is itself rejected while dequeuing; that cancellation must apply.
+	FEditorDelegates::CancelPIE.Broadcast();
+
+	FTSTicker::GetCoreTicker().Tick(0.0f);
+
+	TestEqual(TEXT("Later cancellation should complete the pending caller once"), TerminatedCount, 1);
+	TestEqual(TEXT("Error code should be PIE_TERMINATED"), LastErrorCode, TEXT("PIE_TERMINATED"));
+	TestEqual(TEXT("Tracker should be Stopped"), PIEState.GetState(), ECortexPIEState::Stopped);
+
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexEditorPIEStateScopedEndPreservesForeignInputTest,
 	"Cortex.Editor.PIEState.ScopedEndRetiresOnlyOwnedInput",
@@ -292,4 +489,3 @@ bool FCortexEditorPIEStateScopedEndPreservesForeignInputTest::RunTest(const FStr
 
 	return true;
 }
-

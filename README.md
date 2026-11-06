@@ -49,6 +49,10 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 **Blueprint-to-C++ migration:** The AI reads the full Blueprint structure — variables, functions, graph nodes, pin connections — and generates equivalent C++ code. Combined with CortexReflect's class hierarchy awareness, it understands inheritance, overrides, and dependencies before writing a single line.
 
+**Guarded retirement:** `graph.apply_patch` with `migration.op="retire_entries"` previews and removes explicitly reviewed obsolete entries and closed disconnected components. Closed orphan inventories additionally admit only exact `UK2Node_VariableGet`, `UK2Node_VariableSet`, `UK2Node_ExecutionSequence`, `UK2Node_Select` and `UK2Node_BreakStruct` classes, with class-owned resolved variables or a valid reflected struct. `source.entry_node_guids` may be omitted only for a nonempty explicit `source.orphan_component_node_guids`; a provided empty entry array and entryless additional-node selection refuse. External execution/data/delegate links, unresolved references and bound-graph owners refuse. Fingerprint/approval guards and compile/readback remain required; rollback preserves node indices and reciprocal pin-link enumeration, not just connectivity. The primary EventGraph is never deleted.
+
+**Migration inspection and cleanup:** Byte-backed enum pin defaults retain their symbolic enum names rather than becoming integer zero. `blueprint.cleanup_migration` supports same-family native-parent migration for ordinary normal `UBlueprint`/`UBlueprintGeneratedClass` Object Blueprints as well as Actor, Component and Widget families; interfaces, specialized Blueprint families and cross-family targets refuse before mutation.
+
 **Example tasks:** *"Convert BP_EnemyBase to a C++ class preserving all variables and function signatures"* · *"Create a BP_DoorInteractable with a boolean IsLocked variable and an Interact event"* · *"Wire up the OnOverlap event to toggle visibility and play a sound cue"*
 
 </details>
@@ -58,11 +62,11 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 <br>
 
-**Widget tree:** Traverse hierarchies, add/remove widgets, reparent within the tree.
+**Widget tree:** Traverse hierarchies, add/remove widgets, reparent within the tree. `umg.get_tree` returns a top-level whole-Widget-Blueprint `fingerprint` for tree operations; property-binding inspection retains its separate scoped fingerprint. Do not interchange the two guards.
 
 **Properties:** Read and write any widget property — text, colors, visibility, padding, alignment. Schema introspection returns available properties for any widget class.
 
-**Animations:** Create, list, and manage widget animations.
+**Animations:** Create animations with stable Designer variable identities; inspect bindings and guardedly author float, `FLinearColor`, and `FSlateColor` tracks. Widget addition registers the actual UObject name through `OnVariableAdded`. Animation creation refuses widget/animation identity collisions and, only for a legacy empty GUID map, initializes all source-widget and existing-animation identities deterministically before registering the new animation; populated identities remain unchanged. Sections default to `RestoreState`; explicit `completion_mode: "KeepState"` preserves one-shot state effects. Completion mode accepts only those exact strings, not null, booleans or other names. Binding/track writes require fresh content fingerprints and separate preview/apply; compile and save explicitly.
 
 **Example tasks:** *"Build a main menu with Play, Settings, and Quit buttons in a vertical box"* · *"Change the health bar color to red when below 25%"* · *"Add a fade-in animation to the game over screen"*
 
@@ -126,11 +130,13 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 
 <br>
 
-**PIE lifecycle:** Start, stop, pause, resume, and restart Play-In-Editor sessions.
+**PIE lifecycle:** Start, stop, pause, resume, and restart Play-In-Editor sessions. Deferred cancellation is correlated with its start-request generation: late cleanup from a stopped session cannot terminate a newer start or its input/callback ownership. Duplicate cancellation coalesces to one owned deferred ticker; genuine current-request cancellation still reports termination and performs cleanup.
 
 **Viewport:** Get and set editor-client camera position/rotation, capture the active viewport with explicit source/provenance, and switch render modes (including Lit + MeshEdges wire overlay). Possessed PIE rejects editor-camera movement by default; `allow_during_pie: true` changes only the transient editor client, not the game camera. Game captures do not invent camera poses; ejected/SIE editor views remain controllable.
 
 **Input injection:** Press keys or inject typed Enhanced Input values using canonical `action_name` and a scalar or `{x,y,z}`. Single-shot and timed sequences share validation. `inject_input_continuous` supports immediate start/update/stop and deferred positive `duration_ms` starts. Ownership follows the actual subsystem/action pair; stop, PIE teardown, owner destruction, and any client disconnect cancel Cortex-owned runs. Ownership is session-wide, not per-client isolation; game-managed injection is not stopped by an unowned Cortex stop, and already queued input may drain afterward.
+
+**Mouse input:** `inject_mouse` requires `action: "click"`, `"move"` or `"scroll"`. Optional `x`/`y` are screen-space coordinates; omitted coordinates use the current cursor position. Click defaults to `button: "left"` (also `"right"`/`"middle"`); scroll requires numeric `delta`. This operation has no `duration_ms` contract. Its `dispatched` result reports Slate event dispatch, not proof that the intended gameplay UI target handled a click.
 
 **Editor management:** Execute console commands. Adjust time dilation. Shutdown/restart editor.
 
@@ -536,7 +542,7 @@ void FMyDomainModule::StartupModule()
 | **CortexStateTree** | CortexCore | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `AssetRegistry` · `AssetTools` · `UnrealEd` · `GameplayTags` · `StateTreeModule` · `StateTreeEditorModule` |
 | **CortexLevel** | CortexCore | `LevelEditor` · `DataLayerEditor` |
 | **CortexUMG** | CortexCore | `UMG` · `UMGEditor` · `Slate` · `SlateCore` · `MovieScene` |
-| **CortexReflect** | CortexCore | `AssetRegistry` · `BlueprintGraph` · `Kismet` |
+| **CortexReflect** | CortexCore | `AssetRegistry` · `BlueprintGraph` · `Kismet` · `UMG` |
 | **CortexGen** | CortexCore | `HTTP` · `Json` · `JsonUtilities` · `AssetTools` · `DeveloperSettings` · `ImageWrapper` · `UnrealEd` |
 | **CortexAnimation** | CortexCore | `CoreUObject` · `Engine` · `Json` · `JsonUtilities` · `UnrealEd` · `AssetRegistry` · `AnimGraph` · `BlueprintGraph` · `Kismet` |
 | **CortexFrontend** | CortexCore · CortexGen | `Slate` · `SlateCore` · `GraphEditor` · `BlueprintGraph` · `Kismet` · `ImageWrapper` · `EditorScriptingUtilities` · `DesktopPlatform` |
@@ -552,6 +558,8 @@ All 15 modules declare `"Type": "Editor"` in `UnrealCortex.uplugin`. Because `Ty
 
 `FCortexSerializer` uses Unreal's property system (`FProperty*`, `UStruct*`) to convert any UStruct to JSON. Domain modules focus on logic, not formatting — they never write JSON manually.
 
+`FCortexSerializer::PropertyDifferenceToJson` serializes the recursive difference between a value and an inherited baseline. Identical values produce no value at all, structs of the same type are compared member by member so equal members are omitted, and arrays, sets, maps, object identities and scalars are compared whole and serialized atomically. A comparison that exhausts its depth budget reports a structured issue and a partial result instead of a sentinel value. The caller owns the baseline's identity, so a caller never reads one instance's fields through another instance's layout. Blueprint's `get_class_defaults` uses it for `changed_only=true` (which requires `include_values=true` and refuses `include_members`, because that describes effective members rather than deltas): the response declares `value_mode=inherited_delta` and `baseline_class`, sets `effective_values_complete=false`, lists equal-to-baseline roots under `omitted_equal_properties`, and reports subclass-owned roots (which have no inherited baseline) as their own effective values. Only a complete and truly equal comparison is ever listed as an omission: a root whose comparison could not be completed (for example a struct chain deeper than the comparison depth) is reported as an entry flagged `incomplete` that carries its own `issues` and no `value`, and the echo declares `echo_complete=false`. A value is presented only when the serialization produced a usable one, so a truncated or unsupported comparison never has its null placeholder or an effective value passed off as the delta value.
+
 ### Hot Reload
 
 After a Live Coding recompile, the TCP server restarts automatically with the new module. If reconnection fails, restarting the editor restores the connection.
@@ -564,7 +572,7 @@ After a Live Coding recompile, the TCP server restarts automatically with the ne
 
 These are the current boundaries of the beta. They're on the roadmap but not yet resolved:
 
-- **Widget animation tracks:** Named animations can be created and listed, but property track binding and keyframe creation are not yet implemented
+- **Widget animation track scope:** Guarded authoring supports ordinary named Designer widgets with float/linear-color/Slate-color tracks and linear/constant keys. Root user-widget, slot/dynamic bindings, object/bool/custom tracks, double and cubic interpolation remain unsupported.
 - **Blueprint compile diagnostics:** `bp.compile` returns success/failure with structured diagnostics, but error-to-node mapping depends on compiler message format consistency
 - **Concurrent input sequences:** `run_input_sequence` works correctly for single-agent use; concurrent sequences from multiple agents may route callbacks incorrectly
 - **Reflect coverage:** `query_class_hierarchy` and `find_usages` only see Blueprint classes loaded in memory; unloaded Blueprints are silently skipped

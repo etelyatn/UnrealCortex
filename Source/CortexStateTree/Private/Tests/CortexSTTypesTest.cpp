@@ -71,7 +71,7 @@ bool FCortexSTValidateWritablePackageTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Unknown root rejection uses invalid field"), Error.ErrorCode, CortexErrorCodes::InvalidField);
 	TestTrue(TEXT("Unknown root rejection names original root"), Error.ErrorMessage.Contains(TEXT("/MissingPlugin")));
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MountRoot = FString::Printf(TEXT("/CortexSTMount%s"), *Suffix);
 	FScopedMountedRoot Mount(MountRoot);
 

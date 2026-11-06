@@ -1,5 +1,6 @@
 #include "Operations/CortexGraphMigrationOps.h"
 #include "Operations/CortexGraphPatchOps.h"
+#include "Operations/CortexGraphMigrationOps.h"
 #include "Operations/CortexGraphPatchState.h"
 #include "Misc/AutomationTest.h"
 
@@ -10,6 +11,7 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
 #include "Components/CanvasPanel.h"
+#include "Components/CheckBox.h"
 #include "CortexGraphMigrationTestTypes.h"
 #include "CortexGraphTestContentRoot.h"
 #include "EdGraph/EdGraph.h"
@@ -20,9 +22,14 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/ComponentDelegateBinding.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CallParentFunction.h"
+#include "K2Node_BreakStruct.h"
 #include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Event.h"
+#include "K2Node_ExecutionSequence.h"
+#include "K2Node_Select.h"
+#include "K2Node_VariableSetRef.h"
 #include "Kismet/KismetStringLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -47,6 +54,8 @@
 #include "Misc/PackageName.h"
 #include "HAL/FileManager.h"
 #include "PackageTools.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "UObject/GarbageCollection.h"
 #include "Dom/JsonObject.h"
 #include "UObject/UnrealType.h"
@@ -413,6 +422,44 @@ FString CaptureNativeGraph(UEdGraph* Graph, const TSet<FGuid>* Filter = nullptr)
 }
 
 /**
+ * Ordered identity enumeration of one Blueprint: every graph GUID, every node GUID and class, every
+ * pin's stable `PinId` with its name, direction and default, then every link in the order it appears
+ * in each pin's `LinkedTo`. `CaptureNativeGraph` sorts its records, so it cannot see a reordered link
+ * list; this enumeration is the ordered oracle a recovery rollback is measured against.
+ */
+FString CaptureOrderedEnumeration(UBlueprint* Blueprint)
+{
+	TArray<FString> Enumeration;
+	if (!Blueprint) return FString();
+	TArray<UEdGraph*> Graphs;
+	Blueprint->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!Graph) continue;
+		Enumeration.Add(TEXT("graph|") + Graph->GraphGuid.ToString());
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+			Enumeration.Add(TEXT("node|") + Node->NodeGuid.ToString() + TEXT("|") + Node->GetClass()->GetName());
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin) continue;
+				Enumeration.Add(TEXT("pin|") + Pin->PinId.ToString() + TEXT("|") + Pin->PinName.ToString()
+					+ TEXT("|") + (Pin->Direction == EGPD_Input ? TEXT("in") : TEXT("out"))
+					+ TEXT("|") + Pin->DefaultValue
+					+ TEXT("|") + (Pin->DefaultObject ? Pin->DefaultObject->GetPathName() : FString()));
+				for (UEdGraphPin* Linked : Pin->LinkedTo)
+					Enumeration.Add(Linked && Linked->GetOwningNode()
+						? TEXT("link|") + Linked->GetOwningNode()->NodeGuid.ToString() + TEXT("|")
+							+ Linked->PinId.ToString() + TEXT("|") + Linked->PinName.ToString()
+						: TEXT("link|null"));
+			}
+		}
+	}
+	return FString::Join(Enumeration, TEXT("\n"));
+}
+
+/**
  * Two-stage reviewed retirement request for an arbitrary entry set: preview, echo the published
  * removable set, then approve it. `OutApproved` is the approved set the reviewed preview published.
  */
@@ -666,8 +713,12 @@ struct FGuardedEntryFixture
 			&& BoundBody && ConstructBody && InitializedBody && RetainedBody && CustomBody;
 	}
 
-	/** `bAddIncompatibleComponent` compiles a second widget variable of an unrelated widget class. */
-	bool Build(const TCHAR* Name, const bool bAddIncompatibleComponent = false)
+	/**
+	 * `bAddIncompatibleComponent` compiles a second widget variable of an unrelated widget class.
+	 * `bParameterisedDelegate` binds the component-bound node to `UCheckBox::OnCheckStateChanged(bool)`,
+	 * a file-scope delegate with a parameter, instead of the parameterless `UButton::OnClicked`.
+	 */
+	bool Build(const TCHAR* Name, const bool bAddIncompatibleComponent = false, const bool bParameterisedDelegate = false)
 	{
 		Package = CreateCortexGraphTestPackage(Name, OwnedPackageName);
 		Blueprint = Cast<UWidgetBlueprint>(FKismetEditorUtilities::CreateBlueprint(
@@ -687,6 +738,13 @@ struct FGuardedEntryFixture
 		Tree->RootWidget = Root;
 		ActionButton->bIsVariable = true;
 		Root->AddChild(ActionButton);
+		if (bParameterisedDelegate)
+		{
+			UCheckBox* OptionCheck = Tree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(), TEXT("OptionCheck"));
+			if (!OptionCheck) return false;
+			OptionCheck->bIsVariable = true;
+			Root->AddChild(OptionCheck);
+		}
 		if (bAddIncompatibleComponent)
 		{
 			UCanvasPanel* IncompatiblePanel =
@@ -708,11 +766,12 @@ struct FGuardedEntryFixture
 		// The widget variable becomes a generated object property only after a widget compile, and the
 		// component-bound node must bind to that real property.
 		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		const TCHAR* const BoundComponentName = bParameterisedDelegate ? TEXT("OptionCheck") : TEXT("ActionButton");
 		FObjectProperty* FoundComponentProperty = Blueprint->SkeletonGeneratedClass
-			? FindFProperty<FObjectProperty>(Blueprint->SkeletonGeneratedClass, TEXT("ActionButton")) : nullptr;
+			? FindFProperty<FObjectProperty>(Blueprint->SkeletonGeneratedClass, BoundComponentName) : nullptr;
 		if (!FoundComponentProperty && Blueprint->GeneratedClass)
 		{
-			FoundComponentProperty = FindFProperty<FObjectProperty>(Blueprint->GeneratedClass, TEXT("ActionButton"));
+			FoundComponentProperty = FindFProperty<FObjectProperty>(Blueprint->GeneratedClass, BoundComponentName);
 		}
 		if (bAddIncompatibleComponent)
 		{
@@ -725,8 +784,9 @@ struct FGuardedEntryFixture
 			}
 			if (!IncompatibleComponentProperty) return false;
 		}
-		FMulticastDelegateProperty* FoundClickedDelegate =
-			FindFProperty<FMulticastDelegateProperty>(UButton::StaticClass(), TEXT("OnClicked"));
+		FMulticastDelegateProperty* FoundClickedDelegate = bParameterisedDelegate
+			? FindFProperty<FMulticastDelegateProperty>(UCheckBox::StaticClass(), TEXT("OnCheckStateChanged"))
+			: FindFProperty<FMulticastDelegateProperty>(UButton::StaticClass(), TEXT("OnClicked"));
 		if (!FoundComponentProperty || !FoundClickedDelegate) return false;
 		ComponentProperty = FoundComponentProperty;
 		ClickedDelegate = FoundClickedDelegate;
@@ -1204,6 +1264,8 @@ bool PrepareAdditionalRetirementRequest(
 	OutRequest->SetBoolField(TEXT("allow_noop"), false);
 	TSharedPtr<FJsonObject> Migration = WithAdditionalNodeGuids(Fixture.Migration(Entries), AdditionalGuids);
 	WithAdditionalNodeGuids(Migration, OrphanGuids, TEXT("orphan_component_node_guids"));
+	if (Entries.IsEmpty() && !OrphanGuids.IsEmpty())
+		Migration->GetObjectField(TEXT("source"))->RemoveField(TEXT("entry_node_guids"));
 	OutRequest->SetObjectField(TEXT("migration"), Migration);
 
 	FCortexGraphPreparedPatch Preview;
@@ -2145,8 +2207,18 @@ bool FCortexGraphMigrationRetirePatchEligibilityTest::RunTest(const FString& Par
 	TSharedPtr<FJsonObject> PruneMigration = MakeShared<FJsonObject>();
 	PruneMigration->SetStringField(TEXT("op"), TEXT("prune_island"));
 	PruneRequest->SetObjectField(TEXT("migration"), PruneMigration);
-	TestFalse(TEXT("prune_island remains ineligible for a compiler-error Blueprint"),
+	TestTrue(TEXT("prune_island is eligible for a compiler-error Blueprint"),
 		FCortexGraphPatchOps::ValidateEligibility(Fixture.Blueprint, PruneRequest, Error));
+	for (const TCHAR* OtherMigration : { TEXT("replace_entry"), TEXT("copy_subgraph"), TEXT("move_subgraph") })
+	{
+		Error = FCortexCommandResult();
+		const TSharedPtr<FJsonObject> OtherRequest = MakeShared<FJsonObject>();
+		const TSharedPtr<FJsonObject> OtherOp = MakeShared<FJsonObject>();
+		OtherOp->SetStringField(TEXT("op"), OtherMigration);
+		OtherRequest->SetObjectField(TEXT("migration"), OtherOp);
+		TestFalse(FString::Printf(TEXT("%s remains ineligible for a compiler-error Blueprint"), OtherMigration),
+			FCortexGraphPatchOps::ValidateEligibility(Fixture.Blueprint, OtherRequest, Error));
+	}
 	Error = FCortexCommandResult();
 	const TSharedPtr<FJsonObject> AuthoringRequest = MakeShared<FJsonObject>();
 	TestFalse(TEXT("ordinary authoring remains ineligible for a compiler-error Blueprint"),
@@ -3756,6 +3828,9 @@ bool FCortexGraphMigrationRetireComponentBoundApplyFaultTest::RunTest(const FStr
 	const FName BoundComponent = Fixture.Bound->ComponentPropertyName;
 	const FName BoundDelegate = Fixture.Bound->DelegatePropertyName;
 	UClass* BoundDelegateOwner = Fixture.Bound->DelegateOwnerClass;
+	const UFunction* const SignatureBefore =
+		Fixture.Bound->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass);
+	TestNotNull(TEXT("the delegate signature resolves before the request"), SignatureBefore);
 	const FString GraphBefore = CaptureNativeGraph(Fixture.Graph);
 	const FString BindingsBefore = CaptureComponentBindings(Fixture.Blueprint);
 
@@ -3784,6 +3859,8 @@ bool FCortexGraphMigrationRetireComponentBoundApplyFaultTest::RunTest(const FStr
 		TestEqual(TEXT("the restored node keeps its delegate property"), Restored->DelegatePropertyName, BoundDelegate);
 		TestEqual(TEXT("the restored node keeps its delegate owner"), Restored->DelegateOwnerClass.Get(), BoundDelegateOwner);
 		TestEqual(TEXT("the restored node keeps its generated binding function"), Restored->CustomFunctionName, BindingFunction);
+		TestTrue(TEXT("the restored event resolves the same delegate signature"),
+			Restored->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass) == SignatureBefore);
 	}
 	TestEqual(TEXT("the restored graph matches the pre-request snapshot"), CaptureNativeGraph(Fixture.Graph), GraphBefore);
 	TestEqual(TEXT("the generated component binding is untouched by the rolled-back apply"),
@@ -3810,6 +3887,9 @@ bool FCortexGraphMigrationRetireComponentBoundReadbackFaultTest::RunTest(const F
 
 	const FGuid BoundGuid = Fixture.Bound->NodeGuid;
 	const FName BindingFunction = Fixture.Bound->CustomFunctionName;
+	const UFunction* const SignatureBefore =
+		Fixture.Bound->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass);
+	TestNotNull(TEXT("the delegate signature resolves before the request"), SignatureBefore);
 	const FString BindingsBefore = CaptureComponentBindings(Fixture.Blueprint);
 
 	TArray<FString> Approved;
@@ -3836,6 +3916,8 @@ bool FCortexGraphMigrationRetireComponentBoundReadbackFaultTest::RunTest(const F
 	if (Restored)
 	{
 		TestEqual(TEXT("the restored node keeps its generated binding function"), Restored->CustomFunctionName, BindingFunction);
+		TestTrue(TEXT("the restored event resolves the same delegate signature"),
+			Restored->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass) == SignatureBefore);
 	}
 	TestTrue(TEXT("the recovery compile registered the component binding again"),
 		CaptureComponentBindings(Fixture.Blueprint).Contains(BindingFunction.ToString()));
@@ -3843,6 +3925,111 @@ bool FCortexGraphMigrationRetireComponentBoundReadbackFaultTest::RunTest(const F
 		CaptureComponentBindings(Fixture.Blueprint), BindingsBefore);
 	TestNotNull(TEXT("the recovery compile re-declares the binding function"),
 		Fixture.Blueprint->GeneratedClass ? Fixture.Blueprint->GeneratedClass->FindFunctionByName(BindingFunction) : nullptr);
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// CortexSandbox #107 live acceptance: a component-bound event on a file-scope delegate with parameters
+// (Ripper's CommonButtonBase OnButtonBaseClicked) keeps a package-owned event signature. Rolling back
+// its retirement must restore that exact event reference, or the recovery compile reports the restored
+// node out-of-date and the asset is blocked instead of restored.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireParameterisedBoundRollbackTest,
+	"Cortex.Graph.Authoring.Migration.Retire.ParameterisedBoundEventRollbackRestoresSignature",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireParameterisedBoundRollbackTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FGuardedEntryFixture Fixture;
+	TestTrue(TEXT("parameterised component-bound fixture is created"),
+		Fixture.Build(TEXT("BP_RetireParameterisedBoundRollback"), /*bAddIncompatibleComponent=*/false,
+			/*bParameterisedDelegate=*/true));
+	if (!Fixture.IsComplete()) { Fixture.Cleanup(); return false; }
+
+	const FGuid BoundGuid = Fixture.Bound->NodeGuid;
+	const UFunction* const SignatureBefore =
+		Fixture.Bound->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass);
+	TestNotNull(TEXT("the delegate signature resolves before the request"), SignatureBefore);
+	TestNotNull(TEXT("the delegate signature is owned by a package, not a class"),
+		Fixture.Bound->EventReference.GetMemberParentPackage());
+	TestTrue(TEXT("the bound event exposes the delegate parameter"),
+		Fixture.Bound->FindPin(FName(TEXT("bIsChecked"))) != nullptr);
+	const FString BindingsBefore = CaptureComponentBindings(Fixture.Blueprint);
+
+	TArray<FString> Approved;
+	TSharedPtr<FJsonObject> Request;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("the guarded apply request prepares: %s"), *Error.ErrorMessage),
+		PrepareGuardedRequest(Fixture, { BoundGuid.ToString() }, TEXT("00000000-0000-0000-0000-000000107101"),
+			Request, Approved, Error, /*bCompile=*/true, /*bSave=*/false));
+	if (!Request.IsValid()) { Fixture.Cleanup(); return false; }
+
+	FCortexGraphMigrationOps::SetRetirementReadbackFaultForTesting(TEXT("retire_after_binding"));
+	FCortexGraphPatchOutcome Outcome;
+	Error = FCortexCommandResult();
+	TestFalse(TEXT("the injected readback fault fails the retirement"),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	FCortexGraphMigrationOps::ClearRetirementReadbackFaultForTesting();
+	TestEqual(TEXT("the journal and the recovery compile restored the transaction"),
+		Outcome.RollbackStatus, FString(TEXT("restored")));
+	TestFalse(TEXT("the restored asset is not blocked"), Outcome.bBlocked);
+	TestFalse(TEXT("the recovery compile does not report the restored node out-of-date"),
+		FString::Join(Outcome.Diagnostics, TEXT("; ")).Contains(TEXT("out-of-date")));
+	UK2Node_ComponentBoundEvent* Restored = Cast<UK2Node_ComponentBoundEvent>(
+		FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, BoundGuid));
+	TestNotNull(TEXT("the component-bound node was restored"), Restored);
+	if (Restored)
+	{
+		TestTrue(TEXT("the restored event resolves the same delegate signature"),
+			Restored->EventReference.ResolveMember<UFunction>(Fixture.Blueprint->SkeletonGeneratedClass) == SignatureBefore);
+	}
+	TestEqual(TEXT("the rolled-back retirement restores the exact component binding set"),
+		CaptureComponentBindings(Fixture.Blueprint), BindingsBefore);
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// CortexSandbox #107 live acceptance: a selected custom event whose body is also driven by retained
+// logic is blocked by the partition. The preview must publish that blocked entry with its reason; the
+// entry is not an in-asset reference to its own generated function.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexGraphMigrationRetireBlockedCustomEventPreviewTest,
+	"Cortex.Graph.Authoring.Migration.Retire.BlockedCustomEventPublishesBlockedEntry",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationRetireBlockedCustomEventPreviewTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationRetireTest;
+	FGuardedEntryFixture Fixture;
+	TestTrue(TEXT("guarded fixture is created"), Fixture.Build(TEXT("BP_RetireBlockedCustomEventPreview")));
+	if (!Fixture.IsComplete()) { Fixture.Cleanup(); return false; }
+	// The retained cosmetic chain also executes the custom event's body, so the body and therefore the
+	// selected custom event are owned by retained logic.
+	TestTrue(TEXT("the retained body also drives the custom event body"),
+		Fixture.LinkNodes(Fixture.RetainedBody, TEXT("then"), Fixture.CustomBody, TEXT("execute")));
+
+	FCortexGraphMigrationRetirePlan PlanValue;
+	bool bReused = false;
+	FCortexCommandResult Error;
+	const FString CustomGuid = Fixture.Custom->NodeGuid.ToString();
+	TestTrue(FString::Printf(TEXT("the preview publishes the partition instead of refusing: %s"), *Error.ErrorMessage),
+		Plan(Fixture, { CustomGuid }, PlanValue, bReused, Error));
+	TestFalse(TEXT("the refusal does not name the selected entry as its own reference"),
+		Error.ErrorMessage.Contains(TEXT("same_name_event")));
+	const FCortexGraphPruneNode* const BlockedEntry = PlanValue.Blocked.FindByPredicate(
+		[&CustomGuid](const FCortexGraphPruneNode& Node) { return Node.NodeGuid == CustomGuid; });
+	TestNotNull(TEXT("the selected custom event is published as blocked"), BlockedEntry);
+	TestTrue(TEXT("the blocked entry carries its ownership reason"), BlockedEntry && !BlockedEntry->Reason.IsEmpty());
+	TestFalse(TEXT("the blocked custom event is not removable"), PlanValue.RemovableGuids.Contains(CustomGuid));
+
+	Error = FCortexCommandResult();
+	TestFalse(TEXT("approving the blocked entry itself is refused"),
+		Plan(Fixture, { CustomGuid }, PlanValue, bReused, Error, true, { CustomGuid }));
+	TestTrue(FString::Printf(TEXT("the refusal comes from the blocked-entry gate: %s"), *Error.ErrorMessage),
+		Error.ErrorMessage.Contains(TEXT("blocked or retained")));
 
 	Fixture.Cleanup();
 	return true;
@@ -6393,6 +6580,13 @@ bool FCortexGraphMigrationRetireClosedOrphanTest::RunTest(const FString& Paramet
 	using namespace CortexGraphMigrationRetireTest;
 	FFixture Fixture;
 	if (!TestTrue(TEXT("fixture built"), Fixture.Build(TEXT("BP_RetireClosedOrphan"), true))) return false;
+	UScriptStruct* const ColorStruct = TBaseStructure<FLinearColor>::Get();
+	FEdGraphPinType ColorType;
+	ColorType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+	ColorType.PinSubCategoryObject = ColorStruct;
+	if (!TestTrue(TEXT("closed struct component has a reflected Blueprint member"),
+		FBlueprintEditorUtils::AddMemberVariable(Fixture.Blueprint, TEXT("OrphanColor"), ColorType)))
+	{ Fixture.Cleanup(); return false; }
 	UK2Node_CustomEvent* OldUpdate = NewObject<UK2Node_CustomEvent>(Fixture.Graph);
 	OldUpdate->CustomFunctionName = TEXT("OldOrphanUpdate");
 	OldUpdate->CreateNewGuid();
@@ -6434,6 +6628,30 @@ bool FCortexGraphMigrationRetireClosedOrphanTest::RunTest(const FString& Paramet
 	Update->CreateNewGuid();
 	Update->AllocateDefaultPins();
 	Fixture.Graph->AddNode(Update, true, false);
+	// Ordinary, fully closed variable/control-flow work must be admitted by the same guarded API.
+	UK2Node_VariableGet* Get = NewObject<UK2Node_VariableGet>(Fixture.Graph);
+	Get->VariableReference.SetSelfMember(TEXT("RetireButtonTarget"));
+	UK2Node_VariableSet* Set = NewObject<UK2Node_VariableSet>(Fixture.Graph);
+	Set->VariableReference.SetSelfMember(TEXT("RetireButtonTarget"));
+	UK2Node_ExecutionSequence* Sequence = NewObject<UK2Node_ExecutionSequence>(Fixture.Graph);
+	UK2Node_Select* Select = NewObject<UK2Node_Select>(Fixture.Graph);
+	UK2Node_Knot* Knot = NewObject<UK2Node_Knot>(Fixture.Graph);
+	UK2Node_VariableGet* ColorGet = NewObject<UK2Node_VariableGet>(Fixture.Graph);
+	ColorGet->VariableReference.SetSelfMember(TEXT("OrphanColor"));
+	UK2Node_BreakStruct* Break = NewObject<UK2Node_BreakStruct>(Fixture.Graph);
+	Break->StructType = ColorStruct;
+	for (UK2Node* Node : TArray<UK2Node*>{Get, Set, Sequence, Select, Knot, ColorGet, Break})
+	{
+		Node->CreateNewGuid();
+		Node->AllocateDefaultPins();
+		Fixture.Graph->AddNode(Node, true, false);
+	}
+	Select->GetIndexPin()->PinType.PinCategory = UEdGraphSchema_K2::PC_Int;
+	Select->PinTypeChanged(Select->GetIndexPin());
+	Select->NodeConnectionListChanged();
+	Select->GetReturnValuePin()->PinType = Get->FindPin(TEXT("RetireButtonTarget"))->PinType;
+	Select->PinTypeChanged(Select->GetReturnValuePin());
+	Select->NodeConnectionListChanged();
 	const UEdGraphSchema* Schema = Fixture.Graph->GetSchema();
 	FString Failure;
 	auto Link = [&](UEdGraphPin* From, UEdGraphPin* To)
@@ -6449,9 +6667,30 @@ bool FCortexGraphMigrationRetireClosedOrphanTest::RunTest(const FString& Paramet
 			FindTypedPin(Assign, EGPD_Input, UEdGraphSchema_K2::PC_Delegate));
 	if (!TestTrue(FString::Printf(TEXT("all six real links connect: %s"), *Failure), bConnected))
 	{ Fixture.Cleanup(); return false; }
-	TestTrue(TEXT("macro entry remains disconnected"), FindTypedPin(Macro, EGPD_Input, UEdGraphSchema_K2::PC_Exec)->LinkedTo.IsEmpty());
+	TArray<UEdGraphPin*> Options;
+	Select->GetOptionPins(Options);
+	const bool bOrdinaryConnected = Options.Num() == 2
+		&& ConnectTypedPins(Schema, Get->FindPin(TEXT("RetireButtonTarget")), Knot->GetInputPin(),
+			TEXT("variable get to knot"), Failure)
+		&& ConnectTypedPins(Schema, Knot->GetOutputPin(), Options[0], TEXT("knot to select option zero"), Failure)
+		&& ConnectTypedPins(Schema, Get->FindPin(TEXT("RetireButtonTarget")), Options[1],
+			TEXT("variable get to select option one"), Failure)
+		&& ConnectTypedPins(Schema, Select->GetReturnValuePin(), Set->FindPin(TEXT("RetireButtonTarget")),
+			TEXT("select to variable set"), Failure)
+		&& ConnectTypedPins(Schema, Sequence->GetThenPinGivenIndex(0), Set->FindPin(TEXT("execute")),
+			TEXT("sequence to variable set"), Failure)
+		&& ConnectTypedPins(Schema, Set->FindPin(TEXT("then")),
+			FindTypedPin(Macro, EGPD_Input, UEdGraphSchema_K2::PC_Exec), TEXT("variable set to macro"), Failure)
+		&& ConnectTypedPins(Schema, ColorGet->FindPin(TEXT("OrphanColor")),
+			FindTypedPin(Break, EGPD_Input, UEdGraphSchema_K2::PC_Struct), TEXT("struct getter to break struct"), Failure);
+	if (!TestTrue(FString::Printf(TEXT("ordinary closed component connects through real typed pins (options=%d): %s"),
+		Options.Num(), *Failure), bOrdinaryConnected))
+	{ Fixture.Cleanup(); return false; }
+	TestTrue(TEXT("ordinary component entry remains disconnected"), Sequence->FindPin(TEXT("execute"))->LinkedTo.IsEmpty());
 	const TArray<FString> Orphans = {Router->NodeGuid.ToString(), Macro->NodeGuid.ToString(),
-		Assign->NodeGuid.ToString(), Create->NodeGuid.ToString(), Update->NodeGuid.ToString()};
+		Assign->NodeGuid.ToString(), Create->NodeGuid.ToString(), Update->NodeGuid.ToString(),
+		Get->NodeGuid.ToString(), Set->NodeGuid.ToString(), Sequence->NodeGuid.ToString(),
+		Select->NodeGuid.ToString(), Knot->NodeGuid.ToString(), ColorGet->NodeGuid.ToString(), Break->NodeGuid.ToString()};
 	const TArray<FString> Entries = {Fixture.AlphaGuid.ToString(), Fixture.BetaGuid.ToString(), OldUpdate->NodeGuid.ToString()};
 	TestTrue(TEXT("disk-backed fixture saved"), Fixture.SaveToDisk());
 	const TArray<uint8> DiskBefore = ReadBytes(Fixture.Filename());
@@ -6488,16 +6727,61 @@ bool FCortexGraphMigrationRetireClosedOrphanTest::RunTest(const FString& Paramet
 	TArray<FString> Forbidden = Orphans;
 	Forbidden.Add(Fixture.RetainedGuid.ToString());
 	RefusesWithoutMutation(TEXT("authored entry cannot be an orphan member"), Forbidden);
+	const FMemberReference SetReference = Set->VariableReference;
+	Set->VariableReference.SetSelfMember(TEXT("MissingUnreviewedVariable"));
+	RefusesWithoutMutation(TEXT("unresolved ordinary setter refused"), Orphans);
+	Set->VariableReference = SetReference;
+	const FMemberReference ColorReference = ColorGet->VariableReference;
+	ColorGet->VariableReference.SetLocalMember(TEXT("OrphanColor"), TEXT("MissingScope"), FGuid());
+	RefusesWithoutMutation(TEXT("local-scope access cannot use class-property admission"), Orphans);
+	ColorGet->VariableReference = ColorReference;
 	UK2Node_VariableGet* Unproved = NewObject<UK2Node_VariableGet>(Fixture.Graph);
-	Unproved->VariableReference.SetSelfMember(TEXT("RetireButtonTarget"));
+	Unproved->VariableReference.SetSelfMember(TEXT("MissingUnreviewedVariable"));
 	Unproved->CreateNewGuid();
 	Unproved->AllocateDefaultPins();
 	Fixture.Graph->AddNode(Unproved, true, false);
 	Forbidden = Orphans;
 	Forbidden.Add(Unproved->NodeGuid.ToString());
-	RefusesWithoutMutation(TEXT("unproved class refused even when disconnected"), Forbidden);
+	RefusesWithoutMutation(TEXT("unresolved variable refused even when disconnected"), Forbidden);
 	Fixture.Graph->RemoveNode(Unproved);
 	Unproved->MarkAsGarbage();
+	UK2Node_VariableSetRef* Unsupported = NewObject<UK2Node_VariableSetRef>(Fixture.Graph);
+	Unsupported->CreateNewGuid();
+	Unsupported->AllocateDefaultPins();
+	Fixture.Graph->AddNode(Unsupported, true, false);
+	Forbidden = Orphans;
+	Forbidden.Add(Unsupported->NodeGuid.ToString());
+	RefusesWithoutMutation(TEXT("unsupported exact reference-write class refused"), Forbidden);
+	Fixture.Graph->RemoveNode(Unsupported);
+	Unsupported->MarkAsGarbage();
+	UK2Node_CallParentFunction* UnsupportedSubclass = NewObject<UK2Node_CallParentFunction>(Fixture.Graph);
+	UnsupportedSubclass->FunctionReference.SetExternalMember(TEXT("OnLegacyAlpha"), Fixture.Blueprint->ParentClass);
+	UnsupportedSubclass->CreateNewGuid();
+	UnsupportedSubclass->AllocateDefaultPins();
+	Fixture.Graph->AddNode(UnsupportedSubclass, true, false);
+	Forbidden = Orphans;
+	Forbidden.Add(UnsupportedSubclass->NodeGuid.ToString());
+	RefusesWithoutMutation(TEXT("ordinary call subclass cannot inherit exact-class admission"), Forbidden);
+	Fixture.Graph->RemoveNode(UnsupportedSubclass);
+	UnsupportedSubclass->MarkAsGarbage();
+	UK2Node_Composite* GraphOwner = NewObject<UK2Node_Composite>(Fixture.Graph);
+	GraphOwner->CreateNewGuid();
+	GraphOwner->BoundGraph = NewObject<UEdGraph>(GraphOwner);
+	Fixture.Graph->AddNode(GraphOwner, true, false);
+	Forbidden = Orphans;
+	Forbidden.Add(GraphOwner->NodeGuid.ToString());
+	RefusesWithoutMutation(TEXT("structural bound-graph owner refused"), Forbidden);
+	Fixture.Graph->RemoveNode(GraphOwner);
+	GraphOwner->MarkAsGarbage();
+	UK2Node_BreakStruct* UnresolvedStruct = NewObject<UK2Node_BreakStruct>(Fixture.Graph);
+	UnresolvedStruct->CreateNewGuid();
+	UnresolvedStruct->AllocateDefaultPins();
+	Fixture.Graph->AddNode(UnresolvedStruct, true, false);
+	Forbidden = Orphans;
+	Forbidden.Add(UnresolvedStruct->NodeGuid.ToString());
+	RefusesWithoutMutation(TEXT("unresolved reflected struct refused"), Forbidden);
+	Fixture.Graph->RemoveNode(UnresolvedStruct);
+	UnresolvedStruct->MarkAsGarbage();
 	UK2Node_CallFunction* Unresolved = NewObject<UK2Node_CallFunction>(Fixture.Graph);
 	Unresolved->FunctionReference.SetSelfMember(TEXT("MissingUnreviewedFunction"));
 	Unresolved->CreateNewGuid();
@@ -6509,7 +6793,7 @@ bool FCortexGraphMigrationRetireClosedOrphanTest::RunTest(const FString& Paramet
 	Fixture.Graph->RemoveNode(Unresolved);
 	Unresolved->MarkAsGarbage();
 	UEdGraphPin* OutsideExec = Fixture.Retained->FindPin(TEXT("then"));
-	UEdGraphPin* InsideExec = FindTypedPin(Macro, EGPD_Input, UEdGraphSchema_K2::PC_Exec);
+	UEdGraphPin* InsideExec = Sequence->FindPin(TEXT("execute"));
 	OutsideExec->MakeLinkTo(InsideExec);
 	RefusesWithoutMutation(TEXT("execution boundary refused"), Orphans);
 	OutsideExec->BreakLinkTo(InsideExec);
@@ -6546,9 +6830,14 @@ bool FCortexGraphMigrationRetireClosedOrphanTest::RunTest(const FString& Paramet
 			Request, Approved, Error, true, false, Orphans))) { Fixture.Cleanup(); return false; }
 	FCortexGraphPreparedPatch Preview;
 	TestTrue(TEXT("reviewed preview remains valid"), FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Request, Preview, Error));
-	TestEqual(TEXT("all five proofs published"), JsonStringArray(
-		FCortexGraphMigrationOps::MakeRetirementInventory(Preview.RetirementPlan), TEXT("orphan_component_nodes")).Num(), 5);
+	TestEqual(TEXT("all twelve class-specific proofs published"), JsonStringArray(
+		FCortexGraphMigrationOps::MakeRetirementInventory(Preview.RetirementPlan), TEXT("orphan_component_nodes")).Num(), 12);
 	TestTrue(TEXT("compiled statements and generated function require compilation"), Preview.RetirementPlan->GetBoolField(TEXT("requires_compile")));
+	// The ordered oracle the closed ordinary component is rolled back against: it is the same
+	// enumeration every recovery assertion below compares, so pin identity, defaults and the
+	// reciprocal link order are covered by one capture.
+	auto CaptureEnumeration = [&]() { return CaptureOrderedEnumeration(Fixture.Blueprint); };
+	const FString OriginalEnumeration = CaptureEnumeration();
 	Router->NodePosX++;
 	const FString StaleHash = FCortexGraphPatchState::ComputeFingerprint(Fixture.Blueprint)->GetStringField(TEXT("graph_authoring_hash"));
 	const int32 StaleCount = Fixture.Graph->Nodes.Num();
@@ -6560,7 +6849,95 @@ bool FCortexGraphMigrationRetireClosedOrphanTest::RunTest(const FString& Paramet
 	TestEqual(TEXT("stale refusal preserves dirty state"), Fixture.Package->IsDirty(), bStaleDirty);
 	TestTrue(TEXT("stale refusal preserves disk"), SameBytes(DiskBefore, ReadBytes(Fixture.Filename())));
 	Router->NodePosX--;
-	TestTrue(TEXT("reviewed atomic removal applies"), FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	const FString BeforeRemoval = CaptureNativeGraph(Fixture.Graph);
+	const bool bDirtyBeforeRemoval = Fixture.Package->IsDirty();
+	FCortexGraphPatchOps::SetApplyFaultPointForTesting(TEXT("migration_retire_after_removals"));
+	TestFalse(TEXT("post-removal fault refuses the closed ordinary component atomically"),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	FCortexGraphPatchOps::ClearApplyFaultPointForTesting();
+	TestEqual(TEXT("closed ordinary component rollback restores transaction"), Outcome.RollbackStatus, FString(TEXT("restored")));
+	TestFalse(TEXT("verified rollback does not block the asset"), Outcome.bBlocked);
+	TestEqual(TEXT("rollback restores every ordinary node and physical link"), CaptureNativeGraph(Fixture.Graph), BeforeRemoval);
+	TestEqual(TEXT("rollback restores dirty state"), Fixture.Package->IsDirty(), bDirtyBeforeRemoval);
+	TestTrue(TEXT("rollback preserves original disk"), SameBytes(DiskBefore, ReadBytes(Fixture.Filename())));
+	FCortexGraphPreparedPatch RecoveryPreview;
+	FCortexCommandResult RecoveryError;
+	const bool bRecoveryValid = FCortexGraphPatchOps::Preflight(Fixture.Blueprint, Request, RecoveryPreview, RecoveryError);
+	TestTrue(TEXT("rollback preserves exact graph, node, pin and physical link enumeration"),
+		CaptureEnumeration() == OriginalEnumeration);
+	TestTrue(FString::Printf(TEXT("restored component preserves the reviewed apply precondition: %s"),
+		*RecoveryError.ErrorMessage), bRecoveryValid);
+	TestEqual(TEXT("rollback preserves the exact reviewed validation token"), RecoveryPreview.ValidationHash, Preview.ValidationHash);
+
+	// The fault above fires during the apply phase, before the target compile. This one is a retirement
+	// readback seam, and `Execute` only reaches the retirement readback after `CompileTargetBlueprint`
+	// succeeded (`compile=true` here), immediately after the class-specific generated-artefact
+	// comparison this fixture's plan requires (`requires_compile`, asserted above). The injected
+	// failure is therefore a genuine post-target-compile one, and the assertions below prove the
+	// compile/recovery-compile phases really ran rather than inferring them from the wiring.
+	FOperations PostCompileOperations;
+	PostCompileOperations.Begin();
+	FCortexGraphPatchOutcome PostCompileOutcome;
+	Error = FCortexCommandResult();
+	FCortexGraphMigrationOps::SetRetirementReadbackFaultForTesting(TEXT("retire_after_binding"));
+	const bool bPostCompileApplied = FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, PostCompileOutcome, Error);
+	FCortexGraphMigrationOps::ClearRetirementReadbackFaultForTesting();
+	PostCompileOperations.End();
+	TestFalse(TEXT("the post-target-compile readback fault refuses the closed ordinary component"),
+		bPostCompileApplied);
+	TestEqual(TEXT("the post-target-compile failure is the retirement readback mismatch"),
+		PostCompileOutcome.ReadbackStatus, FString(TEXT("mismatched")));
+	TestEqual(TEXT("the target compile really ran before the injected failure"),
+		PostCompileOutcome.TargetCompileCount, 1);
+	TestEqual(TEXT("the target compile was observed independently of the outcome"),
+		PostCompileOperations.TargetCompiles, 1);
+	TestEqual(TEXT("the target compile completed before the injected failure"),
+		PostCompileOutcome.CompileStatus, FString(TEXT("compiled")));
+	TestEqual(TEXT("the failure was raised after the apply phase, not as an apply-phase refusal"),
+		PostCompileOutcome.ApplyStatus, FString(TEXT("applied")));
+	TestEqual(TEXT("the post-target-compile failure performed the recovery compilation"),
+		PostCompileOutcome.RecoveryCompileCount, 1);
+	TestEqual(TEXT("the recovery compilation was observed independently of the outcome"),
+		PostCompileOperations.RecoveryCompiles, 1);
+	TestEqual(TEXT("the post-target-compile rollback restores the transaction"),
+		PostCompileOutcome.RollbackStatus, FString(TEXT("restored")));
+	TestFalse(TEXT("the restored post-compile asset is not blocked"), PostCompileOutcome.bBlocked);
+	TestEqual(TEXT("post-compile rollback restores the exact ordered node, pin, default and reciprocal link enumeration"),
+		CaptureEnumeration(), OriginalEnumeration);
+	TestEqual(TEXT("post-compile rollback restores the exact native graph snapshot"),
+		CaptureNativeGraph(Fixture.Graph), BeforeRemoval);
+	TestEqual(TEXT("post-compile rollback restores the dirty baseline"), Fixture.Package->IsDirty(), bDirtyBeforeRemoval);
+	TestTrue(TEXT("post-compile rollback preserves the original disk bytes"),
+		SameBytes(DiskBefore, ReadBytes(Fixture.Filename())));
+	for (const FString& GuidText : Approved)
+	{
+		FGuid Guid;
+		FGuid::Parse(GuidText, Guid);
+		TestNotNull(TEXT("post-compile rollback restores every reviewed identity"),
+			FCortexGraphMigrationOps::FindNodeByGuid(Fixture.Blueprint, Guid));
+	}
+	FCortexGraphPreparedPatch PostCompilePreview;
+	FCortexCommandResult PostCompileError;
+	const bool bPostCompileValid = FCortexGraphPatchOps::Preflight(
+		Fixture.Blueprint, Request, PostCompilePreview, PostCompileError);
+	TestTrue(FString::Printf(TEXT("the post-compile rollback preserves the reviewed apply precondition: %s"),
+		*PostCompileError.ErrorMessage), bPostCompileValid);
+	TestEqual(TEXT("the post-compile rollback preserves the exact reviewed validation token"),
+		PostCompilePreview.ValidationHash, Preview.ValidationHash);
+	TestEqual(TEXT("the request still carries the reviewed validation token"),
+		Request->GetStringField(TEXT("expected_validation_hash")), Preview.ValidationHash);
+
+	// The original reviewed token is carried by the unchanged request into the apply below, so a
+	// successful removal here proves the token still authorizes the same intent after the recovery.
+	const bool bApplied = FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error);
+	FString ErrorDetails;
+	if (Error.ErrorDetails.IsValid())
+		FJsonSerializer::Serialize(Error.ErrorDetails.ToSharedRef(), TJsonWriterFactory<>::Create(&ErrorDetails));
+	if (!TestTrue(FString::Printf(
+		TEXT("reviewed atomic removal applies: code=%s message=%s details=%s apply=%s compile=%s rollback=%s diagnostics=%s"),
+		*Error.ErrorCode, *Error.ErrorMessage, *ErrorDetails, *Outcome.ApplyStatus, *Outcome.CompileStatus,
+		*Outcome.RollbackStatus, *FString::Join(Outcome.Diagnostics, TEXT("; "))), bApplied))
+	{ Fixture.Cleanup(); return false; }
 	TestTrue(TEXT("final compiled Blueprint is valid"), Fixture.Blueprint->Status == BS_UpToDate
 		|| Fixture.Blueprint->Status == BS_UpToDateWithWarnings);
 	TestNull(TEXT("retired generated function removed by final compile"),
@@ -6573,9 +6950,167 @@ bool FCortexGraphMigrationRetireClosedOrphanTest::RunTest(const FString& Paramet
 	}
 	TestEqual(TEXT("hover presentation and shared producer preserved"), CaptureNativeGraph(Fixture.Graph, &Retained), RetainedBefore);
 	TestEqual(TEXT("shared macro graph untouched"), CaptureNativeGraph(MacroGraph), SharedMacroBefore);
+	TestNotNull(TEXT("retiring variable nodes preserves the native property"),
+		FindFProperty<FProperty>(Fixture.Blueprint->GeneratedClass, TEXT("RetireButtonTarget")));
+	const FStructProperty* const PreservedColor =
+		FindFProperty<FStructProperty>(Fixture.Blueprint->GeneratedClass, TEXT("OrphanColor"));
+	if (TestNotNull(TEXT("retiring struct nodes preserves the reflected Blueprint member"), PreservedColor))
+		TestEqual(TEXT("retiring struct access preserves its shared reflected type"), PreservedColor->Struct.Get(), ColorStruct);
+	TestTrue(TEXT("retiring ordinary work preserves the primary EventGraph"),
+		Fixture.Blueprint->UbergraphPages.Contains(Fixture.Graph));
 	TestTrue(TEXT("unsaved apply keeps original disk"), SameBytes(DiskBefore, ReadBytes(Fixture.Filename())));
 	TestTrue(TEXT("unsaved apply keeps package dirty"), Fixture.Package->IsDirty());
 	Fixture.Cleanup();
+
+	// A previously migrated graph can have closed obsolete work but no obsolete entry left.
+	FFixture OrphanOnly;
+	if (!TestTrue(TEXT("orphan-only fixture built"), OrphanOnly.Build(TEXT("BP_RetireOrphanOnly"), true))) return false;
+	FKismetEditorUtilities::CompileBlueprint(OrphanOnly.Blueprint);
+	TSet<FGuid> ExistingGuids;
+	for (UEdGraphNode* Node : OrphanOnly.Graph->Nodes) if (Node) ExistingGuids.Add(Node->NodeGuid);
+	const FString ExistingBefore = CaptureNativeGraph(OrphanOnly.Graph, &ExistingGuids);
+	UK2Node_VariableGet* OnlyGet = NewObject<UK2Node_VariableGet>(OrphanOnly.Graph);
+	OnlyGet->VariableReference.SetSelfMember(TEXT("RetireButtonTarget"));
+	UK2Node_VariableSet* OnlySet = NewObject<UK2Node_VariableSet>(OrphanOnly.Graph);
+	OnlySet->VariableReference.SetSelfMember(TEXT("RetireButtonTarget"));
+	for (UK2Node* Node : TArray<UK2Node*>{OnlyGet, OnlySet})
+	{
+		Node->CreateNewGuid();
+		Node->AllocateDefaultPins();
+		OrphanOnly.Graph->AddNode(Node, true, false);
+	}
+	if (!TestTrue(TEXT("orphan-only ordinary component connects"),
+		OrphanOnly.LinkPins(OnlyGet, TEXT("RetireButtonTarget"), OnlySet, TEXT("RetireButtonTarget"))))
+	{ OrphanOnly.Cleanup(); return false; }
+	const TArray<FString> OnlyGuids = {OnlyGet->NodeGuid.ToString(), OnlySet->NodeGuid.ToString()};
+	TestTrue(TEXT("orphan-only baseline saved"), OrphanOnly.SaveToDisk());
+	const TArray<uint8> OnlyDiskBefore = ReadBytes(OrphanOnly.Filename());
+	OrphanOnly.Package->SetDirtyFlag(true);
+	auto OnlyMigration = [&]()
+	{
+		TSharedPtr<FJsonObject> Value = WithAdditionalNodeGuids(
+			OrphanOnly.Migration({}), OnlyGuids, TEXT("orphan_component_node_guids"));
+		Value->GetObjectField(TEXT("source"))->RemoveField(TEXT("entry_node_guids"));
+		return Value;
+	};
+	auto RefuseEmptySelection = [&](const TCHAR* Label, const TSharedPtr<FJsonObject>& Value)
+	{
+		const FString Before = CaptureNativeGraph(OrphanOnly.Graph);
+		const bool bDirty = OrphanOnly.Package->IsDirty();
+		FCortexGraphMigrationRetirePlan PlanValue;
+		FCortexCommandResult Refusal;
+		bool bReused = false;
+		TestFalse(Label, FCortexGraphMigrationOps::PlanRetirement(
+			OrphanOnly.Blueprint, Value, PlanValue, bReused, Refusal));
+		TestEqual(TEXT("empty-selection refusal preserves graph"), CaptureNativeGraph(OrphanOnly.Graph), Before);
+		TestEqual(TEXT("empty-selection refusal preserves dirty state"), OrphanOnly.Package->IsDirty(), bDirty);
+		TestTrue(TEXT("empty-selection refusal preserves disk"), SameBytes(OnlyDiskBefore, ReadBytes(OrphanOnly.Filename())));
+	};
+	TSharedPtr<FJsonObject> EmptySelection = OnlyMigration();
+	EmptySelection->GetObjectField(TEXT("source"))->RemoveField(TEXT("orphan_component_node_guids"));
+	RefuseEmptySelection(TEXT("absent entry and absent orphan selection refused"), EmptySelection);
+	EmptySelection = OnlyMigration();
+	EmptySelection->GetObjectField(TEXT("source"))->SetArrayField(TEXT("orphan_component_node_guids"), {});
+	RefuseEmptySelection(TEXT("absent entries and empty orphan selection refused"), EmptySelection);
+	EmptySelection = OnlyMigration();
+	EmptySelection->GetObjectField(TEXT("source"))->SetArrayField(TEXT("entry_node_guids"), {});
+	RefuseEmptySelection(TEXT("explicit empty entry selection remains invalid with nonempty orphans"), EmptySelection);
+	EmptySelection = WithAdditionalNodeGuids(OnlyMigration(), {OrphanOnly.ProducerGuid.ToString()});
+	RefuseEmptySelection(TEXT("additional nodes cannot join an entryless orphan retirement"), EmptySelection);
+	UEdGraphPin* RetainedExec = OrphanOnly.Retained->FindPin(TEXT("then"));
+	UEdGraphPin* OrphanExec = OnlySet->FindPin(TEXT("execute"));
+	RetainedExec->MakeLinkTo(OrphanExec);
+	RefuseEmptySelection(TEXT("orphan-only inventory still rejects a retained execution boundary"), OnlyMigration());
+	RetainedExec->BreakLinkTo(OrphanExec);
+	TSharedPtr<FJsonObject> OnlyRequest;
+	TArray<FString> OnlyApproved;
+	FCortexCommandResult OnlyError;
+	const bool bOnlyPrepared = PrepareAdditionalRetirementRequest(OrphanOnly, {}, {},
+		TEXT("00000000-0000-0000-0000-000000114802"), OnlyRequest, OnlyApproved, OnlyError, true, false, OnlyGuids);
+	if (!TestTrue(FString::Printf(TEXT("orphan-only preview and exact approval succeed: %s"), *OnlyError.ErrorMessage), bOnlyPrepared))
+	{ OrphanOnly.Cleanup(); return false; }
+	FCortexGraphPreparedPatch OnlyPreview;
+	TestTrue(TEXT("orphan-only reviewed preflight succeeds"),
+		FCortexGraphPatchOps::Preflight(OrphanOnly.Blueprint, OnlyRequest, OnlyPreview, OnlyError));
+	TestEqual(TEXT("orphan-only inventory publishes no selected entries"),
+		JsonStringArray(OnlyPreview.RetirementPlan, TEXT("selected_entry_guids")).Num(), 0);
+	TestEqual(TEXT("orphan-only exact approval includes only closed inventory"), OnlyApproved.Num(), 2);
+	// The entryless (omitted `entry_node_guids`) inventory is put through the same post-target-compile
+	// readback failure and recovery the closed component uses, so an inventory with no selected entry
+	// is proven recoverable rather than only admissible.
+	const FString OnlyEnumeration = CaptureOrderedEnumeration(OrphanOnly.Blueprint);
+	const bool bOnlyDirtyBefore = OrphanOnly.Package->IsDirty();
+	FOperations OnlyPostCompileOperations;
+	OnlyPostCompileOperations.Begin();
+	FCortexGraphPatchOutcome OnlyPostCompileOutcome;
+	OnlyError = FCortexCommandResult();
+	FCortexGraphMigrationOps::SetRetirementReadbackFaultForTesting(TEXT("retire_after_removal"));
+	const bool bOnlyPostCompileApplied = FCortexGraphPatchOps::Execute(
+		OrphanOnly.Blueprint, OnlyRequest, OnlyPostCompileOutcome, OnlyError);
+	FCortexGraphMigrationOps::ClearRetirementReadbackFaultForTesting();
+	OnlyPostCompileOperations.End();
+	TestFalse(TEXT("the entryless post-target-compile readback fault refuses the orphan-only removal"),
+		bOnlyPostCompileApplied);
+	TestEqual(TEXT("the entryless post-target-compile failure is the retirement readback mismatch"),
+		OnlyPostCompileOutcome.ReadbackStatus, FString(TEXT("mismatched")));
+	TestEqual(TEXT("the entryless target compile really ran before the injected failure"),
+		OnlyPostCompileOutcome.TargetCompileCount, 1);
+	TestEqual(TEXT("the entryless target compile was observed independently of the outcome"),
+		OnlyPostCompileOperations.TargetCompiles, 1);
+	TestEqual(TEXT("the entryless target compile completed before the injected failure"),
+		OnlyPostCompileOutcome.CompileStatus, FString(TEXT("compiled")));
+	TestEqual(TEXT("the entryless failure was raised after the apply phase"),
+		OnlyPostCompileOutcome.ApplyStatus, FString(TEXT("applied")));
+	TestEqual(TEXT("the entryless post-target-compile failure performed the recovery compilation"),
+		OnlyPostCompileOutcome.RecoveryCompileCount, 1);
+	TestEqual(TEXT("the entryless recovery compilation was observed independently of the outcome"),
+		OnlyPostCompileOperations.RecoveryCompiles, 1);
+	TestEqual(TEXT("the entryless post-target-compile rollback restores the transaction"),
+		OnlyPostCompileOutcome.RollbackStatus, FString(TEXT("restored")));
+	TestFalse(TEXT("the entryless restored post-compile asset is not blocked"), OnlyPostCompileOutcome.bBlocked);
+	TestEqual(TEXT("the entryless post-compile rollback restores the exact ordered node, pin, default and reciprocal link enumeration"),
+		CaptureOrderedEnumeration(OrphanOnly.Blueprint), OnlyEnumeration);
+	TestEqual(TEXT("the entryless post-compile rollback restores every existing node"),
+		CaptureNativeGraph(OrphanOnly.Graph, &ExistingGuids), ExistingBefore);
+	TestEqual(TEXT("the entryless post-compile rollback restores the dirty baseline"),
+		OrphanOnly.Package->IsDirty(), bOnlyDirtyBefore);
+	TestTrue(TEXT("the entryless post-compile rollback preserves the original disk bytes"),
+		SameBytes(OnlyDiskBefore, ReadBytes(OrphanOnly.Filename())));
+	for (const FString& Text : OnlyGuids)
+	{
+		FGuid Guid;
+		FGuid::Parse(Text, Guid);
+		TestNotNull(TEXT("the entryless post-compile rollback restores the reviewed orphan identity"),
+			FCortexGraphMigrationOps::FindNodeByGuid(OrphanOnly.Blueprint, Guid));
+	}
+	FCortexGraphPreparedPatch OnlyPostCompilePreview;
+	FCortexCommandResult OnlyPostCompileError;
+	const bool bOnlyPostCompileValid = FCortexGraphPatchOps::Preflight(
+		OrphanOnly.Blueprint, OnlyRequest, OnlyPostCompilePreview, OnlyPostCompileError);
+	TestTrue(FString::Printf(TEXT("the entryless post-compile rollback preserves the reviewed apply precondition: %s"),
+		*OnlyPostCompileError.ErrorMessage), bOnlyPostCompileValid);
+	TestEqual(TEXT("the entryless post-compile rollback preserves the exact reviewed validation token"),
+		OnlyPostCompilePreview.ValidationHash, OnlyPreview.ValidationHash);
+	FCortexGraphPatchOutcome OnlyOutcome;
+	const bool bOnlyApplied = FCortexGraphPatchOps::Execute(OrphanOnly.Blueprint, OnlyRequest, OnlyOutcome, OnlyError);
+	if (!TestTrue(FString::Printf(TEXT("orphan-only guarded removal applies: %s"), *OnlyError.ErrorMessage), bOnlyApplied))
+	{ OrphanOnly.Cleanup(); return false; }
+	for (const FString& Text : OnlyGuids)
+	{
+		FGuid Guid;
+		FGuid::Parse(Text, Guid);
+		TestNull(TEXT("orphan-only approved node removed"), FCortexGraphMigrationOps::FindNodeByGuid(OrphanOnly.Blueprint, Guid));
+	}
+	for (const FGuid& Guid : ExistingGuids)
+		TestNotNull(TEXT("orphan-only removal retains every authored entry and existing body"),
+			FCortexGraphMigrationOps::FindNodeByGuid(OrphanOnly.Blueprint, Guid));
+	TestEqual(TEXT("orphan-only removal preserves all existing nodes"), CaptureNativeGraph(OrphanOnly.Graph, &ExistingGuids), ExistingBefore);
+	TestTrue(TEXT("orphan-only removal preserves primary EventGraph"), OrphanOnly.Blueprint->UbergraphPages.Contains(OrphanOnly.Graph));
+	TestTrue(TEXT("orphan-only final compile succeeds"), OrphanOnly.Blueprint->Status == BS_UpToDate
+		|| OrphanOnly.Blueprint->Status == BS_UpToDateWithWarnings);
+	TestTrue(TEXT("orphan-only unsaved removal preserves disk"), SameBytes(OnlyDiskBefore, ReadBytes(OrphanOnly.Filename())));
+	TestFalse(TEXT("orphan-only removal does not claim a save"), OnlyOutcome.bSaved);
+	OrphanOnly.Cleanup();
 	return true;
 }
 

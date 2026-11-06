@@ -157,24 +157,44 @@ def _composite_hint(domain: str, command_names: set[str] | None = None) -> str:
     return _COMPOSITE_HINTS.get(domain, "")
 
 
+def _command_name_list(commands: list[dict]) -> str:
+    """Render a domain's command names for the public description (names only)."""
+    return ", ".join(command.get("name", "unknown") for command in commands)
+
+
+def _router_body(domain: str, commands: list[dict]) -> str:
+    """The public description body: canonical envelope, complete command names, schema guidance.
+
+    Parameter signatures are deliberately absent; the full metadata stays in the capabilities
+    cache / fallback structures and is served on demand by core.get_operation_schema.
+    """
+    names = _command_name_list(commands)
+    parts = [f"Route through {domain}_cmd(command, params)."]
+    if names:
+        parts.append(f"Commands: {names}.")
+    parts.append("Fetch parameters with core.get_operation_schema before unfamiliar calls.")
+    return " ".join(parts)
+
+
+def _router_docstring(domain: str, commands: list[dict], command_names: set[str] | None = None) -> str:
+    """Compose a router description from the shared metadata command list plus its domain hint."""
+    hint = _composite_hint(domain, command_names)
+    body = _router_body(domain, commands)
+    return (hint + body) if hint else body
+
+
 def minimal_router_docstrings(domains: tuple[str, ...] | None = None) -> dict[str, str]:
     """Return minimal router docstrings when no capabilities cache is available.
 
-    Every domain gets a hardcoded command list so LLMs know valid command
-    names even when the live capabilities cache is unavailable.
+    Every domain renders its complete fallback command names (never parameter signatures) so
+    LLMs know valid command names even when the live capabilities cache is unavailable.
     """
     if domains is None:
         domains = CORE_DOMAINS
-    docstrings: dict[str, str] = {}
-    for domain in domains:
-        tool_name = f"{domain}_cmd"
-        hint = _composite_hint(domain)
-        base = f"Route UnrealCortex {domain} commands through `{tool_name}(command, params)`."
-        commands = _FALLBACK_COMMANDS.get(domain, "")
-        body = base + commands
-        docstrings[domain] = (hint + body) if hint else body
-
-    return docstrings
+    return {
+        domain: _router_docstring(domain, _FALLBACK_STRUCTURED.get(domain, []))
+        for domain in domains
+    }
 
 
 def build_router_docstrings(capabilities: dict | None) -> dict[str, str]:
@@ -198,46 +218,83 @@ def build_router_docstrings(capabilities: dict | None) -> dict[str, str]:
         command_names = {command.get("name") for command in commands}
         if domain_name == "anim":
             commands = _animation_commands_for_docstring(commands)
-        lines = [
-            f"Route UnrealCortex {domain_name} commands through `{domain_name}_cmd(command, params)`.",
-            "Available commands:",
-        ]
-        for command in commands:
-            lines.append(f"- {_format_command_signature(command)}")
-        hint = _composite_hint(domain_name, command_names)
-        body = "\n".join(lines)
-        docstrings[domain_name] = (hint + body) if hint else body
+        docstrings[domain_name] = _router_docstring(domain_name, commands, command_names)
 
     return docstrings
 
 
-def _format_command_signature(command: dict) -> str:
-    """Format a command entry into a compact signature string."""
-    name = command.get("name", "unknown")
-    params = command.get("params", [])
-    if not params:
-        return f"{name}()"
+# --- startup toolsets (design §2.2) ---
+#
+# ``CORTEX_TOOLSET`` is a startup registration filter, not an authorization boundary: it only
+# decides which public tools are registered. Router membership is expressed by domain and the
+# live registered domains are applied at resolve time, so an optional domain (gen/anim) can never
+# be advertised by a preset that did not ask for it.
 
-    parts = []
-    for param in params:
-        param_name = param.get("name", "param")
-        param_type = param.get("type", "any")
-        if param.get("required", False):
-            parts.append(f"{param_name}: {param_type}")
-        else:
-            parts.append(f"{param_name}: {param_type} = optional")
-    return f"{name}({', '.join(parts)})"
+_REFLECT_STANDALONE_TOOLS = frozenset({
+    "scan_project",
+    "reflect_cache_status",
+    "rebuild_graph_cache",
+    "query_class_context",
+    "get_dependencies",
+    "query_class_detail",
+    "query_class_hierarchy",
+    "impact_analysis",
+    "query_overrides",
+    "get_referencers",
+    "query_usages",
+})
+
+# ui: core/data/blueprint/graph/umg/editor routers; blueprint_compose, widget_compose;
+# profile_operation_schema, schema_generate, editor_restart.
+_UI_TOOLSET = frozenset({
+    "core_cmd", "data_cmd", "blueprint_cmd", "graph_cmd", "umg_cmd", "editor_cmd",
+    "blueprint_compose", "widget_compose",
+    "profile_operation_schema", "schema_generate", "editor_restart",
+})
+
+# blueprint: core/data/blueprint/graph/editor/reflect routers; blueprint_compose; all 11 Reflect
+# standalone tools; profile_operation_schema, schema_generate, editor_restart.
+_BLUEPRINT_TOOLSET = frozenset({
+    "core_cmd", "data_cmd", "blueprint_cmd", "graph_cmd", "editor_cmd", "reflect_cmd",
+    "blueprint_compose",
+    "profile_operation_schema", "schema_generate", "editor_restart",
+}) | _REFLECT_STANDALONE_TOOLS
+
+# data: core/data/editor routers; apply_import_ops_json, schema_generate, editor_restart.
+_DATA_TOOLSET = frozenset({
+    "core_cmd", "data_cmd", "editor_cmd",
+    "apply_import_ops_json", "schema_generate", "editor_restart",
+})
+
+_TOOLSETS: dict[str, frozenset[str]] = {
+    "ui": _UI_TOOLSET,
+    "blueprint": _BLUEPRINT_TOOLSET,
+    "data": _DATA_TOOLSET,
+}
+
+TOOLSET_NAMES = ("all",) + tuple(_TOOLSETS)
 
 
-def _build_fallback_strings() -> dict[str, str]:
-    """Format structured fallback data into docstring-ready command lists."""
-    result: dict[str, str] = {}
-    for domain, commands in _FALLBACK_STRUCTURED.items():
-        lines = ["\nAvailable commands:"]
-        for cmd in commands:
-            lines.append(f"\n- {_format_command_signature(cmd)}")
-        result[domain] = "".join(lines)
-    return result
+def resolve_toolset(name: str, registered_domains: tuple[str, ...]) -> frozenset[str] | None:
+    """Resolve a startup toolset name to the public registration allowlist.
 
+    ``all`` returns ``None`` (no filter, i.e. the current registered surface). A named preset
+    returns the exact design §2.2 membership with optional-domain availability applied. An
+    unknown name refuses startup. Toolset visibility is not execution policy.
+    """
+    normalized = (name or "all").strip().lower()
+    if normalized == "all":
+        return None
 
-_FALLBACK_COMMANDS = _build_fallback_strings()
+    preset = _TOOLSETS.get(normalized)
+    if preset is None:
+        raise ValueError(
+            f"CORTEX_TOOLSET={name!r} is invalid; choose one of {', '.join(TOOLSET_NAMES)}."
+        )
+
+    available = set(registered_domains)
+    return frozenset(
+        tool
+        for tool in preset
+        if not tool.endswith("_cmd") or tool[: -len("_cmd")] in available
+    )

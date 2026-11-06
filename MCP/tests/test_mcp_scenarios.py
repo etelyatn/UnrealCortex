@@ -912,18 +912,24 @@ async def test_stress_many_graph_nodes(mcp_client):
             except Exception:
                 break
 
+        # A mixed node+edge read is never cursor-paginated: select the wanted nodes explicitly and
+        # read them in one bounded, complete-or-refuse response instead of paging nodes while
+        # keeping the whole edge topology. 30 explicit nodes exceed the response budget, so the
+        # honest contract is the complete requested set or an explicit refusal — never a silently
+        # shortened node array.
         data = await call_tool(mcp_client, "graph_cmd", {
             "command": "get_subgraph",
-            "params": {"asset_path": asset_path, "graph_name": "EventGraph", "limit": 5},
+            "params": {"asset_path": asset_path, "graph_name": "EventGraph", "node_ids": node_ids},
         })
-        nodes = list(data["nodes"])
-        while data["_pagination"]["has_more"]:
-            data = await call_tool(mcp_client, "graph_cmd", {
-                "command": "get_subgraph",
-                "params": {"cursor": data["_pagination"]["next_cursor"]},
-            })
-            nodes.extend(data["nodes"])
-        assert set(node_ids) <= {node["node_id"] for node in nodes}
+        assert "_pagination" not in data
+        assert "_truncated" not in data
+        if data.get("_error") == "RESPONSE_TOO_LARGE":
+            assert data.get("reader_complete") is False
+            assert data.get("_suggestion")
+            assert "nodes" not in data
+        else:
+            assert data.get("reader_complete") is not False
+            assert set(node_ids) <= {node["node_id"] for node in data["nodes"]}
 
     finally:
         if asset_path:

@@ -177,10 +177,9 @@ def _build_widget_batch_commands(
                     if isinstance(value, dict):
                         params.update(value)
                 elif key == "padding":
-                    if isinstance(value, dict):
-                        params.update(value)
-                    else:
-                        params["padding"] = value
+                    # umg.set_padding declares a single `padding` object/number; flattening the
+                    # dict into top-level edge keys would be silently dropped by the native handler.
+                    params["padding"] = value
                 elif key == "anchor":
                     params["preset"] = value
                 elif key == "alignment":

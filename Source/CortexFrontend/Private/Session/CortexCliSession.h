@@ -141,6 +141,9 @@ private:
 	friend class FCortexReconnectFromIdleTransitionsTest;
 	friend class FCortexReconnectDirtyStatePreservedOnFailureTest;
 	friend class FCortexReconnectPinsLaunchMetadataAcrossSettingsChangeTest;
+	friend class FCortexInputAreaResolutionCodexDefaultTurnAccessModeTest;
+	friend class FCortexInputAreaResolutionCodexCustomTurnAccessModeTest;
+	friend class FCortexInputAreaResolutionCodexResumedTurnAccessModeTest;
 
 	FString BuildLaunchCommandLine(bool bResumeSession, ECortexAccessMode AccessMode) const;
 	FString BuildAllowedToolsArg(ECortexAccessMode AccessMode) const;

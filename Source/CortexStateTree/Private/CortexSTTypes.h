@@ -39,6 +39,8 @@ bool CheckExpectedFingerprint(UObject* Asset, const TSharedPtr<FJsonObject>& Par
 TSharedPtr<FJsonObject> MakeValidationPayload(bool bValid, const TArray<FString>& Errors, const TArray<FString>& Warnings);
 TSharedPtr<FJsonObject> BuildValidationPayload(UStateTree* StateTree);
 void CollectStates(UStateTreeState* Root, TArray<FCortexSTStateRef>& OutStates);
+// Stored inspection needs only native references, not selector IDs/Parent paths.
+void CollectAllStates(const FCortexSTAssetContext& Context, TArray<FCortexSTStateRef>& OutStates, bool bIncludeSelectorFields = true);
 bool ResolveState(const FCortexSTAssetContext& Context, const TSharedPtr<FJsonObject>& Params, FCortexSTStateRef& OutState, FCortexCommandResult& OutError);
 TSharedPtr<FJsonObject> SerializeState(const FCortexSTStateRef& StateRef, bool bIncludeTransitions, bool bIncludeNodes);
 }

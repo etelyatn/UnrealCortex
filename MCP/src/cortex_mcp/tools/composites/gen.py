@@ -61,17 +61,11 @@ def register_gen_compose_tools(mcp, connection) -> None:
     @mcp.tool(
         name="gen_compose",
         description=(
-            "COMPOSITE tool — submit an AI generation job and wait for completion. "
-            "Handles the submit-poll loop automatically. Returns the final job state "
-            "(imported, failed, etc.) without manual polling.\n\n"
-            "Parameters:\n"
-            "- type: 'mesh' | 'image' | 'texturing'\n"
-            "- prompt: Text description (required for mesh/image)\n"
-            "- source_image_path: Local file path for image-to-mesh (optional)\n"
-            "- source_model_path: UE asset path for texturing (required for texturing)\n"
-            "- provider: Provider ID (optional, uses default)\n"
-            "- destination: UE content path for import (optional)\n"
-            "- timeout: Max seconds to wait (default 300)\n"
+            "COMPOSITE tool — submit an AI generation job and wait for completion. Handles the "
+            "submit-poll loop automatically and returns the final job state (imported, failed, "
+            "etc.) without manual polling. `type` is one of 'mesh', 'image', 'texturing'; "
+            "`prompt` is required for mesh/image and `source_model_path` for texturing. The "
+            "remaining fields follow the typed schema (provider/destination/timeout).\n"
         ),
     )
     async def gen_compose(

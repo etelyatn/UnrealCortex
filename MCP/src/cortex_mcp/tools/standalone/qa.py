@@ -27,7 +27,14 @@ def register_qa_standalone_tools(mcp, connection) -> None:
 
     register_qa_composite_tools(_CaptureMCP(), connection)
 
-    @mcp.tool(name="qa_test_step")
+    @mcp.tool(
+        name="qa_test_step",
+        description=(
+            "Run one QA step in a single call: send the action, apply an optional wait, observe state, "
+            "collect recent logs, run the optional assertion, and capture a screenshot. Returns "
+            "action/wait/assert success, the finding count and the screenshot payload.\n"
+        ),
+    )
     def qa_test_step(
         action: dict,
         wait: dict | None = None,

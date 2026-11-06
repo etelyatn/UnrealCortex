@@ -62,18 +62,23 @@ def register_graph_tools(mcp, connection: UEConnection):
         subgraph_path: str = "",
         compact: bool = True,
     ) -> str:
-        """Search nodes across all Blueprint graphs.
+        """Search nodes across Blueprint graphs.
 
-        Finds nodes server-side using one or more filters. By default, recursively
+        Finds nodes server-side. All filters are optional: with none, the full node
+        inventory in scope is returned and this standalone tool does not page (for a bounded, cursor-paged
+        inventory call graph_cmd with command='search_nodes' and limit/cursor). By default, recursively
         searches inside composite subgraphs too. Results include 'subgraph_path'
         for nodes found inside composites so you can navigate to them directly.
 
         Args:
             asset_path: Full asset path to the Blueprint.
-            node_class: Optional node class filter (exact match).
+            node_class: Optional node class filter, case-insensitive; matches the node's
+                class or any superclass (leading U optional, e.g. K2Node_Event also returns
+                custom events). A trailing * is a prefix match (e.g. K2Node_Call*).
             function_name: Optional partial/case-insensitive function-name filter.
             display_name: Optional partial/case-insensitive node display name filter.
-            graph_name: Optional graph to restrict search to.
+            graph_name: Optional graph to restrict search to; unknown names fail with
+                GRAPH_NOT_FOUND. Default searches all graphs.
             subgraph_path: Dot-separated path to restrict search to a specific subgraph.
                 Requires graph_name to be set.
             compact: Omit redundant node_class field from results (default: true).
@@ -82,8 +87,6 @@ def register_graph_tools(mcp, connection: UEConnection):
             JSON with results array. Each entry includes graph_name and
             optionally subgraph_path for composite-nested nodes.
         """
-        if not node_class and not function_name and not display_name:
-            return "Error: At least one filter required: node_class, function_name, or display_name"
         if subgraph_path and not graph_name:
             return "Error: subgraph_path requires graph_name to be set"
 

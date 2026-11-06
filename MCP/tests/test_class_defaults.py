@@ -93,6 +93,63 @@ class TestGetClassDefaults:
             },
         )
 
+    def test_discovery_call_does_not_request_values(self):
+        """Discovery is metadata-only unless the caller selects values or members."""
+        connection = MagicMock()
+        connection.send_command.return_value = _fake_success_data()
+
+        tools = _register_tools(connection)
+        tools["get_class_defaults"]("/Game/Test/BP_Test")
+
+        params = connection.send_command.call_args.args[1]
+        assert params.get("include_values") is not True
+        assert params.get("include_members") is not True
+
+    def test_explicit_values_members_and_paging_are_forwarded(self):
+        """Agents must be able to opt into values, member metadata and a discovery page."""
+        connection = MagicMock()
+        connection.send_command.return_value = _fake_success_data()
+
+        tools = _register_tools(connection)
+        tools["get_class_defaults"](
+            asset_path="/Game/Test/BP_Test",
+            properties=["bReplicates"],
+            include_values=True,
+            include_members=True,
+            discovery_offset=0,
+            discovery_limit=25,
+        )
+
+        connection.send_command.assert_called_once_with(
+            "blueprint.get_class_defaults",
+            {
+                "asset_path": "/Game/Test/BP_Test",
+                "blueprint_path": "/Game/Test/BP_Test",
+                "properties": ["bReplicates"],
+                "include_values": True,
+                "include_members": True,
+                "discovery_offset": 0,
+                "discovery_limit": 25,
+            },
+        )
+
+    def test_legacy_three_positional_arguments_still_forward(self):
+        """The original (asset_path, properties, blueprint_path) positional order is preserved."""
+        connection = MagicMock()
+        connection.send_command.return_value = _fake_success_data()
+
+        tools = _register_tools(connection)
+        tools["get_class_defaults"]("/Game/Test/BP_Test", ["bReplicates"], "/Game/Test/BP_IgnoredAlias")
+
+        connection.send_command.assert_called_once_with(
+            "blueprint.get_class_defaults",
+            {
+                "asset_path": "/Game/Test/BP_Test",
+                "blueprint_path": "/Game/Test/BP_Test",
+                "properties": ["bReplicates"],
+            },
+        )
+
 
 class TestSetClassDefaults:
     def test_default_compile_and_save_true(self):

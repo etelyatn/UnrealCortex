@@ -62,11 +62,12 @@ def detect_structural_issues(
             }
         )
 
-    logs = (recent_logs or {}).get("logs", [])
-    for entry in logs:
-        text = entry.get("message", "") if isinstance(entry, dict) else str(entry)
-        level = entry.get("level", "") if isinstance(entry, dict) else ""
-        if level.upper() == "ERROR" or "Error:" in text:
+    # Canonical window entries carry an explicit lowercase severity (log/warning/error); the old
+    # logs/level shape and its textual "Error:" heuristic are gone.
+    for entry in (recent_logs or {}).get("entries", []):
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("severity", "")).strip().lower() == "error":
             findings.append(
                 {
                     "severity": "MAJOR",

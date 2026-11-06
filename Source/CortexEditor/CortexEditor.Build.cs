@@ -28,6 +28,15 @@ public class CortexEditor : ModuleRules
 			"ImageWrapper",
 			"RenderCore",
 			"PythonScriptPlugin",
+			"AssetRegistry",
+			"Kismet",
 		});
+
+		// LiveCoding lives in Developer/Windows and only exists where Live Coding is supported, so an
+		// unconditional dependency would pull a Windows-only module into Linux and Mac editor builds.
+		if (Target.bWithLiveCoding)
+		{
+			PrivateDependencyModuleNames.Add("LiveCoding");
+		}
 	}
 }

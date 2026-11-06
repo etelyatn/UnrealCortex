@@ -1,13 +1,22 @@
 #include "CortexUMGCommandHandler.h"
 #include "CortexCommandRouter.h"
+#include "CortexCommandContract.h"
 #include "Operations/CortexUMGWidgetTreeOps.h"
 #include "Operations/CortexUMGWidgetPropertyOps.h"
 #include "Operations/CortexUMGWidgetAnimationOps.h"
+#include "Operations/CortexUMGAnimationAuthoringOps.h"
+#include "Operations/CortexUMGPropertyBindingOps.h"
+#include "Operations/CortexUMGNativeBindingOps.h"
+#include "Operations/CortexUMGEmbeddedValueOps.h"
+#include "Operations/CortexUMGCommonUIOps.h"
 #include "CortexAssetMutationGuard.h"
 #include "Engine/Blueprint.h"
 
 namespace
 {
+/** Declared before Execute; defined with GetSupportedCommands at the end of this file. */
+const TArray<FCortexCommandInfo>& UMGCommandInfos();
+
 bool RejectBlockedUMGMutation(const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)
 {
     FString AssetPath;
@@ -30,10 +39,25 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
 {
     (void)DeferredCallback;
 
+    // Opted-in commands reject undeclared parameters and missing required ones before any work.
+    FCortexCommandResult ContractError;
+    if (!FCortexCommandContract::ValidateDeclaredParams(UMGCommandInfos(), Command, Params, ContractError))
+    {
+        return ContractError;
+    }
+
+    // This setter validates native name bounds before resolving its own mutation guard.
+    if (Command == TEXT("set_property_binding"))
+    {
+        return FCortexUMGPropertyBindingOps::SetPropertyBinding(Params);
+    }
+
     const bool bReadOnly = Command == TEXT("get_tree") || Command == TEXT("get_widget")
         || Command == TEXT("list_widget_classes") || Command == TEXT("get_property")
         || Command == TEXT("get_schema") || Command == TEXT("list_animations")
-        || Command == TEXT("get_animation") || Command == TEXT("list_animation_bindings");
+        || Command == TEXT("get_animation") || Command == TEXT("list_animation_bindings")
+        || Command == TEXT("check_native_bindings") || Command == TEXT("get_embedded_widget_values")
+        || Command == TEXT("get_commonui_info");
     if (!bReadOnly)
     {
         FCortexCommandResult GuardError;
@@ -144,6 +168,26 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     {
         return FCortexUMGWidgetAnimationOps::RemoveAnimationBinding(Params);
     }
+    if (Command == TEXT("ensure_animation_binding"))
+    {
+        return FCortexUMGAnimationAuthoringOps::EnsureAnimationBinding(Params);
+    }
+    if (Command == TEXT("check_native_bindings"))
+    {
+        return FCortexUMGNativeBindingOps::CheckNativeBindings(Params);
+    }
+    if (Command == TEXT("get_embedded_widget_values"))
+    {
+        return FCortexUMGEmbeddedValueOps::GetEmbeddedWidgetValues(Params);
+    }
+    if (Command == TEXT("get_commonui_info"))
+    {
+        return FCortexUMGCommonUIOps::GetCommonUIInfo(Params);
+    }
+    if (Command == TEXT("set_animation_property_track"))
+    {
+        return FCortexUMGAnimationAuthoringOps::SetAnimationPropertyTrack(Params);
+    }
 
     return FCortexCommandRouter::Error(
         CortexErrorCodes::UnknownCommand,
@@ -151,9 +195,15 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     );
 }
 
-TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() const
+namespace
 {
-    return {
+/**
+ * Single source of truth for this domain's command contracts: capability publication and the
+ * declared-contract validation both read the same table.
+ */
+const TArray<FCortexCommandInfo>& UMGCommandInfos()
+{
+    static const TArray<FCortexCommandInfo> Infos = {
         FCortexCommandInfo{ TEXT("add_widget"), TEXT("Add a widget to the tree") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_class"), TEXT("string"), TEXT("Widget class to create"))
@@ -168,16 +218,30 @@ TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() cons
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to move"))
             .Required(TEXT("new_parent"), TEXT("string"), TEXT("Destination parent widget"))
             .Optional(TEXT("slot_index"), TEXT("number"), TEXT("Insertion index within the new parent")),
-        FCortexCommandInfo{ TEXT("get_tree"), TEXT("Get full widget hierarchy") }
-            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path")),
+        FCortexCommandInfo{ TEXT("get_tree"), TEXT("Get widget hierarchy (bounded depth/max_nodes, names_only projection)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Optional(TEXT("include_property_bindings"), TEXT("boolean"), TEXT("Read complete serialized Designer bindings including orphan targets and guard fingerprint"))
+            .Optional(TEXT("depth"), TEXT("number"), TEXT("Deepest retained level; root is 0. Omitted keeps full depth"))
+            .Optional(TEXT("max_nodes"), TEXT("number"), TEXT("Maximum emitted widgets, root included; integer >= 1"))
+            .Optional(TEXT("names_only"), TEXT("boolean"), TEXT("Keep hierarchy/name/child counts and drop class identity")),
         FCortexCommandInfo{ TEXT("get_widget"), TEXT("Get single widget details") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
-            .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to inspect")),
+            .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to inspect"))
+            .Optional(TEXT("include_property_bindings"), TEXT("boolean"), TEXT("Read serialized Designer bindings for this widget with whole-asset guard fingerprint")),
+        FCortexCommandInfo{ TEXT("set_property_binding"), TEXT("Create/replace a Designer attribute binding, or clear with explicit null; no compile or save") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Required(TEXT("widget_name"), TEXT("string"), TEXT("Exact Designer widget name"))
+            .Required(TEXT("property_name"), TEXT("string"), TEXT("Bindable attribute property"))
+            .Required(TEXT("binding"), TEXT("any"), TEXT("Required object {kind:property,source_path:[names]} or {kind:function,function_name:name}; explicit null clears. Empty/omitted refuses."))
+            .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Complete serialized binding fingerprint from opted-in get_tree/get_widget")),
         FCortexCommandInfo{ TEXT("rename_widget"), TEXT("Guarded Unreal widget rename with structural/skeleton refresh; no explicit full compile or save") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Exact current widget name"))
             .Required(TEXT("new_name"), TEXT("string"), TEXT("Literal identifier; no silent sanitizing or case-only rename"))
-            .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Complete current UMG tree fingerprint, including compiled_signature_crc")),
+            .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Complete current UMG tree fingerprint, including compiled_signature_crc"))
+            .Optional(TEXT("scope"), TEXT("string"), TEXT("asset (default, single-asset contract) or dependents (also renames the member references in child and referencing Blueprints, loading unloaded ones)"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("scope=dependents only; defaults to true and returns the plan (assets with role, fingerprint and references, plus conflicts) without mutating"))
+            .Optional(TEXT("expected_dependent_fingerprints"), TEXT("object"), TEXT("scope=dependents apply: object keyed by asset_path whose key set equals the plan's modified dependents exactly, each value that dependent's plan fingerprint")),
         FCortexCommandInfo{ TEXT("set_widget_variable"), TEXT("Set whether a designer widget becomes a Blueprint variable") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
@@ -198,14 +262,18 @@ TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() cons
         FCortexCommandInfo{ TEXT("set_text"), TEXT("Set text content") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
-            .Required(TEXT("text"), TEXT("string"), TEXT("Text value")),
+            .Required(TEXT("text"), TEXT("string"), TEXT("Text value"))
+            .StrictParams(),
         FCortexCommandInfo{ TEXT("set_font"), TEXT("Set font family, size, typeface") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
             .Optional(TEXT("size"), TEXT("number"), TEXT("Font size"))
             .Optional(TEXT("typeface"), TEXT("string"), TEXT("Typeface name"))
             .Optional(TEXT("letter_spacing"), TEXT("number"), TEXT("Letter spacing"))
-            .Optional(TEXT("family"), TEXT("string"), TEXT("Font family asset")),
+            .Optional(TEXT("family"), TEXT("string"), TEXT("Font family asset"))
+            .Optional(TEXT("outline_size"), TEXT("number"), TEXT("Outline size"))
+            .Optional(TEXT("outline_color"), TEXT("string"), TEXT("Outline color"))
+            .StrictParams(),
         FCortexCommandInfo{ TEXT("set_brush"), TEXT("Set brush appearance") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
@@ -216,24 +284,32 @@ TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() cons
         FCortexCommandInfo{ TEXT("set_padding"), TEXT("Set padding or margin") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
-            .Required(TEXT("padding"), TEXT("object"), TEXT("Padding values"))
-            .Optional(TEXT("target"), TEXT("string"), TEXT("Padding target to update")),
+            .Required(TEXT("padding"), TEXT("object"), TEXT("Padding values: {left, top, right, bottom} or a uniform number"))
+            .Optional(TEXT("target"), TEXT("string"), TEXT("Padding target to update"))
+            .StrictParams(),
         FCortexCommandInfo{ TEXT("set_anchor"), TEXT("Set anchor preset or custom") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
-            .Required(TEXT("preset"), TEXT("string"), TEXT("Anchor preset")),
+            .Optional(TEXT("preset"), TEXT("string"), TEXT("Anchor preset name; required unless min/max/alignment/offset is given"))
+            .Optional(TEXT("min"), TEXT("object"), TEXT("Custom anchor minimum {x, y}"))
+            .Optional(TEXT("max"), TEXT("object"), TEXT("Custom anchor maximum {x, y}"))
+            .Optional(TEXT("alignment"), TEXT("object"), TEXT("Slot alignment {x, y}"))
+            .Optional(TEXT("offset"), TEXT("object"), TEXT("Slot offsets {left, top, right, bottom}"))
+            .StrictParams(),
         FCortexCommandInfo{ TEXT("set_alignment"), TEXT("Set horizontal/vertical alignment") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
             .Optional(TEXT("horizontal"), TEXT("string"), TEXT("Horizontal alignment"))
-            .Optional(TEXT("vertical"), TEXT("string"), TEXT("Vertical alignment")),
+            .Optional(TEXT("vertical"), TEXT("string"), TEXT("Vertical alignment"))
+            .StrictParams(),
         FCortexCommandInfo{ TEXT("set_size"), TEXT("Set desired size or fill rules") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
             .Optional(TEXT("width"), TEXT("number"), TEXT("Desired width"))
             .Optional(TEXT("height"), TEXT("number"), TEXT("Desired height"))
             .Optional(TEXT("size_rule"), TEXT("string"), TEXT("Sizing rule"))
-            .Optional(TEXT("fill_ratio"), TEXT("number"), TEXT("Fill ratio for fill rules")),
+            .Optional(TEXT("fill_ratio"), TEXT("number"), TEXT("Fill ratio for fill rules"))
+            .StrictParams(),
         FCortexCommandInfo{ TEXT("set_visibility"), TEXT("Set widget visibility state") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
@@ -265,6 +341,7 @@ TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() cons
             .Required(TEXT("animation_name"), TEXT("string"), TEXT("Animation name to inspect"))
             .Optional(TEXT("offset"), TEXT("number"), TEXT("0-based pagination offset"))
             .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum bindings to return (1-200, default: 50)"))
+            .Optional(TEXT("include_track_content"), TEXT("boolean"), TEXT("Include detailed per-track property/section/channel content (default: false)"))
             .Optional(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Optional content guard fingerprint")),
         FCortexCommandInfo{ TEXT("remove_animation_binding"), TEXT("Remove a single UMG animation binding record with optimistic locking and preview") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
@@ -273,5 +350,37 @@ TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() cons
             .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Content guard fingerprint from prior read"))
             .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("If true, previews changes without mutating (default: true)"))
             .Optional(TEXT("save"), TEXT("boolean"), TEXT("If true, persists package to disk after mutation (default: false)")),
+        FCortexCommandInfo{ TEXT("ensure_animation_binding"), TEXT("Create or resolve an ordinary Designer-widget animation binding") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Required(TEXT("animation_name"), TEXT("string"), TEXT("Animation name"))
+            .Required(TEXT("widget_name"), TEXT("string"), TEXT("Exact case-sensitive Designer widget name"))
+            .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Content guard fingerprint from prior read"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("If true, previews changes without mutating (default: true)")),
+        FCortexCommandInfo{ TEXT("set_animation_property_track"), TEXT("Create, replace or clear one float/linear-color/Slate-color property track on an existing binding") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Required(TEXT("animation_name"), TEXT("string"), TEXT("Animation name"))
+            .Required(TEXT("selector"), TEXT("object"), TEXT("Exact binding selector"))
+            .Required(TEXT("property_path"), TEXT("string"), TEXT("Exact reflected property path"))
+            .Required(TEXT("track"), TEXT("object"), TEXT("Track object with optional section completion_mode 'RestoreState' (default) or 'KeepState', or explicit null to clear the one property track"))
+            .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Content guard fingerprint from prior read"))
+            .Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("If true, previews changes without mutating (default: true)")),
+        FCortexCommandInfo{ TEXT("check_native_bindings"), TEXT("Check BindWidget/BindWidgetAnim members of a native UserWidget base against a Widget Blueprint, including graph reads of members that are not Blueprint visible (read-only)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Optional(TEXT("native_class"), TEXT("string"), TEXT("UserWidget class path or name to check against; defaults to the Blueprint's parent class"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("get_embedded_widget_values"), TEXT("Read per-instance values of embedded UserWidgets with is_override against the class default (read-only)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
+            .Optional(TEXT("widget_name"), TEXT("string"), TEXT("Exact embedded widget name; omitted reads every embedded UserWidget"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("get_commonui_info"), TEXT("Read CommonUI activatable settings, implemented overrides, button/text/border styles and style_assets of a Widget Blueprint, or the style kind and referenced styles of a CommonUI style Blueprint; commonui_available is false when the CommonUI plugin is not loaded (read-only)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint or CommonUI style Blueprint asset path"))
+            .StrictParams(),
     };
+    return Infos;
+}
+}
+
+TArray<FCortexCommandInfo> FCortexUMGCommandHandler::GetSupportedCommands() const
+{
+    return UMGCommandInfos();
 }

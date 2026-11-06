@@ -19,7 +19,7 @@ bool FCortexBlueprintLayoutE2ETest::RunTest(const FString& Parameters)
 {
 	UPackage* TestPackage = CreatePackage(*FString::Printf(
 		TEXT("/Game/Temp/CortexGraphLayoutE2E_%s"),
-		*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8)));
 	TestPackage->SetPackageFlags(PKG_PlayInEditor);
 	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(), TestPackage, TEXT("BP_LayoutE2E"),

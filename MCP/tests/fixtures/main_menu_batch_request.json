@@ -111,10 +111,7 @@
       "params": {
         "asset_path": "$steps[0].data.asset_path",
         "widget_name": "Layout",
-        "left": 40,
-        "top": 40,
-        "right": 40,
-        "bottom": 40
+        "padding": {"left": 40, "top": 40, "right": 40, "bottom": 40}
       }
     },
     {

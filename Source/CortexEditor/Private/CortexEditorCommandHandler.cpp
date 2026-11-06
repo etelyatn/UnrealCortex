@@ -5,6 +5,7 @@
 #include "CortexEditorLogCapture.h"
 #include "Operations/CortexEditorPIEOps.h"
 #include "Operations/CortexEditorInputOps.h"
+#include "Operations/CortexEditorTurnaroundOps.h"
 #include "Operations/CortexEditorUtilityOps.h"
 #include "Operations/CortexEditorViewportOps.h"
 
@@ -137,6 +138,14 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorUtilityOps::RunPython(Params, MoveTemp(DeferredCallback));
 	}
+	if (Command == TEXT("live_coding_compile"))
+	{
+		return FCortexEditorTurnaroundOps::LiveCodingCompile(Params, MoveTemp(DeferredCallback));
+	}
+	if (Command == TEXT("wait_ready"))
+	{
+		return FCortexEditorTurnaroundOps::WaitReady(Params, MoveTemp(DeferredCallback));
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
@@ -160,11 +169,12 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Required(TEXT("key"), TEXT("string"), TEXT("Key to inject"))
 			.Optional(TEXT("action"), TEXT("string"), TEXT("tap, press, or release"))
 			.Optional(TEXT("duration_ms"), TEXT("number"), TEXT("Press duration in milliseconds")),
-		FCortexCommandInfo{ TEXT("inject_mouse"), TEXT("Inject mouse input into PIE") }
-			.Required(TEXT("button"), TEXT("string"), TEXT("Mouse button to inject"))
-			.Optional(TEXT("action"), TEXT("string"), TEXT("tap, press, or release"))
-			.Optional(TEXT("duration_ms"), TEXT("number"), TEXT("Press duration in milliseconds"))
-			.Optional(TEXT("delta"), TEXT("object"), TEXT("Optional relative mouse delta")),
+		FCortexCommandInfo{ TEXT("inject_mouse"), TEXT("Inject Slate mouse input into PIE") }
+			.Required(TEXT("action"), TEXT("string"), TEXT("click, move, or scroll"))
+			.Optional(TEXT("button"), TEXT("string"), TEXT("left (default), right, or middle; used for click"))
+			.Optional(TEXT("x"), TEXT("number"), TEXT("Screen-space X coordinate; defaults to current cursor X"))
+			.Optional(TEXT("y"), TEXT("number"), TEXT("Screen-space Y coordinate; defaults to current cursor Y"))
+			.Optional(TEXT("delta"), TEXT("number"), TEXT("Scroll delta; required for scroll")),
 		FCortexCommandInfo{ TEXT("inject_input_action"), TEXT("Inject one frame of Enhanced Input into active PIE") }
 			.Required(TEXT("action_name"), TEXT("string"), TEXT("Input action asset path or loaded name"))
 			.Optional(TEXT("value"), TEXT("any"), TEXT("Number or x/y/z numeric object; action type determines axes; defaults to 1")),
@@ -203,8 +213,11 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum results, clamped to 1..500")),
 		FCortexCommandInfo{ TEXT("get_recent_logs"), TEXT("Get recent log entries") }
 			.Optional(TEXT("severity"), TEXT("string"), TEXT("Minimum severity filter"))
-			.Optional(TEXT("since_seconds"), TEXT("number"), TEXT("Only include recent entries"))
-			.Optional(TEXT("since_cursor"), TEXT("string"), TEXT("Resume from a previous cursor"))
+			.Optional(TEXT("since_seconds"), TEXT("number"), TEXT("Only include entries newer than this many seconds; exactly -1 disables time filtering"))
+			.Optional(TEXT("since_cursor"), TEXT("number"), TEXT("Resume from a previous cursor"))
+			.Optional(TEXT("until_cursor"), TEXT("number"), TEXT("Inclusive end-of-window cursor pinning the window"))
+			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum retained entries, 1..2000; omitted uses 200"))
+			.Optional(TEXT("count_only"), TEXT("boolean"), TEXT("Return window metadata and matched_count without entry rows"))
 			.Optional(TEXT("category"), TEXT("string"), TEXT("Optional log category filter")),
 		FCortexCommandInfo{ TEXT("set_time_dilation"), TEXT("Set game time scale") }
 			.Required(TEXT("factor"), TEXT("number"), TEXT("Global time dilation factor")),
@@ -213,6 +226,12 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 		FCortexCommandInfo{ TEXT("run_python"), TEXT("Run trusted editor Python as a high-trust escape hatch; prefer structured Cortex commands; can mutate assets/files") }
 			.Required(TEXT("code"), TEXT("string"), TEXT("Python code to execute inside the local editor process"))
 			.Optional(TEXT("run_next_tick"), TEXT("boolean"), TEXT("Run on the next core ticker tick; requires deferred callback")),
+		FCortexCommandInfo{ TEXT("live_coding_compile"), TEXT("Trigger a Live Coding patch and answer when it completes (success, no_changes, failure, cancelled, in_progress); NOT_AVAILABLE when the build has no Live Coding or it is not started for this session (it is never started by this command). The patch build blocks the editor until it finishes, so the MCP/transport timeout must cover the compile time (the server allows up to 1800 s). New reflected types (UCLASS/USTRUCT/UPROPERTY changes) need a full editor build instead")}
+			.StrictParams(),
+		FCortexCommandInfo{ TEXT("wait_ready"), TEXT("Answer once the editor is usable: GEditor valid, Asset Registry finished loading, no asset (shader, texture, mesh) compilation pending; TIMEOUT otherwise. Blueprint compiles run synchronously on the game thread and are never pending between ticks, so they are not a condition. Then opens every reopen_assets path in its asset editor and reports opened and failed (maps are refused, never opened). The transport waits timeout plus a short grace. Never restarts the editor") }
+			.Optional(TEXT("reopen_assets"), TEXT("array"), TEXT("Asset paths to open in their asset editors once the editor is ready"))
+			.Optional(TEXT("timeout"), TEXT("number"), TEXT("Seconds to wait for readiness, greater than 0 and at most 3600 (default 120)"))
+			.StrictParams(),
 	};
 }
 

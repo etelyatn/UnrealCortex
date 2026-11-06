@@ -16,29 +16,44 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
         asset_path: str = "",
         properties: list[str] | None = None,
         blueprint_path: str = "",
+        include_values: bool | None = None,
+        include_members: bool | None = None,
+        discovery_offset: int | None = None,
+        discovery_limit: int | None = None,
     ) -> str:
-        """Read default property values from a Blueprint's Class Default Object (CDO).
+        """Read default properties from a Blueprint's Class Default Object (CDO).
 
-        Returns type information, current values, and property metadata.
-        Call with no property names to discover all settable properties on a Blueprint.
+        Metadata discovery is the default: no property names reads one page of property
+        metadata (type, category, defined_in, accepted_formats) with no values. Select
+        `properties` to read their effective values, or opt in with include_values.
         For reading properties on placed actor instances in a level, use get_actor_property instead.
 
         Args:
             asset_path: Full asset path to the Blueprint (e.g., '/Game/Blueprints/BP_Character')
+            properties: Optional list of property paths to select. A nonempty list defaults
+                to an effective-value read; omit or pass an empty list for metadata discovery.
             blueprint_path: Deprecated alias for asset_path.
-            properties: Optional list of property names to read. Omit or pass empty list
-                to discover all settable properties with their types and categories.
+            include_values: Include effective values. Defaults to true for a selected read
+                and false for discovery. Explicit false keeps a selected read metadata-only.
+            include_members: Expand one level of struct member path/type metadata. Member
+                values are only extracted when include_values is also true. Default false.
+            discovery_offset: Metadata discovery page offset (default 0). Ignored by selected reads.
+            discovery_limit: Metadata discovery page size (default 100, max 200). Ignored by selected reads.
 
         Returns:
             JSON with:
             - blueprint_path: Asset path
             - class: Generated class name
             - parent_class: Parent class name
-            - properties: Object mapping property names to type, value, category, and defined_in
-              FText properties include an optional `string_table` sibling field
-              with {table_id, key} when backed by a StringTable.
-              The `value` field remains the resolved string.
+            - values_included: Whether the response carries effective property values
+            - properties: Object mapping property names to type, category, defined_in and
+              accepted_formats. `value` is present only when values are included; FText
+              properties also carry an optional `string_table` sibling field with {table_id, key}.
+              Struct properties carry `members` only when include_members=true.
             - count: Number of properties returned
+            - total_properties: Admitted population size for a discovery read
+            - discovery_pagination: {offset, limit, returned, next_offset, is_complete} for a
+              metadata discovery page
 
             Note: response currently returns key "blueprint_path" (not "asset_path").
         """
@@ -54,6 +69,14 @@ def register_blueprint_class_defaults_tools(mcp, connection: UEConnection):
             }
             if properties:
                 params["properties"] = properties
+            if include_values is not None:
+                params["include_values"] = include_values
+            if include_members is not None:
+                params["include_members"] = include_members
+            if discovery_offset is not None:
+                params["discovery_offset"] = discovery_offset
+            if discovery_limit is not None:
+                params["discovery_limit"] = discovery_limit
             response = connection.send_command("blueprint.get_class_defaults", params)
             return format_response(response.get("data", {}), "get_class_defaults")
         except ConnectionError as exc:

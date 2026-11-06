@@ -22,6 +22,9 @@ public class CortexGraph : ModuleRules
 			"UnrealEd",
 			"BlueprintGraph",
 			"KismetCompiler",
+			"GraphEditor",
+			"Slate",
+			"SlateCore",
 			"UMG",
 			"UMGEditor",
 		});

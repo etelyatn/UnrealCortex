@@ -33,7 +33,7 @@ bool FCortexPromptBaseSystemTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPromptScopeLayerFullClassTest,
-    "Cortex.Frontend.Conversion.Prompts.ScopeLayerFullClass",
+    "Cortex.Frontend.Conversion.Prompts.ScopeLayerFullClass.Basic",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexPromptScopeLayerFullClassTest::RunTest(const FString& Parameters)

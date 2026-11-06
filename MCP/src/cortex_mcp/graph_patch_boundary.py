@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 
-from .response import MAX_RESPONSE_CHARS, format_response
+from .response import MAX_RESPONSE_CHARS, compact_json, format_response
 from .tcp_client import UECommandError, UECommandNotDispatchedError
 
 _GRAPH_PATCH_COMMAND = "graph.apply_patch"
@@ -60,11 +59,11 @@ def reject_apply_patch_pagination(request: dict[str, Any]) -> str | None:
 
 
 def _json_size(value: Any) -> int:
-    return len(json.dumps(value, indent=2))
+    return len(compact_json(value))
 
 
 def _encode(value: Any) -> str:
-    return json.dumps(value, indent=2)
+    return compact_json(value)
 
 
 def _identity(request: dict[str, Any]) -> dict[str, Any]:

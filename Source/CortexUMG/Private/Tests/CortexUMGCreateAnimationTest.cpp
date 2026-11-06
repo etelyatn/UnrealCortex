@@ -26,6 +26,11 @@ bool FCortexUMGCreateAnimationTest::RunTest(const FString& Parameters)
         TestPackage, TEXT("WBP_AnimTest"), RF_Public | RF_Standalone | RF_Transactional);
     WBP->ParentClass = UUserWidget::StaticClass();
     WBP->WidgetTree = NewObject<UWidgetTree>(WBP, TEXT("WidgetTree"));
+    ON_SCOPE_EXIT
+    {
+        WBP->MarkAsGarbage();
+        TestPackage->MarkAsGarbage();
+    };
 
     const FString AssetPath = WBP->GetPathName();
 
@@ -39,6 +44,14 @@ bool FCortexUMGCreateAnimationTest::RunTest(const FString& Parameters)
     P1->SetStringField(TEXT("name"), TEXT("Root"));
     Router.Execute(TEXT("umg.add_widget"), P1);
 
+    FCompilerResultsLog InitialCompile;
+    FKismetEditorUtilities::CompileBlueprint(WBP, EBlueprintCompileOptions::None, &InitialCompile);
+    if (!TestEqual(TEXT("Existing Designer compiles before animation authoring"), InitialCompile.NumErrors, 0))
+    {
+        return false;
+    }
+    const FGuid RootGuid = WBP->WidgetVariableNameToGuidMap.FindRef(TEXT("Root"));
+
     TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
     CreateParams->SetStringField(TEXT("asset_path"), AssetPath);
     CreateParams->SetStringField(TEXT("animation_name"), TEXT("FadeIn"));
@@ -47,22 +60,67 @@ bool FCortexUMGCreateAnimationTest::RunTest(const FString& Parameters)
     FCortexCommandResult CreateResult = Router.Execute(TEXT("umg.create_animation"), CreateParams);
     TestTrue(TEXT("create_animation should succeed"), CreateResult.bSuccess);
 
-    TSharedPtr<FJsonObject> ListParams = MakeShared<FJsonObject>();
-    ListParams->SetStringField(TEXT("asset_path"), AssetPath);
-
-    FCortexCommandResult ListResult = Router.Execute(TEXT("umg.list_animations"), ListParams);
-    TestTrue(TEXT("list_animations should succeed"), ListResult.bSuccess);
-
-    if (ListResult.Data.IsValid())
+    const FGuid AnimationGuid = WBP->WidgetVariableNameToGuidMap.FindRef(TEXT("FadeIn"));
+    if (!TestTrue(TEXT("New animation identity exists before compilation"), AnimationGuid.IsValid()))
     {
-        const TArray<TSharedPtr<FJsonValue>>* Anims = nullptr;
-        if (ListResult.Data->TryGetArrayField(TEXT("animations"), Anims))
-        {
-            TestEqual(TEXT("Should have 1 animation"), Anims->Num(), 1);
-        }
+        return false;
     }
+    TestEqual(TEXT("Animation creation preserves existing widget identity"),
+        WBP->WidgetVariableNameToGuidMap.FindRef(TEXT("Root")), RootGuid);
+    UWidgetAnimation* const AuthoredAnimation = WBP->Animations[0];
+    CreateParams->SetStringField(TEXT("animation_name"), TEXT("Root"));
+    TestFalse(TEXT("Animation cannot overwrite an existing Designer widget identity"),
+        Router.Execute(TEXT("umg.create_animation"), CreateParams).bSuccess);
+    TestEqual(TEXT("Name refusal preserves widget identity"),
+        WBP->WidgetVariableNameToGuidMap.FindRef(TEXT("Root")), RootGuid);
+    TestTrue(TEXT("Name refusal preserves authored animation"), WBP->Animations.Contains(AuthoredAnimation));
 
-    WBP->MarkAsGarbage();
+    FCompilerResultsLog FinalCompile;
+    FKismetEditorUtilities::CompileBlueprint(WBP, EBlueprintCompileOptions::None, &FinalCompile);
+    TestEqual(TEXT("Animation-bearing Blueprint compiles"), FinalCompile.NumErrors, 0);
+    TestEqual(TEXT("Animation-bearing Blueprint has no compiler warnings"), FinalCompile.NumWarnings, 0);
+    TestEqual(TEXT("Compile preserves the authored animation identity"),
+        WBP->WidgetVariableNameToGuidMap.FindRef(TEXT("FadeIn")), AnimationGuid);
+    TestEqual(TEXT("Compile preserves existing widget identity"),
+        WBP->WidgetVariableNameToGuidMap.FindRef(TEXT("Root")), RootGuid);
+
+    UWidgetBlueprint* Legacy = NewObject<UWidgetBlueprint>(
+        TestPackage, TEXT("WBP_LegacyIdentity"), RF_Public | RF_Standalone | RF_Transactional);
+    ON_SCOPE_EXIT { Legacy->MarkAsGarbage(); };
+    Legacy->ParentClass = UUserWidget::StaticClass();
+    Legacy->WidgetTree = NewObject<UWidgetTree>(Legacy, TEXT("WidgetTree"));
+    UCanvasPanel* LegacyRoot = Legacy->WidgetTree->ConstructWidget<UCanvasPanel>(
+        UCanvasPanel::StaticClass(), TEXT("Root"));
+    Legacy->WidgetTree->RootWidget = LegacyRoot;
+    UCanvasPanel* Detached = Legacy->WidgetTree->ConstructWidget<UCanvasPanel>(
+        UCanvasPanel::StaticClass(), TEXT("Detached"));
+    CreateParams->SetStringField(TEXT("asset_path"), Legacy->GetPathName());
+    CreateParams->SetStringField(TEXT("animation_name"), TEXT("detached"));
+    if (!TestFalse(TEXT("Detached source widget name collision refuses before initialization"),
+        Router.Execute(TEXT("umg.create_animation"), CreateParams).bSuccess))
+    {
+        return false;
+    }
+    TestTrue(TEXT("Collision preserves the empty legacy identity map"),
+        Legacy->WidgetVariableNameToGuidMap.IsEmpty());
+    TestEqual(TEXT("Collision creates no animation"), Legacy->Animations.Num(), 0);
+    LegacyRoot->AddChild(Detached);
+    CreateParams->SetStringField(TEXT("animation_name"), TEXT("LegacyFade"));
+    if (!TestTrue(TEXT("Animation can initialize an uncompiled legacy Designer"),
+        Router.Execute(TEXT("umg.create_animation"), CreateParams).bSuccess))
+    {
+        return false;
+    }
+    TestEqual(TEXT("Legacy root retains the engine's deterministic identity"),
+        Legacy->WidgetVariableNameToGuidMap.FindRef(TEXT("Root")),
+        FGuid::NewDeterministicGuid(LegacyRoot->GetPathName()));
+    TestEqual(TEXT("Legacy child retains the engine's deterministic identity"),
+        Legacy->WidgetVariableNameToGuidMap.FindRef(TEXT("Detached")),
+        FGuid::NewDeterministicGuid(Detached->GetPathName()));
+    FCompilerResultsLog LegacyCompile;
+    FKismetEditorUtilities::CompileBlueprint(Legacy, EBlueprintCompileOptions::None, &LegacyCompile);
+    TestEqual(TEXT("Legacy Designer with authored animation compiles"), LegacyCompile.NumErrors, 0);
+    TestEqual(TEXT("Legacy Designer compiles without warnings"), LegacyCompile.NumWarnings, 0);
     return true;
 }
 
@@ -85,12 +143,19 @@ bool FCortexUMGRemoveAnimationVariableIdentityTest::RunTest(const FString& Param
     };
     WBP->ParentClass = UUserWidget::StaticClass();
     WBP->WidgetTree = NewObject<UWidgetTree>(WBP, TEXT("WidgetTree"));
-    WBP->WidgetTree->RootWidget = WBP->WidgetTree->ConstructWidget<UCanvasPanel>(
-        UCanvasPanel::StaticClass(), TEXT("Root"));
 
     FCortexCommandRouter Router;
     Router.RegisterDomain(TEXT("umg"), TEXT("Cortex UMG"), TEXT("1.0.1"),
         MakeShared<FCortexUMGCommandHandler>());
+    TSharedPtr<FJsonObject> RootParams = MakeShared<FJsonObject>();
+    RootParams->SetStringField(TEXT("asset_path"), WBP->GetPathName());
+    RootParams->SetStringField(TEXT("widget_class"), TEXT("CanvasPanel"));
+    RootParams->SetStringField(TEXT("name"), TEXT("Root"));
+    if (!TestTrue(TEXT("Designer root is authored with its variable identity"),
+        Router.Execute(TEXT("umg.add_widget"), RootParams).bSuccess))
+    {
+        return false;
+    }
     TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
     Params->SetStringField(TEXT("asset_path"), WBP->GetPathName());
     Params->SetStringField(TEXT("animation_name"), TEXT("Removed"));

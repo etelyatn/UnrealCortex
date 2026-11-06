@@ -37,17 +37,13 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
 
     @mcp.tool()
     def scan_project(root: str = "AActor", project_only: bool = True) -> str:
-        """Full project scan — builds cache of class hierarchy and details.
+        """Full project scan — builds the cache of class hierarchy and details.
 
-        Call this once at session start to populate the cache.
-        Subsequent queries will be served from cache (instant).
+        Call this once at session start to populate the cache. `root='UObject'` scans everything
+        (the default `AActor` scans the actor hierarchy) and `project_only=false` includes engine
+        classes. Subsequent queries are served from the cache.
 
-        Args:
-            root: Root class to scan from (default 'AActor'). Use 'UObject' for everything.
-            project_only: If true, only include project classes. If false, include engine too.
-
-        Returns:
-            Scan summary with class count and timing.
+        Returns the scan summary with class count and timing.
         """
         try:
             start = time.time()

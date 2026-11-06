@@ -2157,4 +2157,92 @@ bool FCortexGraphPatchPersistenceParentCallTest::RunTest(const FString& Paramete
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchLayoutPresentationTest,
+	"Cortex.Graph.Authoring.Persistence.LayoutPresentation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchLayoutPresentationTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexGraphPatchPersistenceTest;
+	EnsureCortexGraphTestTempContentRoot();
+	FFixture Fixture;
+	const FString Name = TEXT("BP_LayoutPresentation_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	if (!TestTrue(TEXT("Guarded presentation fixture"), Fixture.Create(*Name)))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	const FString PatchId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+	TSharedPtr<FJsonObject> Request = BaseRequest(Fixture.Blueprint, *PatchId);
+	TSharedPtr<FJsonObject> Construction = MakeShared<FJsonObject>();
+	Construction->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.PrintString"));
+	AddNode(Request, TEXT("first"), TEXT("UK2Node_CallFunction"), Construction);
+	AddNode(Request, TEXT("second"), TEXT("UK2Node_CallFunction"), Construction);
+	AddNode(Request, TEXT("third"), TEXT("UK2Node_CallFunction"), Construction);
+	FCortexGraphCommandHandler Handler;
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("apply_patch"), Request);
+	if (!TestTrue(FString::Printf(TEXT("Preview guarded calls: %s %s"),
+		*Preview.ErrorCode, *Preview.ErrorMessage), Preview.bSuccess))
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	Request->SetStringField(TEXT("expected_validation_hash"), Preview.Data->GetStringField(TEXT("validation_hash")));
+	Request->SetBoolField(TEXT("dry_run"), false);
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("apply_patch"), Request);
+	TestTrue(FString::Printf(TEXT("Guarded patch authors calls: %s %s"),
+		*Applied.ErrorCode, *Applied.ErrorMessage), Applied.bSuccess);
+	TSharedPtr<FJsonObject> Layout = MakeShared<FJsonObject>();
+	Layout->SetStringField(TEXT("asset_path"), Fixture.Blueprint->GetPathName());
+	Layout->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	TestTrue(TEXT("Guarded calls format"), Handler.Execute(TEXT("auto_layout"), Layout).bSuccess);
+	TMap<FGuid, FIntPoint> Positions;
+	int32 CallCount = 0;
+	for (UEdGraphNode* Node : Fixture.Blueprint->UbergraphPages[0]->Nodes)
+	{
+		Positions.Add(Node->NodeGuid, FIntPoint(Node->NodePosX, Node->NodePosY));
+		if (UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
+		{
+			++CallCount;
+			TestTrue(TEXT("Guarded call has persisted presentation before first save"),
+				Call->GetDesiredEnabledState() == ENodeEnabledState::DevelopmentOnly);
+		}
+	}
+	TestEqual(TEXT("All guarded calls materialized"), CallCount, 3);
+	if (TestTrue(TEXT("Explicitly save arranged guarded asset"), Fixture.SaveToDisk()))
+	{
+		const FString PackageName = Fixture.Package->GetName();
+		const FString ObjectName = Fixture.Blueprint->GetName();
+		TArray<UPackage*> PackagesToReload = { Fixture.Package };
+		FText ReloadError;
+		TestTrue(FString::Printf(TEXT("First disk reload succeeds: %s"), *ReloadError.ToString()),
+			UPackageTools::ReloadPackages(PackagesToReload, ReloadError, EReloadPackagesInteractionMode::AssumeNegative));
+		UPackage* ReloadedPackage = FindPackage(nullptr, *PackageName);
+		UBlueprint* Reloaded = ReloadedPackage ? FindObject<UBlueprint>(ReloadedPackage, *ObjectName) : nullptr;
+		if (TestNotNull(TEXT("Reloaded guarded Blueprint"), Reloaded))
+		{
+			Fixture.Package = ReloadedPackage;
+			Fixture.Blueprint = Reloaded;
+			for (UEdGraphNode* Node : Reloaded->UbergraphPages[0]->Nodes)
+			{
+				TestEqual(TEXT("Disk preserves every arranged position"),
+					FIntPoint(Node->NodePosX, Node->NodePosY), Positions[Node->NodeGuid]);
+			}
+			TestTrue(TEXT("Loaded guarded graph formats"), Handler.Execute(TEXT("auto_layout"), Layout).bSuccess);
+			for (UEdGraphNode* Node : Reloaded->UbergraphPages[0]->Nodes)
+			{
+				TestEqual(TEXT("First-reload formatting preserves every arranged position"),
+					FIntPoint(Node->NodePosX, Node->NodePosY), Positions[Node->NodeGuid]);
+			}
+			TestFalse(TEXT("First-reload no-op leaves saved package clean"), ReloadedPackage->IsDirty());
+		}
+	}
+	UPackage* CleanupPackage = Fixture.Package;
+	Fixture.Cleanup();
+	if (CleanupPackage) ResetLoaders(CleanupPackage);
+	TestTrue(TEXT("Remove only the guarded presentation fixture file"), DeleteFixtureFile(Fixture.Filename));
+	return true;
+}
+
 #endif // WITH_EDITOR && WITH_AUTOMATION_TESTS

@@ -63,7 +63,7 @@ FCortexCommandRouter CreateSocketRouter()
 
 FString MakeSocketSuffix()
 {
-	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(12);
+	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(12);
 }
 
 USkeleton* CreateSocketTestAsset(FAutomationTestBase& Test, FCortexSocketTestAssetGuard& Guard, FString& OutAssetPath)

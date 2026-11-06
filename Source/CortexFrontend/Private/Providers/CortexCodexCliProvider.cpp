@@ -78,11 +78,9 @@ namespace
 
         FString Instructions = !SessionConfig.SystemPrompt.IsEmpty()
             ? SessionConfig.SystemPrompt
-            : FString::Printf(
+            : FString(
                 TEXT("You are running inside the Unreal Editor's Cortex AI frontend. ")
-                TEXT("You can inspect and modify the local workspace and use Cortex MCP tools when available. ")
-                TEXT("Current access mode: %s."),
-                *GetAccessModeDisplayName(AccessMode));
+                TEXT("You can inspect and modify the local workspace and use Cortex MCP tools when available."));
 
         Instructions += FString::Printf(
             TEXT("\nCurrent access mode: %s")

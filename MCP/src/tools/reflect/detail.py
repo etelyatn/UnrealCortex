@@ -19,9 +19,20 @@ _PROPERTIES_FIELDS = _SUMMARY_FIELDS | {"properties", "interfaces", "components"
 # full: + function signatures (source snippets deferred from MVP)
 _FULL_FIELDS = _PROPERTIES_FIELDS | {"functions"}
 
+# Coverage/error metadata is not a presentation level: a native reason why a read is incomplete
+# (an unreadable CDO, a partial result, an error envelope) must survive every projection, or the
+# caller cannot tell a genuinely empty result from an unreadable one.
+_COVERAGE_FIELDS = {"cdo_unavailable", "_message", "error", "error_code"}
+
+# Standalone detail levels, and the native extraction mode each one forwards.
+_VALID_DETAILS = ("summary", "properties", "full")
+# Native implements summary and full only; the properties view is the native full extraction
+# followed by the existing Python allowlist, so only 'summary' requests the reduced native read.
+_NATIVE_DETAIL = {"summary": "summary", "properties": "full", "full": "full"}
+
 
 def _prune_detail(data: dict, detail: str) -> dict:
-    """Prune response fields based on detail level."""
+    """Prune response fields based on detail level, always keeping coverage/error metadata."""
     if detail == "full":
         allowed = _FULL_FIELDS
     elif detail == "properties":
@@ -29,6 +40,7 @@ def _prune_detail(data: dict, detail: str) -> dict:
     else:
         allowed = _SUMMARY_FIELDS
 
+    allowed = allowed | _COVERAGE_FIELDS
     return {k: v for k, v in data.items() if k in allowed}
 
 
@@ -39,28 +51,28 @@ def register_reflect_detail_tools(mcp, connection: UEConnection):
     def query_class_detail(
         class_name: str,
         include_inherited: bool = False,
-        detail: str = "full",
+        detail: str = "summary",
     ) -> str:
         """Use when you need complete information about a single class.
 
-        Returns properties, functions, interfaces, components, and source file path.
-        Use detail='summary' for just name/type/parent, 'properties' for property list,
-        'full' for everything including function signatures.
-
-        Args:
-            class_name: Class name (e.g., 'AMyCharacter') or Blueprint asset path.
-            include_inherited: Include inherited properties/functions (default False).
-            detail: Detail level — 'summary', 'properties', or 'full' (default 'full').
-
-        Returns:
-            Class metadata at the requested detail level.
+        Returns properties, functions, interfaces, components and source file path. `detail` is
+        'summary' (default; name/type/parent/routing only, forwarded to the native summary read
+        before any member extraction), 'properties' (property list) or 'full' (everything including
+        function signatures); `include_inherited=true` adds inherited members. Any other `detail`
+        value is refused without contacting the editor.
         """
+        if detail not in _VALID_DETAILS:
+            return (
+                f"Error: invalid detail '{detail}'; expected one of "
+                f"{', '.join(_VALID_DETAILS)}"
+            )
         try:
             response = connection.send_command_cached(
                 "reflect.class_detail",
                 {
                     "class_name": class_name,
                     "include_inherited": include_inherited,
+                    "detail": _NATIVE_DETAIL[detail],
                 },
                 ttl=_TTL_DETAIL,
             )

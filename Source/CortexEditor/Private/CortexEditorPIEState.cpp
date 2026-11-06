@@ -71,6 +71,16 @@ void FCortexEditorPIEState::UnbindDelegates()
 
 void FCortexEditorPIEState::SetState(ECortexPIEState NewState)
 {
+	// Starting from any other state is a new play request: either this tracker's own
+	// start_pie/restart_pie, or an engine-initiated PreBeginPIE.  Repeated Starting notifications for
+	// the same request (PreBeginPIE arriving after start_pie already moved us to Starting) must not
+	// advance the generation, otherwise a legitimate CancelPIE cleanup armed for the request just
+	// begun would be discarded as superseded.
+	if (NewState == ECortexPIEState::Starting && State != ECortexPIEState::Starting)
+	{
+		++PlayRequestGeneration;
+	}
+
 	UE_LOG(LogCortexEditor, Log, TEXT("PIE state: %s -> %s"),
 		*StateToString(State), *StateToString(NewState));
 	State = NewState;
@@ -430,17 +440,41 @@ void FCortexEditorPIEState::HandleEndPIE(bool bIsSimulating)
 
 void FCortexEditorPIEState::HandleCancelPIE()
 {
-	UE_LOG(LogCortexEditor, Log, TEXT("PIE cancelled"));
+	// Nothing may be logged or mutated synchronously here.  CancelPIE can be broadcast from inside
+	// RequestPlaySession()/CancelRequestPlaySession() while the engine holds internal locks, and a
+	// UE_LOG from this stack (SetState logs) can deadlock against them.
+	//
+	// EndPlayMap() broadcasts CancelPIE unconditionally after EndPIE, so most cancellations are
+	// follow-ups to a session that HandleEndPIE() already finished.  A start request issued in the
+	// meantime must not be terminated by such a stale cancellation, so the cleanup is armed for the
+	// generation of the request that was current when the cancel arrived and is dropped if a newer
+	// request has begun by the time it runs.  A cancellation of the request still in flight keeps
+	// the same generation and is applied (PIE_TERMINATED), matching engine PIE-start rejections.
+	const uint32 CancelledGeneration = PlayRequestGeneration;
 
-	// Do not call OnPIEEnded() synchronously here.
-	// CancelPIE can fire from inside RequestPlaySession() or CancelRequestPlaySession()
-	// while the engine holds internal locks.  Calling UE_LOG from within that call
-	// stack (via SetState -> UE_LOG inside OnPIEEnded) deadlocks against those locks.
-	// Defer to the next tick so we are safely outside the engine call.
+	// Coalesce duplicate cancellations onto a single ticker.  Keeping the earliest armed cleanup
+	// when a later cancellation belongs to a newer request would drop the later one, and simply
+	// overwriting the handle would leak the previous raw-this ticker.
+	if (CancelDeferHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(CancelDeferHandle);
+		CancelDeferHandle.Reset();
+	}
+
 	CancelDeferHandle = FTSTicker::GetCoreTicker().AddTicker(
-		FTickerDelegate::CreateLambda([this](float) mutable
+		FTickerDelegate::CreateLambda([this, CancelledGeneration](float) mutable
 		{
 			CancelDeferHandle.Reset();
+
+			if (PlayRequestGeneration != CancelledGeneration)
+			{
+				UE_LOG(LogCortexEditor, Log,
+					TEXT("PIE cancel ignored: superseded by a newer play request (generation %u -> %u)"),
+					CancelledGeneration, PlayRequestGeneration);
+				return false;
+			}
+
+			UE_LOG(LogCortexEditor, Log, TEXT("PIE cancelled"));
 			OnPIEEnded();
 			return false;
 		}));

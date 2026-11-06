@@ -155,7 +155,8 @@ def render_catalog(
     Args:
         project_name: Name of the Unreal project.
         data_summary: Dict with structs, tables, tag_prefixes, data_assets for data domain.
-        blueprint_summary: Dict with classes for blueprint domain (future).
+        blueprint_summary: Dict with classes for blueprint domain. The entry point renders
+            counts and a relative link only; class identity lives in blueprints.md.
         engine_version: Unreal Engine version (e.g., "5.6").
         plugin_version: UnrealCortex plugin version (e.g., "1.0.0").
     """
@@ -226,21 +227,18 @@ def render_catalog(
             lines.append(f"**Tables:** {len(tables)} total")
             lines.append("")
 
-    # Blueprint domain index (future)
+    # Blueprint domain index: entry point only — class identity lives in blueprints.md.
     if bp_s:
-        lines.append("### blueprints.md")
-        lines.append("")
         bp_classes_list = bp_s.get("classes", [])
-        if bp_classes_list:
-            lines.append("#### Blueprint Classes")
-            lines.append("| Name | Parent |")
-            lines.append("|------|--------|")
-            for c in sorted(bp_classes_list, key=lambda item: (
-                item.get("asset_path", "").casefold(),
-                item.get("generated_class_path", item.get("name", "")).casefold(),
-            )):
-                lines.append(f"| {c['name']} | {c['parent']} |")
-            lines.append("")
+        bp_blueprint_rows = sum(1 for c in bp_classes_list if c.get("type") == "blueprint")
+        bp_cpp_rows = sum(1 for c in bp_classes_list if c.get("type") == "cpp")
+        lines.append("### Blueprint Classes")
+        lines.append("")
+        lines.append(
+            f"[blueprints.md](blueprints.md) — full class catalog: "
+            f"{len(bp_classes_list)} classes ({bp_blueprint_rows} blueprints, {bp_cpp_rows} cpp)."
+        )
+        lines.append("")
 
     return "\n".join(lines)
 

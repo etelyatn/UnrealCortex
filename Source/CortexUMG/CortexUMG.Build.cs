@@ -15,6 +15,7 @@ public class CortexUMG : ModuleRules
         PrivateDependencyModuleNames.AddRange(new string[]
         {
             "CoreUObject",
+            "AssetRegistry",
             "Engine",
             "Json",
             "JsonUtilities",
@@ -27,5 +28,7 @@ public class CortexUMG : ModuleRules
             "MovieScene",
             "MovieSceneTracks",
         });
+        // Canonical serialized binding guards use the engine-adopted SHA-256 implementation.
+        AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
     }
 }

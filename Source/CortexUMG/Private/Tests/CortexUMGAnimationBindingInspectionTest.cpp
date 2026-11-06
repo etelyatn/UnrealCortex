@@ -122,7 +122,7 @@ bool FCortexUMGAnimationBindingInspectCanonicalTest::RunTest(const FString& Para
         TestTrue(TEXT("domain_signature present"), (*Fingerprint)->TryGetObjectField(TEXT("domain_signature"), DomainSig));
         if (DomainSig && DomainSig->IsValid())
         {
-            TestEqual(TEXT("domain_signature version"), (*DomainSig)->GetIntegerField(TEXT("version")), 1);
+            TestEqual(TEXT("domain_signature version"), (*DomainSig)->GetIntegerField(TEXT("version")), 2);
             TestEqual(TEXT("domain_signature scope"), (*DomainSig)->GetStringField(TEXT("scope")), TEXT("umg.animation_binding"));
             TestEqual(TEXT("domain_signature animation_name"), (*DomainSig)->GetStringField(TEXT("animation_name")), TEXT("appearance"));
             TestTrue(TEXT("domain_signature digest is non-empty"), !(*DomainSig)->GetStringField(TEXT("digest")).IsEmpty());

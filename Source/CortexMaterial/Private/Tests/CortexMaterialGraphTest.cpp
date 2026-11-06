@@ -5,6 +5,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionSceneTexture.h"
+#include "UObject/UnrealType.h"
 #include "CortexBatchScope.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexMaterialGraphOps.h"
@@ -17,7 +18,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAddNodeTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestGraph_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Graph_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -65,7 +66,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialListNodesTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestList_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_List_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -112,13 +113,13 @@ bool FCortexMaterialListNodesTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialGetNodeTest,
-	"Cortex.Material.Graph.GetNode",
+	"Cortex.Material.Graph.GetNode.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 bool FCortexMaterialGetNodeTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestGetNode_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_GetNode_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -176,7 +177,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialGetNodeCollectionParamTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestGetNodeCP_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_GetNodeCP_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -269,7 +270,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialRemoveNodeTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestRemove_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Remove_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -348,7 +349,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialGetNodeNotFoundTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestNotFound_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_NotFound_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -380,13 +381,13 @@ bool FCortexMaterialGetNodeNotFoundTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialConnectTest,
-	"Cortex.Material.Graph.Connect",
+	"Cortex.Material.Graph.Connect.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 bool FCortexMaterialConnectTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestConnect_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Connect_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -438,13 +439,13 @@ bool FCortexMaterialConnectTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialListConnectionsTest,
-	"Cortex.Material.Graph.ListConnections",
+	"Cortex.Material.Graph.ListConnections.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 bool FCortexMaterialListConnectionsTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestListConn_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_ListConn_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -511,7 +512,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialListMultipleResultConnectionsTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestListMultiConn_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_ListMultiConn_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -617,7 +618,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialDisconnectTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestDisconnect_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Disconnect_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -681,7 +682,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexMaterialBatchDeferredTest::RunTest(const FString& Parameters)
 {
 	// Execute add_node + connect via batch command, verify both succeed
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestBatch_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Batch_%s"), *Suffix);
 
@@ -769,7 +770,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialConnectExprToExprTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestE2E_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_E2E_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -886,7 +887,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialConnectStringOutputTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestStrOut_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_StrOut_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -930,7 +931,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAutoLayoutTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestLayout_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Layout_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -991,7 +992,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAutoLayoutEmptyTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestLayoutEmpty_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_LayoutEmpty_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1024,13 +1025,13 @@ bool FCortexMaterialAutoLayoutEmptyTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialSetNodePropertyTest,
-	"Cortex.Material.Graph.SetNodeProperty",
+	"Cortex.Material.Graph.SetNodeProperty.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 bool FCortexMaterialSetNodePropertyTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestSetProp_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_SetProp_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1093,7 +1094,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAutoLayoutDisconnectedTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestLayoutDisc_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_LayoutDisc_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1147,7 +1148,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAutoLayoutCenteringTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestLayoutCenter_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_LayoutCenter_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1227,7 +1228,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAutoLayoutCycleTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestLayoutCycle_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_LayoutCycle_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1319,7 +1320,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialSetNodePropertyEnumTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestEnumProp_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_EnumProp_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1404,7 +1405,7 @@ bool FCortexMaterialAutoLayoutNodeSeparationTest::RunTest(const FString& Paramet
 	//
 	// Bug before fix: TextureCoordinate.X=0, Multiply.X=224 (both positive, overlap with MaterialResult)
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestLayoutSep_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Sep_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1500,7 +1501,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAutoLayoutNoOverlapTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestOverlap_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_Overlap_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1615,7 +1616,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAutoLayoutAllInputsTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestAllInputs_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_AllInputs_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1717,7 +1718,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexMaterialAutoLayoutResultGapTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString MatName = FString::Printf(TEXT("M_TestResultGap_%s"), *Suffix);
 	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_ResultGap_%s"), *Suffix);
 	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
@@ -1772,6 +1773,324 @@ bool FCortexMaterialAutoLayoutResultGapTest::RunTest(const FString& Parameters)
 		}
 		Material->MarkAsGarbage();
 	}
+
+	return true;
+}
+
+// Task-5 selected-value contract (token-efficiency TE05) for material.get_node: the string
+// array `properties` restricts the serialized editable expression fields to the requested
+// names; absence/empty keeps the current full read. Node identity and the special
+// collection/parameter selectors must survive the selection.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialGetNodeSelectedPropertiesTest,
+	"Cortex.Material.Graph.GetNode.SelectedProperties",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialGetNodeSelectedPropertiesTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString MatName = FString::Printf(TEXT("M_TestGetNodeSel_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_GetNodeSel_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	const FString MpcName = FString::Printf(TEXT("MPC_TestSel_%s"), *Suffix);
+	const FString MpcDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_MPCSel_%s"), *Suffix);
+
+	FCortexMaterialCommandHandler Handler;
+
+	// The collection-parameter expression keeps the collection/parameter selectors in scope.
+	TSharedPtr<FJsonObject> CreateMpcParams = MakeShared<FJsonObject>();
+	CreateMpcParams->SetStringField(TEXT("asset_path"), MpcDir);
+	CreateMpcParams->SetStringField(TEXT("name"), MpcName);
+	FCortexCommandResult MpcResult = Handler.Execute(TEXT("create_collection"), CreateMpcParams);
+	TestTrue(TEXT("collection fixture is created"), MpcResult.bSuccess);
+	FString MpcPath;
+	if (MpcResult.Data.IsValid())
+	{
+		MpcResult.Data->TryGetStringField(TEXT("asset_path"), MpcPath);
+	}
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionCollectionParameter"));
+	FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+	TestTrue(TEXT("collection parameter node is added"), AddResult.bSuccess);
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+	TestFalse(TEXT("node_id is populated"), NodeId.IsEmpty());
+
+	TSharedPtr<FJsonObject> SetCollectionParams = MakeShared<FJsonObject>();
+	SetCollectionParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetCollectionParams->SetStringField(TEXT("node_id"), NodeId);
+	SetCollectionParams->SetStringField(TEXT("property_name"), TEXT("Collection"));
+	SetCollectionParams->SetStringField(TEXT("value"), MpcPath);
+	TestTrue(TEXT("Collection is set"),
+		Handler.Execute(TEXT("set_node_property"), SetCollectionParams).bSuccess);
+
+	TSharedPtr<FJsonObject> SetNameParams = MakeShared<FJsonObject>();
+	SetNameParams->SetStringField(TEXT("asset_path"), MatPath);
+	SetNameParams->SetStringField(TEXT("node_id"), NodeId);
+	SetNameParams->SetStringField(TEXT("property_name"), TEXT("ParameterName"));
+	SetNameParams->SetStringField(TEXT("value"), TEXT("Task5Selected"));
+	TestTrue(TEXT("ParameterName is set"),
+		Handler.Execute(TEXT("set_node_property"), SetNameParams).bSuccess);
+
+	// Unfiltered read keeps every editable property (the fallback contract).
+	TSharedPtr<FJsonObject> FullParams = MakeShared<FJsonObject>();
+	FullParams->SetStringField(TEXT("asset_path"), MatPath);
+	FullParams->SetStringField(TEXT("node_id"), NodeId);
+	const FCortexCommandResult Full = Handler.Execute(TEXT("get_node"), FullParams);
+	TestTrue(TEXT("unfiltered get_node succeeds"), Full.bSuccess);
+	if (Full.Data.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* FullProperties = nullptr;
+		const bool bHasFullProperties =
+			Full.Data->TryGetObjectField(TEXT("properties"), FullProperties)
+			&& FullProperties != nullptr && FullProperties->IsValid();
+		TestTrue(TEXT("unfiltered read keeps the properties object"), bHasFullProperties);
+		if (bHasFullProperties)
+		{
+			TestTrue(TEXT("unfiltered read keeps an unrelated editable property"),
+				(*FullProperties)->HasField(TEXT("Desc")));
+			TestTrue(TEXT("unfiltered read keeps the selectable property"),
+				(*FullProperties)->HasField(TEXT("ParameterName")));
+		}
+	}
+
+	// Selected read exposes only the requested editable property.
+	TSharedPtr<FJsonObject> SelectedParams = MakeShared<FJsonObject>();
+	SelectedParams->SetStringField(TEXT("asset_path"), MatPath);
+	SelectedParams->SetStringField(TEXT("node_id"), NodeId);
+	SelectedParams->SetArrayField(TEXT("properties"), {
+		MakeShared<FJsonValueString>(TEXT("ParameterName")) });
+	const FCortexCommandResult Selected = Handler.Execute(TEXT("get_node"), SelectedParams);
+	TestTrue(TEXT("selected get_node succeeds"), Selected.bSuccess);
+	TestTrue(TEXT("selected get_node returns a payload"), Selected.Data.IsValid());
+	if (!Selected.Data.IsValid())
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* SelectedProperties = nullptr;
+	TestTrue(TEXT("selected get_node keeps the properties object"),
+		Selected.Data->TryGetObjectField(TEXT("properties"), SelectedProperties)
+			&& SelectedProperties != nullptr
+			&& SelectedProperties->IsValid());
+	if (SelectedProperties != nullptr && SelectedProperties->IsValid())
+	{
+		TestEqual(TEXT("exact selected property count"), (*SelectedProperties)->Values.Num(), 1);
+
+		FString SelectedPropertyValue;
+		TestTrue(TEXT("selected editable property is exposed"),
+			(*SelectedProperties)->TryGetStringField(TEXT("ParameterName"), SelectedPropertyValue));
+		TestEqual(TEXT("selected editable property keeps its value"),
+			SelectedPropertyValue, TEXT("Task5Selected"));
+		TestFalse(TEXT("selected read excludes an unrequested editable property"),
+			(*SelectedProperties)->HasField(TEXT("Desc")));
+		TestFalse(TEXT("selected read excludes the unrequested object reference"),
+			(*SelectedProperties)->HasField(TEXT("Collection")));
+	}
+
+	// Node identity and the special collection/parameter selectors survive selection.
+	FString ResultNodeId;
+	Selected.Data->TryGetStringField(TEXT("node_id"), ResultNodeId);
+	TestEqual(TEXT("selected read keeps node_id"), ResultNodeId, NodeId);
+	FString ResultExprClass;
+	Selected.Data->TryGetStringField(TEXT("expression_class"), ResultExprClass);
+	TestEqual(TEXT("selected read keeps expression_class"), ResultExprClass,
+		TEXT("MaterialExpressionCollectionParameter"));
+	TestTrue(TEXT("selected read keeps position"),
+		Selected.Data->HasTypedField<EJson::Object>(TEXT("position")));
+	FString SelectedCollectionPath;
+	Selected.Data->TryGetStringField(TEXT("collection_path"), SelectedCollectionPath);
+	TestTrue(TEXT("selected read keeps collection_path"),
+		SelectedCollectionPath.Contains(MpcName));
+	FString SelectedParameterName;
+	Selected.Data->TryGetStringField(TEXT("parameter_name"), SelectedParameterName);
+	TestEqual(TEXT("selected read keeps parameter_name"), SelectedParameterName,
+		TEXT("Task5Selected"));
+
+	// An empty selector is the documented full-read fallback.
+	TSharedPtr<FJsonObject> EmptyParams = MakeShared<FJsonObject>();
+	EmptyParams->SetStringField(TEXT("asset_path"), MatPath);
+	EmptyParams->SetStringField(TEXT("node_id"), NodeId);
+	EmptyParams->SetArrayField(TEXT("properties"), TArray<TSharedPtr<FJsonValue>>());
+	const FCortexCommandResult Empty = Handler.Execute(TEXT("get_node"), EmptyParams);
+	TestTrue(TEXT("empty selected get_node succeeds"), Empty.bSuccess);
+	if (Empty.Data.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* EmptyProperties = nullptr;
+		const bool bHasEmptyProperties =
+			Empty.Data->TryGetObjectField(TEXT("properties"), EmptyProperties)
+			&& EmptyProperties != nullptr && EmptyProperties->IsValid();
+		TestTrue(TEXT("empty selector keeps the properties object"), bHasEmptyProperties);
+		if (bHasEmptyProperties)
+		{
+			TestTrue(TEXT("empty selector keeps the complete property set"),
+				(*EmptyProperties)->HasField(TEXT("Desc")));
+		}
+	}
+
+	// An unknown selected property refuses; it must not fall back to the full read.
+	TSharedPtr<FJsonObject> UnknownParams = MakeShared<FJsonObject>();
+	UnknownParams->SetStringField(TEXT("asset_path"), MatPath);
+	UnknownParams->SetStringField(TEXT("node_id"), NodeId);
+	UnknownParams->SetArrayField(TEXT("properties"), {
+		MakeShared<FJsonValueString>(TEXT("CortexTask5NoSuchProperty")) });
+	const FCortexCommandResult Unknown = Handler.Execute(TEXT("get_node"), UnknownParams);
+	TestFalse(TEXT("unknown selected property refuses"), Unknown.bSuccess);
+	TestEqual(TEXT("unknown selected property refuses with PROPERTY_NOT_FOUND"),
+		Unknown.ErrorCode, CortexErrorCodes::PropertyNotFound);
+	TestTrue(TEXT("unknown selected property refusal does not fall back to the full read"),
+		!Unknown.Data.IsValid() || !Unknown.Data->HasField(TEXT("properties")));
+
+	// Cleanup
+	UObject* LoadedMat = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedMat) LoadedMat->MarkAsGarbage();
+
+	UObject* LoadedMpc = LoadObject<UObject>(nullptr, *MpcPath);
+	if (LoadedMpc) LoadedMpc->MarkAsGarbage();
+
+	return true;
+}
+
+// Task-5 review fix: the material selector validates the ROOT segment with the same editable
+// admission before traversing, so a dotted selector cannot cross a non-editable root into the
+// owning material. `MaterialExpression::Material` is a plain `UPROPERTY()` pointer
+// (MaterialExpression.h:179-184) that the full node read excludes, while the owning material's
+// `TwoSided` is editable (Material.h:559-561): the pair is exactly the reviewed
+// excluded-root/editable-leaf case.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialGetNodeSelectedPropertiesExcludedRootTest,
+	"Cortex.Material.Graph.GetNode.SelectedPropertiesExcludedRoot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialGetNodeSelectedPropertiesExcludedRootTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString MatName = FString::Printf(TEXT("M_TestGetNodeRoot_%s"), *Suffix);
+	const FString MatDir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_GetNodeRoot_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *MatDir, *MatName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), MatDir);
+	CreateParams->SetStringField(TEXT("name"), MatName);
+	Handler.Execute(TEXT("create_material"), CreateParams);
+
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), MatPath);
+	AddParams->SetStringField(TEXT("expression_class"), TEXT("MaterialExpressionScalarParameter"));
+	const FCortexCommandResult AddResult = Handler.Execute(TEXT("add_node"), AddParams);
+	TestTrue(TEXT("scalar parameter node is added"), AddResult.bSuccess);
+	FString NodeId;
+	if (AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+	TestFalse(TEXT("node_id is populated"), NodeId.IsEmpty());
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MatPath);
+	TestNotNull(TEXT("material fixture loads"), Material);
+	if (Material == nullptr)
+	{
+		return false;
+	}
+
+	UMaterialExpression* Expr = nullptr;
+	for (UMaterialExpression* Candidate : Material->GetExpressions())
+	{
+		if (Candidate != nullptr && Candidate->GetName() == NodeId)
+		{
+			Expr = Candidate;
+			break;
+		}
+	}
+	TestNotNull(TEXT("fixture expression resolves"), Expr);
+	if (Expr == nullptr)
+	{
+		Material->MarkAsGarbage();
+		return false;
+	}
+
+	// Fixture setup: the engine sets `MaterialExpression::Material` when an expression is
+	// loaded/duplicated (MaterialExpressions.cpp:896). A freshly created expression in this editor
+	// session may not have it yet, so establish the same engine state explicitly — the regression
+	// must exercise the root admission, never a null object pointer.
+	if (Expr->Material == nullptr)
+	{
+		Expr->Material = Material;
+	}
+	TestNotNull(TEXT("fixture expression has a populated Material root"), Expr->Material.Get());
+
+	// Pin the exact reviewed shape: the root is excluded by the readable admission while the leaf
+	// it reaches is editable.
+	FProperty* RootProperty = Expr->GetClass()->FindPropertyByName(FName(TEXT("Material")));
+	TestNotNull(TEXT("excluded root property exists on the expression"), RootProperty);
+	if (RootProperty != nullptr)
+	{
+		TestTrue(TEXT("root property is excluded by the editable admission"),
+			!RootProperty->HasAnyPropertyFlags(CPF_Edit)
+			|| RootProperty->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated | CPF_DisableEditOnInstance));
+	}
+	FProperty* LeafProperty = UMaterial::StaticClass()->FindPropertyByName(FName(TEXT("TwoSided")));
+	TestNotNull(TEXT("editable leaf property exists on the owning material"), LeafProperty);
+	if (LeafProperty != nullptr)
+	{
+		TestTrue(TEXT("leaf property is editable"), LeafProperty->HasAnyPropertyFlags(CPF_Edit));
+	}
+
+	// The full node read excludes the non-editable root entirely.
+	{
+		TSharedPtr<FJsonObject> FullParams = MakeShared<FJsonObject>();
+		FullParams->SetStringField(TEXT("asset_path"), MatPath);
+		FullParams->SetStringField(TEXT("node_id"), NodeId);
+		const FCortexCommandResult Full = Handler.Execute(TEXT("get_node"), FullParams);
+		TestTrue(TEXT("full read succeeds"), Full.bSuccess);
+		if (Full.Data.IsValid())
+		{
+			const TSharedPtr<FJsonObject>* FullProperties = nullptr;
+			const bool bHasFullProperties =
+				Full.Data->TryGetObjectField(TEXT("properties"), FullProperties)
+				&& FullProperties != nullptr && FullProperties->IsValid();
+			TestTrue(TEXT("full read keeps the properties object"), bHasFullProperties);
+			if (bHasFullProperties)
+			{
+				TestFalse(TEXT("full read excludes the non-editable Material root"),
+					(*FullProperties)->HasField(TEXT("Material")));
+			}
+		}
+	}
+
+	// A dotted selector through that excluded root refuses with no properties payload.
+	{
+		TSharedPtr<FJsonObject> SelectedParams = MakeShared<FJsonObject>();
+		SelectedParams->SetStringField(TEXT("asset_path"), MatPath);
+		SelectedParams->SetStringField(TEXT("node_id"), NodeId);
+		SelectedParams->SetArrayField(TEXT("properties"), {
+			MakeShared<FJsonValueString>(TEXT("Material.TwoSided")) });
+		const FCortexCommandResult Selected = Handler.Execute(TEXT("get_node"), SelectedParams);
+		TestFalse(TEXT("selector through an excluded root refuses"), Selected.bSuccess);
+		TestEqual(TEXT("excluded-root refusal uses PROPERTY_NOT_FOUND"),
+			Selected.ErrorCode, CortexErrorCodes::PropertyNotFound);
+		TestTrue(TEXT("excluded-root refusal carries no properties payload"),
+			!Selected.Data.IsValid() || !Selected.Data->HasField(TEXT("properties")));
+	}
+
+	// Cleanup
+	UObject* LoadedMat = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (LoadedMat) LoadedMat->MarkAsGarbage();
 
 	return true;
 }

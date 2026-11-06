@@ -1,5 +1,6 @@
 #include "CortexDataCommandHandler.h"
 #include "CortexCommandRouter.h"
+#include "CortexCommandContract.h"
 #include "Operations/CortexDataTableOps.h"
 #include "Operations/CortexGameplayTagOps.h"
 #include "Operations/CortexDataAssetOps.h"
@@ -11,12 +12,25 @@
 #include "Operations/CortexDataImportQueueOps.h"
 #include "Operations/CortexDataJsonDiffOps.h"
 
+namespace
+{
+/** Declared before Execute; defined with GetSupportedCommands at the end of this file. */
+const TArray<FCortexCommandInfo>& DataCommandInfos();
+}
+
 FCortexCommandResult FCortexDataCommandHandler::Execute(
     const FString& Command,
     const TSharedPtr<FJsonObject>& Params,
     FDeferredResponseCallback DeferredCallback)
 {
     (void)DeferredCallback;
+
+    // Opted-in commands reject undeclared parameters and missing required ones before any work.
+    FCortexCommandResult ContractError;
+    if (!FCortexCommandContract::ValidateDeclaredParams(DataCommandInfos(), Command, Params, ContractError))
+    {
+        return ContractError;
+    }
 
     // Note: no longer static - virtual override of ICortexDomainHandler
     // DataTable operations
@@ -189,9 +203,15 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     );
 }
 
-TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() const
+namespace
 {
-    return {
+/**
+ * Single source of truth for this domain's command contracts: capability publication and the
+ * declared-contract validation both read the same table.
+ */
+const TArray<FCortexCommandInfo>& DataCommandInfos()
+{
+    static const TArray<FCortexCommandInfo> Infos = {
         FCortexCommandInfo{ TEXT("create_datatable"), TEXT("Create a new DataTable asset") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
             .Required(TEXT("row_struct"), TEXT("string"), TEXT("Row struct type name")),
@@ -211,7 +231,7 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
             .Required(TEXT("row_name"), TEXT("string"), TEXT("Row identifier")),
         FCortexCommandInfo{ TEXT("get_struct_schema"), TEXT("Get schema for any UStruct") }
-            .Required(TEXT("struct_name"), TEXT("string"), TEXT("Struct type name"))
+            .Required(TEXT("struct_name"), TEXT("string"), TEXT("Struct type name (short name, with or without the F prefix) or full object path such as /Script/Engine.HitResult or /Game/Data/S_Foo.S_Foo"))
             .Optional(TEXT("include_subtypes"), TEXT("boolean"), TEXT("Include known instanced-struct subtypes")),
         FCortexCommandInfo{ TEXT("add_datatable_row"), TEXT("Add new row") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
@@ -240,7 +260,9 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Optional(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable path/id filter for string_table_refs mode"))
             .Optional(TEXT("key_pattern"), TEXT("string"), TEXT("Wildcard StringTable key filter for string_table_refs mode"))
             .Optional(TEXT("keys"), TEXT("array"), TEXT("Exact StringTable keys for string_table_refs mode")),
-        FCortexCommandInfo{ TEXT("get_data_catalog"), TEXT("Discovery catalog of all data") },
+        FCortexCommandInfo{ TEXT("get_data_catalog"), TEXT("Discovery catalog of all data; build only the selected sections and opt into the full asset path inventory") }
+            .Optional(TEXT("sections"), TEXT("array"), TEXT("Catalog sections to build: datatables, gameplay_tags, data_assets, string_tables, curve_tables. Omitted or empty builds every section; unknown names are refused."))
+            .Optional(TEXT("include_asset_paths"), TEXT("boolean"), TEXT("Include the full per-class asset path inventory (default: false; use list_data_assets for one class)")),
         FCortexCommandInfo{ TEXT("resolve_tags"), TEXT("Look up rows by GameplayTag") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
             .Required(TEXT("tag_field"), TEXT("string"), TEXT("Field containing GameplayTags"))
@@ -259,9 +281,11 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Required(TEXT("tags"), TEXT("array"), TEXT("GameplayTags to register")),
         FCortexCommandInfo{ TEXT("list_data_assets"), TEXT("List DataAssets") }
             .Optional(TEXT("class_name"), TEXT("string"), TEXT("Optional class filter"))
-            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix")),
-        FCortexCommandInfo{ TEXT("get_data_asset"), TEXT("Get deep DataAsset properties with partial/issues diagnostics") }
-            .Required(TEXT("asset_path"), TEXT("string"), TEXT("DataAsset path")),
+            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("get_data_asset"), TEXT("Get deep DataAsset properties with partial/issues diagnostics; optional fields selects property paths") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("DataAsset path"))
+            .Optional(TEXT("fields"), TEXT("array"), TEXT("Property paths to select (dotted struct paths allowed). Omitted or empty reads every reflected property; unknown paths are refused.")),
         FCortexCommandInfo{ TEXT("update_data_asset"), TEXT("Update DataAsset properties") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("DataAsset path"))
             .Required(TEXT("properties"), TEXT("object"), TEXT("Properties to update"))
@@ -290,9 +314,13 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Skip invalid operations and apply valid ones")),
         FCortexCommandInfo{ TEXT("search_assets"), TEXT("Asset Registry search") }
             .Optional(TEXT("query"), TEXT("string"), TEXT("Search text"))
-            .Optional(TEXT("class_names"), TEXT("array"), TEXT("Allowed asset classes"))
-            .Optional(TEXT("path_prefixes"), TEXT("array"), TEXT("Allowed asset path prefixes"))
-            .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum assets to return")),
+            .Optional(TEXT("class_names"), TEXT("array"), TEXT("Allowed asset classes (exact class names)"))
+            .Optional(TEXT("path_prefixes"), TEXT("array"), TEXT("Allowed canonical package folders (recursive)"))
+            .Optional(TEXT("fields"), TEXT("array"), TEXT("Projection fields: path, name, class_name, package_path"))
+            .Optional(TEXT("count_only"), TEXT("boolean"), TEXT("Return only the exact match count without rows"))
+            .Optional(TEXT("offset"), TEXT("number"), TEXT("Result offset for paging"))
+            .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum assets to return"))
+            .StrictParams(),
         FCortexCommandInfo{ TEXT("list_curve_tables"), TEXT("List CurveTables") }
             .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix")),
         FCortexCommandInfo{ TEXT("get_curve_table"), TEXT("Get curve rows") }
@@ -351,4 +379,11 @@ TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() con
             .Optional(TEXT("query_back"), TEXT("boolean"), TEXT("Verify affected targets after real apply; defaults to true"))
             .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit partial execution summary; defaults to false")),
     };
+    return Infos;
+}
+}
+
+TArray<FCortexCommandInfo> FCortexDataCommandHandler::GetSupportedCommands() const
+{
+    return DataCommandInfos();
 }

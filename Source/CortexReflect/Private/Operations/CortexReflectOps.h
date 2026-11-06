@@ -39,6 +39,7 @@ public:
 	static FCortexCommandResult Search(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult GetDependencies(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult GetReferencers(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult FindBrokenConfigPaths(const TSharedPtr<FJsonObject>& Params);
 	static bool WriteReflectCache(
 		const TSharedPtr<FJsonObject>& HierarchyData,
 		const TSharedPtr<FJsonObject>& Params = nullptr
@@ -67,6 +68,7 @@ private:
 		int32& OutBPCount,
 		int32& OutProjectCppCount,
 		int32& OutProjectBPCount,
+		bool& bOutTruncated,
 		const TSet<UClass*>& EngineAncestorsOfProject
 	);
 	static TSharedPtr<FJsonObject> SerializeProperty(const FProperty* Property, const UObject* CDO);

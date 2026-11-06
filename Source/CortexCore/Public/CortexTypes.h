@@ -89,6 +89,12 @@ namespace CortexErrorCodes
 	// Blueprint SCS migration safety
 	static const FString PotentialDataLoss = TEXT("POTENTIAL_DATA_LOSS");
 	static const FString AmbiguousComponentReference = TEXT("AMBIGUOUS_COMPONENT_REFERENCE");
+	// Native member adoption and safe reparent
+	static const FString AmbiguousClass = TEXT("AMBIGUOUS_CLASS");
+	static const FString NameCollision = TEXT("NAME_COLLISION");
+	static const FString MemberReferenced = TEXT("MEMBER_REFERENCED");
+	static const FString MissingPropertyRedirect = TEXT("MISSING_PROPERTY_REDIRECT");
+	static const FString ReadbackMismatch = TEXT("READBACK_MISMATCH");
 	// Level errors
 	static const FString ActorNotFound = TEXT("ACTOR_NOT_FOUND");
 	static const FString AmbiguousActor = TEXT("AMBIGUOUS_ACTOR");
@@ -120,6 +126,8 @@ namespace CortexErrorCodes
 	static const FString ConsoleCommandFailed = TEXT("CONSOLE_COMMAND_FAILED");
 	static const FString InvalidTimeScale = TEXT("INVALID_TIME_SCALE");
 	static const FString GameModeNotFound = TEXT("GAME_MODE_NOT_FOUND");
+	static const FString Timeout = TEXT("TIMEOUT");
+	static const FString NotAvailable = TEXT("NOT_AVAILABLE");
 	// QA errors
 	static const FString NavigationFailed = TEXT("NAVIGATION_FAILED");
 	static const FString InteractionFailed = TEXT("INTERACTION_FAILED");
@@ -154,6 +162,8 @@ struct CORTEXCORE_API FCortexCommandResult
 {
 	bool bSuccess = false;
 	bool bIsDeferred = false;
+	/** Only meaningful with bIsDeferred: how long the server waits for the deferred callback. 0 = server default (30 s). */
+	double DeferredTimeoutSeconds = 0.0;
 	TSharedPtr<FJsonObject> Data;
 	FString ErrorCode;
 	FString ErrorMessage;

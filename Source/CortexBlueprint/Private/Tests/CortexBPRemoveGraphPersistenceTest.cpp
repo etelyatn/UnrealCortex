@@ -33,6 +33,7 @@
 #include "IO/IoHash.h"
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectHash.h"
 #include "Misc/FileHelper.h"
 #include "Operations/CortexBPRemoveGraphOps.h"
 #include "CortexAssetMutationGuard.h"
@@ -188,10 +189,20 @@ static void MarkFixtureGarbage(UBlueprint* BP)
 {
 	if (BP)
 	{
-		// Discard the asset itself: package garbage alone leaves it visible to PIE compilation.
-		BP->ClearFlags(RF_Public | RF_Standalone);
-		BP->MarkAsGarbage();
-		BP->GetOutermost()->MarkAsGarbage();
+		// These fixtures own dedicated packages. Retire their classes and CDOs with the
+		// Blueprint so later compile-triggered GC never scans a partially retired graph.
+		UPackage* Package = BP->GetOutermost();
+		ForEachObjectWithOuter(Package, [](UObject* Object)
+		{
+			Object->ClearFlags(RF_Public | RF_Standalone);
+			// CDO destruction still needs class reflection metadata (notably the
+			// ubergraph function). Release those fields to normal GC, not forced nulling.
+			if (!Object->IsA<UField>() || Object->IsA<UClass>())
+			{
+				Object->MarkAsGarbage();
+			}
+		});
+		Package->MarkAsGarbage();
 	}
 }
 
@@ -2013,5 +2024,103 @@ bool FCortexBPRemoveGraphSavePreconditionTest::RunTest(const FString&)
 	}
 	MarkFixtureGarbage(BP);
 	IFileManager::Get().Delete(*Filename, false, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRemoveGraphFixtureRetirementTest,
+	"Cortex.Blueprint.RemoveGraph.Fixture.RetiresOwnedObjectGraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexBPRemoveGraphFixtureRetirementTest::RunTest(const FString&)
+{
+	FCortexBPCommandHandler Handler;
+	UBlueprint* Retired = CreateRemoveGraphFixture(
+		Handler, TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_RetiredFixture"));
+	UBlueprint* Retained = CreateRemoveGraphFixture(
+		Handler, TEXT("/Game/Temp/CortexBPRemoveGraphApply/BP_RetainedFixture"));
+	if (!TestNotNull(TEXT("retirement fixture"), Retired)
+		|| !TestNotNull(TEXT("unrelated compilation fixture"), Retained))
+	{
+		MarkFixtureGarbage(Retired);
+		MarkFixtureGarbage(Retained);
+		return false;
+	}
+	UEdGraph* EventGraph = Retired->UbergraphPages[0];
+	UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(EventGraph);
+	Event->CreateNewGuid();
+	Event->CustomFunctionName = TEXT("RetirementEvent");
+	EventGraph->AddNode(Event, false, false);
+	Event->AllocateDefaultPins();
+	FKismetEditorUtilities::CompileBlueprint(Retired);
+	TestEqual(TEXT("event-bearing retirement fixture compiles"), Retired->Status, BS_UpToDate);
+
+	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Retired->GeneratedClass);
+	UClass* SkeletonClass = Retired->SkeletonGeneratedClass;
+	UObject* GeneratedDefault = GeneratedClass ? GeneratedClass->GetDefaultObject() : nullptr;
+	UObject* SkeletonDefault = SkeletonClass ? SkeletonClass->GetDefaultObject() : nullptr;
+	if (!TestNotNull(TEXT("generated class exists before retirement"), GeneratedClass)
+		|| !TestNotNull(TEXT("skeleton class exists before retirement"), SkeletonClass)
+		|| !TestNotNull(TEXT("generated CDO exists before retirement"), GeneratedDefault)
+		|| !TestNotNull(TEXT("skeleton CDO exists before retirement"), SkeletonDefault))
+	{
+		MarkFixtureGarbage(Retired);
+		MarkFixtureGarbage(Retained);
+		return false;
+	}
+	UFunction* UbergraphFunction = GeneratedClass->UberGraphFunction;
+	TestNotNull(TEXT("retirement fixture exercises persistent ubergraph teardown"), UbergraphFunction);
+	const TWeakObjectPtr<UClass> GeneratedWeak(GeneratedClass);
+	const TWeakObjectPtr<UClass> SkeletonWeak(SkeletonClass);
+	const TWeakObjectPtr<UObject> GeneratedDefaultWeak(GeneratedDefault);
+	const TWeakObjectPtr<UObject> SkeletonDefaultWeak(SkeletonDefault);
+	UPackage* RetiredPackage = Retired->GetOutermost();
+	UPackage* RetainedPackage = Retained->GetOutermost();
+
+	MarkFixtureGarbage(Retired);
+	const bool bGeneratedRetired = TestFalse(
+		TEXT("retired Blueprint does not leave its generated class eligible for GC scanning"), IsValid(GeneratedClass));
+	const bool bSkeletonRetired = TestFalse(
+		TEXT("retired Blueprint does not leave its skeleton class eligible for GC scanning"), IsValid(SkeletonClass));
+	const bool bGeneratedDefaultRetired = TestFalse(
+		TEXT("retired generated class does not leave its CDO live"), IsValid(GeneratedDefault));
+	const bool bSkeletonDefaultRetired = TestFalse(
+		TEXT("retired skeleton class does not leave its CDO live"), IsValid(SkeletonDefault));
+	TestTrue(TEXT("unrelated Blueprint remains valid"), IsValid(Retained));
+	TestTrue(TEXT("unrelated generated class retains its Blueprint owner"),
+		Retained->GeneratedClass && Retained->GeneratedClass->ClassGeneratedBy == Retained);
+	if (bGeneratedRetired && bSkeletonRetired && bGeneratedDefaultRetired && bSkeletonDefaultRetired)
+	{
+		// Exercise the consumer that previously collected partially retired fixture graphs.
+		FKismetEditorUtilities::CompileBlueprint(Retained);
+		TestEqual(TEXT("subsequent unrelated Blueprint compiles"), Retained->Status, BS_UpToDate);
+		// Ignore garbage flags: prove these objects are actually gone, not just retired.
+		TestFalse(TEXT("generated class is collected by normal post-compile GC"), GeneratedWeak.IsValid(false, true));
+		TestFalse(TEXT("skeleton class is collected by normal post-compile GC"), SkeletonWeak.IsValid(false, true));
+		TestFalse(TEXT("generated CDO is collected by normal post-compile GC"), GeneratedDefaultWeak.IsValid(false, true));
+		TestFalse(TEXT("skeleton CDO is collected by normal post-compile GC"), SkeletonDefaultWeak.IsValid(false, true));
+		TestTrue(TEXT("subsequent compile preserves the unrelated Blueprint"), IsValid(Retained));
+	}
+	else
+	{
+		// Isolate a failing-before run without collecting the partially retired graph.
+		ForEachObjectWithOuter(RetiredPackage, [](UObject* Object)
+		{
+			Object->ClearFlags(RF_Public | RF_Standalone);
+			if (!Object->IsA<UField>() || Object->IsA<UClass>())
+			{
+				Object->MarkAsGarbage();
+			}
+		});
+	}
+
+	ForEachObjectWithOuter(RetainedPackage, [](UObject* Object)
+	{
+		Object->ClearFlags(RF_Public | RF_Standalone);
+		if (!Object->IsA<UField>() || Object->IsA<UClass>())
+		{
+			Object->MarkAsGarbage();
+		}
+	});
+	RetainedPackage->MarkAsGarbage();
 	return true;
 }

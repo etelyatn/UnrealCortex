@@ -321,3 +321,186 @@ bool FCortexReflectHierarchyProjectOnlyCountsTest::RunTest(const FString& Parame
 
 	return true;
 }
+
+namespace CortexReflectHierarchyFlatClassesTest
+{
+	/**
+	 * Collects every node name of the nested hierarchy tree in visit order. The flat class list is
+	 * a duplicate of exactly these names, so the tree walk is the authority for "navigable without
+	 * duplicate flat classes" as well as for the explicit opt-in recovery.
+	 */
+	void CollectFlatClassNames(const TSharedPtr<FJsonObject>& Node, TArray<FString>& OutNames)
+	{
+		if (!Node.IsValid())
+		{
+			return;
+		}
+
+		FString Name;
+		if (Node->TryGetStringField(TEXT("name"), Name))
+		{
+			OutNames.Add(Name);
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+		if (!Node->TryGetArrayField(TEXT("children"), Children) || !Children)
+		{
+			return;
+		}
+
+		for (const TSharedPtr<FJsonValue>& Child : *Children)
+		{
+			CollectFlatClassNames(Child->AsObject(), OutNames);
+		}
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectHierarchyFlatClassesDefaultOffTest,
+	"Cortex.Reflect.Hierarchy.FlatClassesDefaultOff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectHierarchyFlatClassesDefaultOffTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("root"), TEXT("AActor"));
+	Params->SetNumberField(TEXT("depth"), 1);
+	Params->SetBoolField(TEXT("include_engine"), true);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("class_hierarchy"), Params);
+	TestTrue(TEXT("class_hierarchy should succeed"), Result.bSuccess);
+
+	if (!Result.Data.IsValid())
+	{
+		AddError(TEXT("Result data is invalid"));
+		return true;
+	}
+
+	// The flat duplicate of every node name is opt-in: a default response must not repeat the
+	// whole navigable tree as a second flat array.
+	TestFalse(TEXT("Default class_hierarchy must not duplicate flat classes"),
+		Result.Data->HasField(TEXT("classes")));
+
+	const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+	TestTrue(TEXT("Default hierarchy must remain navigable through children"),
+		Result.Data->TryGetArrayField(TEXT("children"), Children));
+	TestTrue(TEXT("Engine-inclusive AActor hierarchy must expose direct children"),
+		Children != nullptr && Children->Num() > 0);
+
+	// The aggregate counts must still describe the nested tree the caller can walk.
+	int32 TotalClasses = 0;
+	TestTrue(TEXT("total_classes must remain present"),
+		Result.Data->TryGetNumberField(TEXT("total_classes"), TotalClasses));
+	TestEqual(TEXT("total_classes must count the navigable tree (root plus direct children)"),
+		TotalClasses, 1 + (Children ? Children->Num() : 0));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectHierarchyFlatClassesOptInTest,
+	"Cortex.Reflect.Hierarchy.FlatClassesOptIn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectHierarchyFlatClassesOptInTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("root"), TEXT("AActor"));
+	Params->SetNumberField(TEXT("depth"), 1);
+	Params->SetBoolField(TEXT("include_engine"), true);
+	Params->SetBoolField(TEXT("include_flat_classes"), true);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("class_hierarchy"), Params);
+	TestTrue(TEXT("class_hierarchy should succeed with include_flat_classes=true"), Result.bSuccess);
+
+	if (!Result.Data.IsValid())
+	{
+		AddError(TEXT("Result data is invalid"));
+		return true;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* FlatClasses = nullptr;
+	TestTrue(TEXT("Explicit include_flat_classes=true must recover the flat class list"),
+		Result.Data->TryGetArrayField(TEXT("classes"), FlatClasses));
+	if (!FlatClasses)
+	{
+		return true;
+	}
+
+	TArray<FString> TreeNames;
+	CortexReflectHierarchyFlatClassesTest::CollectFlatClassNames(Result.Data, TreeNames);
+	TestTrue(TEXT("Opt-in hierarchy must still carry a navigable tree"), TreeNames.Num() > 1);
+	TestEqual(TEXT("Flat classes must list every navigable tree node exactly once"),
+		FlatClasses->Num(), TreeNames.Num());
+
+	for (const FString& TreeName : TreeNames)
+	{
+		bool bFound = false;
+		for (const TSharedPtr<FJsonValue>& Value : *FlatClasses)
+		{
+			FString FlatName;
+			if (Value->TryGetString(FlatName) && FlatName == TreeName)
+			{
+				bFound = true;
+				break;
+			}
+		}
+		TestTrue(FString::Printf(TEXT("Flat classes must include tree node %s"), *TreeName), bFound);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectHierarchyBoundedTraversalSignalTest,
+	"Cortex.Reflect.Hierarchy.BoundedTraversalDeclaresTruncation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectHierarchyBoundedTraversalSignalTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("root"), TEXT("AActor"));
+	Params->SetNumberField(TEXT("depth"), 2);
+	Params->SetBoolField(TEXT("include_engine"), true);
+	// A node budget far below the size of the AActor hierarchy, so the walk is bounded early.
+	Params->SetNumberField(TEXT("max_results"), 3);
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("class_hierarchy"), Params);
+	TestTrue(TEXT("class_hierarchy should succeed"), Result.bSuccess);
+
+	if (!Result.Data.IsValid())
+	{
+		AddError(TEXT("Result data is invalid"));
+		return true;
+	}
+
+	// The node budget is spent on the root and its descendants, so the walk stops early. The
+	// emitted top-level child list is shorter than the budget, and the truncation must come from
+	// the traversal itself rather than from the emitted child count.
+	bool bTruncated = false;
+	TestTrue(TEXT("A bounded traversal must declare truncation"),
+		Result.Data->TryGetBoolField(TEXT("truncated"), bTruncated));
+	TestTrue(TEXT("A bounded traversal must report truncated=true"), bTruncated);
+
+	const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+	TestTrue(TEXT("A bounded hierarchy must still be navigable through children"),
+		Result.Data->TryGetArrayField(TEXT("children"), Children));
+	if (Children)
+	{
+		TestTrue(TEXT("Emitted children must be shorter than the node budget"),
+			Children->Num() < 3);
+	}
+
+	int32 TotalClasses = 0;
+	TestTrue(TEXT("total_classes must remain present"),
+		Result.Data->TryGetNumberField(TEXT("total_classes"), TotalClasses));
+	TestTrue(TEXT("total_classes must not exceed the node budget"), TotalClasses <= 3);
+
+	return true;
+}

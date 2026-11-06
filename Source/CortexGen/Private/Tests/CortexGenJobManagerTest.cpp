@@ -2,6 +2,9 @@
 #include "Operations/CortexGenJobManager.h"
 #include "Providers/ICortexGenProvider.h"
 #include "CortexGenSettings.h"
+#include "CortexGenCommandHandler.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 
 namespace
 {
@@ -63,6 +66,12 @@ TSharedPtr<FCortexGenJobManager> CreateTestJobManager()
     Manager->Initialize();
     Manager->ClearTimingData();
     return Manager;
+}
+
+/** Distinct long prompt body (>512 chars) so omission vs. full retention is unambiguous. */
+FString BuildLongGenJobPrompt(const TCHAR* Tag, TCHAR Fill)
+{
+    return FString(Tag) + FString::ChrN(600, Fill);
 }
 
 } // anonymous namespace
@@ -298,6 +307,324 @@ bool FCortexGenJobManagerListJobsTest::RunTest(const FString& Parameters)
 
     TArray<FCortexGenJobState> Jobs = Manager->ListJobs();
     TestEqual(TEXT("Should have 2 jobs"), Jobs.Num(), 2);
+
+    return true;
+}
+
+/**
+ * list_jobs must default to include_prompt=false: rows keep identity/metadata (id, provider,
+ * status, progress, created_at, completed_at) and the count, but omit the prompt body.
+ * Explicit include_prompt=true restores the full prompt. Exercised through the real
+ * FCortexGenCommandHandler over the isolated FTestGenProvider fixture (production insertion
+ * path RegisterProvider/SubmitJob; no LoadJobs/SaveJobs, no provider network calls).
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenCommandHandlerListJobsPromptEmissionTest,
+    "Cortex.Gen.CommandHandler.ListJobsPromptEmission",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenCommandHandlerListJobsPromptEmissionTest::RunTest(const FString& Parameters)
+{
+    auto Provider = MakeShared<FTestGenProvider>();
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
+
+    const FString Prompt1 = BuildLongGenJobPrompt(TEXT("alpha-prompt "), TEXT('a'));
+    const FString Prompt2 = BuildLongGenJobPrompt(TEXT("beta-prompt "), TEXT('b'));
+
+    FCortexGenJobRequest Request1;
+    Request1.Type = ECortexGenJobType::MeshFromText;
+    Request1.Prompt = Prompt1;
+
+    FString JobId1, Error;
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    TestTrue(TEXT("job1 submitted"), Manager->SubmitJob(TEXT("test"), Request1, JobId1, Error, ErrorCode));
+    TestTrue(TEXT("job1 cancelled to terminal state"), Manager->CancelJob(JobId1, Error, ErrorCode));
+
+    FCortexGenJobRequest Request2;
+    Request2.Type = ECortexGenJobType::MeshFromText;
+    Request2.Prompt = Prompt2;
+    FString JobId2;
+    TestTrue(TEXT("job2 submitted"), Manager->SubmitJob(TEXT("test"), Request2, JobId2, Error, ErrorCode));
+    TestTrue(TEXT("job2 cancelled to terminal state"), Manager->CancelJob(JobId2, Error, ErrorCode));
+
+    const FCortexGenJobState* State1 = Manager->GetJobState(JobId1);
+    TestNotNull(TEXT("canonical state for job1 exists"), State1);
+
+    FCortexGenCommandHandler Handler(Manager);
+
+    // --- default list_jobs: prompt omitted, identity/metadata retained ---
+    TSharedPtr<FJsonObject> DefaultParams = MakeShared<FJsonObject>();
+    const FCortexCommandResult DefaultResult = Handler.Execute(TEXT("list_jobs"), DefaultParams);
+    TestTrue(TEXT("default list_jobs succeeds"), DefaultResult.bSuccess);
+
+    const TArray<TSharedPtr<FJsonValue>>* DefaultJobs = nullptr;
+    TestTrue(TEXT("default list_jobs returns jobs array"),
+        DefaultResult.Data.IsValid() && DefaultResult.Data->TryGetArrayField(TEXT("jobs"), DefaultJobs));
+    if (DefaultJobs)
+    {
+        TestEqual(TEXT("default list_jobs returns every job"), DefaultJobs->Num(), 2);
+
+        const TSharedPtr<FJsonValue>* DefaultRow = DefaultJobs->FindByPredicate(
+            [&JobId1](const TSharedPtr<FJsonValue>& Item)
+            {
+                FString Id;
+                const TSharedPtr<FJsonObject> Obj = Item.IsValid() ? Item->AsObject() : nullptr;
+                return Obj.IsValid() && Obj->TryGetStringField(TEXT("job_id"), Id) && Id == JobId1;
+            });
+        TestNotNull(TEXT("default list_jobs retains submitted job"), DefaultRow);
+        if (DefaultRow)
+        {
+            const TSharedPtr<FJsonObject> Obj = (*DefaultRow)->AsObject();
+            TestTrue(TEXT("default row is an object"), Obj.IsValid());
+            if (Obj.IsValid())
+            {
+                TestFalse(TEXT("default list_jobs omits prompt body"), Obj->HasField(TEXT("prompt")));
+
+                FString RowProvider, RowStatus;
+                double RowProgress = -1.0;
+                TestTrue(TEXT("row provider retained"), Obj->TryGetStringField(TEXT("provider"), RowProvider));
+                TestEqual(TEXT("row provider matches"), RowProvider, FString(TEXT("test")));
+                TestTrue(TEXT("row status retained"), Obj->TryGetStringField(TEXT("status"), RowStatus));
+                TestEqual(TEXT("row status matches canonical"), RowStatus, FString(TEXT("cancelled")));
+                TestTrue(TEXT("row progress retained"), Obj->TryGetNumberField(TEXT("progress"), RowProgress));
+
+                if (State1)
+                {
+                    TestEqual(TEXT("row progress matches canonical"), RowProgress,
+                        static_cast<double>(State1->Progress));
+
+                    FString RowCreatedAt, RowCompletedAt;
+                    TestTrue(TEXT("row created_at retained"),
+                        Obj->TryGetStringField(TEXT("created_at"), RowCreatedAt));
+                    TestEqual(TEXT("row created_at matches canonical"), RowCreatedAt, State1->CreatedAt);
+                    TestTrue(TEXT("row completed_at retained"),
+                        Obj->TryGetStringField(TEXT("completed_at"), RowCompletedAt));
+                    TestEqual(TEXT("row completed_at matches canonical"), RowCompletedAt, State1->CompletedAt);
+                }
+            }
+        }
+    }
+
+    double DefaultCount = -1.0;
+    TestTrue(TEXT("default count retained"),
+        DefaultResult.Data.IsValid() && DefaultResult.Data->TryGetNumberField(TEXT("count"), DefaultCount));
+    TestEqual(TEXT("default count equals returned rows"), DefaultCount, 2.0);
+
+    // --- explicit include_prompt=false also omits the body on every row ---
+    TSharedPtr<FJsonObject> OmitParams = MakeShared<FJsonObject>();
+    OmitParams->SetBoolField(TEXT("include_prompt"), false);
+    const FCortexCommandResult OmitResult = Handler.Execute(TEXT("list_jobs"), OmitParams);
+    TestTrue(TEXT("list_jobs include_prompt=false succeeds"), OmitResult.bSuccess);
+    TestTrue(TEXT("include_prompt=false returns response data"), OmitResult.Data.IsValid());
+    const TArray<TSharedPtr<FJsonValue>>* OmitJobs = nullptr;
+    TestTrue(TEXT("include_prompt=false returns jobs array"),
+        OmitResult.Data.IsValid() && OmitResult.Data->TryGetArrayField(TEXT("jobs"), OmitJobs));
+    double OmitCount = -1.0;
+    TestTrue(TEXT("include_prompt=false count present"),
+        OmitResult.Data.IsValid() && OmitResult.Data->TryGetNumberField(TEXT("count"), OmitCount));
+    TestEqual(TEXT("include_prompt=false count equals returned rows"), OmitCount, 2.0);
+    if (OmitJobs)
+    {
+        TestEqual(TEXT("include_prompt=false returns every job"), OmitJobs->Num(), 2);
+
+        bool bAnyRowCarriedPrompt = false;
+        for (const TSharedPtr<FJsonValue>& Item : *OmitJobs)
+        {
+            const TSharedPtr<FJsonObject> Obj = Item.IsValid() ? Item->AsObject() : nullptr;
+            TestTrue(TEXT("include_prompt=false row is an object"), Obj.IsValid());
+            if (Obj.IsValid())
+            {
+                TestTrue(TEXT("include_prompt=false row retains job_id"),
+                    Obj->HasTypedField<EJson::String>(TEXT("job_id")));
+                TestTrue(TEXT("include_prompt=false row retains provider"),
+                    Obj->HasTypedField<EJson::String>(TEXT("provider")));
+                TestTrue(TEXT("include_prompt=false row retains status"),
+                    Obj->HasTypedField<EJson::String>(TEXT("status")));
+                TestTrue(TEXT("include_prompt=false row retains progress"),
+                    Obj->HasTypedField<EJson::Number>(TEXT("progress")));
+                TestTrue(TEXT("include_prompt=false row retains created_at"),
+                    Obj->HasTypedField<EJson::String>(TEXT("created_at")));
+                TestTrue(TEXT("include_prompt=false row retains completed_at"),
+                    Obj->HasTypedField<EJson::String>(TEXT("completed_at")));
+                if (Obj->HasField(TEXT("prompt")))
+                {
+                    bAnyRowCarriedPrompt = true;
+                }
+            }
+        }
+        TestFalse(TEXT("explicit include_prompt=false omits every prompt body"), bAnyRowCarriedPrompt);
+    }
+
+    // --- include_prompt=true restores the full prompt body ---
+    TSharedPtr<FJsonObject> PromptParams = MakeShared<FJsonObject>();
+    PromptParams->SetBoolField(TEXT("include_prompt"), true);
+    const FCortexCommandResult PromptResult = Handler.Execute(TEXT("list_jobs"), PromptParams);
+    TestTrue(TEXT("list_jobs include_prompt=true succeeds"), PromptResult.bSuccess);
+    TestTrue(TEXT("include_prompt=true returns response data"), PromptResult.Data.IsValid());
+    const TArray<TSharedPtr<FJsonValue>>* PromptJobs = nullptr;
+    TestTrue(TEXT("include_prompt=true returns jobs array"),
+        PromptResult.Data.IsValid() && PromptResult.Data->TryGetArrayField(TEXT("jobs"), PromptJobs));
+    double PromptCount = -1.0;
+    TestTrue(TEXT("include_prompt=true count present"),
+        PromptResult.Data.IsValid() && PromptResult.Data->TryGetNumberField(TEXT("count"), PromptCount));
+    TestEqual(TEXT("include_prompt=true count equals returned rows"), PromptCount, 2.0);
+    if (PromptJobs)
+    {
+        TestEqual(TEXT("include_prompt=true returns every job"), PromptJobs->Num(), 2);
+
+        const TSharedPtr<FJsonValue>* PromptRow = PromptJobs->FindByPredicate(
+            [&JobId1](const TSharedPtr<FJsonValue>& Item)
+            {
+                FString Id;
+                const TSharedPtr<FJsonObject> Obj = Item.IsValid() ? Item->AsObject() : nullptr;
+                return Obj.IsValid() && Obj->TryGetStringField(TEXT("job_id"), Id) && Id == JobId1;
+            });
+        TestNotNull(TEXT("submitted job retained"), PromptRow);
+        if (PromptRow)
+        {
+            const TSharedPtr<FJsonObject> Obj = PromptRow->IsValid() ? (*PromptRow)->AsObject() : nullptr;
+            TestTrue(TEXT("include_prompt=true row is an object"), Obj.IsValid());
+            if (Obj.IsValid())
+            {
+                FString RowId, RowProvider, RowStatus, RowCreatedAt, RowCompletedAt;
+                double RowProgress = -1.0;
+                TestTrue(TEXT("include_prompt=true row retains job_id"),
+                    Obj->TryGetStringField(TEXT("job_id"), RowId));
+                TestEqual(TEXT("include_prompt=true row job_id matches"), RowId, JobId1);
+                TestTrue(TEXT("include_prompt=true row retains provider"),
+                    Obj->TryGetStringField(TEXT("provider"), RowProvider));
+                TestEqual(TEXT("include_prompt=true row provider matches"), RowProvider, FString(TEXT("test")));
+                TestTrue(TEXT("include_prompt=true row retains status"),
+                    Obj->TryGetStringField(TEXT("status"), RowStatus));
+                TestEqual(TEXT("include_prompt=true row status matches canonical"), RowStatus,
+                    FString(TEXT("cancelled")));
+                TestTrue(TEXT("include_prompt=true row retains progress"),
+                    Obj->TryGetNumberField(TEXT("progress"), RowProgress));
+                TestTrue(TEXT("include_prompt=true row retains created_at"),
+                    Obj->TryGetStringField(TEXT("created_at"), RowCreatedAt));
+                TestTrue(TEXT("include_prompt=true row retains completed_at"),
+                    Obj->TryGetStringField(TEXT("completed_at"), RowCompletedAt));
+
+                FString RowPrompt;
+                TestTrue(TEXT("prompt present on request"),
+                    Obj->TryGetStringField(TEXT("prompt"), RowPrompt));
+                const FCortexGenJobState* Expected = State1;
+                TestEqual(TEXT("prompt retained on request"), RowPrompt,
+                    Expected ? Expected->Prompt : FString(TEXT("<missing canonical state>")));
+                TestEqual(TEXT("include_prompt=true row progress matches canonical"), RowProgress,
+                    Expected ? static_cast<double>(Expected->Progress) : -1.0);
+                TestEqual(TEXT("include_prompt=true row created_at matches canonical"), RowCreatedAt,
+                    Expected ? Expected->CreatedAt : FString(TEXT("<missing canonical state>")));
+                TestEqual(TEXT("include_prompt=true row completed_at matches canonical"), RowCompletedAt,
+                    Expected ? Expected->CompletedAt : FString(TEXT("<missing canonical state>")));
+            }
+        }
+    }
+
+    return true;
+}
+
+/**
+ * native limit semantics must stay unchanged: limit=0 is native-unlimited (never reinterpreted
+ * as a cached-pagination request), while a positive limit returns the bounded native page.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenCommandHandlerListJobsNativeLimitTest,
+    "Cortex.Gen.CommandHandler.ListJobsNativeLimitSemantics",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenCommandHandlerListJobsNativeLimitTest::RunTest(const FString& Parameters)
+{
+    auto Provider = MakeShared<FTestGenProvider>();
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
+    Manager->SetMaxConcurrentJobs(10);
+
+    const TCHAR Fills[] = { TEXT('0'), TEXT('1'), TEXT('2') };
+    for (int32 Index = 0; Index < 3; ++Index)
+    {
+        FCortexGenJobRequest Request;
+        Request.Type = ECortexGenJobType::MeshFromText;
+        Request.Prompt = BuildLongGenJobPrompt(TEXT("limit-prompt "), Fills[Index]);
+
+        FString JobId, Error;
+        ECortexGenError ErrorCode = ECortexGenError::None;
+        TestTrue(TEXT("job submitted"), Manager->SubmitJob(TEXT("test"), Request, JobId, Error, ErrorCode));
+        TestTrue(TEXT("job cancelled to terminal state"), Manager->CancelJob(JobId, Error, ErrorCode));
+    }
+
+    FCortexGenCommandHandler Handler(Manager);
+
+    TSharedPtr<FJsonObject> ZeroParams = MakeShared<FJsonObject>();
+    ZeroParams->SetNumberField(TEXT("limit"), 0);
+    const FCortexCommandResult ZeroResult = Handler.Execute(TEXT("list_jobs"), ZeroParams);
+    double ZeroCount = -1.0;
+    TestTrue(TEXT("limit=0 list_jobs succeeds"), ZeroResult.bSuccess);
+    TestTrue(TEXT("limit=0 count present"),
+        ZeroResult.Data.IsValid() && ZeroResult.Data->TryGetNumberField(TEXT("count"), ZeroCount));
+    TestEqual(TEXT("native limit=0 stays unlimited (not a cached-pagination request)"), ZeroCount, 3.0);
+
+    TSharedPtr<FJsonObject> OneParams = MakeShared<FJsonObject>();
+    OneParams->SetNumberField(TEXT("limit"), 1);
+    const FCortexCommandResult OneResult = Handler.Execute(TEXT("list_jobs"), OneParams);
+    double OneCount = -1.0;
+    TestTrue(TEXT("limit=1 list_jobs succeeds"), OneResult.bSuccess);
+    TestTrue(TEXT("limit=1 count present"),
+        OneResult.Data.IsValid() && OneResult.Data->TryGetNumberField(TEXT("count"), OneCount));
+    TestEqual(TEXT("positive limit returns the existing bounded native page"), OneCount, 1.0);
+
+    return true;
+}
+
+/**
+ * job_status keeps returning the full prompt regardless of the list_jobs default.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenCommandHandlerJobStatusPromptRetainedTest,
+    "Cortex.Gen.CommandHandler.JobStatusPromptRetained",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenCommandHandlerJobStatusPromptRetainedTest::RunTest(const FString& Parameters)
+{
+    auto Provider = MakeShared<FTestGenProvider>();
+    auto Manager = CreateTestJobManager();
+    Manager->RegisterProvider(Provider);
+
+    FCortexGenJobRequest Request;
+    Request.Type = ECortexGenJobType::MeshFromText;
+    Request.Prompt = BuildLongGenJobPrompt(TEXT("status-prompt "), TEXT('s'));
+
+    FString JobId, Error;
+    ECortexGenError ErrorCode = ECortexGenError::None;
+    TestTrue(TEXT("job submitted"), Manager->SubmitJob(TEXT("test"), Request, JobId, Error, ErrorCode));
+    TestTrue(TEXT("job cancelled to terminal state"), Manager->CancelJob(JobId, Error, ErrorCode));
+
+    const FCortexGenJobState* State = Manager->GetJobState(JobId);
+    TestNotNull(TEXT("canonical state exists"), State);
+
+    FCortexGenCommandHandler Handler(Manager);
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("job_id"), JobId);
+    const FCortexCommandResult Result = Handler.Execute(TEXT("job_status"), Params);
+    TestTrue(TEXT("job_status succeeds"), Result.bSuccess);
+    TestTrue(TEXT("job_status returns response data"), Result.Data.IsValid());
+
+    FString RowId, RowStatus, RowPrompt;
+    TestTrue(TEXT("job_status retains job_id field"),
+        Result.Data.IsValid() && Result.Data->TryGetStringField(TEXT("job_id"), RowId));
+    TestEqual(TEXT("job_status job_id matches"), RowId, JobId);
+    TestTrue(TEXT("job_status retains status field"),
+        Result.Data.IsValid() && Result.Data->TryGetStringField(TEXT("status"), RowStatus));
+    TestEqual(TEXT("job_status status matches canonical"), RowStatus, FString(TEXT("cancelled")));
+    TestTrue(TEXT("job_status retains prompt field"),
+        Result.Data.IsValid() && Result.Data->TryGetStringField(TEXT("prompt"), RowPrompt));
+    TestEqual(TEXT("job_status retains the full prompt"), RowPrompt,
+        State ? State->Prompt : FString(TEXT("<missing canonical state>")));
 
     return true;
 }

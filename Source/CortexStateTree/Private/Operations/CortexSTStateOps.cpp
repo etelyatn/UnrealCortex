@@ -1,6 +1,7 @@
 ﻿#include "Operations/CortexSTStateOps.h"
 
 #include "CortexCommandRouter.h"
+#include "CortexEngineCompat.h"
 #include "CortexSTCompat.h"
 #include "CortexSTTypes.h"
 #include "CortexStateTreeModule.h"
@@ -119,16 +120,6 @@ bool TryParseEnumValue(
 	return true;
 }
 
-void CollectAllStates(const FCortexSTAssetContext& Context, TArray<FCortexSTStateRef>& OutStates)
-{
-	if (Context.EditorData == nullptr || Context.EditorData->SubTrees.Num() == 0 || Context.EditorData->SubTrees[0] == nullptr)
-	{
-		return;
-	}
-
-	CortexST::CollectStates(Context.EditorData->SubTrees[0], OutStates);
-}
-
 bool ResolveStateBySelector(
 	const FCortexSTAssetContext& Context,
 	const TSharedPtr<FJsonObject>& Params,
@@ -138,18 +129,6 @@ bool ResolveStateBySelector(
 	FCortexSTStateRef& OutState,
 	FCortexCommandResult& OutError)
 {
-	const UStateTreeState* RootState =
-		Context.EditorData != nullptr && Context.EditorData->SubTrees.Num() > 0
-			? Context.EditorData->SubTrees[0]
-			: nullptr;
-	if (RootState == nullptr)
-	{
-		OutError = FCortexCommandRouter::Error(
-			CortexErrorCodes::StateTreeStateNotFound,
-			FString::Printf(TEXT("StateTree has no root state: %s"), *Context.AssetPath));
-		return false;
-	}
-
 	FString StateId;
 	FString StatePath;
 	const bool bHasStateId = Params.IsValid() && Params->TryGetStringField(IdField, StateId) && !StateId.IsEmpty();
@@ -164,7 +143,7 @@ bool ResolveStateBySelector(
 	}
 
 	TArray<FCortexSTStateRef> States;
-	CollectAllStates(Context, States);
+	CortexST::CollectAllStates(Context, States);
 
 	if (!bHasStateId && !bHasStatePath)
 	{
@@ -394,20 +373,21 @@ bool ApplyStatePropertiesPatch(
 	const TArray<FString> AllowedFields = GetAllowedStateFields();
 	TSet<FString> AllowedFieldSet(AllowedFields);
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : Properties->Values)
+	for (const auto& Entry : Properties->Values)
 	{
-		if (!AllowedFieldSet.Contains(Entry.Key))
+		const FString FieldName = CortexEngineCompat::JsonKeyToString(Entry.Key);
+		if (!AllowedFieldSet.Contains(FieldName))
 		{
 			OutError = MakeInvalidFieldError(
-				FString::Printf(TEXT("Unsupported state property: %s"), *Entry.Key),
+				FString::Printf(TEXT("Unsupported state property: %s"), *FieldName),
 				AllowedFields);
 			return false;
 		}
 	}
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : Properties->Values)
+	for (const auto& Entry : Properties->Values)
 	{
-		const FString& FieldName = Entry.Key;
+		const FString FieldName = CortexEngineCompat::JsonKeyToString(Entry.Key);
 
 		if (FieldName == TEXT("name"))
 		{

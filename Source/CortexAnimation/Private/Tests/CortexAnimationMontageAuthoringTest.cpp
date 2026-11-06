@@ -56,7 +56,7 @@ FCortexCommandRouter CreateMontageRouter()
 
 FString MakeMontageSuffix()
 {
-	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(12);
+	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(12);
 }
 
 void CleanupMontageTestAssets(UAnimMontage*& Montage, UAnimSequence*& Sequence)

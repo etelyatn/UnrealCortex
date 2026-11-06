@@ -86,6 +86,7 @@ TArray<FCortexCommandInfo> FCortexGenCommandHandler::GetSupportedCommands() cons
     Commands.Add(FCortexCommandInfo{TEXT("list_jobs"), TEXT("List generation jobs with optional status filter")}
         .Optional(TEXT("status"), TEXT("string"), TEXT("Filter by status (e.g. Pending, Processing, Imported, Failed)"))
         .Optional(TEXT("limit"), TEXT("integer"), TEXT("Maximum number of jobs to return (0 = no limit)"))
+        .Optional(TEXT("include_prompt"), TEXT("boolean"), TEXT("Include the full prompt body per row; default false"))
     );
 
     Commands.Add(FCortexCommandInfo{TEXT("cancel_job"), TEXT("Cancel an active generation job")}
@@ -306,6 +307,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleListJobs(const TSharedPtr<F
 
     FString StatusFilter;
     int32 Limit = 0;
+    bool bIncludePrompt = false;
 
     if (Params.IsValid())
     {
@@ -315,6 +317,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleListJobs(const TSharedPtr<F
         {
             Limit = static_cast<int32>(LimitVal);
         }
+        Params->TryGetBoolField(TEXT("include_prompt"), bIncludePrompt);
     }
 
     TArray<FCortexGenJobState> Jobs = JobManager->ListJobs(StatusFilter, Limit);
@@ -327,7 +330,10 @@ FCortexCommandResult FCortexGenCommandHandler::HandleListJobs(const TSharedPtr<F
         Obj->SetStringField(TEXT("status"), JobStatusToString(Job.Status));
         Obj->SetStringField(TEXT("provider"), Job.Provider);
         Obj->SetNumberField(TEXT("progress"), Job.Progress);
-        Obj->SetStringField(TEXT("prompt"), Job.Prompt);
+        if (bIncludePrompt)
+        {
+            Obj->SetStringField(TEXT("prompt"), Job.Prompt);
+        }
         Obj->SetStringField(TEXT("created_at"), Job.CreatedAt);
         Obj->SetStringField(TEXT("completed_at"), Job.CompletedAt);
         JobsArray.Add(MakeShared<FJsonValueObject>(Obj));

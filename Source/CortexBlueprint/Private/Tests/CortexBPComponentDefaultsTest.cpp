@@ -29,7 +29,7 @@ namespace CortexBPComponentDefaultsTest
 
 		FFixture()
 		{
-			const FString UniqueSuffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+			const FString UniqueSuffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 			BlueprintName = FString::Printf(TEXT("BP_CompDefaultsTest_%s"), *UniqueSuffix);
 			Dir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_CompDefaults_%s"), *UniqueSuffix);
 			AssetPath = FString::Printf(TEXT("%s/%s"), *Dir, *BlueprintName);
@@ -637,7 +637,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBPComponentDefaultsInheritedTemplateRejectedTest::RunTest(const FString& Parameters)
 {
-	const FString UniqueSuffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString UniqueSuffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString BlueprintName = FString::Printf(TEXT("BP_InheritedCompDefaults_%s"), *UniqueSuffix);
 	const FString Dir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_InheritedCompDefaults_%s"), *UniqueSuffix);
 	const FString AssetPath = FString::Printf(TEXT("%s/%s"), *Dir, *BlueprintName);

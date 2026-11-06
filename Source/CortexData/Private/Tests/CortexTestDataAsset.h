@@ -91,6 +91,26 @@ public:
 	FString DerivedOnlyProperty = TEXT("derived editable");
 };
 
+/** Task-5 selected-value read fixture (token-efficiency TE05). Inherits the declared CRUD
+ *  members (TestProperty, TestNumber=0, Nested.Visible/Internal, NestedArray,
+ *  UnsupportedExportInterface) and adds only the explicit false / null / string-table-text
+ *  members a selected data.get_data_asset read must preserve. */
+UCLASS()
+class UCortexTask5SelectedValuesAsset : public UCortexTestDataAsset
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere)
+	bool TestFlag = false;
+
+	UPROPERTY(EditAnywhere)
+	UObject* TestObjectRef = nullptr;
+
+	UPROPERTY(EditAnywhere)
+	FText TestLocalizedText;
+};
+
 UCLASS()
 class UCortexSchemaInstancedDataAsset : public UDataAsset
 {

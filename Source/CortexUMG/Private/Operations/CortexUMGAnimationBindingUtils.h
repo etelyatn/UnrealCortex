@@ -55,7 +55,10 @@ struct FCortexUMGAnimationBindingFingerprint
 namespace CortexUMGAnimationBindingUtils
 {
     /** Serializes a section's range, properties, and all channel proxy keys to an archive */
-    void SerializeSectionChannels(FArchive& Ar, UMovieSceneSection* Section);
+    void SerializeSectionChannels(FArchive& Ar, const UMovieSceneSection* Section);
+
+    /** Serializes one track's full authored state (identity + sorted sections) for exact comparison */
+    void SerializeTrackState(FArchive& Ar, const UMovieSceneTrack* Track);
 
     /** Computes the canonical SHA256 digest of the authored animation state */
     FString ComputeAnimationDigest(

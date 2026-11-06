@@ -587,6 +587,163 @@ def test_core_router_uses_cached_send_for_get_data_catalog():
     connection.send_command.assert_not_called()
 
 
+# --- agent-facing capability inventory and catalog selections (Task 8) ---
+
+CAPABILITIES_FIXTURE = Path(__file__).parent / "fixtures" / "capabilities_cache_full.json"
+
+
+def _capability_document() -> dict:
+    """Fixture-derived capability document that fits the MCP response budget.
+
+    The complete live document (~118k compact characters) exceeds MAX_RESPONSE_CHARS, so the
+    facade regressions use the fixture's real records for two domains: that exercises the names
+    projection and the full inventory instead of the size refusal.
+    """
+    full = json.loads(CAPABILITIES_FIXTURE.read_text(encoding="utf-8"))
+    return {
+        "plugin_version": full["plugin_version"],
+        "domains": {name: full["domains"][name] for name in ("core", "data")},
+    }
+
+
+def _command_names(document: dict) -> dict:
+    return {
+        domain: [command["name"] for command in body["commands"]]
+        for domain, body in document["domains"].items()
+    }
+
+
+def _dispatched_commands(connection) -> list:
+    """Every recorded dispatch, whichever send path the facade uses."""
+    return list(connection.send_command.call_args_list) + list(
+        connection.send_command_cached.call_args_list
+    )
+
+
+def _command_call(connection, command: str):
+    """The single recorded dispatch of one native command."""
+    calls = [call for call in _dispatched_commands(connection) if call.args[0] == command]
+    assert len(calls) == 1, calls
+    return calls[0]
+
+
+def _native_params(call) -> dict:
+    return call.args[1] if len(call.args) > 1 and call.args[1] is not None else {}
+
+
+def test_core_router_names_detail_projects_command_names_only():
+    """core_cmd(get_capabilities, detail=names) is a Python-owned names-only projection."""
+    capabilities = _capability_document()
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": capabilities}
+    connection.send_command_cached.return_value = {"success": True, "data": capabilities}
+
+    router = make_router("core", connection, "core docs")
+    payload = json.loads(router("get_capabilities", {"detail": "names"}))
+
+    assert payload.get("_error") is None, payload
+    assert sorted(payload["domains"]) == sorted(capabilities["domains"])
+    assert _command_names(payload) == _command_names(capabilities)
+    assert all(
+        "params" not in command
+        for domain in payload["domains"].values()
+        for command in domain["commands"]
+    )
+
+    # The Python-owned selector never reaches the editor: native get_capabilities has no detail
+    # parameter, and the facade makes exactly one native call.
+    calls = _dispatched_commands(connection)
+    assert len(calls) == 1, calls
+    assert calls[0].args[0].endswith("get_capabilities"), calls[0].args
+    assert "detail" not in _native_params(calls[0])
+
+
+def test_core_router_capabilities_default_view_is_names_only():
+    """The agent-facing default is detail=names (design §3.4)."""
+    capabilities = _capability_document()
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": capabilities}
+    connection.send_command_cached.return_value = {"success": True, "data": capabilities}
+
+    router = make_router("core", connection, "core docs")
+    payload = json.loads(router("get_capabilities"))
+
+    assert payload.get("_error") is None, payload
+    assert sorted(payload["domains"]) == sorted(capabilities["domains"])
+    assert all(
+        "params" not in command
+        for domain in payload["domains"].values()
+        for command in domain["commands"]
+    )
+
+
+def test_core_router_names_view_keeps_full_signatures_available():
+    """A projected read never truncates the authoritative capabilities.
+
+    detail=full still exposes the complete signature inventory, and a subsequent live
+    operation-schema read still carries its params.
+    """
+    capabilities = _capability_document()
+
+    def _dispatch(command, params=None, **_kwargs):
+        if command.endswith("get_capabilities"):
+            return {"success": True, "data": capabilities}
+        if command == "core.get_operation_schema":
+            return {
+                "success": True,
+                "data": {
+                    "source": "live_editor",
+                    "domain": params.get("domain"),
+                    "command": params.get("command"),
+                    "params": [{"name": "items", "type": "array", "required": True}],
+                },
+            }
+        raise AssertionError(f"unexpected native command: {command}")
+
+    connection = MagicMock()
+    connection.send_command.side_effect = _dispatch
+    connection.send_command_cached.side_effect = _dispatch
+    router = make_router("core", connection, "core docs")
+
+    names_view = json.loads(router("get_capabilities", {"detail": "names"}))
+    assert names_view.get("_error") is None, names_view
+    assert all(
+        "params" not in command
+        for domain in names_view["domains"].values()
+        for command in domain["commands"]
+    )
+
+    full_view = json.loads(router("get_capabilities", {"detail": "full"}))
+    assert full_view.get("_error") is None, full_view
+    core_commands = {
+        command["name"]: command for command in full_view["domains"]["core"]["commands"]
+    }
+    assert core_commands["save_asset"]["params"], "detail=full must keep the signature inventory"
+
+    schema = json.loads(router("get_operation_schema", {"domain": "core", "command": "save_asset"}))
+    assert schema["source"] == "live_editor"
+    assert schema["params"] == [{"name": "items", "type": "array", "required": True}]
+
+
+def test_catalog_selection_params_are_forwarded_by_data_and_core_facades():
+    """Both facades forward sections/include_asset_paths so the cache key includes them."""
+    selection = {"sections": ["datatables"], "include_asset_paths": True}
+
+    data_connection = MagicMock()
+    data_connection.send_command.return_value = {"success": True, "data": {"datatables": []}}
+    data_router = make_router("data", data_connection, "data docs")
+    assert json.loads(data_router("get_data_catalog", dict(selection)))["datatables"] == []
+    data_call = _command_call(data_connection, "data.get_data_catalog")
+    assert data_call.args[1] == selection
+
+    core_connection = MagicMock()
+    core_connection.send_command_cached.return_value = {"success": True, "data": {"datatables": []}}
+    core_router = make_router("core", core_connection, "core docs")
+    assert json.loads(core_router("get_data_catalog", dict(selection)))["datatables"] == []
+    core_call = _command_call(core_connection, "data.get_data_catalog")
+    assert core_call.args[1] == selection
+
+
 def test_core_router_dispatches_normal_commands_via_tcp():
     connection = MagicMock()
     connection.send_command.return_value = {"success": True, "data": {"saved": True}}
@@ -599,6 +756,73 @@ def test_core_router_dispatches_normal_commands_via_tcp():
         "core.save_asset",
         {"asset_path": "/Game/Test"},
     )
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_wait_ready_non_finite_timeout_falls_back_to_default_window(bad):
+    from cortex_mcp.tools.routers import _dispatch_timeout
+
+    assert _dispatch_timeout("editor.wait_ready", {"timeout": bad}) == 150.0
+
+
+@pytest.mark.parametrize(
+    ("command", "params", "expected_timeout"),
+    [
+        ("wait_ready", {}, 150.0),
+        ("wait_ready", {"timeout": 300}, 330.0),
+        ("live_coding_compile", {}, 1830.0),
+    ],
+)
+def test_editor_router_widens_receive_window_for_deferred_turnaround_commands(command, params, expected_timeout):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {"ready": True}}
+
+    router = make_router("editor", connection, "editor docs")
+    payload = json.loads(router(command, params))
+
+    assert payload["ready"] is True
+    connection.send_command.assert_called_once_with(
+        f"editor.{command}",
+        params,
+        timeout=expected_timeout,
+    )
+
+
+@pytest.mark.parametrize(
+    ("domain", "command", "params"),
+    [
+        ("blueprint", "compile_all", {"path_prefix": "/Game/Ripper", "out_path": "x.json"}),
+        ("blueprint", "export_migration_analysis", {"path_prefix": "/Game/Ripper", "out_path": "x.jsonl"}),
+        ("level", "export_class_instances", {"class": "A", "maps": ["/Game/M"], "out_path": "x.json"}),
+        ("reflect", "export_dependency_graph", {"path_prefixes": ["/Game/Ripper"], "out_path": "x.json"}),
+        ("reflect", "find_duplicate_graphs", {"path_prefixes": ["/Game/Ripper"]}),
+        ("reflect", "find_name_lookups", {"path_prefixes": ["/Game/Ripper"]}),
+    ],
+)
+def test_router_widens_receive_window_for_long_synchronous_commands(domain, command, params):
+    connection = MagicMock()
+    connection.send_command.return_value = {"success": True, "data": {"ok": True}}
+
+    router = make_router(domain, connection, f"{domain} docs")
+    payload = json.loads(router(command, params))
+
+    assert payload["ok"] is True
+    connection.send_command.assert_called_once_with(f"{domain}.{command}", params, timeout=1800.0)
+
+
+@pytest.mark.parametrize(
+    "qualified",
+    [
+        "blueprint.export_migration_analysis",
+        "reflect.export_dependency_graph",
+        "reflect.find_duplicate_graphs",
+        "reflect.find_name_lookups",
+    ],
+)
+def test_dispatch_timeout_is_the_long_window_for_whole_project_scans(qualified):
+    from cortex_mcp.tools.routers import _dispatch_timeout
+
+    assert _dispatch_timeout(qualified, {}) == 1800.0
 
 
 def test_blueprint_router_uses_cached_send_for_discovery_reads():

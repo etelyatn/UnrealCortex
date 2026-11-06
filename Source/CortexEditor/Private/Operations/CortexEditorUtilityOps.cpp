@@ -634,6 +634,9 @@ FCortexCommandResult FCortexEditorUtilityOps::GetRecentLogs(
 	double SinceSeconds = 30.0;
 	int32 SinceCursor = -1;
 	FString Category;
+	int32 Limit = 200;
+	int32 UntilCursor = INDEX_NONE;
+	bool bCountOnly = false;
 
 	if (Params.IsValid())
 	{
@@ -641,6 +644,35 @@ FCortexCommandResult FCortexEditorUtilityOps::GetRecentLogs(
 		Params->TryGetNumberField(TEXT("since_seconds"), SinceSeconds);
 		Params->TryGetNumberField(TEXT("since_cursor"), SinceCursor);
 		Params->TryGetStringField(TEXT("category"), Category);
+		Params->TryGetBoolField(TEXT("count_only"), bCountOnly);
+
+		double LimitNumber = 0.0;
+		if (Params->TryGetNumberField(TEXT("limit"), LimitNumber))
+		{
+			Limit = static_cast<int32>(LimitNumber);
+		}
+
+		double UntilCursorNumber = 0.0;
+		if (Params->TryGetNumberField(TEXT("until_cursor"), UntilCursorNumber))
+		{
+			UntilCursor = static_cast<int32>(UntilCursorNumber);
+		}
+	}
+
+	// -1 is the only accepted negative duration and disables time filtering; every other negative
+	// (including values inside the float tolerance of -1) is malformed.
+	if (SinceSeconds < 0.0 && SinceSeconds != -1.0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("since_seconds must be nonnegative, or exactly -1 to disable time filtering."));
+	}
+
+	if (Limit < 1 || Limit > 2000)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("limit must be between 1 and 2000."));
 	}
 
 	ELogVerbosity::Type Severity = ELogVerbosity::Log;
@@ -653,10 +685,12 @@ FCortexCommandResult FCortexEditorUtilityOps::GetRecentLogs(
 		Severity = ELogVerbosity::Error;
 	}
 
-	const FCortexEditorLogResult Logs = LogCapture.GetRecentLogs(Severity, SinceSeconds, SinceCursor, Category);
+	const FCortexEditorLogResult Logs =
+		LogCapture.GetRecentLogs(Severity, SinceSeconds, SinceCursor, Category, Limit, UntilCursor, bCountOnly);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	TArray<TSharedPtr<FJsonValue>> EntriesArray;
+	EntriesArray.Reserve(Logs.Entries.Num());
 	for (const FCortexEditorLogEntry& Entry : Logs.Entries)
 	{
 		TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
@@ -671,9 +705,14 @@ FCortexCommandResult FCortexEditorUtilityOps::GetRecentLogs(
 		EntriesArray.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	Data->SetArrayField(TEXT("entries"), EntriesArray);
-	Data->SetArrayField(TEXT("logs"), EntriesArray);
 	Data->SetNumberField(TEXT("count"), EntriesArray.Num());
-	Data->SetNumberField(TEXT("cursor"), Logs.Cursor);
+	Data->SetNumberField(TEXT("next_cursor"), Logs.NextCursor);
+	Data->SetNumberField(TEXT("latest_cursor"), Logs.LatestCursor);
+	Data->SetNumberField(TEXT("window_end_cursor"), Logs.WindowEndCursor);
+	Data->SetNumberField(TEXT("oldest_available_cursor"), Logs.OldestAvailableCursor);
+	Data->SetNumberField(TEXT("matched_count"), Logs.MatchedCount);
+	Data->SetBoolField(TEXT("has_more"), Logs.bHasMore);
+	Data->SetBoolField(TEXT("lost_before_cursor"), Logs.bLostBeforeCursor);
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -697,7 +736,9 @@ FCortexCommandResult FCortexEditorUtilityOps::ExecuteConsoleCommand(
 			TEXT("Missing required param: command"));
 	}
 
-	const bool bOk = GEditor->PlayWorld->Exec(GEditor->PlayWorld, *Command);
+	// Preserve world Exec precedence; never dispatch again after either path handles the input.
+	const bool bOk = GEditor->PlayWorld->Exec(GEditor->PlayWorld, *Command)
+		|| IConsoleManager::Get().ProcessUserConsoleInput(*Command, *GLog, GEditor->PlayWorld);
 	if (!bOk)
 	{
 		return FCortexCommandRouter::Error(

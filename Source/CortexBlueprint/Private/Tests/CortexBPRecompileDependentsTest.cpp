@@ -21,7 +21,7 @@ namespace
 		return CreatePackage(*FString::Printf(
 			TEXT("/Game/Temp/%s_%s"),
 			Name,
-			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8)));
 	}
 
 	bool IsPackageUnderRoot(const FString& PackageName, const FString& Root)
@@ -38,7 +38,7 @@ namespace
 		{
 			Root = FString::Printf(
 				TEXT("/CortexReadOnly%s"),
-				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8));
 			PhysicalDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("CortexReadOnlyBlueprintTests") / Root.RightChop(1));
 			IFileManager::Get().MakeDirectory(*PhysicalDir, true);
 			FPackageName::RegisterMountPoint(Root + TEXT("/"), PhysicalDir / TEXT(""));

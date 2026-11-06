@@ -14,7 +14,7 @@ namespace
 		return CreatePackage(*FString::Printf(
 			TEXT("/Game/Temp/%s_%s"),
 			Name,
-			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8)));
 	}
 }
 

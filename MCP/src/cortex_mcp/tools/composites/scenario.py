@@ -28,7 +28,15 @@ def register_scenario_compose_tools(mcp, connection) -> None:
     register_qa_composite_tools(_CaptureMCP(), connection)
     run_scenario_inline = captured["run_scenario_inline"]
 
-    @mcp.tool(name="scenario_compose")
+    @mcp.tool(
+        name="scenario_compose",
+        description=(
+            "COMPOSITE tool — run a named QA scenario of ordered action steps in one call. Each step "
+            "sends its command, then observes state and recent logs; findings are aggregated and a "
+            "Markdown report bundle is written. Returns per-step success/findings and the report path. "
+            "For individual QA commands use qa_cmd.\n"
+        ),
+    )
     def scenario_compose(
         scenario_name: str,
         steps: list[dict],

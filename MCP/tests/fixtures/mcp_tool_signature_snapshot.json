@@ -43,7 +43,8 @@
     "analyze_blueprint_for_migration": {
       "file": "tools/blueprint/analysis.py",
       "params": [
-        "asset_path"
+        "asset_path",
+        "sections"
       ]
     },
     "blueprint_search": {
@@ -64,7 +65,8 @@
         "remove_variables",
         "remove_functions",
         "migrated_overrides",
-        "compile"
+        "compile",
+        "save"
       ]
     },
     "compare_blueprints": {
@@ -163,7 +165,11 @@
       "params": [
         "asset_path",
         "properties",
-        "blueprint_path"
+        "blueprint_path",
+        "include_values",
+        "include_members",
+        "discovery_offset",
+        "discovery_limit"
       ]
     },
     "get_level_blueprint": {
@@ -714,6 +720,9 @@
         "severity",
         "since_seconds",
         "since_cursor",
+        "until_cursor",
+        "limit",
+        "count_only",
         "category"
       ]
     },
@@ -1646,7 +1655,8 @@
       "params": [
         "asset_path",
         "category",
-        "limit"
+        "limit",
+        "include_config"
       ]
     },
     "impact_analysis": {

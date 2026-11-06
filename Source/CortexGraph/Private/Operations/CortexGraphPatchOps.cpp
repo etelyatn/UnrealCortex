@@ -2494,6 +2494,14 @@ struct FGraphPatchJournal
 	};
 	TArray<FNodePinSnapshot> NodePins;
 
+	struct FRemovalLinkOrder
+	{
+		FPinLinkTarget Pin;
+		TArray<FPinLinkTarget> LinkedTo;
+	};
+	/** Fan-out/fan-in order before any retirement mutation, including retained neighboring pins. */
+	TArray<FRemovalLinkOrder> RemovalLinkOrders;
+
 	/**
 	 * One terminator node the migration detached from its graph. The node object stays alive here so
 	 * its identity (GUID and object name) survives, and the pin snapshot carries the state that the
@@ -2503,6 +2511,8 @@ struct FGraphPatchJournal
 	{
 		FGuid NodeGuid;
 		FGuid GraphGuid;
+		/** Index immediately before removal; reverse replay restores exact graph enumeration order. */
+		int32 NodeIndex = INDEX_NONE;
 		int32 NodePosX = 0;
 		int32 NodePosY = 0;
 		FString NodeComment;
@@ -2512,6 +2522,11 @@ struct FGraphPatchJournal
 		bool bUserSetEnabledState = false;
 		bool bForceDisplayAsDisabled = false;
 		bool bOverrideFunction = false;
+		/**
+		 * The whole event reference, not its class parent: a component-bound or delegate event's
+		 * signature can be owned by a package (a file-scope delegate), which has no parent class.
+		 */
+		FMemberReference EventReference;
 		FName MemberName = NAME_None;
 		UClass* MemberParentClass = nullptr;
 		/**
@@ -2627,6 +2642,58 @@ void JournalNodePins(UEdGraphNode* Node, FGraphPatchJournal& Journal)
 	Journal.NodePins.Add(MakeNodePinSnapshot(Node));
 }
 
+void JournalRemovalLinkOrders(UEdGraphNode* Node, FGraphPatchJournal& Journal)
+{
+	if (!Node) return;
+	auto Capture = [&Journal](UEdGraphPin* Pin)
+	{
+		if (!Pin || Pin->LinkedTo.Num() < 2 || !Pin->GetOwningNode()) return;
+		const FGuid Guid = Pin->GetOwningNode()->NodeGuid;
+		if (Journal.RemovalLinkOrders.ContainsByPredicate(
+			[&](const FGraphPatchJournal::FRemovalLinkOrder& Entry)
+			{
+				return Entry.Pin.NodeGuid == Guid && Entry.Pin.PinName == Pin->PinName
+					&& Entry.Pin.Direction == Pin->Direction;
+			})) return;
+		FGraphPatchJournal::FRemovalLinkOrder Entry;
+		Entry.Pin = {Guid, Pin->PinName, Pin->Direction};
+		Entry.LinkedTo.Reserve(Pin->LinkedTo.Num());
+		for (UEdGraphPin* Linked : Pin->LinkedTo)
+			if (Linked && Linked->GetOwningNode())
+				Entry.LinkedTo.Add({Linked->GetOwningNode()->NodeGuid, Linked->PinName, Linked->Direction});
+		Journal.RemovalLinkOrders.Add(MoveTemp(Entry));
+	};
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		Capture(Pin);
+		if (Pin)
+			for (UEdGraphPin* Linked : Pin->LinkedTo) Capture(Linked);
+	}
+}
+
+bool RestoreRemovalLinkOrders(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
+{
+	for (const FGraphPatchJournal::FRemovalLinkOrder& Entry : Journal.RemovalLinkOrders)
+	{
+		UEdGraphNode* Node = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, Entry.Pin.NodeGuid);
+		UEdGraphPin* Pin = Node ? Node->FindPin(Entry.Pin.PinName, Entry.Pin.Direction) : nullptr;
+		if (!Pin || Pin->LinkedTo.Num() != Entry.LinkedTo.Num()) return false;
+		TArray<UEdGraphPin*> Ordered;
+		Ordered.Reserve(Entry.LinkedTo.Num());
+		for (const FGraphPatchJournal::FPinLinkTarget& Link : Entry.LinkedTo)
+		{
+			UEdGraphNode* Other = FCortexGraphMigrationOps::FindNodeByGuid(Blueprint, Link.NodeGuid);
+			UEdGraphPin* Linked = Other ? Other->FindPin(Link.PinName, Link.Direction) : nullptr;
+			// Reorder only a completely restored reciprocal set; never manufacture or hide a link.
+			if (!Linked || !Pin->LinkedTo.Contains(Linked) || !Linked->LinkedTo.Contains(Pin)
+				|| Ordered.Contains(Linked)) return false;
+			Ordered.Add(Linked);
+		}
+		Pin->LinkedTo = MoveTemp(Ordered);
+	}
+	return true;
+}
+
 /**
  * Journals the complete pre-removal identity of a node the migration detaches. The object itself is
  * kept alive by the journal, so recovery re-registers the same node and its identity (including the
@@ -2642,6 +2709,7 @@ void JournalNodeRemoved(UEdGraphNode* Node, FGraphPatchJournal& Journal)
 	FGraphPatchJournal::FRemovedNodeEntry Entry;
 	Entry.NodeGuid = Node->NodeGuid;
 	Entry.GraphGuid = Node->GetGraph() ? Node->GetGraph()->GraphGuid : FGuid();
+	Entry.NodeIndex = Node->GetGraph() ? Node->GetGraph()->Nodes.IndexOfByKey(Node) : INDEX_NONE;
 	Entry.NodePosX = Node->NodePosX;
 	Entry.NodePosY = Node->NodePosY;
 	Entry.NodeComment = Node->NodeComment;
@@ -2653,8 +2721,7 @@ void JournalNodeRemoved(UEdGraphNode* Node, FGraphPatchJournal& Journal)
 	if (const UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
 	{
 		Entry.bOverrideFunction = Event->bOverrideFunction;
-		Entry.MemberName = Event->EventReference.GetMemberName();
-		Entry.MemberParentClass = Event->EventReference.GetMemberParentClass();
+		Entry.EventReference = Event->EventReference;
 		Entry.CustomFunctionName = Event->CustomFunctionName;
 	}
 	else if (const UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
@@ -2726,8 +2793,13 @@ bool RestoreRemovedNodes(UBlueprint* Blueprint, const FGraphPatchJournal& Journa
 		if (!Node)
 		{
 			if (!IsValid(Entry.Node)) return false;
+			if (Entry.NodeIndex < 0 || Entry.NodeIndex > Graph->Nodes.Num()) return false;
 			Node = Entry.Node;
 			Graph->AddNode(Node, false, false);
+			// Append alone changes scan work and invalidates an otherwise restored reviewed intent.
+			// Removal entries replay in reverse, so each immediate pre-removal index is valid again.
+			Graph->Nodes.RemoveAt(Graph->Nodes.Num() - 1);
+			Graph->Nodes.Insert(Node, Entry.NodeIndex);
 		}
 		Node->Modify();
 		Node->NodeGuid = Entry.NodeGuid;
@@ -2741,14 +2813,7 @@ bool RestoreRemovedNodes(UBlueprint* Blueprint, const FGraphPatchJournal& Journa
 		if (UK2Node_Event* Event = Cast<UK2Node_Event>(Node))
 		{
 			Event->bOverrideFunction = Entry.bOverrideFunction;
-			if (Entry.MemberParentClass)
-			{
-				Event->EventReference.SetExternalMember(Entry.MemberName, Entry.MemberParentClass);
-			}
-			else if (!Entry.MemberName.IsNone())
-			{
-				Event->EventReference.SetSelfMember(Entry.MemberName);
-			}
+			Event->EventReference = Entry.EventReference;
 		}
 		else if (UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
 		{
@@ -3226,6 +3291,7 @@ bool RestoreJournal(UBlueprint* Blueprint, FGraphPatchJournal& Journal)
 	// preserved downstream pins are free again and the journaled links can be re-created exactly.
 	if (!RestoreRemovedNodes(Blueprint, Journal)) return false;
 	if (!RestoreRemovedMember(Blueprint, Journal)) return false;
+	if (!RestoreRemovalLinkOrders(Blueprint, Journal)) return false;
 
 	for (int32 Index = Journal.AddedGraphs.Num() - 1; Index >= 0; --Index)
 	{
@@ -3684,9 +3750,9 @@ bool ComparePlannedDefaults(
 	{
 		return true;
 	}
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*DefaultsPtr)->Values)
+	for (const auto& Pair : (*DefaultsPtr)->Values)
 	{
-		const FString PinName = Pair.Key;
+		const FString PinName = CortexEngineCompat::JsonKeyToString(Pair.Key);
 		const TSharedPtr<FJsonObject> Literal = Pair.Value.IsValid() ? Pair.Value->AsObject() : nullptr;
 		UEdGraphPin* Pin = Live ? Live->FindPin(FName(*PinName)) : nullptr;
 		FString Expected;
@@ -4645,6 +4711,7 @@ bool ApplyPrepared(
 					*GuidText));
 			}
 			Journal.CapturePreRemovalState(ApprovedNode);
+			JournalRemovalLinkOrders(ApprovedNode, Journal);
 		}
 
 		for (int32 Index = 0; Index < RetirePlan.ApprovedGuids.Num(); ++Index)
@@ -5119,9 +5186,9 @@ bool ApplyPrepared(
 		const TSharedPtr<FJsonObject>* DefaultsPtr = nullptr;
 		if (NodeJson->TryGetObjectField(TEXT("defaults"), DefaultsPtr) && DefaultsPtr && DefaultsPtr->IsValid())
 		{
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*DefaultsPtr)->Values)
+			for (const auto& Pair : (*DefaultsPtr)->Values)
 			{
-				UEdGraphPin* Pin = Node->FindPin(FName(*Pair.Key));
+				UEdGraphPin* Pin = Node->FindPin(FName(*CortexEngineCompat::JsonKeyToString(Pair.Key)));
 				const TSharedPtr<FJsonObject> Literal = Pair.Value->AsObject();
 				if (!Pin || !Literal.IsValid()) return Fail(TEXT("Prepared node default no longer resolves"));
 				FCortexCommandResult DefaultError;
@@ -5388,15 +5455,18 @@ bool FCortexGraphPatchOps::ValidateEligibility(
 		&& Params->TryGetObjectField(TEXT("migration"), Migration)
 		&& Migration && Migration->IsValid()
 		&& (*Migration)->TryGetStringField(TEXT("op"), Op);
-	// The two repair operations exist to clear a compiler-invalid state, so they are the only
-	// migrations a BS_Error asset accepts. Everything else still refuses to touch a broken asset.
-	const bool bRepairOp = bMigrationOp && (Op == TEXT("retire_entries") || Op == TEXT("replace_call_output"));
+	// The repair operations exist to clear a compiler-invalid state, so they are the only
+	// migrations a BS_Error asset accepts. prune_island is admitted because stale non-entry islands
+	// left by a reparent can be the remaining compiler errors; its entry-retention contract is unchanged.
+	// Everything else still refuses to touch a broken asset.
+	const bool bRepairOp = bMigrationOp
+		&& (Op == TEXT("retire_entries") || Op == TEXT("replace_call_output") || Op == TEXT("prune_island"));
 
 	if (Blueprint->Status == BS_Error && !bRepairOp)
 	{
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidOperation,
-			TEXT("Blueprint has pre-existing compiler errors; only retire_entries and replace_call_output may repair this state through graph.apply_patch"));
+			TEXT("Blueprint has pre-existing compiler errors; only retire_entries, replace_call_output and prune_island may repair this state through graph.apply_patch"));
 		return false;
 	}
 	return true;

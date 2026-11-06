@@ -60,6 +60,22 @@ public:
 	/** Deep serialize a single FProperty value. FieldPath is used for structured diagnostics. */
 	static FCortexPropertySerializationResult PropertyToJsonDeep(const FProperty* Property, const void* ValuePtr, const FCortexSerializationPolicy& Policy, const FString& FieldPath);
 
+	/** Serialize the recursive difference between a property value and an inherited baseline value.
+	 *  Identical values produce no JSON value at all. Struct values recurse into the members of the
+	 *  same struct type, so equal members are omitted instead of restated; arrays, sets, maps, object
+	 *  identities and scalars are compared whole and serialized atomically through PropertyToJsonDeep.
+	 *  A comparison that cannot be completed within the remaining depth budget degrades to a structured
+	 *  issue plus a partial result, never to a sentinel value that would read as a complete value.
+	 *  The caller owns the guarantee that both pointers address a value of the property's own type,
+	 *  laid out in its own instance; this helper never reinterprets one instance as another.
+	 *  FieldPath is used for structured diagnostics. */
+	static FCortexPropertySerializationResult PropertyDifferenceToJson(
+		const FProperty* Property,
+		const void* ValuePtr,
+		const void* BaselineValuePtr,
+		const FCortexSerializationPolicy& Policy,
+		const FString& FieldPath);
+
 	/** Convert structured serializer issues into payload JSON. */
 	static TArray<TSharedPtr<FJsonValue>> SerializationIssuesToJson(const TArray<FCortexSerializationIssue>& Issues);
 

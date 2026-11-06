@@ -5,6 +5,7 @@
 #include "CortexCommandRouter.h"
 
 class UBlueprint;
+struct FAssetData;
 
 /**
  * Blueprint asset operations
@@ -45,8 +46,9 @@ public:
 	/**
 	 * Compile Blueprint
 	 * Params: asset_path (string)
+	 * bSkipGarbageCollection: the caller compiles many assets and collects garbage once itself.
 	 */
-	static FCortexCommandResult Compile(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult Compile(const TSharedPtr<FJsonObject>& Params, bool bSkipGarbageCollection = false);
 
 	/**
 	 * Save Blueprint
@@ -60,18 +62,27 @@ public:
 	 */
 	static FCortexCommandResult Rename(const TSharedPtr<FJsonObject>& Params);
 
-	/**
-	 * Reparent a Blueprint to a new parent class
-	 * Params: asset_path (string), new_parent (string - Blueprint path or C++ class name)
-	 */
-	static FCortexCommandResult Reparent(const TSharedPtr<FJsonObject>& Params);
-
 	/** Load a Blueprint by asset path (with path normalization), returns nullptr and sets OutError if not found */
 	static UBlueprint* LoadBlueprint(const FString& AssetPath, FString& OutError);
 
 	/** Validate that a Blueprint asset path targets project-owned writable content for mutation commands. */
 	static bool ValidateWritableBlueprintAssetPath(const FString& AssetPath, FString& OutError);
 
-	/** Determine Blueprint type string (Actor, Component, Widget, Interface, FunctionLibrary) from a loaded UBlueprint */
+	/** Classify a loaded UBlueprint with the same rules used for Asset Registry rows (Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown) */
 	static FString DetermineBlueprintType(const UBlueprint* BP);
+
+	/** Immediate-parent display name shared by list/get_info/analyze/create: asset name for Blueprint generated classes (no "_C"), class name otherwise. Empty for null. */
+	static FString ParentClassDisplayName(const UClass* ParentClass);
+
+	/** Short name of the nearest native ancestor at or above ParentClass. Empty for null. */
+	static FString NativeParentClassName(const UClass* ParentClass);
+
+	/** Asset Registry class-path tag value to object path; empty for empty or "None" tags. */
+	static FString ClassTagToObjectPath(const FString& TagValue);
+
+	/** Determine the Blueprint type string from AssetRegistry tags, without loading the asset (same classifier as DetermineBlueprintType). */
+	static FString DetermineBlueprintTypeFromAssetData(const FAssetData& AssetData);
+
+	/** Canonical Blueprint type vocabulary in classification precedence order (shared by list, get_info, analyze_for_migration and compile_all). */
+	static const TArray<FString>& GetBlueprintTypeNames();
 };

@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "Operations/CortexGraphPinDefaults.h"
 #include "Operations/CortexGraphNodeContract.h"
+#include "Operations/CortexGraphNodeOps.h"
 #include "K2Node_GenericCreateObject.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_CallFunction.h"
@@ -344,6 +345,18 @@ bool FCortexGraphConstructionRejectionsTest::RunTest(const FString& Parameters)
 		{
 			TestEqual(TEXT("PC_Byte enum pin reads back as kind enum"), ReadEnumDesc->GetStringField(TEXT("kind")), TEXT("enum"));
 			TestEqual(TEXT("PC_Byte enum pin reads back expected value"), ReadEnumDesc->GetStringField(TEXT("value")), TEXT("ECC_WorldStatic"));
+		}
+
+		ValidEnum->SetStringField(TEXT("value"), TEXT("ECC_WorldDynamic"));
+		TestTrue(TEXT("Apply nonzero named enum default"), FCortexGraphPinDefaults::ApplyDefault(EnumPin, ValidEnum, Error));
+		const TSharedRef<FJsonObject> SerializedPin = FCortexGraphNodeOps::SerializePin(EnumPin, true, false);
+		const TSharedPtr<FJsonObject>* SerializedDefault = nullptr;
+		if (TestTrue(TEXT("Graph inspection exposes enum default"), SerializedPin->TryGetObjectField(TEXT("default_descriptor"), SerializedDefault)))
+		{
+			TestEqual(TEXT("Graph inspection preserves enum kind"), (*SerializedDefault)->GetStringField(TEXT("kind")), TEXT("enum"));
+			FString EnumValue;
+			TestTrue(TEXT("Graph inspection retains enum name rather than integer coercion"), (*SerializedDefault)->TryGetStringField(TEXT("value"), EnumValue));
+			TestEqual(TEXT("Graph inspection preserves nonzero named enum"), EnumValue, TEXT("ECC_WorldDynamic"));
 		}
 
 		// Also verify plain PC_Byte (non-enum) reads back as kind:"int"

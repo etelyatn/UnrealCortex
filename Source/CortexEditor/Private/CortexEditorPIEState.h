@@ -28,6 +28,7 @@ public:
 	void UnbindDelegates();
 
 	ECortexPIEState GetState() const { return State; }
+	// Entering Starting is the boundary of a new play request and advances PlayRequestGeneration.
 	void SetState(ECortexPIEState NewState);
 
 	bool IsInTransition() const;
@@ -119,10 +120,20 @@ private:
 	TMap<uint32, FDeferredResponseCallback> PendingInputCallbacks;
 	uint32 NextInputCallbackId = 0;  // Wraps at UINT32_MAX; collision unreachable in practice
 
+	// Monotone identity of the play request this tracker currently follows.  Bumped whenever a
+	// request begins, i.e. on entering Starting from any other state (Cortex start_pie/restart_pie
+	// or an engine-initiated PreBeginPIE); repeat Starting notifications for the same request do
+	// not bump it.  HandleCancelPIE() arms its deferred cleanup for one generation, and
+	// UEditorEngine::EndPlayMap() broadcasts CancelPIE unconditionally after EndPIE (PlayLevel.cpp
+	// ~670/1014), so without this correlation a completed stop would terminate a start request that
+	// was queued after it.
+	uint32 PlayRequestGeneration = 0;
+
 	// Handle for the deferred OnPIEEnded() ticker scheduled by HandleCancelPIE().
 	// Calling UE_LOG from within a CancelPIE delegate broadcast that is itself fired
 	// inside RequestPlaySession() or CancelRequestPlaySession() can deadlock with
 	// engine-internal locks.  We defer state cleanup to the next tick instead.
+	// Only one cleanup is ever pending: a new cancellation re-arms this single handle.
 	FTSTicker::FDelegateHandle CancelDeferHandle;
 	TArray<FTSTicker::FDelegateHandle> InputTickerHandles;
 	TSharedRef<FThreadSafeBool> InputCancelToken = MakeShared<FThreadSafeBool>(false);

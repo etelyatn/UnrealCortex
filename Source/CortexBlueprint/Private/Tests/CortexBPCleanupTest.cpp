@@ -13,6 +13,7 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/SaveGame.h"
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
 #include "Dom/JsonObject.h"
@@ -30,7 +31,7 @@ namespace
 		return CreatePackage(*FString::Printf(
 			TEXT("/Game/Temp/%s_%s"),
 			Name,
-			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8)));
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8)));
 	}
 }
 
@@ -83,7 +84,7 @@ bool FCortexBPCleanupSaveContractTest::RunTest(const FString& Parameters)
 	if (Uncompiled.bSuccess)
 	{
 		TestFalse(TEXT("Uncompiled staging reports no compilation"), Uncompiled.Data->GetBoolField(TEXT("compiled")));
-		TestEqual(TEXT("Uncompiled staging reports skipped status"), Uncompiled.Data->GetStringField(TEXT("compile_status")), FString(TEXT("NotCompiled")));
+		TestEqual(TEXT("Uncompiled staging reports skipped status"), Uncompiled.Data->GetStringField(TEXT("compile_status")), FString(TEXT("skipped")));
 		TestFalse(TEXT("Uncompiled staging does not save"), Uncompiled.Data->GetBoolField(TEXT("saved")));
 		TestTrue(TEXT("Uncompiled staging keeps dirty state"), Uncompiled.Data->GetBoolField(TEXT("is_dirty")));
 	}
@@ -108,8 +109,8 @@ bool FCortexBPCleanupSaveContractTest::RunTest(const FString& Parameters)
 	Params->SetBoolField(TEXT("compile"), false);
 	Blueprint->Status = BS_Error;
 	FCortexCommandResult Failed = FCortexBPCleanupOps::CleanupMigration(Params);
-	TestFalse(TEXT("Compiler-error Blueprint cannot be saved"), Failed.bSuccess);
-	TestEqual(TEXT("Compiler failure reported"), Failed.ErrorCode, CortexErrorCodes::CompileFailed);
+	TestFalse(TEXT("Saving without a compile is refused"), Failed.bSuccess);
+	TestEqual(TEXT("Save-without-compile code"), Failed.ErrorCode, CortexErrorCodes::InvalidOperation);
 	FFileHelper::LoadFileToArray(After, *Filename);
 	TestTrue(TEXT("Compiler failure leaves disk unchanged"), Before == After);
 	// A reachable missing call exercises a real requested compile failure, independently of the
@@ -145,8 +146,7 @@ bool FCortexBPCleanupSaveContractTest::RunTest(const FString& Parameters)
 	Then->MakeLinkTo(Execute);
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 	Params->SetBoolField(TEXT("compile"), true);
-	AddExpectedError(TEXT("Could not find a function named \"MissingCleanupSaveContractFunction\""),
-		EAutomationExpectedErrorFlags::Contains, 1);
+	// The guarded compile runs in silent mode, so the compiler message is returned in the diagnostics payload, not logged.
 	FCortexCommandResult RequestedFailure = FCortexBPCleanupOps::CleanupMigration(Params);
 	TestFalse(TEXT("Actual requested compile fails"), RequestedFailure.bSuccess);
 	TestEqual(TEXT("Actual compile failure code"), RequestedFailure.ErrorCode, CortexErrorCodes::CompileFailed);
@@ -154,7 +154,24 @@ bool FCortexBPCleanupSaveContractTest::RunTest(const FString& Parameters)
 	if (TestTrue(TEXT("Compile failure carries outcome details"), RequestedFailure.ErrorDetails.IsValid()))
 	{
 		TestTrue(TEXT("Failed requested compile was attempted"), RequestedFailure.ErrorDetails->GetBoolField(TEXT("compiled")));
-		TestEqual(TEXT("Failed compile status reported"), RequestedFailure.ErrorDetails->GetStringField(TEXT("compile_status")), FString(TEXT("Error")));
+		// The fault pre-dates the call, so it survives the restore and the recovery compile cannot prove the class:
+		// the guarded run reports an unverified rollback and blocks the asset instead of claiming a restoration.
+		TestEqual(TEXT("Unverifiable rollback is reported"),
+			RequestedFailure.ErrorDetails->GetStringField(TEXT("rollback_status")), FString(TEXT("unverified")));
+		TestTrue(TEXT("Failed recovery blocks the asset"), RequestedFailure.ErrorDetails->GetBoolField(TEXT("blocked")));
+		const TArray<TSharedPtr<FJsonValue>>* Diagnostics = nullptr;
+		if (TestTrue(TEXT("Failed compile returns diagnostics"),
+			RequestedFailure.ErrorDetails->TryGetArrayField(TEXT("diagnostics"), Diagnostics) && Diagnostics != nullptr))
+		{
+			TestTrue(TEXT("Diagnostics name the missing function"),
+				Diagnostics->ContainsByPredicate([](const TSharedPtr<FJsonValue>& Value)
+				{
+					const TSharedPtr<FJsonObject>* Entry = nullptr;
+					return Value->TryGetObject(Entry) && Entry != nullptr
+						&& (*Entry)->GetStringField(TEXT("message")).Contains(TEXT("MissingCleanupSaveContractFunction"));
+				}));
+		}
+		TestEqual(TEXT("Failed compile status reported"), RequestedFailure.ErrorDetails->GetStringField(TEXT("compile_status")), FString(TEXT("failed")));
 		TestFalse(TEXT("Failed requested compile never saved"), RequestedFailure.ErrorDetails->GetBoolField(TEXT("saved")));
 		TestTrue(TEXT("Failed requested compile remains dirty"), RequestedFailure.ErrorDetails->GetBoolField(TEXT("is_dirty")));
 	}
@@ -162,20 +179,42 @@ bool FCortexBPCleanupSaveContractTest::RunTest(const FString& Parameters)
 		&& EventGraph->Nodes.Contains(Trigger) && Then->LinkedTo.Contains(Execute));
 	FFileHelper::LoadFileToArray(After, *Filename);
 	TestTrue(TEXT("Actual requested compile failure preserves disk bytes"), Before == After);
-	FBlueprintEditorUtils::RemoveNode(Blueprint, BrokenCall, true);
-	FBlueprintEditorUtils::RemoveNode(Blueprint, Trigger, true);
-	FCortexCommandResult Final = FCortexBPCleanupOps::CleanupMigration(Params);
+	// The asset is blocked now (the pre-existing fault made the recovery unverifiable), so the repaired save runs on a
+	// fresh Blueprint rather than on a blocked one.
+	IFileManager::Get().Delete(*Filename);
+	Blueprint->MarkAsGarbage();
+
+	UBlueprint* Repaired = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(),
+		CreateWritableCleanupTestPackage(TEXT("BP_CleanupSaveRepaired")), TEXT("BP_CleanupSaveRepaired"),
+		BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+	if (!TestNotNull(TEXT("Repaired Blueprint created"), Repaired))
+	{
+		return false;
+	}
+	FEdGraphPinType RepairedType;
+	RepairedType.PinCategory = UEdGraphSchema_K2::PC_Float;
+	FBlueprintEditorUtils::AddMemberVariable(Repaired, TEXT("RepairedVariable"), RepairedType);
+	FKismetEditorUtilities::CompileBlueprint(Repaired);
+	const FString RepairedFilename = FPackageName::LongPackageNameToFilename(
+		Repaired->GetOutermost()->GetName(), FPackageName::GetAssetPackageExtension());
+	TSharedPtr<FJsonObject> RepairedParams = MakeShared<FJsonObject>();
+	RepairedParams->SetStringField(TEXT("asset_path"), Repaired->GetPathName());
+	RepairedParams->SetArrayField(TEXT("remove_variables"), {MakeShared<FJsonValueString>(TEXT("RepairedVariable"))});
+	RepairedParams->SetBoolField(TEXT("compile"), true);
+	RepairedParams->SetBoolField(TEXT("save"), true);
+	FCortexCommandResult Final = FCortexBPCleanupOps::CleanupMigration(RepairedParams);
 	TestTrue(TEXT("Successful final compile and save"), Final.bSuccess);
 	if (Final.bSuccess)
 	{
 		TestTrue(TEXT("Final save reported"), Final.Data->GetBoolField(TEXT("saved")));
 		TestFalse(TEXT("Repaired saved package is clean"), Final.Data->GetBoolField(TEXT("is_dirty")));
-		TestEqual(TEXT("Repaired compile status valid"), Final.Data->GetStringField(TEXT("compile_status")), FString(TEXT("UpToDate")));
-		TestTrue(TEXT("Repaired package exists on disk"), FFileHelper::LoadFileToArray(After, *Filename));
-		TestTrue(TEXT("Successful final save persists staged variable removals"), Before != After);
+		TestEqual(TEXT("Repaired compile status valid"), Final.Data->GetStringField(TEXT("compile_status")), FString(TEXT("success")));
+		TestTrue(TEXT("Repaired package exists on disk"), FFileHelper::LoadFileToArray(After, *RepairedFilename));
+		TestTrue(TEXT("Successful final save persists the staged variable removal"), !Repaired->NewVariables.ContainsByPredicate(
+			[](const FBPVariableDescription& Variable) { return Variable.VarName == TEXT("RepairedVariable"); }));
 	}
-	IFileManager::Get().Delete(*Filename);
-	Blueprint->MarkAsGarbage();
+	IFileManager::Get().Delete(*RepairedFilename);
+	Repaired->MarkAsGarbage();
 	return true;
 }
 
@@ -300,11 +339,38 @@ bool FCortexBPCleanupRejectsInvalidReparentTest::RunTest(const FString& Paramete
 	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
 	Params->SetStringField(TEXT("new_parent_class"), TEXT("/Script/CoreUObject.Object"));
 	Params->SetBoolField(TEXT("compile"), false);
+	Params->SetBoolField(TEXT("save"), false);
 
 	FCortexCommandResult Result = FCortexBPCleanupOps::CleanupMigration(Params);
 	TestFalse(TEXT("Cleanup should reject invalid reparent"), Result.bSuccess);
 	TestEqual(TEXT("Error code should be INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
 	TestTrue(TEXT("Parent class should remain unchanged"), TestBP->ParentClass == OriginalParent);
+
+	UBlueprint* ObjectBP = FKismetEditorUtilities::CreateBlueprint(
+		UObject::StaticClass(),
+		CreateWritableCleanupTestPackage(TEXT("BP_CleanupObjectModel")),
+		FName(TEXT("BP_CleanupObjectModel")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestNotNull(TEXT("Ordinary object Blueprint is created"), ObjectBP))
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+	Params->SetStringField(TEXT("asset_path"), ObjectBP->GetPathName());
+	Params->SetStringField(TEXT("new_parent_class"), USaveGame::StaticClass()->GetPathName());
+	Params->SetBoolField(TEXT("compile"), true);
+	Params->SetBoolField(TEXT("save"), false);
+	const FCortexCommandResult ObjectResult = FCortexBPCleanupOps::CleanupMigration(Params);
+	TestTrue(TEXT("Ordinary object model can acquire a native object parent"), ObjectResult.bSuccess);
+	TestTrue(TEXT("Object model has its requested native parent"), ObjectBP->ParentClass == USaveGame::StaticClass());
+	Params->SetStringField(TEXT("new_parent_class"), AActor::StaticClass()->GetPathName());
+	const FCortexCommandResult ObjectToActor = FCortexBPCleanupOps::CleanupMigration(Params);
+	TestFalse(TEXT("Object model cannot become an Actor asset"), ObjectToActor.bSuccess);
+	TestTrue(TEXT("Rejected family change preserves object model parent"),
+		ObjectBP->ParentClass == USaveGame::StaticClass());
+	ObjectBP->MarkAsGarbage();
 
 	TestBP->MarkAsGarbage();
 	return true;
@@ -340,6 +406,7 @@ bool FCortexBPCleanupWidgetReparentTypeFamilyTest::RunTest(const FString& Parame
 	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
 	Params->SetStringField(TEXT("new_parent_class"), TEXT("/Script/UMG.UserWidget"));
 	Params->SetBoolField(TEXT("compile"), false);
+	Params->SetBoolField(TEXT("save"), false);
 
 	const FCortexCommandResult Result = FCortexBPCleanupOps::CleanupMigration(Params);
 	TestTrue(TEXT("Widget->Widget reparent is allowed"), Result.bSuccess);
@@ -397,6 +464,7 @@ bool FCortexBPCleanupWidgetPreservationTest::RunTest(const FString& Parameters)
 	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
 	Params->SetStringField(TEXT("new_parent_class"), TEXT("/Script/UMG.UserWidget"));
 	Params->SetBoolField(TEXT("compile"), false);
+	Params->SetBoolField(TEXT("save"), false);
 
 	const FCortexCommandResult Result = FCortexBPCleanupOps::CleanupMigration(Params);
 	TestTrue(TEXT("Cleanup should succeed"), Result.bSuccess);

@@ -98,7 +98,11 @@ TArray<UStateTreeState*> CollectStateObjectsWithOuter(UObject* Outer)
 	}
 
 	TArray<UObject*> Objects;
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
 	GetObjectsWithOuter(Outer, Objects, true);
+#else
+	GetObjectsWithOuter(Outer, Objects, EGetObjectsFlags::IncludeNestedObjects);
+#endif
 	for (UObject* Object : Objects)
 	{
 		if (UStateTreeState* State = Cast<UStateTreeState>(Object))

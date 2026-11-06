@@ -4,7 +4,9 @@
 #include "CortexConversionTypes.h"
 #include "CortexCoreModule.h"
 #include "CortexFrontendModule.h"
+#if WITH_LIVE_CODING
 #include "ILiveCodingModule.h"
+#endif
 #include "Conversion/CortexConversionPromptAssembler.h"
 #include "Conversion/CortexConversionPrompts.h"
 #include "Framework/Application/SlateApplication.h"

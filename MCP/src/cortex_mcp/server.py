@@ -5,11 +5,17 @@ import os
 import sys
 import json
 from mcp.server.fastmcp import FastMCP
-from .capabilities import build_router_docstrings, get_registered_domains, load_capabilities_cache
+from .capabilities import (
+    build_router_docstrings,
+    get_registered_domains,
+    load_capabilities_cache,
+    resolve_toolset,
+)
 from .project import resolve_project_dir as _resolve_project_dir
 from .response import format_response
 from .schema_generator import _decode_data
 from .tcp_client import UEConnection
+from .tool_output import RESPONSE_MODES, ToolOutputRegistrar
 from .tools.composites.blueprint import register_blueprint_compose_tools
 from .tools.composites.level import register_level_compose_tools
 from .tools.composites.material import register_material_compose_tools
@@ -44,27 +50,54 @@ _connection = UEConnection(
 _TTL_CATALOG = 600  # 10 min
 
 
+def _resolve_response_mode() -> str:
+    """Resolve the startup result representation; unknown settings refuse startup."""
+    mode = os.environ.get("CORTEX_RESPONSE_MODE", "text").strip().lower() or "text"
+    if mode not in RESPONSE_MODES:
+        raise ValueError(
+            f"CORTEX_RESPONSE_MODE={mode!r} is invalid; choose one of {', '.join(RESPONSE_MODES)}."
+        )
+    return mode
+
+
+def _resolve_response_metrics() -> bool:
+    """Resolve the opt-in `_meta.cortex` size telemetry flag (default off)."""
+    return os.environ.get("CORTEX_RESPONSE_METRICS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_toolset(registered_domains) -> frozenset[str] | None:
+    """Resolve the startup toolset allowlist; unknown settings refuse server startup."""
+    return resolve_toolset(os.environ.get("CORTEX_TOOLSET", "all"), registered_domains)
+
+
 def _register_explicit_tools(mcp_server, connection) -> None:
-    """Register the consolidated MCP tool surface."""
+    """Register the consolidated MCP tool surface through the public output adapter."""
     capabilities = load_capabilities_cache()
     registered = get_registered_domains(capabilities)
+    registrar = ToolOutputRegistrar(
+        mcp_server,
+        connection,
+        response_mode=_resolve_response_mode(),
+        allowed_tools=_resolve_toolset(registered),
+        metrics=_resolve_response_metrics(),
+    )
     docstrings = build_router_docstrings(capabilities)
-    register_router_tools(mcp_server, connection, docstrings, registered)
-    register_blueprint_compose_tools(mcp_server, connection)
-    register_material_compose_tools(mcp_server, connection)
-    register_widget_compose_tools(mcp_server, connection)
-    register_level_compose_tools(mcp_server, connection)
-    register_scenario_compose_tools(mcp_server, connection)
-    register_statetree_compose_tools(mcp_server, connection)
+    register_router_tools(registrar, connection, docstrings, registered)
+    register_blueprint_compose_tools(registrar, connection)
+    register_material_compose_tools(registrar, connection)
+    register_widget_compose_tools(registrar, connection)
+    register_level_compose_tools(registrar, connection)
+    register_scenario_compose_tools(registrar, connection)
+    register_statetree_compose_tools(registrar, connection)
     if "gen" in registered:
         from .tools.composites.gen import register_gen_compose_tools
-        register_gen_compose_tools(mcp_server, connection)
-    register_editor_standalone_tools(mcp_server, connection)
-    register_schema_standalone_tools(mcp_server, connection)
-    register_profile_standalone_tools(mcp_server, connection)
-    register_qa_standalone_tools(mcp_server, connection)
-    register_import_queue_tools(mcp_server, connection)
-    register_reflect_tools(mcp_server, connection)
+        register_gen_compose_tools(registrar, connection)
+    register_editor_standalone_tools(registrar, connection)
+    register_schema_standalone_tools(registrar, connection)
+    register_profile_standalone_tools(registrar, connection)
+    register_qa_standalone_tools(registrar, connection)
+    register_import_queue_tools(registrar, connection)
+    register_reflect_tools(registrar, connection)
 
 
 def get_status() -> str:

@@ -1,0 +1,264 @@
+{
+  "issue": "https://github.com/etelyatn/UnrealCortex/issues/164",
+  "environment": {
+    "engine": "5.8.3",
+    "platform": "Windows x64",
+    "project": "CortexSandbox",
+    "editor_pid": 78572,
+    "port": 8743
+  },
+  "native_log": "Saved/TestLogs/AutomationTest_2026-10-05_154720.log",
+  "native_results": {
+    "passed": 1701,
+    "graph_passed": 321,
+    "material_passed": 64,
+    "raw_warnings": 0,
+    "expected_native_errors": 1
+  },
+  "acceptance_archive": "Saved/Issue164FinalAcceptanceEvidence.json",
+  "fresh_asset_base": "/Game/Temp/Issue164Final_20261005_155454",
+  "binary_sha256": "e1ad0407b9d080684063e7c3b7b4ad956dbb52796f0c191f8b30eb42c856f048",
+  "source_hashes": {
+    "Source\\CortexGraph\\CortexGraph.Build.cs": "d4f483fb204e092a3f68a5ff645587d2a9b24fc546023eeed392b7292dd68135",
+    "Source\\CortexGraph\\Private\\CortexGraphCommandHandler.cpp": "53a312f6f2e0789156e107cdd85b9db0bef27fa344df015e2ae7e61629b918c8",
+    "Source\\CortexGraph\\Private\\CortexGraphFingerprint.cpp": "2aecdd96c2affdd20c8e14762d786abaa02e4425e61e3b450af0dd472918819a",
+    "Source\\CortexGraph\\Private\\CortexGraphModule.cpp": "fce2fbf66fd222cd20c91de9b7a4b12fe6c3db316ad512e1dbeaee249ea20d31",
+    "Source\\CortexGraph\\Public\\CortexGraphCommandHandler.h": "17fdb084b50750bed4cfc15be5f075c88186474b26ee0ca58e472112a356c89a",
+    "Source\\CortexGraph\\Public\\CortexGraphFingerprint.h": "1d8f21487678f8ee3201b01834635f905c501a1241311a5e7c5a19a942c3bbcc",
+    "Source\\CortexGraph\\Public\\CortexGraphLayoutOps.h": "044721c7429fb0f518e9e666183124ce7ca7a74325cb8a66a6a9d1fbb2963a3d",
+    "Source\\CortexGraph\\Public\\CortexGraphModule.h": "542ee4069358acab2f95239307ae3f1f1c6ab34b9ed9e1af04cd17cf25821115",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphAuthoringContext.cpp": "f664696b62a4429feb39bcd29abd1b6baa8a135199c07e1b73f4038e5c34a384",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphAuthoringContext.h": "7533151ba4f685d45aac90165b2885a3bfacc2691e3e9d0a8bc5f39f4a55d0b5",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphConnectionOps.cpp": "8d4fd117482b90dc6eda885da67779bc383cbd3b6a72b72641576c7a44f99d41",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphConnectionOps.h": "6b8eae25778bdfda218f9bf1486b89eb6df79e6c5fb6bf79a32bdad2d387777a",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphImplementationOps.cpp": "7f31b0e5cd7add02ac731dd0392d53abaf576b3d5309c2b7bcd31135418369d0",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphImplementationOps.h": "fa6a944585059941a38d8d47d512d7779b7227ea0d1bc72300b5f17d46ef3d7f",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphLayoutOps.cpp": "a63322819e2b2a59d01e4de9fab5412b1c20131ed554c3e3075de2d6b10bf76f",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphMigrationOps.cpp": "34e97b86e8945394bf2e8b31c4721f8af74f679cb524e29cf60acc36a08da71b",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphMigrationOps.h": "2279808899f32ba5ccbd5f2ba74f77a3255b87920f4bfa82ebd3567bac746c86",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphNodeContract.cpp": "603338d20474565bb45e578d17a161a999d515199643a10c9c18f5b1cdafb9fb",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphNodeContract.h": "4ae50d5667b44300b651bf8e70496e42efb1f23888734083065a5776b463b8aa",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphNodeOps.cpp": "4fc858621f47faec22be796e74fdcd69a86e95fc9419c5ca3d8ebde8afc5be42",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphNodeOps.h": "cd14be02d5ce25ef7938ed3030dd0fc9fc5272e65dd577e66fd29fddc3ba8795",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphPatchOps.cpp": "c1071d9c1429ce38297622a82578f2d05193a520b014616e68688a07a05d0aa8",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphPatchOps.h": "1d3dc24c2dc522d81634251f4ae0177128362a485b6ed6fdf8cadf4689241682",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphPatchState.cpp": "92e1500a81ec2606960dc7a8eed390c5a72ac999f1f37c4ac004e2c5fa18ed27",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphPatchState.h": "4598655d94b87f58dc2c5ef31829e3a6cb69793c71a4955310f0ec042d38ea3c",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphPinDefaults.cpp": "626f71eea8744e9af210e47f6466047eb947374748e08238a2030dd3ccfb03a4",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphPinDefaults.h": "5b668c1e30b0e3035c9c7ac20b35111f7dbba445219cfbb838e033f271157d92",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphSymbolResolver.cpp": "402591ed49354e34af52fcc694b2caebf110f33c2261723e54cd198b2084d949",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphSymbolResolver.h": "83af05789fdfadbd1acffa455fa14864667b671faff580f4c309e9cfd2d27a96",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphTraceOps.cpp": "f86c4e9440eaab1ad856c758450139d7f48fd58da6cd02fd61ea071990bebe3b",
+    "Source\\CortexGraph\\Private\\Operations\\CortexGraphTraceOps.h": "51f692a5ce4db77dafa8874a2e2f185a6aac5e925b94b3a98ea70f692b61ab59",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphAddNodeTest.cpp": "7ccb39f7acc6896c5afed38ed7223160bd735de9dfffa54396a1b2b14ca6cdf4",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphAuthoringContextTest.cpp": "0800f18de5ec0fcd9db6132103caaa3945f2383bd9f6f8b0e5ce321daef83e1c",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphAuthoringProofTest.cpp": "34e08f6f0568bc9778f5c821418d2d383373016eab599ee2b9366ed6cb9946fb",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphAutoLayoutTest.cpp": "d5a111da85091c529b30d36705a9c322e47e3347396bf0c77cbccd5bcf836717",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphBatchRollbackTest.cpp": "2c1af2f4de0f37cd7807b6407a6bbbdd0149bb4cb947a6eec6d6b29279ba2ae9",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphCompactSerializationTest.cpp": "71a0cda17fccb4a5e122733460fac1b2787700acf0042d22e0482fb93b5fb9a6",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphConnectionRollbackTest.cpp": "b06f8b5c163c42543f4a47cf6419720cfd2bdba6e58856e9e487121b5c322036",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphConnectPinsTest.cpp": "3a0c409e8263ba7e9fd279a355f3a5e726953e76b0203307ca4956ef7dada375",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphDelegateNodeTest.cpp": "2005f46983e4f206a478b0976a0abd380f8dc128d21e17256466f182ce3a13ba",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphDescribeNodeTest.cpp": "a0f3428d0b0d1f04cbde2b81ee8e21e8f629586b6471fe4eed16ef997a87d905",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphFingerprintTest.cpp": "4a8308058958260d00455b7d2e7ad4333950997a3381a90a51f36dbca868ef37",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphImplementationTest.cpp": "f07a79e8ea2cc2d98bd64231d491333f86f1df2a863fa160caea2c0703ecdf2b",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphInterfaceGraphTest.cpp": "50188433b7f1e4e84d8d85f46c7dfd4d626f8e6b1da3f2e7529b2934875e4640",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphLayoutDirectionTest.cpp": "732d927c71b05b32fa59c38003bb06f8f0005ba96540436d271cb8dbeb463da2",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphLayoutGroupingTest.cpp": "1d83ef691e21341fc3cd447de89ddbb627118e2d306dfebc7299df104f3d993a",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphLayoutLayerTest.cpp": "ab9748c4837976a9df2f294c54b069f2c06e7f76d6e51b627a2d4e9e49f6627d",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphLayoutOrderingTest.cpp": "02c3fabc7dccac3a9fd2fe13380d400d17bfad634d9ff4198226ed9b41875f5d",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphLayoutRefinementTest.cpp": "88d92eb2985768122268f73ada4b574e3a8d5ea25d16e2f620e925ae1ef9e55d",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphLayoutSubgraphTest.cpp": "5450a4cca56962dd41087fcacad79616123b49d166c70d875596641bfb896446",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphListGraphsTest.cpp": "da766c40190876fdc015f19778a5a73e096eae75556de2888bb2147f3ffe6f36",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphListNodesTest.cpp": "7d599eb3b459881ddf7048bedb1da95ac60e55cc86120bdc10d30d41c3ee3683",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphMigrationPruneTest.cpp": "63c49faef504ca5a40815180013c7ee5c6dd82bc8c5712ce2a6115753abb9644",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphMigrationRetireTest.cpp": "292f22bc6862ef73ca871b62a73a29e672c36b66af215a133eaa048ff14dbd95",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphMigrationRewireTest.cpp": "cab464692321a60a6f700e78670d118dbcc31a0fdab9df03f41f72eab12645b2",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphMigrationTest.cpp": "800d94a13af96452836fc538f87ca023714803c304dc1348312ce69e0207f855",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphMigrationTestTypes.h": "441e7a5ec42d951f54f68e5ca5431c78ba3a00dc47d49ce3f551088b7c6971f9",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphMigrationTransferTest.cpp": "0342f35e5ef6b95d96fa75fb3942cb628d01e8f1f99e4effe28e023bbc72405f",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphModuleLoadTest.cpp": "e68a43f7c9836347e7ad298bccdd1be8d25630c96e28bfa6f1237a09df300fd8",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphObjectPathMutatorsTest.cpp": "335c22a6fd3138cad490ad8f7fdb07e2595cac20196514b19c0c95abac3ed3ca",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchApplyTest.cpp": "bf4435934c7d2e7e9c7de5a1997285f24535df691542e9324aae5225c9820a67",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchCommandTest.cpp": "3b60128901cac0a925b977e541e328b2fbcf79cc5ea297dced2f5d48b4b21c23",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchCompileTest.cpp": "059cdc01c1646568e5c456010f3ce11428f4377cef76514a93fde97a99d66e52",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchCompositeLocatorTest.cpp": "8bf0abf6ed9d03cb95a599edd6ce2c98f559f4713426e982cfed5461565e575a",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchContentRootTest.cpp": "8f2cb7a352da65e3ff0ca227c5a7e72216e16de07ca9969765fa35d782ec99d5",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchDiagnosticsTest.cpp": "c401a81b0f87b2447488428585011812e3b2b79d152bf052be0a5709c9993704",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchErrorDetailTest.cpp": "bd8491311263d3b83af6b763e01415533fe1aa71af7d674536b1a2c4a22e2647",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchNullDefaultTest.cpp": "d5489b25c5e9dcd5ae422a9ad5440f4d23dce61c10adc65f0f7f0921f9bb08f5",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchPersistenceTest.cpp": "e66a1d08c2957358edb57ea20cedffd87a69a83fca706cd007452903b881f985",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchPreflightTest.cpp": "da09f4dc787069eb45bb92c7562ce444c8771e466f9062ea4f59ede5b3293973",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchReadbackIdentityTest.cpp": "d9c2c58621136d3b39becfde8ac8f30f5c1f82c7db20453f3c99c000fba118f3",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPatchTextIdentityTest.cpp": "accb58736f80d0169176f7398ec143756df6c0a602c2a4ac9fe6c92717b45ea5",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPinConnectionTest.cpp": "89dad3715149b9e47d0fd1276d0d7732717643eb03591304a4a3c70b508406a4",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPinDefaultIdentityTest.cpp": "25fb9aefb597a3ef6b608eccfbb01fb9464632f0a6f273b7128521fe20ba3c3b",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPinMismatchTest.cpp": "3d6329af15e1502f049e38865f5bf7e54935a60fccf6f6953b16229b8df07467",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphPinTextTest.cpp": "d60db8f4cc1d53df516bc29fd4b50dc494749db3c655921b79ed672edf908366",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphRemoveNodeTest.cpp": "112a7ba279e9170b87df95cbd1bfa03710943713e9b3b894e1b71b4b9aec81a9",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphSearchNodesTest.cpp": "aaef534e0cd818d7d8eed19d862bf10d9d916a0749fa44a17ed244c1d4afb4b4",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphSetPinValueTest.cpp": "66fb8107e025912808bcf8e79f3928fb8874cb783bc875d66acf4de81f59d736",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphSetTextPinValueTest.cpp": "cda4d1ca1f1b7281114f7f956551397f0acf4c3dfa831bdc728a71673a106e63",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphSubgraphTest.cpp": "a8bc7a4e43119cfda4d4444a43bff80c0acc0ae1db7ae568829e190b2efdf53a",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphTestContentRoot.h": "3bac388f218fcf13dd0ac431e418a0f404a2710b052b87e025c8e41d03367f5b",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphTraceOpsTest.cpp": "ad37a625001cb1ae11b1fac3e886185af65bd643424e23da183309be8a85e757",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphTypedConstructionTest.cpp": "e7cb2c36dbbb0633cc7a20fd3b1e177a38f6f48aebe3663ee22ba95d0d4688a2",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphTypedDescribeTest.cpp": "dff7046f023baf0e3e92efd80dc861bbb66d92a1eaa7fc578da63e71094c6a17",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphTypedSymbolsTest.cpp": "8ed294c207f35aa65042d86f405c7cff9b7c1cd350f2188807c1667613f7bc77",
+    "Source\\CortexGraph\\Private\\Tests\\CortexGraphWidgetVariableRepairTest.cpp": "13ea6a4714663737380c50f39d2a326f4bd75e5a7839e8cde314face94388f94"
+  },
+  "benchmark_path": "/Game/Temp/CortexMCPTest/Bench_20261005_160239",
+  "benchmark_results": [
+    {
+      "check": "Connection/core",
+      "status": "PASS",
+      "wall_ms": 34.6070000086911,
+      "detail": {
+        "pid": 78572,
+        "port": 8743
+      }
+    },
+    {
+      "check": "Data",
+      "status": "PASS",
+      "wall_ms": 147.6911999634467,
+      "detail": "Catalog, safe row roundtrip/cleanup, good/bad tags"
+    },
+    {
+      "check": "StringTable reference scan",
+      "status": "SKIP",
+      "wall_ms": 0,
+      "detail": "no benchmark references"
+    },
+    {
+      "check": "Data localization migration",
+      "status": "PASS",
+      "wall_ms": 90.08860000176355,
+      "detail": {
+        "migration": "ordered preview/apply/readback",
+        "reference_scan": {
+          "table_path": "/Game/Data/DT_TestSimple",
+          "search_mode": "string_table_refs",
+          "string_table_path": "/Game/Temp/CortexMCPTest/Bench_20261005_160239/ST_Benchmark",
+          "key_pattern": "",
+          "total_matches": 0,
+          "limit": 25,
+          "results": []
+        },
+        "reference_reason": "no benchmark references when no results"
+      }
+    },
+    {
+      "check": "Blueprint/graph inherited mixed flow",
+      "status": "PASS",
+      "wall_ms": 878.9785000262782,
+      "detail": {
+        "custom_asset": "/Game/Temp/CortexMCPTest/Bench_20261005_160239/BP_Custom",
+        "nodes": 8,
+        "inherited_callable": "K2Node_CallFunction_2"
+      }
+    },
+    {
+      "check": "StateTree",
+      "status": "PASS",
+      "wall_ms": 226.01330000907183,
+      "detail": "Fresh tree Idle/Chase transition, fingerprints, check/validate/compile"
+    },
+    {
+      "check": "Animation",
+      "status": "PASS",
+      "wall_ms": 316.88880000729114,
+      "detail": "Duplicate sequence: dry run, add/update/remove fingerprint-guarded notify"
+    },
+    {
+      "check": "UMG custom parent and styling",
+      "status": "PASS",
+      "wall_ms": 565.4969000024721,
+      "detail": "/Game/Temp/CortexMCPTest/Bench_20261005_160239/WBP_Benchmark"
+    },
+    {
+      "check": "Material graph and instance override",
+      "status": "PASS",
+      "wall_ms": 476.21669998625293,
+      "detail": {
+        "material": "/Game/Temp/CortexMCPTest/Bench_20261005_160239/M_Benchmark",
+        "instance": "/Game/Temp/CortexMCPTest/Bench_20261005_160239/MI_Benchmark",
+        "override": {
+          "name": "Color",
+          "type": "vector",
+          "value": [
+            1,
+            0,
+            0,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "check": "Editor/viewport/Python/CVars/PIE",
+      "status": "PASS",
+      "wall_ms": 1586.2906000111252,
+      "detail": {
+        "actor": "StaticMeshActor_3",
+        "screenshot": {
+          "path": "D:/UnrealProjects/CortexSandbox/Saved/Issue164BenchmarkScene.png",
+          "width": 2080,
+          "height": 1276,
+          "file_size_bytes": 2533367,
+          "capture_time_ms": 455.33790066838264,
+          "view": "editor_camera",
+          "pie_active": false,
+          "camera": {
+            "location": {
+              "x": -141.1702880859375,
+              "y": 0,
+              "z": 200
+            },
+            "rotation": {
+              "pitch": 0,
+              "yaw": 0,
+              "roll": 0
+            }
+          },
+          "camera_available": true,
+          "camera_provenance": "editor_client"
+        },
+        "python_cvars": "roundtrip and bounded errors"
+      }
+    },
+    {
+      "check": "Level",
+      "status": "PASS",
+      "wall_ms": 1071.707500028424,
+      "detail": "Transform, tags/folder, attach/detach, property, components, find/select"
+    },
+    {
+      "check": "Reflect",
+      "status": "PASS",
+      "wall_ms": 346.20329999597743,
+      "detail": "Cache scan, hierarchy/detail/context/overrides/usages, graph rebuild"
+    },
+    {
+      "check": "Schema generation",
+      "status": "PASS",
+      "wall_ms": 221.4314000448212,
+      "detail": {
+        "response": {
+          "generated": {
+            "data_index": "D:\\UnrealProjects\\CortexSandbox\\.cortex\\schema\\data\\_index.md",
+            "data_structs": "D:\\UnrealProjects\\CortexSandbox\\.cortex\\schema\\data\\structs.md",
+            "data_formats": "D:\\UnrealProjects\\CortexSandbox\\.cortex\\schema\\data\\formats.md",
+            "blueprints": "D:\\UnrealProjects\\CortexSandbox\\.cortex\\schema\\blueprints.md",
+            "level": "D:\\UnrealProjects\\CortexSandbox\\.cortex\\schema\\level.md",
+            "_catalog": "D:\\UnrealProjects\\CortexSandbox\\.cortex\\schema\\_catalog.md"
+          },
+          "errors": [],
+          "elapsed_seconds": 0.18,
+          "schema_dir": "D:\\UnrealProjects\\CortexSandbox\\.cortex\\schema"
+        },
+        "catalog": "D:\\UnrealProjects\\CortexSandbox\\.cortex\\schema\\_catalog.md"
+      }
+    }
+  ]
+}

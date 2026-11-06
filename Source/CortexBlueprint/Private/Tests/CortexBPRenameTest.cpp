@@ -38,7 +38,7 @@ bool FCortexBPRenameBasicTest::RunTest(const FString& Parameters)
 	}
 	AddExpectedError(TEXT("package was marked as deleted in editor"), EAutomationExpectedErrorFlags::Contains, 1);
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString FolderPath = FString::Printf(TEXT("/Game/Temp/BPRenameFlow_%s"), *Suffix);
 	const FString SourcePath = FString::Printf(TEXT("%s/BP_Rename_Source_%s"), *FolderPath, *Suffix);
 	const FString DestPath = FString::Printf(TEXT("%s/BP_Rename_Dest_%s"), *FolderPath, *Suffix);
@@ -107,7 +107,7 @@ bool FCortexBPRenameBatchSwapTest::RunTest(const FString& Parameters)
 	}
 	AddExpectedError(TEXT("package was marked as deleted in editor"), EAutomationExpectedErrorFlags::Contains, 1);
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString FolderPath = FString::Printf(TEXT("/Game/Temp/BPRenameSwap_%s"), *Suffix);
 	const FString APath = FString::Printf(TEXT("%s/BP_A_%s"), *FolderPath, *Suffix);
 	const FString BPath = FString::Printf(TEXT("%s/BP_B_%s"), *FolderPath, *Suffix);

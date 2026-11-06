@@ -7,10 +7,19 @@ class FCortexBPCleanupOps
 {
 public:
 	/**
-	 * Clean up a Blueprint after C++ migration.
-	 * Params: asset_path (string), new_parent_class (string, optional),
-	 *         remove_variables (array, optional), remove_functions (array, optional),
-	 *         compile (bool, optional, default true)
+	 * Clean up a Blueprint after C++ migration, on the guarded-run skeleton.
+	 *
+	 * Params: asset_path (required), new_parent_class?, remove_variables?, remove_functions?, migrated_overrides?,
+	 *         compile?=true, save?=true, dry_run?, expected_fingerprint?, remove_referencing_nodes?,
+	 *         acknowledged_collisions?, acknowledged_losses?, expected_cdo_values?.
+	 *
+	 * A reparent runs the reparent preflight (`FCortexBPReparentOps::BuildPlan`): blocking collisions refuse
+	 * NAME_COLLISION, the non-blocking ones need acknowledged_collisions, and the compile carries the editor's delta
+	 * flags so the new native parent's defaults win. Variables a native member replaces are reported as
+	 * `adopted_by_engine` (their nodes keep resolving by name); a same-named incompatible variable is renamed by the
+	 * engine and removed by its pre-captured GUID. The CDO value of every adopted variable is read back before and
+	 * after ({before, after, preserved}) and a difference fails closed with READBACK_MISMATCH. A finalize-only call
+	 * (no mutation params) still compiles, verifies `expected_cdo_values` and saves.
 	 */
 	static FCortexCommandResult CleanupMigration(const TSharedPtr<FJsonObject>& Params);
 
@@ -39,5 +48,8 @@ public:
 	static void SetRemoveSCSComponentMidflightTestHook(TFunction<void(class USCS_Node*, class UBlueprint*)> InHook);
 	static void SetRemoveSCSComponentPostCompileTestHook(TFunction<void(class UBlueprint*)> InHook);
 	static void SetRenameSCSComponentPostCompileTestHook(TFunction<void(class UBlueprint*)> InHook);
+
+	/** Test hook: runs in the cleanup readback, after the compile, so a test can force a CDO divergence. */
+	static void SetCdoDivergenceTestHook(TFunction<void(class UBlueprint*)> InHook);
 #endif
 };

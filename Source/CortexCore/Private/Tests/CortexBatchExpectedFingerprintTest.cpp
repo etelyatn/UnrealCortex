@@ -80,7 +80,7 @@ TSharedPtr<FJsonObject> MakeMalformedSingleExpectedFingerprintParams()
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBatchExpectedFingerprintTest,
-	"Cortex.Core.Batch.ExpectedFingerprint",
+	"Cortex.Core.Batch.ExpectedFingerprint.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

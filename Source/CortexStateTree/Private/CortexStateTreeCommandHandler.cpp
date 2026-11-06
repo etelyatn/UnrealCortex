@@ -112,7 +112,11 @@ TArray<FCortexCommandInfo> FCortexStateTreeCommandHandler::GetSupportedCommands(
 		FCortexCommandInfo{ TEXT("dump_tree"), TEXT("Serialize a StateTree") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path"))
 			.Optional(TEXT("include_transitions"), TEXT("boolean"), TEXT("Include transitions"))
-			.Optional(TEXT("include_nodes"), TEXT("boolean"), TEXT("Include read-only node metadata")),
+			.Optional(TEXT("include_nodes"), TEXT("boolean"), TEXT("Include read-only node metadata"))
+			.Optional(TEXT("inspect_instances"), TEXT("boolean"), TEXT("Opt-in stored editor instance inspection; no compile/save. Bare true returns an explicit unpaged capture. Signed64 outside +/-9007199254740991 is a lossless decimal string; cpp_type identifies the stored type."))
+			.Optional(TEXT("inspect_section"), TEXT("string"), TEXT("With inspect_instances=true, page root, states, nodes or bindings; all sections are required for a complete paged capture. Entry bounds are not byte bounds."))
+			.Optional(TEXT("inspect_offset"), TEXT("number"), TEXT("Integral JSON number, default 0; requires enabled inspection and a named section. Offset equal to total returns an empty terminal page."))
+			.Optional(TEXT("inspect_count"), TEXT("number"), TEXT("Integral JSON number 1..100, default 1; requires enabled inspection and a named section. Only selected entry bodies are serialized; total/offset/returned_count/has_more are explicit.")),
 		FCortexCommandInfo{ TEXT("get_state"), TEXT("Get one StateTree state") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path"))
 			.Optional(TEXT("state_id"), TEXT("string"), TEXT("State GUID"))

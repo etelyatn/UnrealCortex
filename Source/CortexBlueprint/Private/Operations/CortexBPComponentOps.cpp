@@ -3,6 +3,7 @@
 #include "Operations/CortexBPSCSDiagnostics.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexAssetMutationGuard.h"
+#include "CortexEngineCompat.h"
 #include "CortexBatchMutation.h"
 #include "CortexBlueprintModule.h"
 #include "CortexSerializer.h"
@@ -36,7 +37,7 @@ namespace CortexBPComponentOpsPrivate
 			return Copy;
 		}
 
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+		for (const auto& Pair : Source->Values)
 		{
 			Copy->SetField(Pair.Key, Pair.Value);
 		}
@@ -610,7 +611,7 @@ namespace CortexBPComponentOpsPrivate
 			}
 
 			bool bValid = true;
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& FieldPair : (*ObjectValue)->Values)
+			for (const auto& FieldPair : (*ObjectValue)->Values)
 			{
 				FProperty* StructField = StructProperty->Struct
 					? StructProperty->Struct->FindPropertyByName(FName(*FieldPair.Key))
@@ -871,9 +872,9 @@ FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPt
 	int32 PropertiesSet = 0;
 	TArray<TSharedPtr<FJsonValue>> ErrorsArray;
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*PropertiesObj)->Values)
+	for (const auto& Pair : (*PropertiesObj)->Values)
 	{
-		const FString& PropName = Pair.Key;
+		const FString PropName = CortexEngineCompat::JsonKeyToString(Pair.Key);
 		const TSharedPtr<FJsonValue>& PropValueJson = Pair.Value;
 		CortexBPComponentOpsPrivate::FResolvedPropertyPath PropertyPath;
 		if (!CortexBPComponentOpsPrivate::ParsePropertyPath(PropName, PropertyPath))

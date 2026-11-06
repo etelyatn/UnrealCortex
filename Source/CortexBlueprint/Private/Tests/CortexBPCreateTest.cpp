@@ -14,7 +14,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateWidgetTest::RunTest(const FString& Parameters)
 {
 	// Setup
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString BlueprintName = FString::Printf(TEXT("WBP_TestCreate_%s"), *Suffix);
 	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_Create_%s"), *Suffix);
 	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
@@ -116,7 +116,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateDuplicateTest::RunTest(const FString& Parameters)
 {
 	// Setup - Create first asset
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString BlueprintName = FString::Printf(TEXT("BP_TestDuplicate_%s"), *Suffix);
 	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_Duplicate_%s"), *Suffix);
 	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);

@@ -60,6 +60,8 @@ FCortexCommandResult FCortexMaterialCommandHandler::Execute(
 		return FCortexMaterialGraphOps::Connect(Params);
 	if (Command == TEXT("disconnect"))
 		return FCortexMaterialGraphOps::Disconnect(Params);
+	if (Command == TEXT("set_material_input"))
+		return FCortexMaterialGraphOps::SetMaterialInput(Params);
 	if (Command == TEXT("auto_layout"))
 		return FCortexMaterialGraphOps::AutoLayout(Params);
 	if (Command == TEXT("set_node_property"))
@@ -116,16 +118,18 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 			.Optional(TEXT("path"), TEXT("string"), TEXT("Content path to search"))
 			.Optional(TEXT("recursive"), TEXT("boolean"), TEXT("Search subdirectories recursively")),
 		FCortexCommandInfo{ TEXT("get_material"), TEXT("Get material details") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path")),
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+			.Optional(TEXT("include_input_state"), TEXT("boolean"), TEXT("Include complete typed root-input state, including disconnected inputs"))
+			.Optional(TEXT("properties"), TEXT("array"), TEXT("Select owned reflected property paths, including EditorOnlyData.OpacityMask.UseConstant; omitted or empty adds no projection")),
 		FCortexCommandInfo{ TEXT("create_material"), TEXT("Create a new UMaterial") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Destination content path"))
 			.Required(TEXT("name"), TEXT("string"), TEXT("Material asset name")),
 		FCortexCommandInfo{ TEXT("delete_material"), TEXT("Delete a material asset") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path")),
-		FCortexCommandInfo{ TEXT("set_material_property"), TEXT("Set a property on a UMaterial asset") }
+		FCortexCommandInfo{ TEXT("set_material_property"), TEXT("Set an owned material property path, including EditorOnlyData fields; save explicitly") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
-			.Required(TEXT("property_name"), TEXT("string"), TEXT("UMaterial property name"))
-			.Required(TEXT("value"), TEXT("object"), TEXT("Property value")),
+			.Required(TEXT("property_name"), TEXT("string"), TEXT("Reflected owned property path, for example BlendMode or EditorOnlyData.OpacityMask.UseConstant"))
+			.Required(TEXT("value"), TEXT("any"), TEXT("Property-typed JSON value; invalid conversion refuses without mutation")),
 		FCortexCommandInfo{ TEXT("list_instances"), TEXT("List material instances") }
 			.Optional(TEXT("path"), TEXT("string"), TEXT("Content path to search"))
 			.Optional(TEXT("parent_material"), TEXT("string"), TEXT("Optional parent material filter")),
@@ -155,9 +159,10 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 			.Required(TEXT("parameter_name"), TEXT("string"), TEXT("Parameter name")),
 		FCortexCommandInfo{ TEXT("list_nodes"), TEXT("List material expression nodes") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path")),
-		FCortexCommandInfo{ TEXT("get_node"), TEXT("Get node details by ID") }
+		FCortexCommandInfo{ TEXT("get_node"), TEXT("Get node details by ID; optional properties selects editable node property names") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
-			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node identifier")),
+			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node identifier"))
+			.Optional(TEXT("properties"), TEXT("array"), TEXT("Editable node property names to select (dotted struct paths allowed). Omitted or empty reads every editable property; unknown or non-editable names are refused.")),
 		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add expression node to material graph") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
 			.Required(TEXT("expression_class"), TEXT("string"), TEXT("Expression class name (short names like VectorParameter accepted)"))
@@ -166,7 +171,8 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node identifier")),
 		FCortexCommandInfo{ TEXT("list_connections"), TEXT("List all node connections in material") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path")),
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+			.Optional(TEXT("include_input_state"), TEXT("boolean"), TEXT("Include complete typed root-input state alongside connected edges")),
 		FCortexCommandInfo{ TEXT("connect"), TEXT("Connect nodes in material graph") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
 			.Required(TEXT("source_node"), TEXT("string"), TEXT("Source node identifier"))
@@ -177,6 +183,17 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
 			.Required(TEXT("target_node"), TEXT("string"), TEXT("Target node identifier"))
 			.Required(TEXT("target_input"), TEXT("string"), TEXT("Target input pin name (e.g. 'BaseColor', 'A', 'Input')")),
+		FCortexCommandInfo{ TEXT("set_material_input"), TEXT("Patch serialized MaterialResult input state; omitted fields preserve state; save explicitly") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+			.Required(TEXT("input"), TEXT("string"), TEXT("Root input name, for example OpacityMask or CustomizedUVs0"))
+			.Optional(TEXT("use_constant"), TEXT("boolean"), TEXT("Select inline constant where the Material Editor permits it"))
+			.Optional(TEXT("constant"), TEXT("any"), TEXT("Finite scalar number, color {r,g,b,a}, vector {x,y,z}, or UV {x,y}; complete objects required"))
+			.Optional(TEXT("output_index"), TEXT("number"), TEXT("Integer output index of the currently connected expression"))
+			.Optional(TEXT("mask"), TEXT("number"), TEXT("Component mask enabled, integer 0 or 1"))
+			.Optional(TEXT("mask_r"), TEXT("number"), TEXT("Red channel, integer 0 or 1"))
+			.Optional(TEXT("mask_g"), TEXT("number"), TEXT("Green channel, integer 0 or 1"))
+			.Optional(TEXT("mask_b"), TEXT("number"), TEXT("Blue channel, integer 0 or 1"))
+			.Optional(TEXT("mask_a"), TEXT("number"), TEXT("Alpha channel, integer 0 or 1")),
 		FCortexCommandInfo{ TEXT("auto_layout"), TEXT("Auto-layout material graph nodes by connection topology") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path")),
 		FCortexCommandInfo{ TEXT("set_node_property"), TEXT("Set property value on material expression node") }

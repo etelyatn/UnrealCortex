@@ -35,11 +35,18 @@ public class CortexFrontend : ModuleRules
             "DesktopPlatform",
             "GraphEditor",
             "BlueprintGraph",
-            "LiveCoding",
             "AssetRegistry",
             "MessageLog",
             "Kismet",
             "ContentBrowser",
         });
+
+        // LiveCoding lives in Developer/Windows and only exists where Live Coding is
+        // supported, so an unconditional dependency pulls a Windows-only module into
+        // Linux and Mac editor builds. Gate it the way engine modules do.
+        if (Target.bWithLiveCoding)
+        {
+            PrivateDependencyModuleNames.Add("LiveCoding");
+        }
     }
 }

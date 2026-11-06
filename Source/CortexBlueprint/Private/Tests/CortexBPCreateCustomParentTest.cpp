@@ -14,7 +14,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateCustomParentActorTest::RunTest(const FString& Parameters)
 {
 	// Setup — use short class name
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString BlueprintName = FString::Printf(TEXT("BP_TestCustomParent_%s"), *Suffix);
 	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_CustomParent_%s"), *Suffix);
 	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
@@ -70,7 +70,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateCustomParentFullPathTest::RunTest(const FString& Parameters)
 {
 	// Setup — use full script path
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString BlueprintName = FString::Printf(TEXT("BP_TestCustomParentFP_%s"), *Suffix);
 	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_CustomParent_%s"), *Suffix);
 	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);
@@ -118,7 +118,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateCustomParentInvalidTest::RunTest(const FString& Parameters)
 {
 	// Setup — use invalid class name
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString BlueprintName = FString::Printf(TEXT("BP_TestCustomParentInv_%s"), *Suffix);
 	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_CustomParent_%s"), *Suffix);
 	FCortexBPCommandHandler Handler;
@@ -147,7 +147,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPCreateCustomParentOverridesTypeTest::RunTest(const FString& Parameters)
 {
 	// Setup — provide both type and parent_class; parent_class should win
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString BlueprintName = FString::Printf(TEXT("BP_TestCustomParentOvr_%s"), *Suffix);
 	const FString BlueprintDir = FString::Printf(TEXT("/Game/Temp/CortexBPTest_CustomParent_%s"), *Suffix);
 	const FString BlueprintPath = FString::Printf(TEXT("%s/%s"), *BlueprintDir, *BlueprintName);

@@ -17,6 +17,7 @@ class STextBlock;
 class SCortexAutoCompletePopup;
 class FCortexMentionMarshaller;
 enum class ECortexEffortLevel : uint8;
+struct FCortexEditorContextSnapshot;
 
 DECLARE_DELEGATE_OneParam(FOnCortexSendMessage, const FString&);
 DECLARE_DELEGATE(FOnCortexCancel);
@@ -66,7 +67,9 @@ private:
     void HandleSendOrNewline();
     void HandleAttachEditorContextShortcut();
     void ResolveAndSend(const TArray<FCortexContextChip>& Chips, const FString& Message);
-    FString ResolveProviderChip(const FString& Label);
+    // Consumes the per-send editor snapshot when the caller already gathered it (auto-context
+    // or an explicit editorContext chip); never re-gathers for that case.
+    FString ResolveProviderChip(const FString& Label, const FCortexEditorContextSnapshot* Snapshot);
     FString ResolveAssetChip(const FCortexContextChip& Chip, bool& bOutSuccess);
     void RebuildChips();
 

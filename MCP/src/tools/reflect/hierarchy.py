@@ -31,12 +31,17 @@ def _flatten_hierarchy(tree: dict) -> dict:
     """Convert C++ tree response to flat list for LLM consumption."""
     classes: list[dict] = []
     _walk_tree(tree, parent_name=None, depth=0, out=classes)
-    return {
+    result = {
         "classes": classes,
         "total_classes": tree.get("total_classes", len(classes)),
         "cpp_count": tree.get("cpp_count", 0),
         "blueprint_count": tree.get("blueprint_count", 0),
     }
+    # The walk's own exhaustion signal. Projecting the tree away must not lose it: emitted child
+    # counts cannot tell a caller whether the traversal stopped early.
+    if "truncated" in tree:
+        result["truncated"] = bool(tree["truncated"])
+    return result
 
 
 def register_reflect_hierarchy_tools(mcp, connection: UEConnection):
@@ -52,19 +57,14 @@ def register_reflect_hierarchy_tools(mcp, connection: UEConnection):
     ) -> str:
         """Use when you need to understand the inheritance tree of a C++ or Blueprint class.
 
-        Shows parent/child relationships across C++ and Blueprint boundaries.
-        Returns a flat list with parent/depth fields for easy reasoning.
+        Shows parent/child relationships across C++ and Blueprint boundaries and returns a flat list
+        with parent/depth fields for easy reasoning. `include_engine=false` (default) keeps project
+        classes only; `include_blueprint=false` drops Blueprint-derived classes; `max_results` caps
+        the list.
 
-        Args:
-            root: Class name (e.g., 'ACharacter') or Blueprint asset path.
-            depth: How many levels deep to traverse (default 2).
-            include_blueprint: Include Blueprint-derived classes (default True).
-            include_engine: Include engine classes (default False — project classes only).
-            max_results: Maximum number of classes to return (default 100).
-
-        Returns:
-            Flat list of classes with name, type, parent, depth, module/asset_path,
-            plus total_classes, cpp_count, blueprint_count.
+        Returns the flat class list (name, type, parent, depth, module/asset_path) plus
+        total_classes, cpp_count, blueprint_count and, when the native walk reports it, truncated
+        (true means the depth/max_results walk stopped early, so the list is not exhaustive).
         """
         try:
             response = connection.send_command_cached(

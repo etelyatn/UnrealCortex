@@ -5,6 +5,11 @@
 #include "CortexFrontendProviderSettings.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Editor.h"
+#include "Engine/World.h"
+#include "GameFramework/Actor.h"
+#include "Selection.h"
+#include "Context/CortexEditorContextGatherer.h"
 
 namespace
 {
@@ -43,6 +48,149 @@ bool InputAreaWidgetTreeContainsText(const TSharedRef<SWidget>& RootWidget, cons
 
     return false;
 }
+
+// Task 16 helpers. Names are module-unique because unity builds merge anonymous
+// namespaces across the CortexFrontend test translation units.
+int32 Task16CountOccurrences(const FString& Haystack, const FString& Needle)
+{
+    if (Needle.IsEmpty() || Haystack.IsEmpty())
+    {
+        return 0;
+    }
+
+    int32 Count = 0;
+    int32 SearchIndex = 0;
+    while (SearchIndex != INDEX_NONE)
+    {
+        SearchIndex = Haystack.Find(Needle, ESearchCase::CaseSensitive, ESearchDir::FromStart, SearchIndex);
+        if (SearchIndex != INDEX_NONE)
+        {
+            ++Count;
+            SearchIndex += Needle.Len();
+        }
+    }
+    return Count;
+}
+
+// Owns a transient actor spawned into the editor world for the duration of a test.
+// Spawned actors get an explicit display label (from the requested name) because
+// SpawnParams.Name only sets the object name while GetActorLabel() otherwise falls back
+// to the class name ("Actor") for every instance, making two actors indistinguishable.
+// Teardown restores the previous selection and the previous world dirty flag, and
+// deletes every owned actor even when the test fails early.
+struct FTask16ActorFixture
+{
+    FTask16ActorFixture() = default;
+    FTask16ActorFixture(const FTask16ActorFixture&) = delete;
+    FTask16ActorFixture& operator=(const FTask16ActorFixture&) = delete;
+
+    UWorld* World = nullptr;
+    TArray<AActor*> OwnedActors;
+    TArray<AActor*> PreviousSelection;
+    bool bPreviousWorldDirty = false;
+    bool bBegun = false;
+
+    bool Begin()
+    {
+        if (GEditor == nullptr || !FSlateApplication::IsInitialized())
+        {
+            return false;
+        }
+
+        World = GEditor->GetEditorWorldContext().World();
+        if (World == nullptr)
+        {
+            return false;
+        }
+
+        bPreviousWorldDirty = World->GetOutermost()->IsDirty();
+
+        if (USelection* Selection = GEditor->GetSelectedActors())
+        {
+            for (FSelectionIterator It(*Selection); It; ++It)
+            {
+                if (AActor* Actor = Cast<AActor>(*It))
+                {
+                    PreviousSelection.Add(Actor);
+                }
+            }
+        }
+
+        bBegun = true;
+        return true;
+    }
+
+    AActor* Spawn(const TCHAR* Name)
+    {
+        if (World == nullptr)
+        {
+            return nullptr;
+        }
+
+        FActorSpawnParameters SpawnParams;
+        SpawnParams.Name = FName(Name);
+        SpawnParams.ObjectFlags |= RF_Transient;
+        SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+        AActor* Actor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SpawnParams);
+        if (Actor != nullptr)
+        {
+#if WITH_EDITOR
+            // SpawnParams.Name sets only the object name; the display label would otherwise default
+            // to the class name ("Actor") for every spawned instance. Set it explicitly (bMarkDirty
+            // = false so the fixture does not dirty the level; the dirty flag is also restored).
+            Actor->SetActorLabel(FString(Name), false);
+#endif
+            OwnedActors.Add(Actor);
+        }
+        return Actor;
+    }
+
+    void Select(AActor* Actor)
+    {
+        if (GEditor == nullptr)
+        {
+            return;
+        }
+
+        GEditor->SelectNone(false, true, false);
+        if (Actor != nullptr)
+        {
+            GEditor->SelectActor(Actor, true, false, true);
+        }
+        GEditor->NoteSelectionChange();
+    }
+
+    ~FTask16ActorFixture()
+    {
+        if (!bBegun || GEditor == nullptr)
+        {
+            return;
+        }
+
+        GEditor->SelectNone(false, true, false);
+        for (AActor* Actor : OwnedActors)
+        {
+            if (IsValid(Actor))
+            {
+                Actor->Destroy();
+            }
+        }
+        for (AActor* Actor : PreviousSelection)
+        {
+            if (IsValid(Actor))
+            {
+                GEditor->SelectActor(Actor, true, false, true);
+            }
+        }
+        GEditor->NoteSelectionChange();
+
+        if (World != nullptr && World->GetOutermost() != nullptr)
+        {
+            World->GetOutermost()->SetDirtyFlag(bPreviousWorldDirty);
+        }
+    }
+};
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaEffortSettingTest,
@@ -622,5 +770,210 @@ bool FCortexInputAreaEffortOptionsUseActiveProviderTest::RunTest(const FString& 
     const TArray<ECortexEffortLevel> Options = SCortexInputArea::GetEffortOptionsForActiveProvider();
     TestFalse(TEXT("Codex effort menu should not expose unsupported Default effort"), Options.Contains(ECortexEffortLevel::Default));
     TestTrue(TEXT("Codex effort menu should expose Maximum/xhigh effort"), Options.Contains(ECortexEffortLevel::Maximum));
+    return true;
+}
+
+// Task 16 RED: an explicit editorContext provider chip must not be duplicated by the
+// auto-context preamble on the same send.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaResolutionProviderEditorContextDedupeTest,
+    "Cortex.Frontend.InputArea.Resolution.ProviderEditorContextNotDuplicatedByAutoContext",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaResolutionProviderEditorContextDedupeTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+
+    FTask16ActorFixture Fixture;
+    if (!Fixture.Begin()) { AddInfo(TEXT("No editor world available")); return true; }
+
+    AActor* SelectedActor = Fixture.Spawn(TEXT("CortexTask16SelectedActor"));
+    if (!TestNotNull(TEXT("Spawned task-owned selected actor"), SelectedActor))
+    {
+        return true;
+    }
+    Fixture.Select(SelectedActor);
+    const FString SelectedIdentity = SelectedActor->GetActorLabel();
+    TestFalse(TEXT("Selected identity is observable"), SelectedIdentity.IsEmpty());
+
+    // Precondition: the gatherer must observe the task-owned selection exactly once, otherwise the
+    // duplicate-identity assertion below would fail for a fixture reason instead of the real defect.
+    TestEqual(TEXT("Gatherer observes the task-owned selection exactly once"),
+        Task16CountOccurrences(FCortexEditorContextGatherer::GatherSelectedActors(), SelectedIdentity), 1);
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const bool bOriginalAutoContext = Settings.GetAutoContext();
+    ON_SCOPE_EXIT { Settings.SetAutoContext(bOriginalAutoContext); Settings.ClearPendingChanges(); };
+    Settings.SetAutoContext(true);
+
+    FString Captured;
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea)
+        .OnSendMessage_Lambda([&Captured](const FString& Prompt) { Captured = Prompt; });
+
+    FCortexContextChip EditorContextChip;
+    EditorContextChip.Kind = ECortexContextChipKind::Provider;
+    EditorContextChip.Label = TEXT("editorContext");
+    Widget->AddContextChip(EditorContextChip);
+
+    FCortexContextChip RawChip;
+    RawChip.Kind = ECortexContextChipKind::RawText;
+    RawChip.Label = TEXT("CortexTask16RawChip");
+    Widget->AddContextChip(RawChip);
+
+    Widget->TestResolveAndSend(TEXT("Inspect selection"));
+
+    TestEqual(TEXT("Auto editor-context preamble is not duplicated by an explicit editorContext chip"),
+        Task16CountOccurrences(Captured, TEXT("## Editor Context (auto)")), 1);
+    TestEqual(TEXT("Selected actor identity is emitted exactly once"),
+        Task16CountOccurrences(Captured, SelectedIdentity), 1);
+    TestTrue(TEXT("User message preserved"), Captured.Contains(TEXT("Inspect selection")));
+    TestEqual(TEXT("Unrelated chip preserved exactly once"),
+        Task16CountOccurrences(Captured, TEXT("@CortexTask16RawChip")), 1);
+
+    return true;
+}
+
+// Task 16: the next send must carry the current selection, never a cached snapshot.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaResolutionNextTurnUsesCurrentSelectionTest,
+    "Cortex.Frontend.InputArea.Resolution.NextTurnUsesCurrentSelection",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaResolutionNextTurnUsesCurrentSelectionTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+
+    FTask16ActorFixture Fixture;
+    if (!Fixture.Begin()) { AddInfo(TEXT("No editor world available")); return true; }
+
+    AActor* ActorA = Fixture.Spawn(TEXT("CortexTask16ActorA"));
+    AActor* ActorB = Fixture.Spawn(TEXT("CortexTask16ActorB"));
+    if (!TestNotNull(TEXT("Spawned task-owned actor A"), ActorA) ||
+        !TestNotNull(TEXT("Spawned task-owned actor B"), ActorB))
+    {
+        return true;
+    }
+    const FString IdentityA = ActorA->GetActorLabel();
+    const FString IdentityB = ActorB->GetActorLabel();
+    TestNotEqual(TEXT("Task actors have distinct identities"), IdentityA, IdentityB);
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const bool bOriginalAutoContext = Settings.GetAutoContext();
+    ON_SCOPE_EXIT { Settings.SetAutoContext(bOriginalAutoContext); Settings.ClearPendingChanges(); };
+    Settings.SetAutoContext(true);
+
+    FString Captured;
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea)
+        .OnSendMessage_Lambda([&Captured](const FString& Prompt) { Captured = Prompt; });
+
+    auto SendWithEditorContext = [&Widget](const FString& Message)
+    {
+        FCortexContextChip Chip;
+        Chip.Kind = ECortexContextChipKind::Provider;
+        Chip.Label = TEXT("editorContext");
+        Widget->AddContextChip(Chip);
+        Widget->TestResolveAndSend(Message);
+    };
+
+    Fixture.Select(ActorA);
+    Captured.Empty();
+    SendWithEditorContext(TEXT("First turn"));
+    TestTrue(TEXT("First turn carries the then-current selection"), Captured.Contains(IdentityA));
+
+    Fixture.Select(ActorB);
+    Captured.Empty();
+    SendWithEditorContext(TEXT("Second turn"));
+    TestTrue(TEXT("Second turn carries the new selection"), Captured.Contains(IdentityB));
+    TestFalse(TEXT("Second turn does not reuse the previous selection"), Captured.Contains(IdentityA));
+    TestTrue(TEXT("Second turn preserves its user message"), Captured.Contains(TEXT("Second turn")));
+
+    return true;
+}
+
+// Task 16: disabled auto-context must still resolve an explicit provider chip exactly once.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaResolutionDisabledAutoContextProviderChipTest,
+    "Cortex.Frontend.InputArea.Resolution.DisabledAutoContextStillResolvesProviderChipOnce",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaResolutionDisabledAutoContextProviderChipTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+
+    FTask16ActorFixture Fixture;
+    if (!Fixture.Begin()) { AddInfo(TEXT("No editor world available")); return true; }
+
+    AActor* SelectedActor = Fixture.Spawn(TEXT("CortexTask16DisabledActor"));
+    if (!TestNotNull(TEXT("Spawned task-owned selected actor"), SelectedActor))
+    {
+        return true;
+    }
+    Fixture.Select(SelectedActor);
+    const FString SelectedIdentity = SelectedActor->GetActorLabel();
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const bool bOriginalAutoContext = Settings.GetAutoContext();
+    ON_SCOPE_EXIT { Settings.SetAutoContext(bOriginalAutoContext); Settings.ClearPendingChanges(); };
+    Settings.SetAutoContext(false);
+
+    FString Captured;
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea)
+        .OnSendMessage_Lambda([&Captured](const FString& Prompt) { Captured = Prompt; });
+
+    FCortexContextChip EditorContextChip;
+    EditorContextChip.Kind = ECortexContextChipKind::Provider;
+    EditorContextChip.Label = TEXT("editorContext");
+    Widget->AddContextChip(EditorContextChip);
+
+    Widget->TestResolveAndSend(TEXT("Hello"));
+
+    TestEqual(TEXT("Explicit editorContext chip still resolves exactly once"),
+        Task16CountOccurrences(Captured, TEXT("## Editor Context (auto)")), 1);
+    TestEqual(TEXT("Selected actor identity emitted exactly once"),
+        Task16CountOccurrences(Captured, SelectedIdentity), 1);
+    TestTrue(TEXT("User message preserved"), Captured.Contains(TEXT("Hello")));
+
+    return true;
+}
+
+// Task 16: a provider that resolves to nothing (or fails) must be dropped, not surfaced
+// as a bogus context block, and other chip fallbacks must survive.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInputAreaResolutionProviderFallbackTest,
+    "Cortex.Frontend.InputArea.Resolution.FailedProviderAndAssetFallbacksRemain",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexInputAreaResolutionProviderFallbackTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    if (!FSlateApplication::IsInitialized()) { AddInfo(TEXT("Slate not initialized")); return true; }
+
+    FCortexFrontendSettings& Settings = FCortexFrontendSettings::Get();
+    const bool bOriginalAutoContext = Settings.GetAutoContext();
+    ON_SCOPE_EXIT { Settings.SetAutoContext(bOriginalAutoContext); Settings.ClearPendingChanges(); };
+    Settings.SetAutoContext(false);
+
+    FString Captured;
+    TSharedRef<SCortexInputArea> Widget = SNew(SCortexInputArea)
+        .OnSendMessage_Lambda([&Captured](const FString& Prompt) { Captured = Prompt; });
+
+    FCortexContextChip FailedProvider;
+    FailedProvider.Kind = ECortexContextChipKind::Provider;
+    FailedProvider.Label = TEXT("unknownProvider");
+    Widget->AddContextChip(FailedProvider);
+
+    FCortexContextChip AssetChip;
+    AssetChip.Kind = ECortexContextChipKind::Asset;
+    AssetChip.Label = TEXT("/Game/SomeUnknownAsset");
+    AssetChip.RouterCommand = TEXT("");
+    Widget->AddContextChip(AssetChip);
+
+    Widget->TestResolveAndSend(TEXT("Hello"));
+
+    TestFalse(TEXT("Failed provider emits no context block"),
+        Captured.Contains(TEXT("## Context: unknownProvider")));
+    TestTrue(TEXT("Unmapped asset still falls back to its @path"),
+        Captured.Contains(TEXT("@/Game/SomeUnknownAsset")));
+    TestTrue(TEXT("User message preserved"), Captured.Contains(TEXT("Hello")));
+
     return true;
 }

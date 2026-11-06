@@ -3,6 +3,7 @@
 #include "Operations/CortexDataMutationHelpers.h"
 #include "CortexDataModule.h"
 #include "CortexLogCapture.h"
+#include "CortexPropertyUtils.h"
 #include "CortexSerializer.h"
 #include "Engine/DataAsset.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -47,7 +48,7 @@ FCortexCommandResult FCortexDataAssetOps::ListDataAssets(const TSharedPtr<FJsonO
 	FString PathFilter;
 	if (Params.IsValid())
 	{
-		Params->TryGetStringField(TEXT("class_filter"), ClassFilter);
+		Params->TryGetStringField(TEXT("class_name"), ClassFilter);
 		Params->TryGetStringField(TEXT("path_filter"), PathFilter);
 	}
 
@@ -169,6 +170,43 @@ FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObj
 		);
 	}
 
+	// Optional property-path selection (token-efficiency TE05). Absent/empty keeps the full read;
+	// malformed selectors refuse instead of being ignored.
+	TArray<FString> SelectedFields;
+	const TArray<TSharedPtr<FJsonValue>>* FieldsArray = nullptr;
+	if (Params->HasField(TEXT("fields")))
+	{
+		if (!Params->TryGetArrayField(TEXT("fields"), FieldsArray) || FieldsArray == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("'fields' must be an array of property path strings")
+			);
+		}
+
+		SelectedFields.Reserve(FieldsArray->Num());
+		for (const TSharedPtr<FJsonValue>& FieldValue : *FieldsArray)
+		{
+			if (!FieldValue.IsValid() || FieldValue->Type != EJson::String)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("'fields' must be an array of property path strings")
+				);
+			}
+
+			const FString FieldPath = FieldValue->AsString();
+			if (FieldPath.IsEmpty())
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					TEXT("'fields' entries must be non-empty property path strings")
+				);
+			}
+			SelectedFields.Add(FieldPath);
+		}
+	}
+
 	FCortexLogCapture LogCapture;
 
 	FCortexCommandResult LoadError;
@@ -183,17 +221,58 @@ FCortexCommandResult FCortexDataAssetOps::GetDataAsset(const TSharedPtr<FJsonObj
 
 	UClass* AssetClass = DataAsset->GetClass();
 
-	const FCortexPropertySerializationResult Serialization = FCortexSerializer::ObjectToJsonDeep(DataAsset, MakeReflectedReadPolicy());
-	TSharedPtr<FJsonObject> Properties = Serialization.JsonValue.IsValid()
-		? Serialization.JsonValue->AsObject()
-		: MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	TArray<FCortexSerializationIssue> Issues;
+	bool bPartial = false;
+
+	if (SelectedFields.Num() == 0)
+	{
+		// Absent/empty selector keeps the complete deep reflected read.
+		const FCortexPropertySerializationResult Serialization =
+			FCortexSerializer::ObjectToJsonDeep(DataAsset, MakeReflectedReadPolicy());
+		Properties = Serialization.JsonValue.IsValid()
+			? Serialization.JsonValue->AsObject()
+			: MakeShared<FJsonObject>();
+		Issues = Serialization.Issues;
+		bPartial = Serialization.bPartial;
+	}
+	else
+	{
+		// Selected read: resolve each requested path against the asset root (dotted struct and
+		// non-null object paths) and serialize only that value with the same deep policy. The
+		// result is a path-keyed object consistent with class-default selected reads, and the
+		// issues/partial stay those of the requested paths.
+		for (const FString& FieldPath : SelectedFields)
+		{
+			FProperty* Property = nullptr;
+			void* ValuePtr = nullptr;
+			if (!FCortexPropertyUtils::ResolvePropertyPath(DataAsset, FieldPath, Property, ValuePtr))
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::PropertyNotFound,
+					FString::Printf(TEXT("DataAsset property path not found: %s"), *FieldPath)
+				);
+			}
+
+			const FCortexPropertySerializationResult FieldResult = FCortexSerializer::PropertyToJsonDeep(
+				Property,
+				ValuePtr,
+				MakeReflectedReadPolicy(),
+				FieldPath);
+			Properties->SetField(
+				FieldPath,
+				FieldResult.JsonValue.IsValid() ? FieldResult.JsonValue : MakeShared<FJsonValueNull>());
+			Issues.Append(FieldResult.Issues);
+			bPartial = bPartial || FieldResult.bPartial;
+		}
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetStringField(TEXT("asset_class"), AssetClass->GetName());
 	Data->SetObjectField(TEXT("properties"), Properties);
-	Data->SetBoolField(TEXT("partial"), Serialization.bPartial);
-	Data->SetArrayField(TEXT("issues"), FCortexSerializer::SerializationIssuesToJson(Serialization.Issues));
+	Data->SetBoolField(TEXT("partial"), bPartial);
+	Data->SetArrayField(TEXT("issues"), FCortexSerializer::SerializationIssuesToJson(Issues));
 
 	if (Warnings.Num() > 0)
 	{

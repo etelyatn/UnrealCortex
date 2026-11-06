@@ -1,5 +1,6 @@
 #include "CortexBPAssetOps.h"
 #include "Operations/CortexBPTypeUtils.h"
+#include "Operations/CortexBPCompileSupport.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexBlueprintModule.h"
@@ -380,41 +381,185 @@ bool FCortexBPAssetOps::ValidateWritableBlueprintAssetPath(const FString& AssetP
 	return CortexBPAssetOpsPrivate::ValidateWritableBlueprintPath(PackagePath, OutError);
 }
 
+namespace
+{
+	/** Canonical Blueprint type vocabulary, in classification precedence order. */
+	const TCHAR* const BlueprintTypeVocabulary[] =
+	{
+		TEXT("Interface"),
+		TEXT("FunctionLibrary"),
+		TEXT("MacroLibrary"),
+		TEXT("AnimBlueprint"),
+		TEXT("EditorUtility"),
+		TEXT("Widget"),
+		TEXT("Component"),
+		TEXT("Actor"),
+		TEXT("Object"),
+		TEXT("Unknown"),
+	};
+
+	/** Facts shared by the loaded-Blueprint and Asset Registry classifiers. */
+	struct FBlueprintClassifierInput
+	{
+		bool bInterface = false;
+		bool bFunctionLibrary = false;
+		bool bMacroLibrary = false;
+		/** Class of the Blueprint asset itself (UBlueprint, UAnimBlueprint, ...); may be null when unresolved. */
+		const UClass* AssetClass = nullptr;
+		/** Immediate parent class; may be a Blueprint generated class or null when unresolved. */
+		const UClass* ImmediateParent = nullptr;
+		/** Nearest native ancestor; null when unresolved. */
+		const UClass* NativeParent = nullptr;
+	};
+
+	/** Dynamic lookup by script path. Not cached: the owning module may load after the first call. */
+	bool IsChildOfScriptClass(const UClass* Candidate, const TCHAR* ClassPath)
+	{
+		if (!Candidate)
+		{
+			return false;
+		}
+		const UClass* BaseClass = FindObject<UClass>(nullptr, ClassPath);
+		return BaseClass && Candidate->IsChildOf(BaseClass);
+	}
+
+	FString ClassifyBlueprint(const FBlueprintClassifierInput& Input)
+	{
+		if (Input.bInterface)
+		{
+			return TEXT("Interface");
+		}
+		if (Input.bFunctionLibrary)
+		{
+			return TEXT("FunctionLibrary");
+		}
+		if (Input.bMacroLibrary)
+		{
+			return TEXT("MacroLibrary");
+		}
+
+		if (IsChildOfScriptClass(Input.AssetClass, TEXT("/Script/Engine.AnimBlueprint")))
+		{
+			return TEXT("AnimBlueprint");
+		}
+
+		// Native ancestry decides the remaining kinds; a Blueprint-only chain is covered by its native parent.
+		const UClass* ParentForRules = Input.NativeParent ? Input.NativeParent : Input.ImmediateParent;
+
+		if (IsChildOfScriptClass(Input.AssetClass, TEXT("/Script/Blutility.EditorUtilityBlueprint"))
+			|| IsChildOfScriptClass(Input.AssetClass, TEXT("/Script/Blutility.EditorUtilityWidgetBlueprint"))
+			|| IsChildOfScriptClass(ParentForRules, TEXT("/Script/Blutility.EditorUtilityObject"))
+			|| IsChildOfScriptClass(ParentForRules, TEXT("/Script/Blutility.EditorUtilityActor"))
+			|| IsChildOfScriptClass(ParentForRules, TEXT("/Script/Blutility.EditorUtilityWidget")))
+		{
+			return TEXT("EditorUtility");
+		}
+
+		if (!ParentForRules)
+		{
+			return TEXT("Unknown");
+		}
+
+		if (IsChildOfScriptClass(ParentForRules, TEXT("/Script/UMG.UserWidget")))
+		{
+			return TEXT("Widget");
+		}
+		if (ParentForRules->IsChildOf(UActorComponent::StaticClass()))
+		{
+			return TEXT("Component");
+		}
+		if (ParentForRules->IsChildOf(AActor::StaticClass()))
+		{
+			return TEXT("Actor");
+		}
+		return TEXT("Object");
+	}
+
+	/** Nearest native class at or above Class. */
+	const UClass* FindNativeAncestor(const UClass* Class)
+	{
+		while (Class && !Class->IsNative())
+		{
+			Class = Class->GetSuperClass();
+		}
+		return Class;
+	}
+
+	/** Case-insensitive vocabulary lookup; returns false for values outside the vocabulary. */
+	bool TryCanonicalizeBlueprintType(const FString& Value, FString& OutCanonical)
+	{
+		for (const TCHAR* Candidate : BlueprintTypeVocabulary)
+		{
+			if (Value.Equals(Candidate, ESearchCase::IgnoreCase))
+			{
+				OutCanonical = Candidate;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	FString BlueprintTypeVocabularyList()
+	{
+		FString List;
+		for (const TCHAR* Candidate : BlueprintTypeVocabulary)
+		{
+			if (!List.IsEmpty())
+			{
+				List += TEXT(", ");
+			}
+			List += Candidate;
+		}
+		return List;
+	}
+
+	/** Short display name of a class object path; Blueprint generated classes (non-/Script/) report the asset name without "_C". */
+	FString ClassDisplayNameFromPath(const FString& ClassObjectPath)
+	{
+		FString Name = FPackageName::ObjectPathToObjectName(ClassObjectPath);
+		if (Name.EndsWith(TEXT("_C")) && !ClassObjectPath.StartsWith(TEXT("/Script/")))
+		{
+			Name.LeftChopInline(2);
+		}
+		return Name;
+	}
+}
+
+FString FCortexBPAssetOps::ParentClassDisplayName(const UClass* ParentClass)
+{
+	return ParentClass ? ClassDisplayNameFromPath(ParentClass->GetPathName()) : FString();
+}
+
+FString FCortexBPAssetOps::NativeParentClassName(const UClass* ParentClass)
+{
+	const UClass* Native = FindNativeAncestor(ParentClass);
+	return Native ? Native->GetName() : FString();
+}
+
+FString FCortexBPAssetOps::ClassTagToObjectPath(const FString& TagValue)
+{
+	if (TagValue.IsEmpty() || TagValue == TEXT("None"))
+	{
+		return FString();
+	}
+	return FPackageName::ExportTextPathToObjectPath(TagValue);
+}
+
 FString FCortexBPAssetOps::DetermineBlueprintType(const UBlueprint* BP)
 {
-	if (!BP || !BP->ParentClass)
+	if (!BP)
 	{
 		return TEXT("Unknown");
 	}
 
-	if (BP->BlueprintType == BPTYPE_Interface)
-	{
-		return TEXT("Interface");
-	}
-
-	if (BP->BlueprintType == BPTYPE_FunctionLibrary)
-	{
-		return TEXT("FunctionLibrary");
-	}
-
-	// Check for Widget using dynamic resolution to avoid compile-time dependency on UMG
-	static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-	if (UserWidgetClass && BP->ParentClass->IsChildOf(UserWidgetClass))
-	{
-		return TEXT("Widget");
-	}
-
-	if (BP->ParentClass->IsChildOf(UActorComponent::StaticClass()))
-	{
-		return TEXT("Component");
-	}
-
-	if (BP->ParentClass->IsChildOf(AActor::StaticClass()))
-	{
-		return TEXT("Actor");
-	}
-
-	return TEXT("Unknown");
+	FBlueprintClassifierInput Input;
+	Input.bInterface = BP->BlueprintType == BPTYPE_Interface;
+	Input.bFunctionLibrary = BP->BlueprintType == BPTYPE_FunctionLibrary;
+	Input.bMacroLibrary = BP->BlueprintType == BPTYPE_MacroLibrary;
+	Input.AssetClass = BP->GetClass();
+	Input.ImmediateParent = BP->ParentClass;
+	Input.NativeParent = FindNativeAncestor(BP->ParentClass);
+	return ClassifyBlueprint(Input);
 }
 
 namespace
@@ -474,188 +619,51 @@ namespace
 		return false;
 	}
 
-	/** Helper: Determine Blueprint type string from AssetRegistry tags (without loading the asset). */
-	FString DetermineTypeFromAssetData(const FAssetData& AssetData)
+	/** Per-row facts for blueprint.list, resolved from Asset Registry tags without loading the asset. */
+	struct FBlueprintListRowInfo
 	{
+		FString Type;
+		FString AssetClass;
+		FString NativeParentClass;
+		FString ParentClass;
+		FString ParentClassPath;
+	};
+
+	FBlueprintListRowInfo DescribeBlueprintAssetData(const FAssetData& AssetData)
+	{
+		FBlueprintListRowInfo Row;
+		Row.AssetClass = AssetData.AssetClassPath.GetAssetName().ToString();
+
+		FString NativeParentTag;
+		AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, NativeParentTag);
+		FString ParentTag;
+		AssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentTag);
+
+		const FString NativeParentPath = FCortexBPAssetOps::ClassTagToObjectPath(NativeParentTag);
+		// Older tag sets may only carry the native parent; treat it as the immediate parent then.
+		const FString ParentTagPath = FCortexBPAssetOps::ClassTagToObjectPath(ParentTag);
+		Row.ParentClassPath = ParentTagPath.IsEmpty() ? NativeParentPath : ParentTagPath;
+
+		if (!NativeParentPath.IsEmpty())
+		{
+			Row.NativeParentClass = FPackageName::ObjectPathToObjectName(NativeParentPath);
+		}
+		if (!Row.ParentClassPath.IsEmpty())
+		{
+			Row.ParentClass = ClassDisplayNameFromPath(Row.ParentClassPath);
+		}
+
 		const FString BlueprintTypeTag = AssetData.GetTagValueRef<FString>(FBlueprintTags::BlueprintType);
-		if (BlueprintTypeTag == TEXT("BPType_Interface"))
-		{
-			return TEXT("Interface");
-		}
-		if (BlueprintTypeTag == TEXT("BPType_FunctionLibrary"))
-		{
-			return TEXT("FunctionLibrary");
-		}
-
-		FString ParentClassName;
-		if (!AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName))
-		{
-			AssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentClassName);
-		}
-
-		if (!ParentClassName.IsEmpty())
-		{
-			const FString ParentClassPath = FPackageName::ExportTextPathToObjectPath(ParentClassName);
-
-			// Resolve to UClass* — native classes are always loaded in editor, no disk I/O
-			UClass* ParentClass = FindObject<UClass>(nullptr, *ParentClassPath);
-			if (ParentClass)
-			{
-				static UClass* UserWidgetClass = FindObject<UClass>(nullptr, TEXT("/Script/UMG.UserWidget"));
-				if (UserWidgetClass && ParentClass->IsChildOf(UserWidgetClass))
-				{
-					return TEXT("Widget");
-				}
-				if (ParentClass->IsChildOf(UActorComponent::StaticClass()))
-				{
-					return TEXT("Component");
-				}
-				if (ParentClass->IsChildOf(AActor::StaticClass()))
-				{
-					return TEXT("Actor");
-				}
-				if (ParentClass->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
-				{
-					return TEXT("FunctionLibrary");
-				}
-				if (ParentClass->IsChildOf(UInterface::StaticClass()))
-				{
-					return TEXT("Interface");
-				}
-				return TEXT("Unknown");
-			}
-
-			// Fallback: string matching for unloaded Blueprint-only parents
-			if (ParentClassPath.Contains(TEXT("UserWidget")))
-			{
-				return TEXT("Widget");
-			}
-			if (ParentClassPath.Contains(TEXT("BlueprintFunctionLibrary")))
-			{
-				return TEXT("FunctionLibrary");
-			}
-			if (ParentClassPath.Contains(TEXT("ActorComponent")))
-			{
-				return TEXT("Component");
-			}
-			if (ParentClassPath.Contains(TEXT("Interface")))
-			{
-				return TEXT("Interface");
-			}
-			if (ParentClassPath.Contains(TEXT("Actor")))
-			{
-				return TEXT("Actor");
-			}
-		}
-
-		return TEXT("Unknown");
-	}
-
-	FString ToSeverity(const UEdGraphNode* Node)
-	{
-		if (!Node)
-		{
-			return TEXT("error");
-		}
-
-		return (Node->ErrorType <= EMessageSeverity::Error) ? TEXT("error") : TEXT("warning");
-	}
-
-	void AddReferencedMetadata(const UEdGraphNode* Node, const TSharedPtr<FJsonObject>& Diagnostic)
-	{
-		if (!Node || !Diagnostic.IsValid())
-		{
-			return;
-		}
-
-		const UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNode(Node);
-		UClass* SelfScope = nullptr;
-		if (Blueprint)
-		{
-			SelfScope = Blueprint->GeneratedClass ? Blueprint->GeneratedClass : Blueprint->SkeletonGeneratedClass;
-		}
-
-		if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
-		{
-			UClass* ParentClass = CallNode->FunctionReference.GetMemberParentClass(SelfScope);
-			if (!ParentClass)
-			{
-				ParentClass = CallNode->FunctionReference.GetMemberParentClass();
-			}
-			if (ParentClass)
-			{
-				Diagnostic->SetStringField(TEXT("referenced_class"), ParentClass->GetName());
-			}
-
-			const FName MemberName = CallNode->FunctionReference.GetMemberName();
-			if (!MemberName.IsNone())
-			{
-				Diagnostic->SetStringField(TEXT("referenced_member"), MemberName.ToString());
-			}
-			return;
-		}
-
-		if (const UK2Node_Variable* VariableNode = Cast<UK2Node_Variable>(Node))
-		{
-			UClass* ParentClass = VariableNode->VariableReference.GetMemberParentClass(SelfScope);
-			if (!ParentClass)
-			{
-				ParentClass = VariableNode->VariableReference.GetMemberParentClass();
-			}
-			if (ParentClass)
-			{
-				Diagnostic->SetStringField(TEXT("referenced_class"), ParentClass->GetName());
-			}
-
-			const FName MemberName = VariableNode->VariableReference.GetMemberName();
-			if (!MemberName.IsNone())
-			{
-				Diagnostic->SetStringField(TEXT("referenced_member"), MemberName.ToString());
-			}
-			return;
-		}
-
-		if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
-		{
-			UClass* ParentClass = EventNode->EventReference.GetMemberParentClass(SelfScope);
-			if (!ParentClass)
-			{
-				ParentClass = EventNode->EventReference.GetMemberParentClass();
-			}
-			if (ParentClass)
-			{
-				Diagnostic->SetStringField(TEXT("referenced_class"), ParentClass->GetName());
-			}
-
-			const FName MemberName = EventNode->EventReference.GetMemberName();
-			if (!MemberName.IsNone())
-			{
-				Diagnostic->SetStringField(TEXT("referenced_member"), MemberName.ToString());
-			}
-			return;
-		}
-
-		if (const UK2Node_DynamicCast* DynamicCastNode = Cast<UK2Node_DynamicCast>(Node))
-		{
-			if (const UClass* TargetClass = DynamicCastNode->TargetType)
-			{
-				Diagnostic->SetStringField(TEXT("referenced_class"), TargetClass->GetName());
-			}
-		}
-	}
-
-	TSharedPtr<FJsonObject> BuildDiagnosticObject(const UEdGraphNode* Node)
-	{
-		TSharedPtr<FJsonObject> Diagnostic = MakeShared<FJsonObject>();
-		Diagnostic->SetStringField(TEXT("graph"), Node && Node->GetGraph() ? Node->GetGraph()->GetName() : TEXT(""));
-		Diagnostic->SetStringField(TEXT("node_id"), Node ? Node->NodeGuid.ToString() : TEXT(""));
-		Diagnostic->SetStringField(TEXT("node_class"), Node ? Node->GetClass()->GetName() : TEXT(""));
-		Diagnostic->SetStringField(TEXT("node_name"),
-			Node ? Node->GetNodeTitle(ENodeTitleType::ListView).ToString() : TEXT(""));
-		Diagnostic->SetStringField(TEXT("severity"), ToSeverity(Node));
-		Diagnostic->SetStringField(TEXT("message"), Node ? Node->ErrorMsg : TEXT(""));
-		AddReferencedMetadata(Node, Diagnostic);
-		return Diagnostic;
+		FBlueprintClassifierInput Input;
+		Input.bInterface = BlueprintTypeTag == TEXT("BPType_Interface");
+		Input.bFunctionLibrary = BlueprintTypeTag == TEXT("BPType_FunctionLibrary");
+		Input.bMacroLibrary = BlueprintTypeTag == TEXT("BPType_MacroLibrary");
+		Input.AssetClass = FindObject<UClass>(nullptr, *AssetData.AssetClassPath.ToString());
+		// Native classes are always loaded in the editor, so these lookups do no disk I/O.
+		Input.NativeParent = NativeParentPath.IsEmpty() ? nullptr : FindObject<UClass>(nullptr, *NativeParentPath);
+		Input.ImmediateParent = Row.ParentClassPath.IsEmpty() ? nullptr : FindObject<UClass>(nullptr, *Row.ParentClassPath);
+		Row.Type = ClassifyBlueprint(Input);
+		return Row;
 	}
 
 	TSharedPtr<FJsonObject> CopyBlueprintAssetBatchJsonObject(const TSharedPtr<FJsonObject>& Source)
@@ -666,7 +674,7 @@ namespace
 			return Copy;
 		}
 
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+		for (const auto& Pair : Source->Values)
 		{
 			Copy->SetField(Pair.Key, Pair.Value);
 		}
@@ -1027,21 +1035,86 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 		ResponseType = FCortexBPAssetOps::DetermineBlueprintType(NewBP);
 	}
 	Result.Data->SetStringField(TEXT("type"), ResponseType);
-	Result.Data->SetStringField(TEXT("parent_class"), ParentClass ? ParentClass->GetName() : TEXT(""));
+	Result.Data->SetStringField(TEXT("parent_class"), FCortexBPAssetOps::ParentClassDisplayName(ParentClass));
 	Result.Data->SetBoolField(TEXT("created"), true);
 
 	return Result;
+}
+
+FString FCortexBPAssetOps::DetermineBlueprintTypeFromAssetData(const FAssetData& AssetData)
+{
+	return DescribeBlueprintAssetData(AssetData).Type;
+}
+
+const TArray<FString>& FCortexBPAssetOps::GetBlueprintTypeNames()
+{
+	static const TArray<FString> Names = []()
+	{
+		TArray<FString> Result;
+		for (const TCHAR* Name : BlueprintTypeVocabulary)
+		{
+			Result.Add(Name);
+		}
+		return Result;
+	}();
+	return Names;
 }
 
 FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Params)
 {
 	FCortexCommandResult Result;
 
-	// Get optional path filter
+	// Optional filters: path, type, exclude_types
 	FString PathFilter;
+	FString TypeFilter;
+	TSet<FString> ExcludedTypes;
 	if (Params.IsValid())
 	{
 		Params->TryGetStringField(TEXT("path"), PathFilter);
+
+		// An empty or null 'type' means "no type filter" (routed callers send type:"" / type:null for absent).
+		const TSharedPtr<FJsonValue> TypeValue = Params->TryGetField(TEXT("type"));
+		FString TypeText;
+		const bool bTypeAbsent = !TypeValue.IsValid() || TypeValue->IsNull()
+			|| (TypeValue->TryGetString(TypeText) && TypeText.IsEmpty());
+		if (!bTypeAbsent && (!TypeValue->TryGetString(TypeText) || !TryCanonicalizeBlueprintType(TypeText, TypeFilter)))
+		{
+			Result.bSuccess = false;
+			Result.ErrorCode = CortexErrorCodes::InvalidField;
+			Result.ErrorMessage = FString::Printf(
+				TEXT("Invalid 'type' filter: %s (supported, case-insensitive: %s)"),
+				*TypeText, *BlueprintTypeVocabularyList());
+			return Result;
+		}
+
+		if (Params->HasField(TEXT("exclude_types")))
+		{
+			const TArray<TSharedPtr<FJsonValue>>* ExcludeArray = nullptr;
+			if (!Params->TryGetArrayField(TEXT("exclude_types"), ExcludeArray))
+			{
+				Result.bSuccess = false;
+				Result.ErrorCode = CortexErrorCodes::InvalidField;
+				Result.ErrorMessage = FString::Printf(
+					TEXT("'exclude_types' must be an array of strings (supported, case-insensitive: %s)"),
+					*BlueprintTypeVocabularyList());
+				return Result;
+			}
+			for (const TSharedPtr<FJsonValue>& Entry : *ExcludeArray)
+			{
+				FString RawType;
+				FString Canonical;
+				if (!Entry.IsValid() || !Entry->TryGetString(RawType) || !TryCanonicalizeBlueprintType(RawType, Canonical))
+				{
+					Result.bSuccess = false;
+					Result.ErrorCode = CortexErrorCodes::InvalidField;
+					Result.ErrorMessage = FString::Printf(
+						TEXT("Invalid 'exclude_types' entry: %s (supported, case-insensitive: %s)"),
+						*RawType, *BlueprintTypeVocabularyList());
+					return Result;
+				}
+				ExcludedTypes.Add(Canonical);
+			}
+		}
 	}
 
 	// Query AssetRegistry for all Blueprint assets
@@ -1080,34 +1153,20 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 	TArray<TSharedPtr<FJsonValue>> BlueprintsArray;
 	for (const FAssetData& AssetData : BlueprintAssets)
 	{
+		const FBlueprintListRowInfo RowInfo = DescribeBlueprintAssetData(AssetData);
+		if ((!TypeFilter.IsEmpty() && RowInfo.Type != TypeFilter) || ExcludedTypes.Contains(RowInfo.Type))
+		{
+			continue;
+		}
+
 		TSharedPtr<FJsonObject> BPObj = MakeShared<FJsonObject>();
-
-		// Asset path
 		BPObj->SetStringField(TEXT("asset_path"), AssetData.GetObjectPathString());
-
-		// Asset name
 		BPObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
-
-		// Resolve type from AssetRegistry tags to avoid loading every Blueprint asset.
-		BPObj->SetStringField(TEXT("type"), DetermineTypeFromAssetData(AssetData));
-
-		// Parent class (extracted from AssetRegistry tags — no load required)
-		FString ParentClassName;
-		if (!AssetData.GetTagValue(FBlueprintTags::NativeParentClassPath, ParentClassName))
-		{
-			AssetData.GetTagValue(FBlueprintTags::ParentClassPath, ParentClassName);
-		}
-		if (!ParentClassName.IsEmpty())
-		{
-			const FString ClassPath = FPackageName::ExportTextPathToObjectPath(ParentClassName);
-			UClass* ParentClass = FindObject<UClass>(nullptr, *ClassPath);
-			BPObj->SetStringField(TEXT("parent_class"),
-				ParentClass ? ParentClass->GetName() : FPackageName::GetShortName(ClassPath));
-		}
-		else
-		{
-			BPObj->SetStringField(TEXT("parent_class"), TEXT(""));
-		}
+		BPObj->SetStringField(TEXT("type"), RowInfo.Type);
+		BPObj->SetStringField(TEXT("asset_class"), RowInfo.AssetClass);
+		BPObj->SetStringField(TEXT("parent_class"), RowInfo.ParentClass);
+		BPObj->SetStringField(TEXT("parent_class_path"), RowInfo.ParentClassPath);
+		BPObj->SetStringField(TEXT("native_parent_class"), RowInfo.NativeParentClass);
 
 		BlueprintsArray.Add(MakeShared<FJsonValueObject>(BPObj));
 	}
@@ -1169,7 +1228,8 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	// Parent class
 	if (BP->ParentClass)
 	{
-		InfoObj->SetStringField(TEXT("parent_class"), BP->ParentClass->GetName());
+		InfoObj->SetStringField(TEXT("parent_class"), FCortexBPAssetOps::ParentClassDisplayName(BP->ParentClass));
+		InfoObj->SetStringField(TEXT("native_parent_class"), FCortexBPAssetOps::NativeParentClassName(BP->ParentClass));
 	}
 
 	// Compilation status
@@ -1590,7 +1650,7 @@ FCortexCommandResult FCortexBPAssetOps::Duplicate(const TSharedPtr<FJsonObject>&
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& Params)
+FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& Params, const bool bSkipGarbageCollection)
 {
 	if (Params.IsValid() && Params->HasField(TEXT("items")))
 	{
@@ -1633,54 +1693,23 @@ FCortexCommandResult FCortexBPAssetOps::Compile(const TSharedPtr<FJsonObject>& P
 		);
 	}
 
-	FCompilerResultsLog CompilerResults;
-	CompilerResults.bSilentMode = true;
-	CompilerResults.bAnnotateMentionedNodes = true;
-	const EBlueprintCompileOptions CompileOptions = Blueprint->IsA<ULevelScriptBlueprint>()
+	const EBlueprintCompileOptions CompileOptions = (bSkipGarbageCollection || Blueprint->IsA<ULevelScriptBlueprint>())
 		? EBlueprintCompileOptions::SkipGarbageCollection
 		: EBlueprintCompileOptions::None;
-	FKismetEditorUtilities::CompileBlueprint(Blueprint, CompileOptions, &CompilerResults);
+	FCortexBPCompileOutcome Outcome;
+	FCortexBPCompileSupport::Compile(Blueprint, CompileOptions, Outcome);
 
-	const int32 ErrorCount = CompilerResults.NumErrors;
-	const int32 WarningCount = CompilerResults.NumWarnings;
-
-	TArray<TSharedPtr<FJsonValue>> DiagnosticsArray;
-	DiagnosticsArray.Reserve(CompilerResults.AnnotatedNodes.Num());
-	for (const TWeakObjectPtr<UEdGraphNode>& WeakNode : CompilerResults.AnnotatedNodes)
-	{
-		UEdGraphNode* Node = WeakNode.Get();
-		if (!Node || !Node->bHasCompilerMessage)
-		{
-			continue;
-		}
-
-		DiagnosticsArray.Add(MakeShared<FJsonValueObject>(BuildDiagnosticObject(Node)));
-	}
-
-	auto BuildCompilePayload = [&]()
-	{
-		TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
-		Payload->SetStringField(TEXT("asset_path"), AssetPath);
-		const FString StatusStr = ErrorCount > 0 ? TEXT("error") : (WarningCount > 0 ? TEXT("warning") : TEXT("success"));
-		Payload->SetStringField(TEXT("compile_status"), StatusStr);
-		Payload->SetStringField(TEXT("status"), StatusStr);
-		Payload->SetNumberField(TEXT("error_count"), ErrorCount);
-		Payload->SetNumberField(TEXT("warning_count"), WarningCount);
-		Payload->SetArrayField(TEXT("diagnostics"), DiagnosticsArray);
-		return Payload;
-	};
-
-	if (ErrorCount > 0)
+	if (Outcome.HasErrors())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::CompileFailed,
-			FString::Printf(TEXT("Blueprint compilation failed with %d errors"), ErrorCount),
-			BuildCompilePayload());
+			FString::Printf(TEXT("Blueprint compilation failed with %d errors"), Outcome.ErrorCount),
+			Outcome.ToPayload(AssetPath));
 	}
 
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Compiled Blueprint: %s"), *AssetPath);
 
-	return FCortexCommandRouter::Success(BuildCompilePayload());
+	return FCortexCommandRouter::Success(Outcome.ToPayload(AssetPath));
 }
 
 FCortexCommandResult FCortexBPAssetOps::Save(const TSharedPtr<FJsonObject>& Params)
@@ -1954,110 +1983,3 @@ FCortexCommandResult FCortexBPAssetOps::Rename(const TSharedPtr<FJsonObject>& Pa
 	return FCortexCommandRouter::Success(Data);
 }
 
-FCortexCommandResult FCortexBPAssetOps::Reparent(const TSharedPtr<FJsonObject>& Params)
-{
-	if (!Params.IsValid())
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing params object")
-		);
-	}
-
-	FString AssetPath;
-	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required param: asset_path")
-		);
-	}
-
-	FString NewParent;
-	if (!Params->TryGetStringField(TEXT("new_parent"), NewParent) || NewParent.IsEmpty())
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Missing required param: new_parent")
-		);
-	}
-
-	FString ValidationError;
-	if (!ValidateWritableBlueprintAssetPath(AssetPath, ValidationError))
-	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
-	}
-
-	// Load the Blueprint to reparent
-	FString LoadError;
-	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
-	if (!Blueprint)
-	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
-	}
-
-	// Resolve the new parent class
-	UClass* NewParentClass = nullptr;
-
-	// First try as a Blueprint asset path
-	FString ParentLoadError;
-	UBlueprint* ParentBP = LoadBlueprint(NewParent, ParentLoadError);
-	if (ParentBP && ParentBP->GeneratedClass)
-	{
-		NewParentClass = ParentBP->GeneratedClass;
-	}
-	else
-	{
-		// Try as a C++ class name (full path or short name)
-		NewParentClass = FindObject<UClass>(nullptr, *NewParent);
-		if (!NewParentClass)
-		{
-			NewParentClass = FindFirstObject<UClass>(*NewParent, EFindFirstObjectOptions::NativeFirst);
-		}
-	}
-
-	if (!NewParentClass)
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidParentClass,
-			FString::Printf(TEXT("Could not resolve new parent: %s (tried as Blueprint path and C++ class name)"), *NewParent)
-		);
-	}
-
-	// Check that the new parent is different
-	FString OldParentName = Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None");
-	if (Blueprint->ParentClass == NewParentClass)
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("Blueprint already has parent class: %s"), *NewParentClass->GetName())
-		);
-	}
-
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Reparent Blueprint %s to %s"), *Blueprint->GetName(), *NewParentClass->GetName())
-	));
-
-	// Perform the reparent — direct ParentClass assignment is the correct approach,
-	// matching what the Blueprint editor's own reparent dialog uses internally.
-	Blueprint->ParentClass = NewParentClass;
-	FBlueprintEditorUtils::RefreshAllNodes(Blueprint);
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-
-	// Compile the reparented Blueprint
-	FKismetEditorUtilities::CompileBlueprint(Blueprint);
-
-	// Mark dirty for save
-	Blueprint->GetOutermost()->MarkPackageDirty();
-
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-	Data->SetStringField(TEXT("asset_path"), AssetPath);
-	Data->SetStringField(TEXT("old_parent"), OldParentName);
-	Data->SetStringField(TEXT("new_parent"), NewParentClass->GetName());
-	Data->SetBoolField(TEXT("reparented"), true);
-
-	UE_LOG(LogCortexBlueprint, Log, TEXT("Reparented Blueprint %s: %s -> %s"),
-		*AssetPath, *OldParentName, *NewParentClass->GetName());
-
-	return FCortexCommandRouter::Success(Data);
-}

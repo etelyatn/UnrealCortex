@@ -249,14 +249,14 @@ class TestBatchCommandGeneration:
         assert brush_cmds[0]["params"]["color"] == "#2196F3"
 
     def test_padding_dict_styling(self):
-        """padding dict shorthand generates umg.set_padding with all sides."""
+        """padding dict shorthand generates a nested umg.set_padding payload."""
         widgets = [{"class": "VerticalBox", "name": "VB", "padding": {"left": 10, "top": 20, "right": 10, "bottom": 20}}]
         commands = _build_widget_batch_commands("WBP_Test", "/Game/UI/", widgets, [])
 
         pad_cmds = [c for c in commands if c["command"] == "umg.set_padding"]
         assert len(pad_cmds) == 1
-        assert pad_cmds[0]["params"]["left"] == 10
-        assert pad_cmds[0]["params"]["top"] == 20
+        assert pad_cmds[0]["params"]["padding"] == {"left": 10, "top": 20, "right": 10, "bottom": 20}
+        assert "top" not in pad_cmds[0]["params"]
 
     def test_padding_number_styling(self):
         """padding number shorthand generates umg.set_padding with uniform value."""
@@ -344,6 +344,13 @@ class TestFixtures:
 
         expected = self._load_fixture("main_menu_batch_request.json")
         assert len(commands) == len(expected["commands"])
+
+        # The recorded batch must match the generated one for a styled command, so a parameter
+        # shape drift (e.g. flat padding edges, which the native handler refuses) cannot hide
+        # behind a count-only comparison.
+        recorded_padding = next(c for c in expected["commands"] if c["command"] == "umg.set_padding")
+        generated_padding = next(c for c in commands if c["command"] == "umg.set_padding")
+        assert generated_padding["params"] == recorded_padding["params"]
 
         # Verify counts
         assert commands[0]["command"] == "blueprint.create"

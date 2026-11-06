@@ -34,7 +34,7 @@ bool FCortexGraphObjectPathMutatorsTest::RunTest(const FString& Parameters)
 {
 	using namespace CortexGraphObjectPathMutatorsTest;
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString PackagePath = FString::Printf(
 		TEXT("/Game/Temp/CortexGraphObjectPathMutators_%s/BP_ObjectPathMutators_%s"),
 		*Suffix,

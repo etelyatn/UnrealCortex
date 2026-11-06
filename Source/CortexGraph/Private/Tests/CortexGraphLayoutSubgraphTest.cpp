@@ -70,3 +70,152 @@ bool FCortexGraphLayoutSubgraphTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphLayoutIncrementalCollisionTest,
+	"Cortex.Graph.Layout.IncrementalCollision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphLayoutIncrementalCollisionTest::RunTest(const FString& Parameters)
+{
+	FCortexLayoutNode A;
+	A.Id = TEXT("A");
+	A.bIsExecNode = true;
+	A.Width = 250;
+	A.Height = 206;
+	A.ExecOutputs.Add(TEXT("B"));
+	FCortexLayoutNode B;
+	B.Id = TEXT("B");
+	B.bIsExecNode = true;
+	B.Width = 250;
+	B.Height = 206;
+	const TArray<FCortexLayoutNode> Nodes = { A, B };
+	FCortexLayoutConfig Config;
+	const FCortexLayoutResult Full = FCortexGraphLayoutOps::CalculateLayout(Nodes, Config);
+	TMap<FString, FIntPoint> Existing;
+	Existing.Add(A.Id, Full.Positions[B.Id]);
+	Existing.Add(B.Id, FIntPoint::ZeroValue);
+	Config.Mode = ECortexLayoutMode::Incremental;
+	const FCortexLayoutResult Actual = FCortexGraphLayoutOps::CalculateLayout(Nodes, Config, Existing);
+	TestFalse(TEXT("Established A is not moved"), Actual.Positions.Contains(A.Id));
+	const FIntPoint* New = Actual.Positions.Find(B.Id);
+	if (!TestNotNull(TEXT("New B is positioned"), New))
+	{
+		return false;
+	}
+	const FIntPoint Fixed = Existing[A.Id];
+	TestTrue(TEXT("New body has requested separation"),
+		New->X >= Fixed.X + A.Width + Config.HorizontalSpacing ||
+		Fixed.X >= New->X + B.Width + Config.HorizontalSpacing ||
+		New->Y >= Fixed.Y + A.Height + Config.VerticalSpacing ||
+		Fixed.Y >= New->Y + B.Height + Config.VerticalSpacing);
+	TestNotEqual(TEXT("Placed node does not retain unpositioned sentinel"), *New, FIntPoint::ZeroValue);
+	Existing.Add(B.Id, *New);
+	const FCortexLayoutResult Repeated = FCortexGraphLayoutOps::CalculateLayout(Nodes, Config, Existing);
+	TestEqual(TEXT("Repeated incremental layout moves no established nodes"), Repeated.Positions.Num(), 0);
+
+	FCortexLayoutNode NegativeA;
+	NegativeA.Id = TEXT("A");
+	NegativeA.bIsExecNode = true;
+	NegativeA.Width = 150;
+	NegativeA.Height = 100;
+	FCortexLayoutNode NegativeB = NegativeA;
+	NegativeB.Id = TEXT("B");
+	NegativeB.ExecOutputs.Add(NegativeA.Id);
+	const TArray<FCortexLayoutNode> NegativeNodes = { NegativeA, NegativeB };
+	TMap<FString, FIntPoint> NegativeExisting;
+	NegativeExisting.Add(NegativeA.Id, FIntPoint(0, -140));
+	NegativeExisting.Add(NegativeB.Id, FIntPoint::ZeroValue);
+	const FCortexLayoutResult NegativeResult = FCortexGraphLayoutOps::CalculateLayout(
+		NegativeNodes, Config, NegativeExisting);
+	const FIntPoint* NegativePosition = NegativeResult.Positions.Find(NegativeB.Id);
+	if (TestNotNull(TEXT("Negative obstacle placement returned"), NegativePosition))
+	{
+		TestNotEqual(TEXT("Collision displacement cannot restore the sentinel"),
+			*NegativePosition, FIntPoint::ZeroValue);
+		TestTrue(TEXT("Negative obstacle retains body clearance"),
+			NegativePosition->Y >= -140 + NegativeA.Height + Config.VerticalSpacing);
+		NegativeExisting.Add(NegativeB.Id, *NegativePosition);
+		const FCortexLayoutResult NegativeRepeat = FCortexGraphLayoutOps::CalculateLayout(
+			NegativeNodes, Config, NegativeExisting);
+		TestEqual(TEXT("Negative obstacle placement is established on repeat"),
+			NegativeRepeat.Positions.Num(), 0);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphLayoutGroupedBodiesTest,
+	"Cortex.Graph.Layout.GroupedBodySeparation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphLayoutGroupedBodiesTest::RunTest(const FString& Parameters)
+{
+	TArray<FCortexLayoutNode> Nodes;
+	FCortexLayoutNode Entry;
+	Entry.Id = TEXT("Entry");
+	Entry.bIsEntryPoint = true;
+	Entry.bIsExecNode = true;
+	Entry.ExecOutputs = { TEXT("Branch") };
+	Nodes.Add(Entry);
+	FCortexLayoutNode Branch;
+	Branch.Id = TEXT("Branch");
+	Branch.bIsExecNode = true;
+	Branch.ExecOutputs = { TEXT("Left"), TEXT("Right") };
+	Nodes.Add(Branch);
+	for (const FString& Id : { FString(TEXT("Left")), FString(TEXT("Right")) })
+	{
+		FCortexLayoutNode Exec;
+		Exec.Id = Id;
+		Exec.Width = 250;
+		Exec.Height = 180;
+		Exec.bIsExecNode = true;
+		Nodes.Add(Exec);
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			FCortexLayoutNode Pure;
+			Pure.Id = FString::Printf(TEXT("%sPure%d"), *Id, Index);
+			Pure.Width = 180 + Index * 40;
+			Pure.Height = 120 + Index * 60;
+			Pure.DataOutputs.Add(Id);
+			Nodes.Add(Pure);
+		}
+	}
+	FCortexLayoutNode Disconnected;
+	Disconnected.Id = TEXT("Disconnected");
+	Disconnected.Width = 350;
+	Disconnected.Height = 400;
+	Nodes.Add(Disconnected);
+	FCortexLayoutConfig Config;
+	Config.HorizontalSpacing = 91;
+	Config.VerticalSpacing = 47;
+	const FCortexLayoutResult Result = FCortexGraphLayoutOps::CalculateLayout(Nodes, Config);
+	const FCortexLayoutResult Repeat = FCortexGraphLayoutOps::CalculateLayout(Nodes, Config);
+	for (int32 Index = 0; Index < Nodes.Num(); ++Index)
+	{
+		const FCortexLayoutNode& A = Nodes[Index];
+		const FIntPoint* AP = Result.Positions.Find(A.Id);
+		if (!TestNotNull(*FString::Printf(TEXT("%s is positioned"), *A.Id), AP))
+		{
+			return false;
+		}
+		TestEqual(*FString::Printf(TEXT("%s repeated position is stable"), *A.Id), Repeat.Positions[A.Id], *AP);
+		for (int32 Other = Index + 1; Other < Nodes.Num(); ++Other)
+		{
+			const FCortexLayoutNode& B = Nodes[Other];
+			const FIntPoint* BP = Result.Positions.Find(B.Id);
+			if (!TestNotNull(*FString::Printf(TEXT("%s is positioned"), *B.Id), BP))
+			{
+				return false;
+			}
+			TestTrue(*FString::Printf(TEXT("%s / %s bodies have clearance"), *A.Id, *B.Id),
+				AP->X >= BP->X + B.Width + Config.HorizontalSpacing ||
+				BP->X >= AP->X + A.Width + Config.HorizontalSpacing ||
+				AP->Y >= BP->Y + B.Height + Config.VerticalSpacing ||
+				BP->Y >= AP->Y + A.Height + Config.VerticalSpacing);
+		}
+	}
+	return true;
+}

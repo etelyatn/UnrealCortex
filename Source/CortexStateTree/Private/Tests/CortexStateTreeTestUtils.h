@@ -10,7 +10,7 @@ namespace CortexStateTreeTest
 {
 inline FString MakeSuffix()
 {
-	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 }
 
 inline FString MakeAssetPath(const FString& Prefix)

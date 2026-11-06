@@ -1,4 +1,7 @@
 #include "Operations/CortexReflectOps.h"
+#include "Operations/CortexReflectConfigScan.h"
+#include "Operations/CortexReflectNodeRefs.h"
+#include "HAL/FileManager.h"
 #include "CortexReflectModule.h"
 #include "UObject/UObjectIterator.h"
 #include "Engine/Blueprint.h"
@@ -12,8 +15,6 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "K2Node_CallFunction.h"
-#include "K2Node_DynamicCast.h"
-#include "K2Node_SpawnActorFromClass.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Blueprint/BlueprintSupport.h"
@@ -499,6 +500,7 @@ void FCortexReflectOps::BuildHierarchyTree(
 	int32& OutBPCount,
 	int32& OutProjectCppCount,
 	int32& OutProjectBPCount,
+	bool& bOutTruncated,
 	const TSet<UClass*>& EngineAncestorsOfProject)
 {
 	OutNode = MakeShared<FJsonObject>();
@@ -540,9 +542,11 @@ void FCortexReflectOps::BuildHierarchyTree(
 	}
 	OutTotalCount++;
 
-	// Build children
+	// Build children. The walk is bounded by MaxResults, so the traversal itself records whether it
+	// stopped early: the emitted child count cannot prove completeness, because filtered/skipped
+	// intermediaries and deeper nodes consume the same node budget.
 	TArray<TSharedPtr<FJsonValue>> ChildrenArray;
-	if (CurrentDepth < MaxDepth && OutTotalCount < MaxResults)
+	if (CurrentDepth < MaxDepth)
 	{
 		TArray<UClass*> DirectChildren;
 		GetDerivedClasses(Root, DirectChildren, false);
@@ -551,6 +555,8 @@ void FCortexReflectOps::BuildHierarchyTree(
 		{
 			if (OutTotalCount >= MaxResults)
 			{
+				// Candidate children remain but the node budget is spent: the walk is bounded.
+				bOutTruncated = true;
 				break;
 			}
 
@@ -576,6 +582,7 @@ void FCortexReflectOps::BuildHierarchyTree(
 					MaxResults,
 					OutTotalCount, OutCppCount, OutBPCount,
 					OutProjectCppCount, OutProjectBPCount,
+					bOutTruncated,
 					EngineAncestorsOfProject
 				);
 				// Undo the count for the skipped engine class itself.
@@ -607,6 +614,7 @@ void FCortexReflectOps::BuildHierarchyTree(
 				MaxResults,
 				OutTotalCount, OutCppCount, OutBPCount,
 				OutProjectCppCount, OutProjectBPCount,
+				bOutTruncated,
 				EngineAncestorsOfProject
 			);
 			ChildrenArray.Add(MakeShared<FJsonValueObject>(ChildNode));
@@ -648,6 +656,11 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 	bool bIncludeEngine = false;
 	Params->TryGetBoolField(TEXT("include_engine"), bIncludeEngine);
 
+	// The flat duplicate of every node name is opt-in. The nested tree is the navigable
+	// representation; repeating all of its names as a second flat array is only built on request.
+	bool bIncludeFlatClasses = false;
+	Params->TryGetBoolField(TEXT("include_flat_classes"), bIncludeFlatClasses);
+
 	// Precompute which engine classes are ancestors of project classes.
 	// This allows BuildHierarchyTree to skip dead-end engine subtrees in O(1)
 	// instead of recursively visiting thousands of engine classes.
@@ -687,6 +700,7 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 	int32 BPCount = 0;
 	int32 ProjectCppCount = 0;
 	int32 ProjectBPCount = 0;
+	bool bHierarchyTruncated = false;
 	TSharedPtr<FJsonObject> TreeNode;
 	BuildHierarchyTree(
 		RootClass, TreeNode,
@@ -695,6 +709,7 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 		MaxResults,
 		TotalCount, CppCount, BPCount,
 		ProjectCppCount, ProjectBPCount,
+		bHierarchyTruncated,
 		EngineAncestorsOfProject
 	);
 
@@ -719,34 +734,41 @@ FCortexCommandResult FCortexReflectOps::ClassHierarchy(const TSharedPtr<FJsonObj
 	TreeNode->SetNumberField(TEXT("project_cpp_count"), ProjectCppCount);
 	TreeNode->SetNumberField(TEXT("engine_cpp_count"), FMath::Max(0, CppCount - ProjectCppCount));
 	TreeNode->SetNumberField(TEXT("project_blueprint_count"), ProjectBPCount);
+	// Authoritative traversal-exhaustion signal: true when the depth/MaxResults walk stopped early.
+	// It is produced by the walk itself, never recomputed from the emitted child array.
+	TreeNode->SetBoolField(TEXT("truncated"), bHierarchyTruncated);
 
-	// Build flat classes list for simple access
-	TArray<TSharedPtr<FJsonValue>> FlatClassesArray;
-	TFunction<void(const TSharedPtr<FJsonObject>&)> FlattenTree = [&](const TSharedPtr<FJsonObject>& Node)
+	// Build flat classes list only when explicitly requested (opt-in duplicate access).
+	if (bIncludeFlatClasses)
 	{
-		if (!Node.IsValid()) return;
-		FString Name;
-		if (Node->TryGetStringField(TEXT("name"), Name))
+		TArray<TSharedPtr<FJsonValue>> FlatClassesArray;
+		TFunction<void(const TSharedPtr<FJsonObject>&)> FlattenTree = [&](const TSharedPtr<FJsonObject>& Node)
 		{
-			FlatClassesArray.Add(MakeShared<FJsonValueString>(Name));
-		}
-		const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
-		if (Node->TryGetArrayField(TEXT("children"), Children))
-		{
-			for (const TSharedPtr<FJsonValue>& Child : *Children)
+			if (!Node.IsValid()) return;
+			FString Name;
+			if (Node->TryGetStringField(TEXT("name"), Name))
 			{
-				FlattenTree(Child->AsObject());
+				FlatClassesArray.Add(MakeShared<FJsonValueString>(Name));
 			}
-		}
-	};
-	FlattenTree(TreeNode);
-	TreeNode->SetArrayField(TEXT("classes"), FlatClassesArray);
+			const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+			if (Node->TryGetArrayField(TEXT("children"), Children))
+			{
+				for (const TSharedPtr<FJsonValue>& Child : *Children)
+				{
+					FlattenTree(Child->AsObject());
+				}
+			}
+		};
+		FlattenTree(TreeNode);
+		TreeNode->SetArrayField(TEXT("classes"), FlatClassesArray);
+	}
 
 	TSharedPtr<FJsonObject> CacheParams = MakeShared<FJsonObject>();
 	CacheParams->SetStringField(TEXT("root"), RootName);
 	CacheParams->SetNumberField(TEXT("depth"), Depth);
 	CacheParams->SetNumberField(TEXT("max_results"), MaxResults);
 	CacheParams->SetBoolField(TEXT("include_engine"), bIncludeEngine);
+	CacheParams->SetBoolField(TEXT("include_flat_classes"), bIncludeFlatClasses);
 	WriteReflectCache(TreeNode, CacheParams);
 
 	return FCortexCommandRouter::Success(TreeNode);
@@ -1115,6 +1137,17 @@ FCortexCommandResult FCortexReflectOps::ClassDetail(const TSharedPtr<FJsonObject
 	{
 		Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
 		Params->TryGetStringField(TEXT("detail"), DetailLevel);
+	}
+	// Native implements exactly two extraction modes. A supplied level must name one of them: an
+	// unknown value is refused instead of silently degrading to the full (most expensive) read.
+	if (!DetailLevel.Equals(TEXT("summary"), ESearchCase::IgnoreCase)
+		&& !DetailLevel.Equals(TEXT("full"), ESearchCase::IgnoreCase))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(
+				TEXT("Invalid detail '%s'; expected 'summary' or 'full'"),
+				*DetailLevel));
 	}
 	const bool bSummaryOnly = DetailLevel.Equals(TEXT("summary"), ESearchCase::IgnoreCase);
 
@@ -1715,8 +1748,8 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 					}
 				}
 
-				UK2Node_DynamicCast* CastNode = Cast<UK2Node_DynamicCast>(Node);
-				if (CastNode && CastNode->TargetType && CastNode->TargetType->IsChildOf(OwnerClass))
+				const UClass* CastTarget = CortexReflectNodeRefs::GetCastTargetClass(Node);
+				if (CastTarget && CastTarget->IsChildOf(OwnerClass))
 				{
 					TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
 					RefObj->SetStringField(TEXT("context"), Graph->GetName());
@@ -1725,22 +1758,14 @@ FCortexCommandResult FCortexReflectOps::FindUsages(const TSharedPtr<FJsonObject>
 					ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
 				}
 
-				UK2Node_SpawnActorFromClass* SpawnNode = Cast<UK2Node_SpawnActorFromClass>(Node);
-				if (SpawnNode)
+				const UClass* SpawnClass = CortexReflectNodeRefs::GetSpawnedClass(Node);
+				if (SpawnClass && SpawnClass->IsChildOf(OwnerClass))
 				{
-					UEdGraphPin* ClassPin = SpawnNode->GetClassPin();
-					if (ClassPin && ClassPin->DefaultObject)
-					{
-						UClass* SpawnClass = Cast<UClass>(ClassPin->DefaultObject);
-						if (SpawnClass && SpawnClass->IsChildOf(OwnerClass))
-						{
-							TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
-							RefObj->SetStringField(TEXT("context"), Graph->GetName());
-							RefObj->SetStringField(TEXT("type"), TEXT("spawn"));
-							RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_SpawnActorFromClass"));
-							ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
-						}
-					}
+					TSharedPtr<FJsonObject> RefObj = MakeShared<FJsonObject>();
+					RefObj->SetStringField(TEXT("context"), Graph->GetName());
+					RefObj->SetStringField(TEXT("type"), TEXT("spawn"));
+					RefObj->SetStringField(TEXT("node_class"), TEXT("UK2Node_SpawnActorFromClass"));
+					ReferenceResults.Add(MakeShared<FJsonValueObject>(RefObj));
 				}
 			}
 		}
@@ -2002,6 +2027,9 @@ FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObj
 		Limit = 100;
 	}
 
+	bool bIncludeConfig = true;
+	Params->TryGetBoolField(TEXT("include_config"), bIncludeConfig);
+
 	UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All;
 	if (CategoryStr == TEXT("package"))
 	{
@@ -2014,7 +2042,36 @@ FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObj
 	TArray<FAssetDependency> Referencers;
 	AssetRegistry.GetReferencers(FAssetIdentifier(FName(*AssetPath)), Referencers, Category);
 
+	// Config rows come first so `limit` keeps them; asset rows fill what remains.
 	TArray<TSharedPtr<FJsonValue>> ReferencerArray;
+	int32 ConfigRowCount = 0;
+	if (bIncludeConfig)
+	{
+		for (const CortexReflectConfigScan::FConfigReference& Ref : CortexReflectConfigScan::Scan())
+		{
+			if (Ref.bDirectory || Ref.PackageName != AssetPath)
+			{
+				continue;
+			}
+
+			++ConfigRowCount;
+			if (ReferencerArray.Num() >= Limit)
+			{
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> ConfigObj = MakeShared<FJsonObject>();
+			ConfigObj->SetStringField(TEXT("package"), Ref.File);
+			ConfigObj->SetBoolField(TEXT("is_code"), false);
+			ConfigObj->SetStringField(TEXT("type"), TEXT("config"));
+			ConfigObj->SetStringField(TEXT("file"), Ref.File);
+			ConfigObj->SetNumberField(TEXT("line"), Ref.Line);
+			ConfigObj->SetStringField(TEXT("section"), Ref.Section);
+			ConfigObj->SetStringField(TEXT("key"), Ref.Key);
+			ReferencerArray.Add(MakeShared<FJsonValueObject>(ConfigObj));
+		}
+	}
+
 	for (const FAssetDependency& Referencer : Referencers)
 	{
 		if (ReferencerArray.Num() >= Limit)
@@ -2061,11 +2118,79 @@ FCortexCommandResult FCortexReflectOps::GetReferencers(const TSharedPtr<FJsonObj
 		ReferencerArray.Add(MakeShared<FJsonValueObject>(ReferencerObj));
 	}
 
+
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("asset_path"), AssetPath);
 	Result->SetArrayField(TEXT("referencers"), ReferencerArray);
 	Result->SetNumberField(TEXT("total"), ReferencerArray.Num());
-	Result->SetNumberField(TEXT("total_unfiltered"), Referencers.Num());
+	Result->SetNumberField(TEXT("total_unfiltered"), Referencers.Num() + ConfigRowCount);
+
+	return FCortexCommandRouter::Success(Result);
+}
+
+FCortexCommandResult FCortexReflectOps::FindBrokenConfigPaths(const TSharedPtr<FJsonObject>& Params)
+{
+	(void)Params;
+
+	CortexReflectConfigScan::FScanSummary ScanSummary;
+	const TArray<CortexReflectConfigScan::FConfigReference> Refs = CortexReflectConfigScan::Scan(&ScanSummary);
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	// Existence is a property of the package/directory, not of the config line; cache per name.
+	TMap<FString, bool> BrokenByName;
+	TArray<TSharedPtr<FJsonValue>> BrokenArray;
+	for (const CortexReflectConfigScan::FConfigReference& Ref : Refs)
+	{
+		const FString CacheKey = FString::Printf(TEXT("%d|%s"), Ref.bDirectory ? 1 : 0, *Ref.PackageName);
+		bool bBroken = false;
+		if (const bool* Cached = BrokenByName.Find(CacheKey))
+		{
+			bBroken = *Cached;
+		}
+		else
+		{
+			if (Ref.bDirectory)
+			{
+				FString DiskPath;
+				const bool bOnDisk = FPackageName::TryConvertLongPackageNameToFilename(Ref.PackageName, DiskPath)
+					&& IFileManager::Get().DirectoryExists(*DiskPath);
+				bBroken = !AssetRegistry.PathExists(FName(*Ref.PackageName)) && !bOnDisk;
+			}
+			else
+			{
+				bBroken = !FindPackage(nullptr, *Ref.PackageName) && !FPackageName::DoesPackageExist(Ref.PackageName);
+			}
+			BrokenByName.Add(CacheKey, bBroken);
+		}
+
+		if (!bBroken)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Row = MakeShared<FJsonObject>();
+		Row->SetStringField(TEXT("file"), Ref.File);
+		Row->SetNumberField(TEXT("line"), Ref.Line);
+		Row->SetStringField(TEXT("section"), Ref.Section);
+		Row->SetStringField(TEXT("key"), Ref.Key);
+		Row->SetStringField(TEXT("value"), Ref.Value);
+		Row->SetStringField(TEXT("path"), Ref.Path);
+		Row->SetStringField(TEXT("kind"), Ref.bDirectory ? TEXT("directory") : TEXT("package"));
+		BrokenArray.Add(MakeShared<FJsonValueObject>(Row));
+	}
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetNumberField(TEXT("scanned_files"), ScanSummary.ScannedFiles);
+	TArray<TSharedPtr<FJsonValue>> UnreadableValues;
+	for (const FString& Unreadable : ScanSummary.UnreadableFiles)
+	{
+		UnreadableValues.Add(MakeShared<FJsonValueString>(Unreadable));
+	}
+	Result->SetArrayField(TEXT("unreadable_files"), UnreadableValues);
+	Result->SetNumberField(TEXT("checked"), Refs.Num());
+	Result->SetArrayField(TEXT("broken"), BrokenArray);
 
 	return FCortexCommandRouter::Success(Result);
 }
@@ -2107,6 +2232,7 @@ FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Pa
 	}
 
 	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+	int32 TotalMatches = 0;
 
 	for (TObjectIterator<UClass> It; It; ++It)
 	{
@@ -2139,6 +2265,14 @@ FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Pa
 			{
 				continue;
 			}
+		}
+
+		// Every match is counted, even past the page size, so the reported match total is not the
+		// returned page length. Only the first Limit matches are materialized into rows.
+		TotalMatches++;
+		if (ResultsArray.Num() >= Limit)
+		{
+			continue;
 		}
 
 		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
@@ -2183,16 +2317,13 @@ FCortexCommandResult FCortexReflectOps::Search(const TSharedPtr<FJsonObject>& Pa
 		Entry->SetNumberField(TEXT("blueprint_children_count"), BPChildCount);
 
 		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
-
-		if (ResultsArray.Num() >= Limit)
-		{
-			break;
-		}
 	}
 
 	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetArrayField(TEXT("results"), ResultsArray);
-	Result->SetNumberField(TEXT("total_results"), ResultsArray.Num());
+	Result->SetNumberField(TEXT("returned"), ResultsArray.Num());
+	Result->SetNumberField(TEXT("total_matches"), TotalMatches);
+	Result->SetBoolField(TEXT("truncated"), TotalMatches > ResultsArray.Num());
 
 	return FCortexCommandRouter::Success(Result);
 }

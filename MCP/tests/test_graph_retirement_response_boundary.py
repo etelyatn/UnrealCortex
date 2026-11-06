@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cortex_mcp.response import MAX_RESPONSE_CHARS
+from cortex_mcp.response import MAX_RESPONSE_CHARS, compact_json
 from cortex_mcp.tcp_client import UECommandError
 
 
@@ -112,7 +112,7 @@ def test_complete_retirement_preview_returns_every_removable_guid_within_budget(
     assert payload["complete"] is True
     assert payload["removable"] == _guids(100)
     assert payload["validation_hash"] == "retire-token"
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
     connection.send_command.assert_called_once()
     connection.send_command_once.assert_not_called()
 
@@ -131,7 +131,7 @@ def test_oversized_retirement_preview_refuses_before_mutation():
     assert payload["approval_complete"] is False
     assert payload["complete"] is True
     assert payload["removable_count"] == count
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
     connection.send_command_once.assert_not_called()
 
 
@@ -248,7 +248,7 @@ def test_oversized_retirement_apply_success_preserves_phase_fields():
     assert payload["save_status"] == "saved"
     assert payload["post_save_status"] == "verified"
     assert payload["saved"] is True
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
 
 
 def test_retirement_native_error_preserves_error_envelope_and_details():
@@ -294,7 +294,7 @@ def test_retirement_incomplete_native_preview_refuses_independently_of_response_
     connection = MagicMock()
     preview = _preview(1, complete=False)
     connection.send_command.return_value = {"success": True, "data": preview}
-    assert len(json.dumps(preview, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(preview)) <= MAX_RESPONSE_CHARS
 
     payload = _payload(dispatch_graph_apply_patch(
         connection, retire_request(dry_run=True), tool_name="graph_cmd",
@@ -340,7 +340,7 @@ def test_retirement_oversized_preview_never_publishes_a_partial_inventory():
                 "orphan_component_guids", "orphan_component_nodes"):
         assert key not in payload, f"the refusal published a partial {key}"
     assert "_omitted_fields" not in payload
-    assert len(json.dumps(payload, indent=2)) <= MAX_RESPONSE_CHARS
+    assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
     connection.send_command_once.assert_not_called()
 
 

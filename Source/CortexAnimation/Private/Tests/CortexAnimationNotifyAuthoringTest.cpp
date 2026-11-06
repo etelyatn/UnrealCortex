@@ -57,7 +57,7 @@ FCortexCommandRouter CreateAnimAuthorRouter()
 
 FString MakeSuffix()
 {
-	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(12);
+	return FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(12);
 }
 
 UAnimSequence* CreateNotifyTestSequence(FAutomationTestBase& Test, FString& OutAssetPath)

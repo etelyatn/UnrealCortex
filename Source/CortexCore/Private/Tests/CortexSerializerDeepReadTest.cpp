@@ -3,6 +3,7 @@
 #include "CortexSerializerDeepReadTestTypes.h"
 #include "Dom/JsonObject.h"
 #include "Misc/EngineVersionComparison.h"
+#include "UObject/UnrealType.h"
 #if UE_VERSION_OLDER_THAN(5, 5, 0)
 #include "InstancedStruct.h"
 #else
@@ -233,5 +234,303 @@ bool FCortexSerializerDeepReadInstancedStructTest::RunTest(const FString& Parame
 		Object->GetStringField(TEXT("Visible")), TEXT("instanced visible"));
 	TestEqual(TEXT("instanced struct includes reflected internal field"),
 		Object->GetStringField(TEXT("Internal")), TEXT("instanced internal"));
+	return true;
+}
+
+// ============================================================================
+// Ownership-safe property difference (delta) contract.
+// The API under test is the new public FCortexSerializer::PropertyDifferenceToJson helper; these
+// tests pin the delta semantics independently of the Blueprint consumer that chooses the baseline.
+// ============================================================================
+
+namespace
+{
+	FCortexSerializationPolicy CortexDeltaPolicy(int32 MaxDepth)
+	{
+		FCortexSerializationPolicy Policy;
+		Policy.Label = ECortexSerializationPolicyLabel::ReflectedRead;
+		Policy.MaxDepth = MaxDepth;
+		return Policy;
+	}
+
+	FStructProperty* CortexDeltaRootProperty()
+	{
+		return CastField<FStructProperty>(
+			UCortexSerializerDeepReadObject::StaticClass()->FindPropertyByName(TEXT("Root")));
+	}
+
+	FProperty* CortexDeltaMemberProperty(const TCHAR* Name)
+	{
+		return FCortexDeepReadRootStruct::StaticStruct()->FindPropertyByName(Name);
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerDifferenceIdenticalTest,
+	"Cortex.Core.Serializer.Difference.NoValueWhenIdentical",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerDifferenceIdenticalTest::RunTest(const FString& Parameters)
+{
+	UCortexSerializerDeepReadObject* Value = NewObject<UCortexSerializerDeepReadObject>();
+	UCortexSerializerDeepReadObject* Baseline = NewObject<UCortexSerializerDeepReadObject>();
+
+	FStructProperty* RootProperty = CortexDeltaRootProperty();
+	if (!TestNotNull(TEXT("delta fixture should expose the Root struct property"), RootProperty))
+	{
+		Value->MarkAsGarbage();
+		Baseline->MarkAsGarbage();
+		return true;
+	}
+
+	// Identical struct values carry no delta value at all: no value, no issues, not partial.
+	const FCortexPropertySerializationResult IdenticalStruct = FCortexSerializer::PropertyDifferenceToJson(
+		RootProperty, &Value->Root, &Baseline->Root, CortexDeltaPolicy(8), TEXT("Root"));
+	TestTrue(TEXT("identical struct values produce no delta value"),
+		!IdenticalStruct.JsonValue.IsValid() || IdenticalStruct.JsonValue->IsNull());
+	TestFalse(TEXT("identical struct values are not partial"), IdenticalStruct.bPartial);
+	TestEqual(TEXT("identical struct values emit no issues"), IdenticalStruct.Issues.Num(), 0);
+
+	// An identical scalar member is equally absent from the delta.
+	const FProperty* TitleProperty = CortexDeltaMemberProperty(TEXT("Title"));
+	if (TestNotNull(TEXT("delta fixture should expose the Title member property"), TitleProperty))
+	{
+		const FCortexPropertySerializationResult IdenticalScalar = FCortexSerializer::PropertyDifferenceToJson(
+			TitleProperty, &Value->Root.Title, &Baseline->Root.Title, CortexDeltaPolicy(8), TEXT("Root.Title"));
+		TestTrue(TEXT("identical scalar values produce no delta value"),
+			!IdenticalScalar.JsonValue.IsValid() || IdenticalScalar.JsonValue->IsNull());
+		TestFalse(TEXT("identical scalar values are not partial"), IdenticalScalar.bPartial);
+		TestEqual(TEXT("identical scalar values emit no issues"), IdenticalScalar.Issues.Num(), 0);
+	}
+
+	Value->MarkAsGarbage();
+	Baseline->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerDifferenceRecursiveStructTest,
+	"Cortex.Core.Serializer.Difference.RecursiveSameTypeStruct",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerDifferenceRecursiveStructTest::RunTest(const FString& Parameters)
+{
+	UCortexSerializerDeepReadObject* Value = NewObject<UCortexSerializerDeepReadObject>();
+	UCortexSerializerDeepReadObject* Baseline = NewObject<UCortexSerializerDeepReadObject>();
+
+	FStructProperty* RootProperty = CortexDeltaRootProperty();
+	if (!TestNotNull(TEXT("delta fixture should expose the Root struct property"), RootProperty))
+	{
+		Value->MarkAsGarbage();
+		Baseline->MarkAsGarbage();
+		return true;
+	}
+
+	Value->Root.Nested.Visible = TEXT("value nested");
+	Baseline->Root.Nested.Visible = TEXT("baseline nested");
+
+	const FCortexPropertySerializationResult Result = FCortexSerializer::PropertyDifferenceToJson(
+		RootProperty, &Value->Root, &Baseline->Root, CortexDeltaPolicy(8), TEXT("Root"));
+	if (!TestTrue(TEXT("a changed nested struct produces a delta object"),
+		Result.JsonValue.IsValid() && Result.JsonValue->Type == EJson::Object))
+	{
+		Value->MarkAsGarbage();
+		Baseline->MarkAsGarbage();
+		return true;
+	}
+
+	const TSharedPtr<FJsonObject> Diff = Result.JsonValue->AsObject();
+	const TSharedPtr<FJsonObject>* NestedDiff = nullptr;
+	if (TestTrue(TEXT("the differing nested struct member is reported"),
+		Diff->TryGetObjectField(TEXT("Nested"), NestedDiff) && NestedDiff != nullptr))
+	{
+		// Same-struct-type recursion keeps the changed member and omits the equal siblings.
+		TestEqual(TEXT("same-type struct recursion keeps the changed leaf"),
+			(*NestedDiff)->GetStringField(TEXT("Visible")), FString(TEXT("value nested")));
+		TestFalse(TEXT("same-type struct recursion omits an equal leaf"),
+			(*NestedDiff)->HasField(TEXT("Internal")));
+		TestFalse(TEXT("same-type struct recursion omits an equal transient leaf"),
+			(*NestedDiff)->HasField(TEXT("Transient")));
+	}
+	TestFalse(TEXT("recursive compare omits an equal sibling member"), Diff->HasField(TEXT("Title")));
+	TestFalse(TEXT("recursive compare omits an equal collection member"), Diff->HasField(TEXT("Items")));
+
+	Value->MarkAsGarbage();
+	Baseline->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerDifferenceAtomicCollectionsTest,
+	"Cortex.Core.Serializer.Difference.AtomicCollections",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerDifferenceAtomicCollectionsTest::RunTest(const FString& Parameters)
+{
+	UCortexSerializerDeepReadObject* Value = NewObject<UCortexSerializerDeepReadObject>();
+	UCortexSerializerDeepReadObject* Baseline = NewObject<UCortexSerializerDeepReadObject>();
+
+	FStructProperty* RootProperty = CortexDeltaRootProperty();
+	if (!TestNotNull(TEXT("delta fixture should expose the Root struct property"), RootProperty))
+	{
+		Value->MarkAsGarbage();
+		Baseline->MarkAsGarbage();
+		return true;
+	}
+
+	Value->Root.Items.Add(FCortexDeepReadNestedStruct());
+	Value->Root.Tags.Add(TEXT("delta"));
+	Value->Root.NamedItems.Add(TEXT("key"), FCortexDeepReadNestedStruct());
+	Value->Root.IdLabels.Add(7, TEXT("seven"));
+
+	const FCortexPropertySerializationResult Result = FCortexSerializer::PropertyDifferenceToJson(
+		RootProperty, &Value->Root, &Baseline->Root, CortexDeltaPolicy(8), TEXT("Root"));
+	if (!TestTrue(TEXT("changed collections produce a delta object"),
+		Result.JsonValue.IsValid() && Result.JsonValue->Type == EJson::Object))
+	{
+		Value->MarkAsGarbage();
+		Baseline->MarkAsGarbage();
+		return true;
+	}
+
+	const TSharedPtr<FJsonObject> Diff = Result.JsonValue->AsObject();
+
+	// Arrays, sets and maps are compared whole and serialized atomically when they differ; they are
+	// never diffed element by element.
+	TestTrue(TEXT("a differing array member is reported"), Diff->HasField(TEXT("Items")));
+	TestTrue(TEXT("an array member is serialized atomically as an array"),
+		Diff->HasTypedField<EJson::Array>(TEXT("Items")));
+	TestEqual(TEXT("the atomic array keeps its full element count"),
+		Diff->GetArrayField(TEXT("Items")).Num(), 1);
+
+	TestTrue(TEXT("a differing set member is reported"), Diff->HasField(TEXT("Tags")));
+	TestTrue(TEXT("a set member is serialized atomically as an array"),
+		Diff->HasTypedField<EJson::Array>(TEXT("Tags")));
+	TestEqual(TEXT("the atomic set keeps its full element count"),
+		Diff->GetArrayField(TEXT("Tags")).Num(), 1);
+
+	TestTrue(TEXT("a differing string-keyed map member is reported"), Diff->HasField(TEXT("NamedItems")));
+	TestTrue(TEXT("a string-keyed map member is serialized atomically as an object"),
+		Diff->HasTypedField<EJson::Object>(TEXT("NamedItems")));
+
+	TestTrue(TEXT("a differing non-string-keyed map member is reported"), Diff->HasField(TEXT("IdLabels")));
+	const TSharedPtr<FJsonObject>* IdLabels = nullptr;
+	if (TestTrue(TEXT("a non-string-keyed map member is serialized atomically as entries"),
+		Diff->TryGetObjectField(TEXT("IdLabels"), IdLabels) && IdLabels != nullptr))
+	{
+		TestTrue(TEXT("the atomic entries wrapper keeps the full entry count"),
+			(*IdLabels)->HasTypedField<EJson::Array>(TEXT("entries")));
+		TestEqual(TEXT("the atomic entries wrapper keeps its single entry"),
+			(*IdLabels)->GetArrayField(TEXT("entries")).Num(), 1);
+	}
+
+	Value->MarkAsGarbage();
+	Baseline->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerDifferenceObjectIdentityTest,
+	"Cortex.Core.Serializer.Difference.ObjectIdentityAtomic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerDifferenceObjectIdentityTest::RunTest(const FString& Parameters)
+{
+	UCortexSerializerDeepReadObject* Value = NewObject<UCortexSerializerDeepReadObject>();
+	UCortexSerializerDeepReadObject* Baseline = NewObject<UCortexSerializerDeepReadObject>();
+
+	FStructProperty* RootProperty = CortexDeltaRootProperty();
+	if (!TestNotNull(TEXT("delta fixture should expose the Root struct property"), RootProperty))
+	{
+		Value->MarkAsGarbage();
+		Baseline->MarkAsGarbage();
+		return true;
+	}
+
+	Value->Root.HardReference = NewObject<UCortexDeepReadReferencedObject>(Value);
+
+	const FCortexPropertySerializationResult Result = FCortexSerializer::PropertyDifferenceToJson(
+		RootProperty, &Value->Root, &Baseline->Root, CortexDeltaPolicy(8), TEXT("Root"));
+	if (!TestTrue(TEXT("a changed object reference produces a delta object"),
+		Result.JsonValue.IsValid() && Result.JsonValue->Type == EJson::Object))
+	{
+		Value->MarkAsGarbage();
+		Baseline->MarkAsGarbage();
+		return true;
+	}
+
+	const TSharedPtr<FJsonObject> Diff = Result.JsonValue->AsObject();
+	// An object reference is compared whole and serialized atomically as its identity; it is never
+	// recursed into member by member.
+	TestTrue(TEXT("a differing object reference member is reported"), Diff->HasField(TEXT("HardReference")));
+	TestTrue(TEXT("an object reference is serialized atomically as identity"),
+		Diff->HasTypedField<EJson::String>(TEXT("HardReference")));
+
+	Value->MarkAsGarbage();
+	Baseline->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerDifferenceDepthLimitTest,
+	"Cortex.Core.Serializer.Difference.DepthLimitStructured",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerDifferenceDepthLimitTest::RunTest(const FString& Parameters)
+{
+	UCortexSerializerDeepReadObject* Value = NewObject<UCortexSerializerDeepReadObject>();
+	UCortexSerializerDeepReadObject* Baseline = NewObject<UCortexSerializerDeepReadObject>();
+
+	FStructProperty* RootProperty = CortexDeltaRootProperty();
+	if (!TestNotNull(TEXT("delta fixture should expose the Root struct property"), RootProperty))
+	{
+		Value->MarkAsGarbage();
+		Baseline->MarkAsGarbage();
+		return true;
+	}
+
+	Value->Root.Nested.Visible = TEXT("value nested");
+	Baseline->Root.Nested.Visible = TEXT("baseline nested");
+
+	// With no remaining depth a struct comparison degrades into a structured issue plus a partial
+	// result; it is never presented as a complete value or as the historical <changed> sentinel.
+	const FCortexPropertySerializationResult Shallow = FCortexSerializer::PropertyDifferenceToJson(
+		RootProperty, &Value->Root, &Baseline->Root, CortexDeltaPolicy(0), TEXT("Root"));
+	TestTrue(TEXT("a depth-limited difference is partial"), Shallow.bPartial);
+	TestTrue(TEXT("a depth-limited difference reports a structured issue"), Shallow.Issues.Num() > 0);
+
+	const bool bShallowChangedSentinel = Shallow.JsonValue.IsValid()
+		&& Shallow.JsonValue->Type == EJson::String
+		&& Shallow.JsonValue->AsString() == TEXT("<changed>");
+	TestFalse(TEXT("the historical changed sentinel is never presented as a depth-limited value"),
+		bShallowChangedSentinel);
+
+	// An already-exhausted depth budget produces no value at all, only a structured issue.
+	const FCortexPropertySerializationResult Exhausted = FCortexSerializer::PropertyDifferenceToJson(
+		RootProperty, &Value->Root, &Baseline->Root, CortexDeltaPolicy(-1), TEXT("Root"));
+	TestTrue(TEXT("an exhausted depth budget is partial"), Exhausted.bPartial);
+	TestTrue(TEXT("an exhausted depth budget never presents a complete value"),
+		!Exhausted.JsonValue.IsValid() || Exhausted.JsonValue->IsNull());
+
+	bool bFoundDepthIssue = false;
+	for (const FCortexSerializationIssue& Issue : Exhausted.Issues)
+	{
+		bFoundDepthIssue = bFoundDepthIssue || Issue.Code == TEXT("MAX_DEPTH_EXCEEDED");
+	}
+	TestTrue(TEXT("the depth-limit issue carries the canonical code"), bFoundDepthIssue);
+
+	const bool bExhaustedChangedSentinel = Exhausted.JsonValue.IsValid()
+		&& Exhausted.JsonValue->Type == EJson::String
+		&& Exhausted.JsonValue->AsString() == TEXT("<changed>");
+	TestFalse(TEXT("the historical changed sentinel is never presented as a delta value"),
+		bExhaustedChangedSentinel);
+
+	Value->MarkAsGarbage();
+	Baseline->MarkAsGarbage();
 	return true;
 }

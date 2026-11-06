@@ -334,28 +334,19 @@ def register_statetree_composite_tools(mcp, connection: UEConnection) -> None:
     ) -> str:
         """Create or update a StateTree asset with sequential mutation steps.
 
-        Args:
-            asset_path: Target StateTree asset path.
-            mode: Operation mode. Use 'create' for new assets or 'update' for
-                existing assets. Only 'create' and 'update' are valid.
-            schema_class: Required in create mode. StateTree schema class path
-                or name passed to statetree.create_asset.
-            root_name: Optional root state display name for create mode.
-            validate: Whether to run statetree.validate_asset after mutations.
-            compile: Whether to run statetree.compile after mutations.
-            save: Whether the final mutating step should persist the asset.
-            operations: Optional explicit operation list. Each item may use
-                {'command': 'add_state', 'params': {...}} or {'op': 'add_state', ...}.
-            states: Optional shorthand list synthesized into statetree.add_state calls.
-            transitions: Optional shorthand list synthesized into statetree.add_transition calls.
-            removals: Optional shorthand for remove_state/remove_transition calls.
-            expected_fingerprint: Required in update mode. Used as the initial
-                stale-write guard and then refreshed after each successful step.
+        mode='create' builds a new asset and requires schema_class; mode='update' mutates an
+        existing asset and requires expected_fingerprint, used as the initial stale-write guard and
+        refreshed after each successful step. validate/compile/save gate the statetree.validate_asset,
+        statetree.compile and final save steps.
 
-        Returns:
-            JSON payload with success/failure metadata, step counts, and the
-            latest known fingerprint. Create mode performs best-effort cleanup
-            with statetree.delete_asset if any later step fails.
+        Mutations come from explicit `operations` items — each an envelope such as
+        {'command': 'add_state', 'params': {...}} or {'op': 'add_state', ...} — and/or the
+        states/transitions/removals shorthands, which are synthesized into statetree.add_state /
+        add_transition / remove_state / remove_transition calls. Explicit operations and shorthands
+        may be combined in one call.
+
+        Returns the success/failure payload with step counts and the latest known fingerprint.
+        Create mode performs best-effort statetree.delete_asset cleanup when a later step fails.
         """
         try:
             _validate_compose_spec(

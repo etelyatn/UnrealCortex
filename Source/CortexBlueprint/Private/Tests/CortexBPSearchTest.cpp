@@ -144,7 +144,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBPSearchCDOMatchTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	FCortexBPCommandHandler Handler;
 	const FString AssetPath = CreateSearchTestBlueprint(Handler, Suffix);
 	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());
@@ -218,7 +218,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBPSearchPinMatchTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	FCortexBPCommandHandler Handler;
 	const FString AssetPath = CreateSearchTestBlueprint(Handler, Suffix);
 	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());
@@ -314,7 +314,7 @@ bool FCortexBPSearchPinTextMatchTest::RunTest(const FString& Parameters)
 		GEngine->Exec(nullptr, TEXT("log LogStringTable Error"));
 	}
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	FCortexBPCommandHandler Handler;
 	const FString AssetPath = CreateSearchTestBlueprint(Handler, Suffix);
 	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());
@@ -452,7 +452,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexBPSearchWidgetStringTableMatchTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	const FString Name = FString::Printf(TEXT("WBP_SearchWidget_%s"), *Suffix);
 	const FString Dir = FString::Printf(TEXT("/Game/Temp/CortexBPSearchWidget_%s"), *Suffix);
 
@@ -591,7 +591,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexBPSearchPinTypedTextStringTableMatchTest::RunTest(const FString& Parameters)
 {
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	FCortexBPCommandHandler Handler;
 	const FString AssetPath = CreateSearchTestBlueprint(Handler, Suffix);
 	TestFalse(TEXT("Test Blueprint should be created"), AssetPath.IsEmpty());

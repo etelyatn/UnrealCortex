@@ -244,7 +244,16 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 			SaveArgs.TopLevelFlags = RF_Standalone;
 			const bool bSaved = UPackage::SavePackage(DestPackage, NewWorld, *FilePath, SaveArgs);
 
-			NewWorld->DestroyWorld(false);
+			// Loaded template duplicates have no initialized world resources to tear down.
+			if (NewWorld->IsInitialized())
+			{
+				NewWorld->DestroyWorld(false);
+			}
+			else
+			{
+				NewWorld->RemoveFromRoot();
+				NewWorld->ClearFlags(RF_Standalone);
+			}
 
 			if (!bSaved)
 			{
@@ -270,8 +279,10 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 
 			bIsWorldPartition = NewWorld->IsPartitionedWorld();
 
-			// RF_Standalone must be set on the asset object itself before saving
-			NewWorld->SetFlags(RF_Standalone);
+			// RF_Public as well as RF_Standalone: UWorld::CreateWorld sets neither, and without
+			// RF_Public the in-memory world is not an asset (UObject::IsAsset), so asset operations
+			// on it - rename_level, for one - fail until the package is unloaded and reloaded.
+			NewWorld->SetFlags(RF_Public | RF_Standalone);
 
 			const FString FilePath = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetMapPackageExtension());
 			FSavePackageArgs SaveArgs;

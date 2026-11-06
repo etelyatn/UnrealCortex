@@ -27,6 +27,14 @@ def register_schema_standalone_tools(mcp, connection) -> None:
 
     register_schema_tools(_CaptureMCP(), connection)
 
-    @mcp.tool(name="schema_generate")
+    @mcp.tool(
+        name="schema_generate",
+        description=(
+            "Generate LLM-readable `.cortex/schema/` files (DataTable catalog, struct schemas, "
+            "GameplayTag prefixes, DataAsset inventories, example rows) for a domain and return the "
+            "generated file paths plus any errors. Requires a running Unreal Editor with the "
+            "UnrealCortex plugin.\n"
+        ),
+    )
     def schema_generate(domain: str = "all") -> str:
         return captured["generate_project_schema"](domain=domain)

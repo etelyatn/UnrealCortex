@@ -41,7 +41,7 @@ namespace
 		{
 			Root = FString::Printf(
 				TEXT("/CortexReadOnlyRename%s"),
-				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8));
 			PhysicalDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("CortexReadOnlyBlueprintTests") / Root.RightChop(1));
 			IFileManager::Get().MakeDirectory(*PhysicalDir, true);
 			FPackageName::RegisterMountPoint(Root + TEXT("/"), PhysicalDir / TEXT(""));
@@ -97,7 +97,7 @@ namespace
 		{
 			Root = FString::Printf(
 				TEXT("/CortexRename%s"),
-				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8));
 			PhysicalDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("CortexRenameBlueprintTests") / Root.RightChop(1));
 			IFileManager::Get().MakeDirectory(*PhysicalDir, true);
 			FPackageName::RegisterMountPoint(Root + TEXT("/"), PhysicalDir / TEXT(""));
@@ -160,7 +160,7 @@ namespace
 				TEXT("%s/%s_%s"),
 				*RenameWritableRoot(),
 				Name,
-				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8))),
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8))),
 			FName(Name),
 			BPTYPE_Normal,
 			UBlueprint::StaticClass(),

@@ -3,6 +3,7 @@
 #include "CortexEditorLogCapture.h"
 #include "CortexEditorCommandHandler.h"
 #include "CortexCommandRouter.h"
+#include "Operations/CortexEditorUtilityOps.h"
 #include "HAL/IConsoleManager.h"
 
 static TAutoConsoleVariable<int32> GCortexEditorUtilityTestIntCVar(
@@ -65,16 +66,17 @@ bool FCortexEditorLogCaptureTest::RunTest(const FString& Parameters)
 
 	const FCortexEditorLogResult AllLogs = LogCapture.GetRecentLogs(ELogVerbosity::Log, 30.0, -1, TEXT(""));
 	TestEqual(TEXT("Should have 3 entries"), AllLogs.Entries.Num(), 3);
-	TestTrue(TEXT("Cursor should be > 0"), AllLogs.Cursor > 0);
+	TestTrue(TEXT("Next cursor should be > 0"), AllLogs.NextCursor > 0);
+	TestFalse(TEXT("No matches remain after a full window"), AllLogs.bHasMore);
 
 	const FCortexEditorLogResult ErrorLogs = LogCapture.GetRecentLogs(ELogVerbosity::Error, 30.0, -1, TEXT(""));
 	TestEqual(TEXT("Should have 1 error"), ErrorLogs.Entries.Num(), 1);
 
-	const FCortexEditorLogResult CursoredLogs = LogCapture.GetRecentLogs(ELogVerbosity::Log, 30.0, AllLogs.Cursor, TEXT(""));
+	const FCortexEditorLogResult CursoredLogs = LogCapture.GetRecentLogs(ELogVerbosity::Log, 30.0, AllLogs.NextCursor, TEXT(""));
 	TestEqual(TEXT("No new entries after cursor"), CursoredLogs.Entries.Num(), 0);
 
 	LogCapture.AddEntry(ELogVerbosity::Error, TEXT("Blueprint"), TEXT("Another error"), 10.3, 603);
-	const FCortexEditorLogResult NewLogs = LogCapture.GetRecentLogs(ELogVerbosity::Log, 30.0, AllLogs.Cursor, TEXT(""));
+	const FCortexEditorLogResult NewLogs = LogCapture.GetRecentLogs(ELogVerbosity::Log, 30.0, AllLogs.NextCursor, TEXT(""));
 	TestEqual(TEXT("Should get 1 new entry"), NewLogs.Entries.Num(), 1);
 
 	return true;
@@ -723,5 +725,357 @@ bool FCortexEditorRunPythonBatchNoCallbackDoesNotExecuteTest::RunTest(const FStr
 		}
 	}
 	TestEqual(TEXT("Python body should not execute in batch/no-callback context"), Sentinel->GetInt(), 0);
+	return true;
+}
+
+// Task 11 consumer regressions: the JSON utility operation must expose a finite, honest log window.
+// Field readers use the TryGet APIs so a missing new field fails the assertion instead of emitting a
+// JSON warning. Fixtures are stack locals that never register with GLog, so their destructor's
+// StopCapture is a no-op and no global state is left behind.
+namespace CortexEditorLogCaptureWindowTest
+{
+bool TryReadNumber(const TSharedPtr<FJsonObject>& Data, const TCHAR* Field, double& OutValue)
+{
+	return Data.IsValid() && Data->TryGetNumberField(Field, OutValue);
+}
+
+bool TryReadBool(const TSharedPtr<FJsonObject>& Data, const TCHAR* Field, bool& OutValue)
+{
+	return Data.IsValid() && Data->TryGetBoolField(Field, OutValue);
+}
+
+const TArray<TSharedPtr<FJsonValue>>* TryReadEntries(const TSharedPtr<FJsonObject>& Data)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+	if (Data.IsValid() && Data->TryGetArrayField(TEXT("entries"), Entries))
+	{
+		return Entries;
+	}
+	return nullptr;
+}
+
+FString ReadEntryString(const TArray<TSharedPtr<FJsonValue>>* Entries, int32 Index, const TCHAR* Field)
+{
+	if (Entries == nullptr || !Entries->IsValidIndex(Index))
+	{
+		return FString();
+	}
+
+	const TSharedPtr<FJsonObject>* Entry = nullptr;
+	if (!(*Entries)[Index]->TryGetObject(Entry) || Entry == nullptr || !Entry->IsValid())
+	{
+		return FString();
+	}
+
+	FString Value;
+	(*Entry)->TryGetStringField(Field, Value);
+	return Value;
+}
+
+TSharedPtr<FJsonObject> MakeLogParams(double Limit, double SinceSeconds)
+{
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetNumberField(TEXT("limit"), Limit);
+	Params->SetNumberField(TEXT("since_seconds"), SinceSeconds);
+	return Params;
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorLogCaptureWindowContinuationTest,
+	"Cortex.Editor.Utility.LogCapture.ContinuationConsumesOmittedMatchesExactlyOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorLogCaptureWindowContinuationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexEditorLogCapture Capture(8);
+	Capture.AddEntry(ELogVerbosity::Log, TEXT("CortexTokenTest"), TEXT("first"), 10.0);
+	Capture.AddEntry(ELogVerbosity::Error, TEXT("CortexTokenTest"), TEXT("fault without prefix"), 10.1);
+
+	auto Params = MakeShared<FJsonObject>();
+	Params->SetNumberField(TEXT("limit"), 1);
+	Params->SetNumberField(TEXT("since_seconds"), -1);
+	const auto Page = FCortexEditorUtilityOps::GetRecentLogs(Capture, Params);
+
+	TestTrue(TEXT("first page response is valid"), Page.Data.IsValid());
+	if (!Page.Data.IsValid())
+	{
+		return false;
+	}
+
+	bool bHasMore = false;
+	double NextCursor = -1, EndCursor = -1;
+	TestTrue(TEXT("continuation flag exists"), Page.Data->TryGetBoolField(TEXT("has_more"), bHasMore));
+	TestTrue(TEXT("another retained match"), bHasMore);
+	TestTrue(TEXT("next cursor exists"), Page.Data->TryGetNumberField(TEXT("next_cursor"), NextCursor));
+	TestTrue(TEXT("window end exists"), Page.Data->TryGetNumberField(TEXT("window_end_cursor"), EndCursor));
+	TestTrue(TEXT("last omitted match is not consumed"), NextCursor < EndCursor);
+
+	TestFalse(TEXT("no duplicate logs array"), Page.Data->HasField(TEXT("logs")));
+	TestFalse(TEXT("no stale cursor alias"), Page.Data->HasField(TEXT("cursor")));
+
+	double PageCount = 0;
+	TestTrue(TEXT("first page count exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Page.Data, TEXT("count"), PageCount));
+	TestEqual(TEXT("first page consumes exactly the requested single match"), PageCount, 1.0);
+
+	const TArray<TSharedPtr<FJsonValue>>* FirstEntries = CortexEditorLogCaptureWindowTest::TryReadEntries(Page.Data);
+	TestTrue(TEXT("first page entries exist"), FirstEntries != nullptr);
+	TestEqual(TEXT("first consumed match is the earliest match"),
+		*CortexEditorLogCaptureWindowTest::ReadEntryString(FirstEntries, 0, TEXT("message")), TEXT("first"));
+
+	TSharedPtr<FJsonObject> Continue = CortexEditorLogCaptureWindowTest::MakeLogParams(1.0, -1.0);
+	Continue->SetNumberField(TEXT("since_cursor"), NextCursor);
+	Continue->SetNumberField(TEXT("until_cursor"), EndCursor);
+	const auto Second = FCortexEditorUtilityOps::GetRecentLogs(Capture, Continue);
+
+	TestTrue(TEXT("second page response is valid"), Second.Data.IsValid());
+	if (!Second.Data.IsValid())
+	{
+		return false;
+	}
+
+	double SecondCount = 0;
+	TestTrue(TEXT("second page count exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Second.Data, TEXT("count"), SecondCount));
+	TestEqual(TEXT("continuation returns the remaining match exactly once"), SecondCount, 1.0);
+
+	const TArray<TSharedPtr<FJsonValue>>* SecondEntries = CortexEditorLogCaptureWindowTest::TryReadEntries(Second.Data);
+	TestTrue(TEXT("second page entries exist"), SecondEntries != nullptr);
+	TestEqual(TEXT("continuation delivers the omitted error match"),
+		*CortexEditorLogCaptureWindowTest::ReadEntryString(SecondEntries, 0, TEXT("message")), TEXT("fault without prefix"));
+	TestEqual(TEXT("severity is the canonical lowercase tag"),
+		*CortexEditorLogCaptureWindowTest::ReadEntryString(SecondEntries, 0, TEXT("severity")), TEXT("error"));
+
+	bool bSecondHasMore = true;
+	const bool bHasSecondHasMore = CortexEditorLogCaptureWindowTest::TryReadBool(Second.Data, TEXT("has_more"), bSecondHasMore);
+	TestTrue(TEXT("second page has_more exists"), bHasSecondHasMore);
+	TestFalse(TEXT("no matches remain after the continuation"), bSecondHasMore);
+
+	double SecondNext = -1;
+	TestTrue(TEXT("second next cursor exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Second.Data, TEXT("next_cursor"), SecondNext));
+	TSharedPtr<FJsonObject> Exhausted = CortexEditorLogCaptureWindowTest::MakeLogParams(200.0, -1.0);
+	Exhausted->SetNumberField(TEXT("since_cursor"), SecondNext);
+	Exhausted->SetNumberField(TEXT("until_cursor"), EndCursor);
+	const auto Third = FCortexEditorUtilityOps::GetRecentLogs(Capture, Exhausted);
+	TestTrue(TEXT("third page response is valid"), Third.Data.IsValid());
+	if (Third.Data.IsValid())
+	{
+		double ThirdCount = -1;
+		TestTrue(TEXT("third page count exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Third.Data, TEXT("count"), ThirdCount));
+		TestEqual(TEXT("no match is re-delivered or skipped"), ThirdCount, 0.0);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorLogCaptureLateRecordWindowTest,
+	"Cortex.Editor.Utility.LogCapture.LateRecordWaitsForNextWindow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorLogCaptureLateRecordWindowTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexEditorLogCapture Capture(8);
+	Capture.AddEntry(ELogVerbosity::Log, TEXT("CortexTokenTest"), TEXT("first"), 10.0);
+	Capture.AddEntry(ELogVerbosity::Error, TEXT("CortexTokenTest"), TEXT("fault"), 10.1);
+
+	const auto Window = FCortexEditorUtilityOps::GetRecentLogs(Capture, CortexEditorLogCaptureWindowTest::MakeLogParams(200.0, -1.0));
+	TestTrue(TEXT("window response is valid"), Window.Data.IsValid());
+	if (!Window.Data.IsValid())
+	{
+		return false;
+	}
+
+	double EndCursor = -1, Consumed = -1;
+	TestTrue(TEXT("window end exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Window.Data, TEXT("window_end_cursor"), EndCursor));
+	TestTrue(TEXT("consumed cursor exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Window.Data, TEXT("next_cursor"), Consumed));
+	TestTrue(TEXT("first window ends at the second record"), EndCursor >= 2.0);
+
+	// A record added after the fixed window end must not appear inside that window.
+	Capture.AddEntry(ELogVerbosity::Log, TEXT("CortexTokenTest"), TEXT("late"), 10.2);
+
+	TSharedPtr<FJsonObject> PinnedContinuation = CortexEditorLogCaptureWindowTest::MakeLogParams(200.0, -1.0);
+	PinnedContinuation->SetNumberField(TEXT("since_cursor"), Consumed);
+	PinnedContinuation->SetNumberField(TEXT("until_cursor"), EndCursor);
+	const auto Pinned = FCortexEditorUtilityOps::GetRecentLogs(Capture, PinnedContinuation);
+	TestTrue(TEXT("pinned continuation response is valid"), Pinned.Data.IsValid());
+	if (Pinned.Data.IsValid())
+	{
+		double PinnedCount = -1, PinnedEnd = -1, PinnedLatest = -1;
+		TestTrue(TEXT("pinned count exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Pinned.Data, TEXT("count"), PinnedCount));
+		TestEqual(TEXT("late record is excluded from the pinned window"), PinnedCount, 0.0);
+		TestTrue(TEXT("pinned window end exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Pinned.Data, TEXT("window_end_cursor"), PinnedEnd));
+		TestEqual(TEXT("pinned window end does not advance"), PinnedEnd, EndCursor);
+		TestTrue(TEXT("latest cursor is reported honestly"), CortexEditorLogCaptureWindowTest::TryReadNumber(Pinned.Data, TEXT("latest_cursor"), PinnedLatest));
+		TestTrue(TEXT("late record is still the newest retained record"), PinnedLatest > EndCursor);
+	}
+
+	// The next window (no until_cursor) attributes the late record to the following read.
+	TSharedPtr<FJsonObject> NextWindow = CortexEditorLogCaptureWindowTest::MakeLogParams(200.0, -1.0);
+	NextWindow->SetNumberField(TEXT("since_cursor"), EndCursor);
+	const auto Next = FCortexEditorUtilityOps::GetRecentLogs(Capture, NextWindow);
+	TestTrue(TEXT("next window response is valid"), Next.Data.IsValid());
+	if (Next.Data.IsValid())
+	{
+		double NextCount = -1;
+		TestTrue(TEXT("next window count exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Next.Data, TEXT("count"), NextCount));
+		TestEqual(TEXT("late record appears exactly once in the next window"), NextCount, 1.0);
+		const TArray<TSharedPtr<FJsonValue>>* NextEntries = CortexEditorLogCaptureWindowTest::TryReadEntries(Next.Data);
+		TestTrue(TEXT("next window entries exist"), NextEntries != nullptr);
+		TestEqual(TEXT("next window holds the late record"),
+			*CortexEditorLogCaptureWindowTest::ReadEntryString(NextEntries, 0, TEXT("message")), TEXT("late"));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorLogCaptureFrontEvictionTest,
+	"Cortex.Editor.Utility.LogCapture.FrontEvictionIsExplicit",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorLogCaptureFrontEvictionTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexEditorLogCapture Capture(2);
+	Capture.AddEntry(ELogVerbosity::Log, TEXT("CortexTokenTest"), TEXT("evicted"), 9.0);
+	Capture.AddEntry(ELogVerbosity::Log, TEXT("CortexTokenTest"), TEXT("kept-a"), 10.0);
+	Capture.AddEntry(ELogVerbosity::Log, TEXT("CortexTokenTest"), TEXT("kept-b"), 10.1);
+
+	const auto Window = FCortexEditorUtilityOps::GetRecentLogs(Capture, CortexEditorLogCaptureWindowTest::MakeLogParams(200.0, -1.0));
+	TestTrue(TEXT("eviction window response is valid"), Window.Data.IsValid());
+	if (!Window.Data.IsValid())
+	{
+		return false;
+	}
+
+	double Oldest = -1;
+	TestTrue(TEXT("oldest available cursor exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Window.Data, TEXT("oldest_available_cursor"), Oldest));
+	TestEqual(TEXT("oldest available cursor is the first retained record"), Oldest, 2.0);
+
+	bool bLost = false;
+	const bool bHasLost = CortexEditorLogCaptureWindowTest::TryReadBool(Window.Data, TEXT("lost_before_cursor"), bLost);
+	TestTrue(TEXT("loss flag exists"), bHasLost);
+	TestTrue(TEXT("front eviction is reported as loss"), bLost);
+
+	TSharedPtr<FJsonObject> After = CortexEditorLogCaptureWindowTest::MakeLogParams(200.0, -1.0);
+	After->SetNumberField(TEXT("since_cursor"), Oldest);
+	const auto Retained = FCortexEditorUtilityOps::GetRecentLogs(Capture, After);
+	TestTrue(TEXT("retained window response is valid"), Retained.Data.IsValid());
+	if (Retained.Data.IsValid())
+	{
+		bool bLostAfter = true;
+		const bool bHasLostAfter = CortexEditorLogCaptureWindowTest::TryReadBool(Retained.Data, TEXT("lost_before_cursor"), bLostAfter);
+		TestTrue(TEXT("retained loss flag exists"), bHasLostAfter);
+		TestFalse(TEXT("reading from the oldest retained record is lossless"), bLostAfter);
+
+		double RetainedCount = -1;
+		TestTrue(TEXT("retained count exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Retained.Data, TEXT("count"), RetainedCount));
+		TestEqual(TEXT("only the newest retained record remains after the start cursor"), RetainedCount, 1.0);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorLogCaptureEmptyContinuationTest,
+	"Cortex.Editor.Utility.LogCapture.EmptyWindowContinuationNeverRegresses",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorLogCaptureEmptyContinuationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexEditorLogCapture Capture(8);
+	Capture.AddEntry(ELogVerbosity::Log, TEXT("CortexTokenTest"), TEXT("only"), 10.0);
+
+	const auto Window = FCortexEditorUtilityOps::GetRecentLogs(Capture, CortexEditorLogCaptureWindowTest::MakeLogParams(200.0, -1.0));
+	TestTrue(TEXT("base window response is valid"), Window.Data.IsValid());
+	if (!Window.Data.IsValid())
+	{
+		return false;
+	}
+
+	double BaseNext = -1, BaseEnd = -1;
+	TestTrue(TEXT("base next cursor exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Window.Data, TEXT("next_cursor"), BaseNext));
+	TestTrue(TEXT("base window end exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Window.Data, TEXT("window_end_cursor"), BaseEnd));
+
+	TSharedPtr<FJsonObject> Empty = CortexEditorLogCaptureWindowTest::MakeLogParams(200.0, -1.0);
+	Empty->SetNumberField(TEXT("since_cursor"), BaseNext);
+	Empty->SetNumberField(TEXT("until_cursor"), BaseEnd);
+	const auto EmptyPage = FCortexEditorUtilityOps::GetRecentLogs(Capture, Empty);
+	TestTrue(TEXT("empty continuation response is valid"), EmptyPage.Data.IsValid());
+	if (!EmptyPage.Data.IsValid())
+	{
+		return false;
+	}
+
+	double EmptyCount = -1, EmptyNext = -1, EmptyEnd = -1;
+	TestTrue(TEXT("empty continuation count exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(EmptyPage.Data, TEXT("count"), EmptyCount));
+	TestEqual(TEXT("no new matches in a fully consumed window"), EmptyCount, 0.0);
+	TestTrue(TEXT("empty continuation next cursor exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(EmptyPage.Data, TEXT("next_cursor"), EmptyNext));
+	TestTrue(TEXT("empty continuation window end exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(EmptyPage.Data, TEXT("window_end_cursor"), EmptyEnd));
+	TestTrue(TEXT("empty continuation never regresses the consumed cursor"), EmptyNext >= BaseNext);
+	TestTrue(TEXT("empty continuation never regresses the window end"), EmptyEnd >= BaseEnd);
+
+	bool bEmptyHasMore = true;
+	const bool bEmptyHasMorePresent = CortexEditorLogCaptureWindowTest::TryReadBool(EmptyPage.Data, TEXT("has_more"), bEmptyHasMore);
+	TestTrue(TEXT("empty continuation has_more exists"), bEmptyHasMorePresent);
+	TestFalse(TEXT("no matches remain in the exhausted window"), bEmptyHasMore);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorLogCaptureNegativeDurationTest,
+	"Cortex.Editor.Utility.LogCapture.NearNegativeOneSinceSecondsRefuses",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorLogCaptureNegativeDurationTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	FCortexEditorLogCapture Capture(8);
+	Capture.AddEntry(ELogVerbosity::Log, TEXT("CortexTokenTest"), TEXT("only"), 10.0);
+
+	// Values inside the float tolerance of -1 must not be accepted as "disable the time filter".
+	for (double NearNegativeOne : { -0.999999999, -1.000000001 })
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetNumberField(TEXT("since_seconds"), NearNegativeOne);
+		const auto Result = FCortexEditorUtilityOps::GetRecentLogs(Capture, Params);
+		TestFalse(TEXT("near-minus-one duration must refuse"), Result.bSuccess);
+		TestEqual(TEXT("near-minus-one refusal uses INVALID_FIELD"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// Exactly -1 is the only accepted negative and disables the time filter.
+	TSharedPtr<FJsonObject> DisableParams = MakeShared<FJsonObject>();
+	DisableParams->SetNumberField(TEXT("since_seconds"), -1.0);
+	const auto Disabled = FCortexEditorUtilityOps::GetRecentLogs(Capture, DisableParams);
+	TestTrue(TEXT("exactly minus one disables time filtering"), Disabled.bSuccess);
+	TestTrue(TEXT("disabled response is valid"), Disabled.Data.IsValid());
+	if (Disabled.Data.IsValid())
+	{
+		double Count = -1;
+		TestTrue(TEXT("disabled count exists"), CortexEditorLogCaptureWindowTest::TryReadNumber(Disabled.Data, TEXT("count"), Count));
+		TestEqual(TEXT("the sole retained record is returned"), Count, 1.0);
+	}
+
+	// Any other negative is refused too.
+	TSharedPtr<FJsonObject> OtherNegative = MakeShared<FJsonObject>();
+	OtherNegative->SetNumberField(TEXT("since_seconds"), -2.0);
+	const auto Refused = FCortexEditorUtilityOps::GetRecentLogs(Capture, OtherNegative);
+	TestFalse(TEXT("minus two refuses"), Refused.bSuccess);
+	TestEqual(TEXT("minus two refusal uses INVALID_FIELD"), Refused.ErrorCode, CortexErrorCodes::InvalidField);
+
 	return true;
 }

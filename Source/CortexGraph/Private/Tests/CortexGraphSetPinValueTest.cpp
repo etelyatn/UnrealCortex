@@ -9,7 +9,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphSetPinValueTest,
-	"Cortex.Graph.SetPinValue",
+	"Cortex.Graph.SetPinValue.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

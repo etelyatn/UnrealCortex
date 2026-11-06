@@ -21,6 +21,7 @@
 #include "K2Node.h"
 #include "K2Node_AssignDelegate.h"
 #include "K2Node_BaseAsyncTask.h"
+#include "K2Node_BreakStruct.h"
 #include "K2Node_AddDelegate.h"
 #include "K2Node_CallDelegate.h"
 #include "K2Node_CallFunction.h"
@@ -33,6 +34,8 @@
 #include "K2Node_CustomEvent.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_Event.h"
+#include "K2Node_ExecutionSequence.h"
+#include "K2Node_Select.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "K2Node_Variable.h"
@@ -5161,6 +5164,38 @@ bool ProveClosedOrphanInventory(
 					? TEXT("selected generated-function self-reference proved removable by final inventory")
 					: TEXT("resolved class-owned function reference"));
 		}
+		else if (Node->GetClass() == UK2Node_VariableGet::StaticClass()
+			|| Node->GetClass() == UK2Node_VariableSet::StaticClass())
+		{
+			const UK2Node_Variable* Variable = static_cast<const UK2Node_Variable*>(Node);
+			if (Variable->VariableReference.IsLocalScope())
+				return Refuse(TEXT("ordinary variable access requires a resolved class-owned property"));
+			// Resolve a copy: engine resolution can redirect the reference, and preview must not
+			// rewrite either the authored member identity or its pins.
+			FMemberReference Reference = Variable->VariableReference;
+			const FProperty* Property = Reference.ResolveMember<FProperty>(Blueprint->GeneratedClass);
+			if (!Property || !Property->GetOwnerClass())
+				return Refuse(TEXT("ordinary variable access requires a resolved class-owned property"));
+			Reason = FString::Printf(
+				TEXT("exact ordinary variable access property=%s owner=%s; removes only node-local pins and compiled access, not the class-owned declaration; required compile rebuilds statements"),
+				*Property->GetPathName(), *Property->GetOwnerClass()->GetPathName());
+		}
+		else if (Node->GetClass() == UK2Node_ExecutionSequence::StaticClass()
+			|| Node->GetClass() == UK2Node_Select::StaticClass())
+		{
+			// These exact engine classes inherit graph-local DestroyNode. Their branch/option
+			// state is node-local; neither owns a graph, declaration or generated binding.
+			Reason = TEXT("exact ordinary control-flow node; inherits graph-local DestroyNode, owns only node-local branch/option state; required compile rebuilds statements");
+		}
+		else if (Node->GetClass() == UK2Node_BreakStruct::StaticClass())
+		{
+			const UK2Node_BreakStruct* Break = static_cast<const UK2Node_BreakStruct*>(Node);
+			if (!IsValid(Break->StructType.Get()))
+				return Refuse(TEXT("ordinary break struct requires a resolved reflected script struct"));
+			Reason = FString::Printf(
+				TEXT("exact ordinary break struct type=%s; inherits graph-local DestroyNode and owns only reflected field-access pins, not the referenced script struct; required compile rebuilds statements"),
+				*Break->StructType->GetPathName());
+		}
 		else
 		{
 			if (!AdditionalNodeClassReason(Node, Reason)
@@ -7469,8 +7504,11 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 			return false;
 		}
 	}
-	const TArray<TSharedPtr<FJsonValue>>* SelectedValues = nullptr;
-	if (!(*SourcePtr)->TryGetArrayField(TEXT("entry_node_guids"), SelectedValues) || !SelectedValues || SelectedValues->IsEmpty())
+	const TArray<TSharedPtr<FJsonValue>> NoSelectedValues;
+	const TArray<TSharedPtr<FJsonValue>>* SelectedValues = &NoSelectedValues;
+	if ((*SourcePtr)->HasField(TEXT("entry_node_guids"))
+		&& (!(*SourcePtr)->TryGetArrayField(TEXT("entry_node_guids"), SelectedValues)
+			|| !SelectedValues || SelectedValues->IsEmpty()))
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration.source.entry_node_guids must be a non-empty array"));
 		return false;
@@ -7561,6 +7599,21 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 			OrphanGuids.Add(Guid);
 		}
 		OrphanGuids.Sort([](const FGuid& A, const FGuid& B) { return A.ToString() < B.ToString(); });
+	}
+	if (SelectedGuids.IsEmpty())
+	{
+		if (OrphanGuids.IsEmpty())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("retire_entries requires entry_node_guids or a non-empty orphan_component_node_guids inventory"));
+			return false;
+		}
+		if (!AdditionalGuids.IsEmpty())
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("additional_node_guids requires a non-empty entry_node_guids selection"));
+			return false;
+		}
 	}
 	const bool bHasApproval = Migration->HasField(TEXT("approved_node_guids"));
 	TArray<FGuid> Approved;
@@ -7844,8 +7897,11 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 		if (AdditionalNodeRequiresCompile(Node)) bRequiresCompile = true;
 	}
 	FPrunePartition Partition;
-	if (!ComputeOwnedIslandPartition(Blueprint, Graph, SelectedNodes, true, Partition, OutError,
-		AdditionalSet.IsEmpty() ? nullptr : &AdditionalSet)) return false;
+	// Entryless retirement has no ownership island to traverse. Its entire removable set must
+	// instead pass the explicit closed-inventory proof below, including every physical boundary.
+	if (!SelectedNodes.IsEmpty()
+		&& !ComputeOwnedIslandPartition(Blueprint, Graph, SelectedNodes, true, Partition, OutError,
+			AdditionalSet.IsEmpty() ? nullptr : &AdditionalSet)) return false;
 	TArray<FCortexGraphMigrationRetireAdditionalNode> OrphanProofs;
 	if (!ProveClosedOrphanInventory(Blueprint, Graph, OrphanSet, SelectedEntries, Partition.Scan,
 		OrphanProofs, bRequiresCompile, OutError)) return false;
@@ -7856,8 +7912,12 @@ bool FCortexGraphMigrationOps::PlanRetirement(
 		const FString FunctionName = !Entry.CustomFunctionName.IsEmpty()
 			? Entry.CustomFunctionName : Entry.BindingFunctionName;
 		if (FunctionName.IsEmpty()) continue;
+		// The selected entry defines the function; it is not a reference to it. A blocked entry is
+		// published through the partition's blocked inventory instead.
+		FGuid EntryGuid;
+		FGuid::Parse(Entry.NodeGuid, EntryGuid);
 		TArray<FString> References;
-		CollectGeneratedFunctionReferences(Blueprint, FName(*FunctionName), FGuid(), References, Graph, &FinalRemovable);
+		CollectGeneratedFunctionReferences(Blueprint, FName(*FunctionName), EntryGuid, References, Graph, &FinalRemovable);
 		if (!References.IsEmpty())
 		{
 			const FString Reason = Entry.CustomFunctionName.IsEmpty()
@@ -9025,7 +9085,7 @@ void CountJsonNumbers(const TSharedPtr<FJsonValue>& Value, int32& InOutCount)
 		for (const TSharedPtr<FJsonValue>& Element : Value->AsArray()) CountJsonNumbers(Element, InOutCount);
 		break;
 	case EJson::Object:
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Value->AsObject()->Values) CountJsonNumbers(Pair.Value, InOutCount);
+		for (const auto& Pair : Value->AsObject()->Values) CountJsonNumbers(Pair.Value, InOutCount);
 		break;
 	default:
 		break;
@@ -9053,7 +9113,7 @@ bool FCortexGraphMigrationOps::EncodedResponseChars(const TSharedPtr<FJsonObject
 	// credited with those two characters; a non-integral number is written by the engine long enough
 	// (17 significant digits) that the allowance only ever adds headroom.
 	int32 NumberCount = 0;
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+	for (const auto& Pair : Object->Values)
 	{
 		CountJsonNumbers(Pair.Value, NumberCount);
 	}

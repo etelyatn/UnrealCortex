@@ -543,7 +543,7 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 			Pending.ClientSocket = InClientSocket;
 			Pending.RequestId = RequestId;
 			Pending.StartTime = StartTime;
-			Pending.TimeoutSeconds = DefaultDeferredTimeoutSeconds;
+			Pending.TimeoutSeconds = Result.DeferredTimeoutSeconds > 0.0 ? Result.DeferredTimeoutSeconds : DefaultDeferredTimeoutSeconds;
 			PendingDeferred.Add(DeferredId, Pending);
 
 			TSharedRef<FJsonObject> AckJson = MakeShared<FJsonObject>();

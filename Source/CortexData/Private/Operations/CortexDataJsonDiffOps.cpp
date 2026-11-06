@@ -256,11 +256,12 @@ namespace
 			return Copy;
 		}
 
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : Source->Values)
+		for (const auto& Entry : Source->Values)
 		{
-			if (!IgnoredFields.Contains(Entry.Key) && Entry.Value.IsValid())
+			const FString FieldName = CortexEngineCompat::JsonKeyToString(Entry.Key);
+			if (!IgnoredFields.Contains(FieldName) && Entry.Value.IsValid())
 			{
-				Copy->SetField(Entry.Key, Entry.Value);
+				Copy->SetField(FieldName, Entry.Value);
 			}
 		}
 

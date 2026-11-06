@@ -13,6 +13,7 @@
 #include "EdGraphSchema_K2.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Misc/Guid.h"
 
 static FCortexCommandResult ExecuteRemoveGraphWithPreview(
 	FCortexBPCommandHandler& Handler,
@@ -34,23 +35,28 @@ static FCortexCommandResult ExecuteRemoveGraphWithPreview(
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPRemoveGraphTest,
-	"Cortex.Blueprint.RemoveGraph",
+	"Cortex.Blueprint.RemoveGraph.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
 bool FCortexBPRemoveGraphTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
-	const FString TestBPPath = TEXT("/Game/Temp/CortexBPTest_RemoveGraph/BP_RemoveGraphTest");
+	const FString FixtureName = TEXT("BP_RemoveGraphTest_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString TestDirectory = TEXT("/Game/Temp/CortexBPTest_RemoveGraph_") + FixtureName;
+	const FString TestBPPath = TestDirectory / FixtureName;
 
 	// Setup: create a Blueprint
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		Params->SetStringField(TEXT("name"), TEXT("BP_RemoveGraphTest"));
-		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_RemoveGraph"));
+		Params->SetStringField(TEXT("name"), FixtureName);
+		Params->SetStringField(TEXT("path"), TestDirectory);
 		Params->SetStringField(TEXT("type"), TEXT("Actor"));
 		FCortexCommandResult R = Handler.Execute(TEXT("create"), Params);
-		TestTrue(TEXT("Setup: create BP"), R.bSuccess);
+		if (!TestTrue(TEXT("Setup: create BP"), R.bSuccess))
+		{
+			return false;
+		}
 	}
 
 	// Setup: add a function graph
@@ -131,7 +137,7 @@ bool FCortexBPRemoveGraphTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), TestBPPath);
 		Params->SetStringField(TEXT("name"), TEXT("NonExistentGraph"));
-		Params->SetBoolField(TEXT("dry_run"), false);
+		Params->SetBoolField(TEXT("dry_run"), true);
 		Params->SetBoolField(TEXT("compile"), false);
 		Params->SetBoolField(TEXT("save"), false);
 
@@ -146,7 +152,7 @@ bool FCortexBPRemoveGraphTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), TestBPPath);
 		Params->SetStringField(TEXT("name"), TEXT("EventGraph"));
-		Params->SetBoolField(TEXT("dry_run"), false);
+		Params->SetBoolField(TEXT("dry_run"), true);
 		Params->SetBoolField(TEXT("compile"), false);
 		Params->SetBoolField(TEXT("save"), false);
 
@@ -161,7 +167,7 @@ bool FCortexBPRemoveGraphTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), TestBPPath);
 		Params->SetStringField(TEXT("name"), TEXT("ConstructionScript"));
-		Params->SetBoolField(TEXT("dry_run"), false);
+		Params->SetBoolField(TEXT("dry_run"), true);
 		Params->SetBoolField(TEXT("compile"), false);
 		Params->SetBoolField(TEXT("save"), false);
 
@@ -338,18 +344,11 @@ bool FCortexBPRemoveGraphTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	// Cleanup
-	{
-		FString PkgName = FPackageName::ObjectPathToPackageName(TestBPPath);
-		if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
-		{
-			UBlueprint* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
-			if (CreatedBP)
-			{
-				CreatedBP->GetOutermost()->MarkAsGarbage();
-			}
-		}
-	}
+	// Use the asset owner to retire the Blueprint, generated classes and saved file together.
+	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+	DeleteParams->SetStringField(TEXT("asset_path"), TestBPPath);
+	DeleteParams->SetBoolField(TEXT("force"), true);
+	TestTrue(TEXT("Cleanup: delete owned Blueprint"), Handler.Execute(TEXT("delete"), DeleteParams).bSuccess);
 
 	return true;
 }

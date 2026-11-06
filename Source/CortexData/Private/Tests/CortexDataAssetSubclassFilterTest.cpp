@@ -196,7 +196,7 @@ bool FCortexDataAssetSubclassFilterTest::RunTest(const FString& Parameters)
 
 	FString Response2;
 	const FString Cmd2 = FString::Printf(
-		TEXT("{\"command\":\"data.list_data_assets\",\"params\":{\"class_filter\":\"CortexTestDataAsset\",\"path_filter\":\"%s\"}}\n"),
+		TEXT("{\"command\":\"data.list_data_assets\",\"params\":{\"class_name\":\"CortexTestDataAsset\",\"path_filter\":\"%s\"}}\n"),
 		*PathFilter);
 	const bool bGotResponse2 = SendCommandAndReadResponse(ClientSocket, Cmd2, Response2);
 	TestTrue(TEXT("Should receive response for base test class filter"), bGotResponse2);
@@ -213,7 +213,7 @@ bool FCortexDataAssetSubclassFilterTest::RunTest(const FString& Parameters)
 
 	FString Response3;
 	const FString Cmd3 = FString::Printf(
-		TEXT("{\"command\":\"data.list_data_assets\",\"params\":{\"class_filter\":\"CortexDerivedTestDataAsset\",\"path_filter\":\"%s\"}}\n"),
+		TEXT("{\"command\":\"data.list_data_assets\",\"params\":{\"class_name\":\"CortexDerivedTestDataAsset\",\"path_filter\":\"%s\"}}\n"),
 		*PathFilter);
 	const bool bGotResponse3 = SendCommandAndReadResponse(ClientSocket, Cmd3, Response3);
 	TestTrue(TEXT("Should receive response for derived test class filter"), bGotResponse3);
@@ -230,7 +230,7 @@ bool FCortexDataAssetSubclassFilterTest::RunTest(const FString& Parameters)
 	FString Response4;
 	const bool bGotResponse4 = SendCommandAndReadResponse(
 		ClientSocket,
-		TEXT("{\"command\":\"data.list_data_assets\",\"params\":{\"class_filter\":\"NonExistentClass_CortexTest\"}}\n"),
+		TEXT("{\"command\":\"data.list_data_assets\",\"params\":{\"class_name\":\"NonExistentClass_CortexTest\"}}\n"),
 		Response4);
 	TestTrue(TEXT("Should receive response for non-existent class filter"), bGotResponse4);
 
@@ -246,7 +246,7 @@ bool FCortexDataAssetSubclassFilterTest::RunTest(const FString& Parameters)
 	FString Response5;
 	const bool bGotResponse5 = SendCommandAndReadResponse(
 		ClientSocket,
-		TEXT("{\"command\":\"data.list_data_assets\",\"params\":{\"class_filter\":\"Actor\"}}\n"),
+		TEXT("{\"command\":\"data.list_data_assets\",\"params\":{\"class_name\":\"Actor\"}}\n"),
 		Response5);
 	TestTrue(TEXT("Should receive response for non-DataAsset class filter"), bGotResponse5);
 

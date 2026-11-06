@@ -9,6 +9,10 @@
 #include "CortexCommandRouter.h"
 #include "CortexDataCommandHandler.h"
 #include "Operations/CortexDataTableOps.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Tests/CortexTestDataAsset.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -300,6 +304,316 @@ bool FCortexDataCatalogNoEngineTablesTest::RunTest(const FString& Parameters)
 			}
 		}
 	}
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Task 8 — lean Data catalog: section selection and opt-in asset path inventory
+//
+// Section selectors come from docs/plans/2026-10-13-token-efficiency-design.md §3.4:
+// datatables / gameplay_tags / data_assets / string_tables / curve_tables, all by default,
+// with include_asset_paths=false by default. The class entry under test is identified through
+// this test's own fixture class, never through an assumption about the project's class
+// population.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	/** One in-memory DataAsset fixture of the existing CortexData test class under /Game, so the
+	 *  catalog has a deterministic class entry to assert against. It is never saved to disk: the
+	 *  AssetRegistry sees it through AssetCreated, so no package-file watcher events occur. */
+	class FCortexCatalogFixture
+	{
+	public:
+		explicit FCortexCatalogFixture(const FString& NameSuffix)
+		{
+			const FString PackageName = FString::Printf(TEXT("/Game/Temp/CortexDataCatalogFixture_%s"), *NameSuffix);
+			const FString AssetName = FString::Printf(TEXT("DA_CortexDataCatalogFixture_%s"), *NameSuffix);
+
+			Package = CreatePackage(*PackageName);
+			Asset = NewObject<UCortexTestDataAsset>(
+				Package,
+				UCortexTestDataAsset::StaticClass(),
+				FName(*AssetName),
+				RF_Public | RF_Standalone);
+			FAssetRegistryModule::AssetCreated(Asset);
+		}
+
+		~FCortexCatalogFixture()
+		{
+			if (Asset == nullptr)
+			{
+				return;
+			}
+
+			FAssetRegistryModule::AssetDeleted(Asset);
+			Asset->ClearFlags(RF_Public | RF_Standalone);
+			Asset->MarkAsGarbage();
+
+			if (Package != nullptr)
+			{
+				Package->ClearFlags(RF_Public | RF_Standalone);
+				Package->MarkAsGarbage();
+			}
+		}
+
+		FString ObjectPath() const { return Asset != nullptr ? Asset->GetPathName() : FString(); }
+		static FString ClassName() { return UCortexTestDataAsset::StaticClass()->GetName(); }
+
+	private:
+		UPackage* Package = nullptr;
+		UCortexTestDataAsset* Asset = nullptr;
+	};
+
+	/** The fixture class entry of the catalog's data-asset class section, matched by class name. */
+	TSharedPtr<FJsonObject> FindCatalogDataAssetClassEntry(
+		const TSharedPtr<FJsonObject>& CatalogData,
+		const FString& ClassName)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ClassEntries = nullptr;
+		if (!CatalogData.IsValid()
+			|| !CatalogData->TryGetArrayField(TEXT("data_asset_classes"), ClassEntries)
+			|| ClassEntries == nullptr)
+		{
+			return nullptr;
+		}
+
+		for (const TSharedPtr<FJsonValue>& ClassValue : *ClassEntries)
+		{
+			const TSharedPtr<FJsonObject>* Entry = nullptr;
+			if (!ClassValue.IsValid() || !ClassValue->TryGetObject(Entry) || Entry == nullptr)
+			{
+				continue;
+			}
+
+			FString EntryClassName;
+			if ((*Entry)->TryGetStringField(TEXT("class_name"), EntryClassName) && EntryClassName == ClassName)
+			{
+				return *Entry;
+			}
+		}
+
+		return nullptr;
+	}
+
+	/** Entry count of one catalog section. A section that was not selected is not built, so an
+	 *  absent array and an empty array both mean zero entries. */
+	int32 CatalogSectionEntryCount(const TSharedPtr<FJsonObject>& CatalogData, const FString& FieldName)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+		if (!CatalogData.IsValid() || !CatalogData->TryGetArrayField(FieldName, Entries) || Entries == nullptr)
+		{
+			return 0;
+		}
+
+		return Entries->Num();
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataCatalogDefaultClassInventoryTest,
+	"Cortex.Data.Catalog.DefaultClassInventory",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataCatalogDefaultClassInventoryTest::RunTest(const FString& Parameters)
+{
+	FCortexCatalogFixture Fixture(TEXT("DefaultClassInventory"));
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.1"),
+		MakeShared<FCortexDataCommandHandler>());
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.get_data_catalog"), Params);
+	TestTrue(TEXT("GetDataCatalog succeeds"), Result.bSuccess);
+
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		AddError(TEXT("GetDataCatalog returned no data"));
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> ClassEntry =
+		FindCatalogDataAssetClassEntry(Result.Data, FCortexCatalogFixture::ClassName());
+	TestTrue(TEXT("Default catalog exposes the fixture's DataAsset class"), ClassEntry.IsValid());
+
+	if (!ClassEntry.IsValid())
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("Class entry keeps its count"), ClassEntry->HasField(TEXT("count")));
+	TestTrue(TEXT("Class entry keeps its example_path"), ClassEntry->HasField(TEXT("example_path")));
+	TestTrue(TEXT("Class count includes the fixture asset"), ClassEntry->GetIntegerField(TEXT("count")) >= 1);
+	TestFalse(TEXT("Default catalog omits the full asset path inventory"),
+		ClassEntry->HasField(TEXT("asset_paths")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataCatalogSelectedSectionsTest,
+	"Cortex.Data.Catalog.SelectedSections",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataCatalogSelectedSectionsTest::RunTest(const FString& Parameters)
+{
+	FCortexCatalogFixture Fixture(TEXT("SelectedSections"));
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.1"),
+		MakeShared<FCortexDataCommandHandler>());
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("sections"), { MakeShared<FJsonValueString>(TEXT("datatables")) });
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.get_data_catalog"), Params);
+	TestTrue(TEXT("Selected-section catalog succeeds"), Result.bSuccess);
+
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		AddError(TEXT("Selected-section catalog returned no data"));
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Datatables = nullptr;
+	TestTrue(TEXT("Selected datatables section is built"),
+		Result.Data->TryGetArrayField(TEXT("datatables"), Datatables) && Datatables != nullptr);
+	TestTrue(TEXT("Selected datatables section is populated"),
+		Datatables != nullptr && Datatables->Num() > 0);
+
+	TestEqual(TEXT("Unselected data_assets section is not built"),
+		CatalogSectionEntryCount(Result.Data, TEXT("data_asset_classes")), 0);
+	TestEqual(TEXT("Unselected string_tables section is not built"),
+		CatalogSectionEntryCount(Result.Data, TEXT("string_tables")), 0);
+	TestEqual(TEXT("Unselected gameplay_tags section is not built"),
+		CatalogSectionEntryCount(Result.Data, TEXT("tag_prefixes")), 0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataCatalogIncludeAssetPathsTest,
+	"Cortex.Data.Catalog.IncludeAssetPaths",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataCatalogIncludeAssetPathsTest::RunTest(const FString& Parameters)
+{
+	FCortexCatalogFixture Fixture(TEXT("IncludeAssetPaths"));
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.1"),
+		MakeShared<FCortexDataCommandHandler>());
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetBoolField(TEXT("include_asset_paths"), true);
+	const FCortexCommandResult Full = Router.Execute(TEXT("data.get_data_catalog"), Params);
+	TestTrue(TEXT("Full catalog succeeds"), Full.bSuccess);
+
+	if (!Full.bSuccess || !Full.Data.IsValid())
+	{
+		AddError(TEXT("Full catalog returned no data"));
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> ClassEntry =
+		FindCatalogDataAssetClassEntry(Full.Data, FCortexCatalogFixture::ClassName());
+	TestTrue(TEXT("Full catalog exposes the fixture's DataAsset class"), ClassEntry.IsValid());
+
+	if (!ClassEntry.IsValid())
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("Explicit include_asset_paths=true restores the path inventory"),
+		ClassEntry->HasField(TEXT("asset_paths")));
+	TestEqual(TEXT("path inventory matches class count"),
+		ClassEntry->GetArrayField(TEXT("asset_paths")).Num(), ClassEntry->GetIntegerField(TEXT("count")));
+
+	bool bContainsFixturePath = false;
+	for (const TSharedPtr<FJsonValue>& AssetPathValue : ClassEntry->GetArrayField(TEXT("asset_paths")))
+	{
+		FString AssetPath;
+		if (AssetPathValue.IsValid() && AssetPathValue->TryGetString(AssetPath) && AssetPath == Fixture.ObjectPath())
+		{
+			bContainsFixturePath = true;
+		}
+	}
+	TestTrue(TEXT("Full path inventory contains the fixture's exact object path"), bContainsFixturePath);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataCatalogDataAssetsSectionTest,
+	"Cortex.Data.Catalog.DataAssetsSection",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataCatalogDataAssetsSectionTest::RunTest(const FString& Parameters)
+{
+	FCortexCatalogFixture Fixture(TEXT("DataAssetsSection"));
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.1"),
+		MakeShared<FCortexDataCommandHandler>());
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("sections"), { MakeShared<FJsonValueString>(TEXT("data_assets")) });
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.get_data_catalog"), Params);
+	TestTrue(TEXT("Data-assets-section catalog succeeds"), Result.bSuccess);
+
+	if (!Result.bSuccess || !Result.Data.IsValid())
+	{
+		AddError(TEXT("Data-assets-section catalog returned no data"));
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> ClassEntry =
+		FindCatalogDataAssetClassEntry(Result.Data, FCortexCatalogFixture::ClassName());
+	TestTrue(TEXT("Selected data_assets section is built"), ClassEntry.IsValid());
+
+	if (!ClassEntry.IsValid())
+	{
+		return false;
+	}
+
+	TestFalse(TEXT("Section selection keeps the default path inventory out"),
+		ClassEntry->HasField(TEXT("asset_paths")));
+	TestEqual(TEXT("Unselected datatables section is not built"),
+		CatalogSectionEntryCount(Result.Data, TEXT("datatables")), 0);
+	TestEqual(TEXT("Unselected string_tables section is not built"),
+		CatalogSectionEntryCount(Result.Data, TEXT("string_tables")), 0);
+	TestEqual(TEXT("Unselected gameplay_tags section is not built"),
+		CatalogSectionEntryCount(Result.Data, TEXT("tag_prefixes")), 0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataCatalogInvalidSectionTest,
+	"Cortex.Data.Catalog.InvalidSectionRefuses",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataCatalogInvalidSectionTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("data"), TEXT("Cortex Data"), TEXT("1.0.1"),
+		MakeShared<FCortexDataCommandHandler>());
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("sections"), { MakeShared<FJsonValueString>(TEXT("not_a_catalog_section")) });
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("data.get_data_catalog"), Params);
+	TestFalse(TEXT("Unknown catalog section refuses instead of building every section"), Result.bSuccess);
+	TestFalse(TEXT("Refusal carries a machine-readable error code"), Result.ErrorCode.IsEmpty());
+	TestFalse(TEXT("Refusal carries an error message"), Result.ErrorMessage.IsEmpty());
 
 	return true;
 }

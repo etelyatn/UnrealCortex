@@ -1,0 +1,3867 @@
+{
+  "runtime_candidate": "3801aaa80d23419757e7999aca3923959c1d1b81",
+  "source_tree": "072da439eaf1fbc4e7de8bf67cb1cabb826503f1",
+  "mcp_tree": "6c279e4116e68f383360f90b47ad396deb7b3d5d",
+  "uplugin_blob": "baf99366d84d3a09ead256639f04e779806df0bc",
+  "native_red": {
+    "log": "Saved/TestLogs/AutomationTest_2026-10-07_085553.log",
+    "passed": 0,
+    "failed": 1,
+    "defect": "case-mismatched clear mutated instead of WIDGET_NOT_FOUND"
+  },
+  "native_green": {
+    "log": "Saved/TestLogs/AutomationTest_2026-10-07_090047.log",
+    "passed": 81,
+    "failed": 0,
+    "raw_diagnostics": 0
+  },
+  "python_red": {
+    "cases_failed": 12,
+    "defect": "malformed flags returned real cached DataTable page"
+  },
+  "python_nonlive_green": {
+    "passed": 970,
+    "deselected": 265
+  },
+  "python_live_green": {
+    "passed": 263,
+    "skipped": 2,
+    "deselected": 970,
+    "seconds": 170.89,
+    "skip_reasons": [
+      "DataLayerEditorSubsystem unavailable",
+      "save_all unstable in unattended e2e"
+    ]
+  },
+  "independent_review": "# Independent final review \u2014 issue167\n\nReviewer: openai-codex/gpt-6.1-sol:high, fresh context, read-only. Exact candidate54f7f550cab3c0e5dcea24161b33dce65665b7da againstbasec05e89bd8aaae5b21af7078ab1a4dfbbeeb8490e; toolkit58a6ab5 and parentd5ea6e2 included. No review reruns or extra reviewers authorized. Original review completed; follow-up artifact-writing was unavailable in the read-only reviewer session, so the controller preserves its delivered findings here.\n\n## Important/P2 \u2014 case-mismatched widget target can clear a binding\n\nInspected citation: `Source/CortexUMG/Private/Operations/CortexUMGPropertyBindingOps.cpp:481-487`, with record match at510. The existing `CortexUMGUtils::FindWidgetByName` uses FString `==`, whose comparison ignores case. A current-guard request for `progressdisplay` with binding:null therefore resolves `ProgressDisplay` and clears its saved binding instead of refusing the nonexistent exact target. Exact serialized matching/filtering also needs case-sensitive comparison.\n\nReviewer minimal correction: exact resolved widget identity and case-sensitive ObjectName matching/filtering in the new owner; existing exact-rename precedent `CortexUMGWidgetTreeOps.cpp:853-855`. Controller confirmed the actual lookup atCortexUMGUtils.h:45-60 and setter/reader matches; native failing-first regression added. No global change to old widget-name semantics is intended.\n\n## Important/P2 \u2014 malformed inspection flag bypasses validation through cursor cache\n\nInspected citation: `MCP/src/cortex_mcp/tools/routers.py:244-248`, generic cursor at270-274. Only literalTrue entered the binding route. Invalid flags1 or\"true\" with a valid cursor returned an unrelated cached page without native flag validation. Absent/false behavior must remain unchanged.\n\nReviewer minimal correction: validate present flag type before generic pagination. Controller confirmed routing; twelve real-PaginationCache regression cases reproduced cached DataTable pages instead of INVALID_FIELD. Minimal early boolean guard now yields complete nonlive suite970passed/265deselected.\n\n## Requirements and other findings\n\nNo Critical or Minor findings. Remaining native/MCP lifecycle, raw identity, preservation, policy, recovery and bounded-response requirements supported by inspected source and supplied observed evidence. Windows-only runtime, no end-to-end injected recovery fault, and user graph-visual waiver remain explicit limits.\n\n## Broad native crash relation\n\nObserved crash075116.log:6129-6156 in unchanged initial compile atCortexBPRemoveGraphPersistenceTest.cpp:961. Animation/Blueprint/Core/Graph/Editor sources unchanged frombase. UMG startup only registers existing handler; capabilities only publish metadata; new fixtures construct insideRunTest; absent/false inspection flags return before reflection/hash; OpenSSL external module adds static library inputs, no Unreal startup, and SHA256 executes onlyinsideSnapshot. No reachable changed UObject mutation/global-GC path identified before the crash.\n\nStructural independence confidence high; causal nonrelation confidence moderate. IsolatedBlueprint242/242 and instrumented boundary success do not prove root cause or baseline causation. Reviewer supports a separate unresolved-cause issue, not speculative changes inissue167 or a green full-native claim. Controller agrees based on independently read paths/dependency definition and exit0 unchanged-domain diff, under user's conditional release instruction.\n",
+  "broader_native_followup": "https://github.com/etelyatn/UnrealCortex/issues/168",
+  "manifest": {
+    "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+    "bench_path": "/Game/Temp/Issue167/Smoke_20261007_090327",
+    "editor_pid": 37208,
+    "retained_bindings": [
+      {
+        "widget_name": "RetainedDisplay",
+        "property_name": "Percent",
+        "kind": "property",
+        "kind_value": 1,
+        "function_name": "None",
+        "source_property": "None",
+        "member_guid": "00000000-0000-0000-0000-000000000000",
+        "source_path": [
+          {
+            "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+            "member_name": "RenderOpacity",
+            "member_guid": "00000000-0000-0000-0000-000000000000",
+            "is_property": true,
+            "resolved": true
+          }
+        ]
+      }
+    ],
+    "root": {
+      "name": "Root",
+      "class": "CanvasPanel",
+      "children": [
+        {
+          "name": "ProgressDisplay",
+          "class": "ProgressBar",
+          "children": []
+        },
+        {
+          "name": "RetainedDisplay",
+          "class": "ProgressBar",
+          "children": []
+        }
+      ]
+    },
+    "properties": {
+      "Percent": {
+        "widget_name": "ProgressDisplay",
+        "property_path": "Percent",
+        "value": 0.25,
+        "type": "float"
+      },
+      "FillColorAndOpacity": {
+        "widget_name": "ProgressDisplay",
+        "property_path": "FillColorAndOpacity",
+        "value": {
+          "R": 0.20000000298023224,
+          "G": 0.4000000059604645,
+          "B": 0.6000000238418579,
+          "A": 1
+        },
+        "type": "FLinearColor"
+      }
+    },
+    "animations": {
+      "animations": [
+        {
+          "name": "RetainedAnimation",
+          "length": 1,
+          "track_count": 0
+        }
+      ]
+    },
+    "file_path": "D:\\UnrealProjects\\CortexSandbox\\Content\\Temp\\Issue167\\Smoke_20261007_090327\\WBP_BindingSmoke.uasset",
+    "file_sha256": "5cc484dd107eaee2ea0f36032e00fb03b6cc914983eea057cf5569f24edb49ab",
+    "file_size": 30682
+  },
+  "physical_hash_after_editor_exit": "5cc484dd107eaee2ea0f36032e00fb03b6cc914983eea057cf5569f24edb49ab",
+  "create_calls_and_checks": [
+    {
+      "check": "fresh tools/list reuses umg_cmd",
+      "tools": [
+        "core_cmd",
+        "data_cmd",
+        "blueprint_cmd",
+        "graph_cmd",
+        "level_cmd",
+        "material_cmd",
+        "umg_cmd",
+        "qa_cmd",
+        "reflect_cmd",
+        "editor_cmd",
+        "statetree_cmd",
+        "anim_cmd",
+        "blueprint_compose",
+        "material_compose",
+        "material_instance_compose",
+        "widget_compose",
+        "level_compose",
+        "scenario_compose",
+        "statetree_compose",
+        "editor_restart",
+        "schema_generate",
+        "profile_operation_schema",
+        "qa_test_step",
+        "apply_import_ops_json",
+        "query_class_hierarchy",
+        "query_class_detail",
+        "query_overrides",
+        "get_dependencies",
+        "get_referencers",
+        "impact_analysis",
+        "query_usages",
+        "scan_project",
+        "reflect_cache_status",
+        "rebuild_graph_cache",
+        "query_class_context"
+      ]
+    },
+    {
+      "tool": "core_cmd",
+      "args": {
+        "command": "get_status",
+        "params": {}
+      },
+      "milliseconds": 48.5,
+      "result": {
+        "connected": true,
+        "plugin_version": "0.3.5",
+        "engine_version": "5.8.3-58210709+++UE5+Release-5.8",
+        "project_name": "CortexSandbox",
+        "subsystems": {
+          "asset_registry": true,
+          "gameplay_tags": true,
+          "localization": true
+        },
+        "caches": {
+          "reflect": {
+            "warm": true,
+            "age_seconds": 33
+          },
+          "blueprint": {
+            "warm": true,
+            "age_seconds": 28
+          }
+        },
+        "connected_editor": {
+          "pid": 37208,
+          "port": 8742
+        },
+        "available_editors": [
+          {
+            "pid": 37208,
+            "port": 8742,
+            "started_at": "2026-10-07T07:02:55.731Z"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "widget_compose",
+      "args": {
+        "name": "WBP_BindingSmoke",
+        "path": "/Game/Temp/Issue167/Smoke_20261007_090327",
+        "widgets": [
+          {
+            "class": "CanvasPanel",
+            "name": "Root",
+            "children": [
+              {
+                "class": "ProgressBar",
+                "name": "ProgressDisplay",
+                "properties": {
+                  "Percent": 0.25,
+                  "FillColorAndOpacity": {
+                    "R": 0.2,
+                    "G": 0.4,
+                    "B": 0.6,
+                    "A": 1.0
+                  }
+                }
+              },
+              {
+                "class": "ProgressBar",
+                "name": "RetainedDisplay"
+              }
+            ]
+          }
+        ],
+        "animations": [
+          {
+            "name": "RetainedAnimation",
+            "length": 1.0
+          }
+        ]
+      },
+      "milliseconds": 302.87,
+      "result": {
+        "success": true,
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+        "total_steps": 7,
+        "widget_count": 3,
+        "styling_count": 2,
+        "property_count": 2,
+        "animation_count": 1,
+        "total_timing_ms": 27.529198676347733,
+        "verification": {
+          "verified": true,
+          "checks": {
+            "widget_count": {
+              "expected": 3,
+              "actual": 3,
+              "pass": true
+            },
+            "widget_exists:Root": {
+              "expected": true,
+              "actual": true,
+              "pass": true
+            },
+            "widget_class:Root": {
+              "expected": "CanvasPanel",
+              "actual": "CanvasPanel",
+              "pass": true
+            },
+            "widget_exists:ProgressDisplay": {
+              "expected": true,
+              "actual": true,
+              "pass": true
+            },
+            "widget_class:ProgressDisplay": {
+              "expected": "ProgressBar",
+              "actual": "ProgressBar",
+              "pass": true
+            },
+            "widget_exists:RetainedDisplay": {
+              "expected": true,
+              "actual": true,
+              "pass": true
+            },
+            "widget_class:RetainedDisplay": {
+              "expected": "ProgressBar",
+              "actual": "ProgressBar",
+              "pass": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "tool": "blueprint_cmd",
+      "args": {
+        "command": "add_variable",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "name": "ElapsedValue",
+          "type": "float",
+          "default_value": "0.35"
+        }
+      },
+      "milliseconds": 23.75,
+      "result": {
+        "added": true,
+        "name": "ElapsedValue",
+        "type": "float",
+        "default_value": "0.35"
+      }
+    },
+    {
+      "tool": "blueprint_cmd",
+      "args": {
+        "command": "compile",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 54.14,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+        "compile_status": "success",
+        "status": "success",
+        "error_count": 0,
+        "warning_count": 0,
+        "diagnostics": []
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_widget",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay"
+        }
+      },
+      "milliseconds": 4.44,
+      "result": {
+        "name": "ProgressDisplay",
+        "class": "ProgressBar",
+        "parent": "Root",
+        "slot_index": 0,
+        "visibility": "Visible",
+        "is_enabled": true,
+        "is_variable": true,
+        "children": [],
+        "child_count": 0,
+        "render_transform": {
+          "translation": {
+            "x": 0,
+            "y": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1
+          },
+          "shear": {
+            "x": 0,
+            "y": 0
+          },
+          "angle": 0,
+          "pivot": {
+            "x": 0.5,
+            "y": 0.5
+          }
+        },
+        "slot_type": "CanvasPanelSlot",
+        "slot": {
+          "anchors": {
+            "min": {
+              "x": 0,
+              "y": 0
+            },
+            "max": {
+              "x": 0,
+              "y": 0
+            }
+          },
+          "offsets": {
+            "left": 0,
+            "top": 0,
+            "right": 100,
+            "bottom": 30
+          },
+          "alignment": {
+            "x": 0,
+            "y": 0
+          },
+          "z_order": 0,
+          "auto_size": false
+        }
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 16.36,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 0,
+          "bindings": [],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "1caab37e7c3f65d75b96a3deb410e0aeaf5a5950eb9d39998ce1262d5bbf939f"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "RetainedDisplay",
+          "property_name": "Percent",
+          "binding": {
+            "kind": "property",
+            "source_path": [
+              "RenderOpacity"
+            ]
+          },
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "1caab37e7c3f65d75b96a3deb410e0aeaf5a5950eb9d39998ce1262d5bbf939f"
+            }
+          }
+        }
+      },
+      "milliseconds": 18.21,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "widget_name": "RetainedDisplay",
+        "property_name": "Percent",
+        "changed": true,
+        "before_binding": null,
+        "binding": {
+          "widget_name": "RetainedDisplay",
+          "property_name": "Percent",
+          "kind": "property",
+          "kind_value": 1,
+          "function_name": "None",
+          "source_property": "None",
+          "member_guid": "00000000-0000-0000-0000-000000000000",
+          "source_path": [
+            {
+              "owner_path": "/Script/UMG.Widget",
+              "member_name": "RenderOpacity",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "is_property": true,
+              "resolved": true
+            }
+          ]
+        },
+        "reader_complete": true,
+        "fingerprint": {
+          "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+          "is_dirty": true,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 1,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "08e8b6251905372ea336ab1ae2d590b17844b2fef013ff60d8005f68cb4e5016"
+          }
+        },
+        "compiled": false,
+        "saved": false
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 13.3,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 1,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "08e8b6251905372ea336ab1ae2d590b17844b2fef013ff60d8005f68cb4e5016"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 16.37,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 1,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "08e8b6251905372ea336ab1ae2d590b17844b2fef013ff60d8005f68cb4e5016"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": {
+            "kind": "property",
+            "source_path": [
+              "ElapsedValue"
+            ]
+          },
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "08e8b6251905372ea336ab1ae2d590b17844b2fef013ff60d8005f68cb4e5016"
+            }
+          }
+        }
+      },
+      "milliseconds": 16.45,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "widget_name": "ProgressDisplay",
+        "property_name": "Percent",
+        "changed": true,
+        "before_binding": null,
+        "binding": {
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "kind": "property",
+          "kind_value": 1,
+          "function_name": "None",
+          "source_property": "None",
+          "member_guid": "00000000-0000-0000-0000-000000000000",
+          "source_path": [
+            {
+              "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+              "member_name": "ElapsedValue",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "is_property": true,
+              "resolved": true
+            }
+          ]
+        },
+        "reader_complete": true,
+        "fingerprint": {
+          "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+          "is_dirty": true,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 1,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+          }
+        },
+        "compiled": false,
+        "saved": false
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 14.2,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": {
+            "kind": "property",
+            "source_path": [
+              "ElapsedValue"
+            ]
+          },
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 15.6,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "widget_name": "ProgressDisplay",
+        "property_name": "Percent",
+        "changed": false,
+        "before_binding": {
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "kind": "property",
+          "kind_value": 1,
+          "function_name": "None",
+          "source_property": "None",
+          "member_guid": "00000000-0000-0000-0000-000000000000",
+          "source_path": [
+            {
+              "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+              "member_name": "ElapsedValue",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "is_property": true,
+              "resolved": true
+            }
+          ]
+        },
+        "binding": {
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "kind": "property",
+          "kind_value": 1,
+          "function_name": "None",
+          "source_property": "None",
+          "member_guid": "00000000-0000-0000-0000-000000000000",
+          "source_path": [
+            {
+              "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+              "member_name": "ElapsedValue",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "is_property": true,
+              "resolved": true
+            }
+          ]
+        },
+        "reader_complete": true,
+        "fingerprint": {
+          "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+          "is_dirty": true,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 1,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+          }
+        },
+        "compiled": false,
+        "saved": false
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_widget",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 15.55,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "widget",
+          "total": 1,
+          "bindings": [
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        },
+        "name": "ProgressDisplay",
+        "class": "ProgressBar",
+        "parent": "Root",
+        "slot_index": 0,
+        "visibility": "Visible",
+        "is_enabled": true,
+        "is_variable": true,
+        "children": [],
+        "child_count": 0,
+        "render_transform": {
+          "translation": {
+            "x": 0,
+            "y": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1
+          },
+          "shear": {
+            "x": 0,
+            "y": 0
+          },
+          "angle": 0,
+          "pivot": {
+            "x": 0.5,
+            "y": 0.5
+          }
+        },
+        "slot_type": "CanvasPanelSlot",
+        "slot": {
+          "anchors": {
+            "min": {
+              "x": 0,
+              "y": 0
+            },
+            "max": {
+              "x": 0,
+              "y": 0
+            }
+          },
+          "offsets": {
+            "left": 0,
+            "top": 0,
+            "right": 100,
+            "bottom": 30
+          },
+          "alignment": {
+            "x": 0,
+            "y": 0
+          },
+          "z_order": 0,
+          "auto_size": false
+        }
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 14.48,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 15.03,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "progressdisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 14.73,
+      "result": {
+        "success": false,
+        "_error": "WIDGET_NOT_FOUND",
+        "_message": "Target Designer widget does not exist",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "Progressdisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 13.56,
+      "result": {
+        "success": false,
+        "_error": "WIDGET_NOT_FOUND",
+        "_message": "Target Designer widget does not exist",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 14.71,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "check": "case-mismatched selectors refuse without changing exact bindings or guard",
+      "pass": true
+    },
+    {
+      "tool": "data_cmd",
+      "args": {
+        "command": "list_datatables",
+        "params": {
+          "limit": 1
+        }
+      },
+      "milliseconds": 169.18,
+      "result": {
+        "datatables": [
+          {
+            "name": "NNEDIM_ColorAlbedoNormal_Alpha",
+            "path": "/NNEDenoiser/NNEDIM_ColorAlbedoNormal_Alpha.NNEDIM_ColorAlbedoNormal_Alpha",
+            "row_struct": "NNEDenoiserInputMappingData",
+            "row_count": 12,
+            "is_composite": false
+          }
+        ],
+        "_pagination": {
+          "returned": 1,
+          "total": 16,
+          "has_more": true,
+          "next_cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": null,
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 3.18,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": 0,
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 3.08,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": 1,
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 2.98,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": "true",
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 3.1,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": [],
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 2.97,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": {},
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 3.06,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_widget",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": null,
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 2.95,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_widget",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": 0,
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 3.15,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_widget",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": 1,
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 3.14,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_widget",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": "true",
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 3.18,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_widget",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": [],
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 5.27,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_widget",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "include_property_bindings": {},
+          "cursor": "eyJrZXkiOiAiYjQ5NzkxNmE0Mzk1MWE5MiIsICJvZmZzZXQiOiAxLCAibGltaXQiOiAxfQ=="
+        }
+      },
+      "milliseconds": 3.64,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 7.92,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "check": "actual cached DataTable cursor cannot bypass strict inspection flag validation",
+      "pass": true
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": {},
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 10.82,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "binding.kind must be property or function",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": "",
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 9.97,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "binding is required: explicit null clears; object creates or replaces",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": [],
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 12.31,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "binding is required: explicit null clears; object creates or replaces",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 12.97,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "A complete property binding fingerprint is required",
+        "_command": "umg.set_property_binding",
+        "current_fingerprint": {
+          "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+          "is_dirty": true,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 1,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+          }
+        }
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "MissingWidget",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 12.18,
+      "result": {
+        "success": false,
+        "_error": "WIDGET_NOT_FOUND",
+        "_message": "Target Designer widget does not exist",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          },
+          "cursor": null
+        }
+      },
+      "milliseconds": 4.06,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "Pagination fields are unsupported for property binding operations."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": {
+            "kind": "property",
+            "source_path": [
+              "Visibility"
+            ]
+          },
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 6.75,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "Member:Visibility Unable to bind EnumProperty, unsupported type.",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 8.61,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 11.52,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": {
+            "kind": "function",
+            "function_name": "GetRenderOpacity"
+          },
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 12.62,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "widget_name": "ProgressDisplay",
+        "property_name": "Percent",
+        "changed": true,
+        "before_binding": {
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "kind": "property",
+          "kind_value": 1,
+          "function_name": "None",
+          "source_property": "None",
+          "member_guid": "00000000-0000-0000-0000-000000000000",
+          "source_path": [
+            {
+              "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+              "member_name": "ElapsedValue",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "is_property": true,
+              "resolved": true
+            }
+          ]
+        },
+        "binding": {
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "kind": "function",
+          "kind_value": 0,
+          "function_name": "GetRenderOpacity",
+          "source_property": "None",
+          "member_guid": "00000000-0000-0000-0000-000000000000",
+          "source_path": []
+        },
+        "reader_complete": true,
+        "fingerprint": {
+          "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+          "is_dirty": true,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 1,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "ac3f1b350911499a3236bf84b05df2dde2bb3bd96af3d4384ca6a3bc1caf37fd"
+          }
+        },
+        "compiled": false,
+        "saved": false
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "804c2d3b4e35793f2803b5026758b404d7087f58628f529f68233f2d8d5aea97"
+            }
+          }
+        }
+      },
+      "milliseconds": 12.91,
+      "result": {
+        "success": false,
+        "_error": "STALE_PRECONDITION",
+        "_message": "Property binding state changed since inspection",
+        "_command": "umg.set_property_binding",
+        "current_fingerprint": {
+          "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+          "is_dirty": true,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 1,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "ac3f1b350911499a3236bf84b05df2dde2bb3bd96af3d4384ca6a3bc1caf37fd"
+          }
+        }
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 9.14,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Script/UMG.Widget",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "function",
+              "kind_value": 0,
+              "function_name": "GetRenderOpacity",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": []
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "8c8dd4567b76d04067c218378de0406132b3cf97",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "ac3f1b350911499a3236bf84b05df2dde2bb3bd96af3d4384ca6a3bc1caf37fd"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "blueprint_cmd",
+      "args": {
+        "command": "compile",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 41.18,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+        "compile_status": "success",
+        "status": "success",
+        "error_count": 0,
+        "warning_count": 0,
+        "diagnostics": []
+      }
+    },
+    {
+      "tool": "core_cmd",
+      "args": {
+        "command": "save_asset",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 30.41,
+      "result": {
+        "results": [
+          {
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+            "asset_type": "WidgetBlueprint",
+            "was_dirty": true,
+            "saved": true
+          }
+        ],
+        "count": 1,
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "asset_type": "WidgetBlueprint",
+        "was_dirty": true,
+        "saved": true
+      }
+    },
+    {
+      "tool": "core_cmd",
+      "args": {
+        "command": "reload_asset",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 294.72,
+      "result": {
+        "results": [
+          {
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+            "asset_type": "WidgetBlueprint",
+            "was_dirty": false,
+            "reloaded": true,
+            "discarded_changes": false
+          }
+        ],
+        "count": 1,
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "asset_type": "WidgetBlueprint",
+        "was_dirty": false,
+        "reloaded": true,
+        "discarded_changes": false
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 14.77,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "function",
+              "kind_value": 0,
+              "function_name": "GetRenderOpacity",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": []
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "8d12d3327f6350255988caf992af280cfc09f13b348fd76998c6b2d8acf72c9a"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 4.15,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "function",
+              "kind_value": 0,
+              "function_name": "GetRenderOpacity",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": []
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "8d12d3327f6350255988caf992af280cfc09f13b348fd76998c6b2d8acf72c9a"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": {
+            "kind": "property",
+            "source_path": [
+              "ElapsedValue"
+            ]
+          },
+          "expected_fingerprint": {
+            "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "8d12d3327f6350255988caf992af280cfc09f13b348fd76998c6b2d8acf72c9a"
+            }
+          }
+        }
+      },
+      "milliseconds": 14.37,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "widget_name": "ProgressDisplay",
+        "property_name": "Percent",
+        "changed": true,
+        "before_binding": {
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "kind": "function",
+          "kind_value": 0,
+          "function_name": "GetRenderOpacity",
+          "source_property": "None",
+          "member_guid": "00000000-0000-0000-0000-000000000000",
+          "source_path": []
+        },
+        "binding": {
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "kind": "property",
+          "kind_value": 1,
+          "function_name": "None",
+          "source_property": "None",
+          "member_guid": "00000000-0000-0000-0000-000000000000",
+          "source_path": [
+            {
+              "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+              "member_name": "ElapsedValue",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "is_property": true,
+              "resolved": true
+            }
+          ]
+        },
+        "reader_complete": true,
+        "fingerprint": {
+          "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+          "is_dirty": true,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 1,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "5423012788a93f5ac2f325935933f0b0a2f8f6181d22774c2baad8a4eb92562e"
+          }
+        },
+        "compiled": false,
+        "saved": false
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 12.34,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "5423012788a93f5ac2f325935933f0b0a2f8f6181d22774c2baad8a4eb92562e"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_property",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_path": "Percent"
+        }
+      },
+      "milliseconds": 12.78,
+      "result": {
+        "widget_name": "ProgressDisplay",
+        "property_path": "Percent",
+        "value": 0.25,
+        "type": "float"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_property",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_path": "FillColorAndOpacity"
+        }
+      },
+      "milliseconds": 13.84,
+      "result": {
+        "widget_name": "ProgressDisplay",
+        "property_path": "FillColorAndOpacity",
+        "value": {
+          "R": 0.20000000298023224,
+          "G": 0.4000000059604645,
+          "B": 0.6000000238418579,
+          "A": 1
+        },
+        "type": "FLinearColor"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "list_animations",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 14.2,
+      "result": {
+        "animations": [
+          {
+            "name": "RetainedAnimation",
+            "length": 1,
+            "track_count": 0
+          }
+        ]
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 15.71,
+      "result": {
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 8.08,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 2,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            },
+            {
+              "widget_name": "ProgressDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+                  "member_name": "ElapsedValue",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "5423012788a93f5ac2f325935933f0b0a2f8f6181d22774c2baad8a4eb92562e"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "5423012788a93f5ac2f325935933f0b0a2f8f6181d22774c2baad8a4eb92562e"
+            }
+          }
+        }
+      },
+      "milliseconds": 10.68,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "widget_name": "ProgressDisplay",
+        "property_name": "Percent",
+        "changed": true,
+        "before_binding": {
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "kind": "property",
+          "kind_value": 1,
+          "function_name": "None",
+          "source_property": "None",
+          "member_guid": "00000000-0000-0000-0000-000000000000",
+          "source_path": [
+            {
+              "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.SKEL_WBP_BindingSmoke_C",
+              "member_name": "ElapsedValue",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "is_property": true,
+              "resolved": true
+            }
+          ]
+        },
+        "binding": null,
+        "reader_complete": true,
+        "fingerprint": {
+          "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+          "is_dirty": true,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 1,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+          }
+        },
+        "compiled": false,
+        "saved": false
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 5.76,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 1,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 10.34,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 1,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+            "is_dirty": true,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 1,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        }
+      },
+      "milliseconds": 6.59,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "widget_name": "ProgressDisplay",
+        "property_name": "Percent",
+        "changed": false,
+        "before_binding": null,
+        "binding": null,
+        "reader_complete": true,
+        "fingerprint": {
+          "package_saved_hash": "54f94c9e7edf1956481c902d97ed85a90a43b61e",
+          "is_dirty": true,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 1,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+          }
+        },
+        "compiled": false,
+        "saved": false
+      }
+    },
+    {
+      "tool": "blueprint_cmd",
+      "args": {
+        "command": "remove_variable",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "name": "ElapsedValue"
+        }
+      },
+      "milliseconds": 11.08,
+      "result": {
+        "removed": true,
+        "name": "ElapsedValue"
+      }
+    },
+    {
+      "tool": "blueprint_cmd",
+      "args": {
+        "command": "compile",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 35.34,
+      "result": {
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+        "compile_status": "success",
+        "status": "success",
+        "error_count": 0,
+        "warning_count": 0,
+        "diagnostics": []
+      }
+    },
+    {
+      "tool": "core_cmd",
+      "args": {
+        "command": "save_asset",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 30.15,
+      "result": {
+        "results": [
+          {
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+            "asset_type": "WidgetBlueprint",
+            "was_dirty": true,
+            "saved": true
+          }
+        ],
+        "count": 1,
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "asset_type": "WidgetBlueprint",
+        "was_dirty": true,
+        "saved": true
+      }
+    },
+    {
+      "tool": "core_cmd",
+      "args": {
+        "command": "reload_asset",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 286.8,
+      "result": {
+        "results": [
+          {
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+            "asset_type": "WidgetBlueprint",
+            "was_dirty": false,
+            "reloaded": true,
+            "discarded_changes": false
+          }
+        ],
+        "count": 1,
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke",
+        "asset_type": "WidgetBlueprint",
+        "was_dirty": false,
+        "reloaded": true,
+        "discarded_changes": false
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 7.61,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 1,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "check": "actual create/replace/clear, explicit source retirement and persisted reload",
+      "pass": true
+    }
+  ],
+  "fresh_reload_calls_and_checks": [
+    {
+      "check": "fresh tools/list reuses umg_cmd",
+      "tools": [
+        "core_cmd",
+        "data_cmd",
+        "blueprint_cmd",
+        "graph_cmd",
+        "level_cmd",
+        "material_cmd",
+        "umg_cmd",
+        "qa_cmd",
+        "reflect_cmd",
+        "editor_cmd",
+        "statetree_cmd",
+        "anim_cmd",
+        "blueprint_compose",
+        "material_compose",
+        "material_instance_compose",
+        "widget_compose",
+        "level_compose",
+        "scenario_compose",
+        "statetree_compose",
+        "editor_restart",
+        "schema_generate",
+        "profile_operation_schema",
+        "qa_test_step",
+        "apply_import_ops_json",
+        "query_class_hierarchy",
+        "query_class_detail",
+        "query_overrides",
+        "get_dependencies",
+        "get_referencers",
+        "impact_analysis",
+        "query_usages",
+        "scan_project",
+        "reflect_cache_status",
+        "rebuild_graph_cache",
+        "query_class_context"
+      ]
+    },
+    {
+      "tool": "core_cmd",
+      "args": {
+        "command": "get_status",
+        "params": {}
+      },
+      "milliseconds": 36.61,
+      "result": {
+        "connected": true,
+        "plugin_version": "0.3.5",
+        "engine_version": "5.8.3-58210709+++UE5+Release-5.8",
+        "project_name": "CortexSandbox",
+        "subsystems": {
+          "asset_registry": true,
+          "gameplay_tags": true,
+          "localization": true
+        },
+        "caches": {
+          "reflect": {
+            "warm": true,
+            "age_seconds": 11
+          },
+          "blueprint": {
+            "warm": true,
+            "age_seconds": 6
+          }
+        },
+        "connected_editor": {
+          "pid": 73256,
+          "port": 8742
+        },
+        "available_editors": [
+          {
+            "pid": 73256,
+            "port": 8742,
+            "started_at": "2026-10-07T07:13:41.354Z"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 19.07,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 1,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_property",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_path": "Percent"
+        }
+      },
+      "milliseconds": 10.18,
+      "result": {
+        "widget_name": "ProgressDisplay",
+        "property_path": "Percent",
+        "value": 0.25,
+        "type": "float"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_property",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "ProgressDisplay",
+          "property_path": "FillColorAndOpacity"
+        }
+      },
+      "milliseconds": 15.62,
+      "result": {
+        "widget_name": "ProgressDisplay",
+        "property_path": "FillColorAndOpacity",
+        "value": {
+          "R": 0.20000000298023224,
+          "G": 0.4000000059604645,
+          "B": 0.6000000238418579,
+          "A": 1
+        },
+        "type": "FLinearColor"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "list_animations",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+        }
+      },
+      "milliseconds": 16.14,
+      "result": {
+        "animations": [
+          {
+            "name": "RetainedAnimation",
+            "length": 1,
+            "track_count": 0
+          }
+        ]
+      }
+    },
+    {
+      "tool": "blueprint_cmd",
+      "args": {
+        "command": "get_info",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_inherited": false,
+          "compact": true
+        }
+      },
+      "milliseconds": 15.89,
+      "result": {
+        "name": "WBP_BindingSmoke",
+        "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+        "type": "Widget",
+        "parent_class": "UserWidget",
+        "is_compiled": true,
+        "variables": [],
+        "functions": [],
+        "graphs": [
+          {
+            "name": "EventGraph",
+            "node_count": 3
+          }
+        ]
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "RetainedDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 4,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        }
+      },
+      "milliseconds": 16.78,
+      "result": {
+        "success": false,
+        "_error": "STALE_PRECONDITION",
+        "_message": "Property binding state changed since inspection",
+        "_command": "umg.set_property_binding",
+        "current_fingerprint": {
+          "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+          "is_dirty": false,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 3,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+          }
+        }
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "RetainedDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": 0,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        }
+      },
+      "milliseconds": 15.05,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "A complete property binding fingerprint is required",
+        "_command": "umg.set_property_binding",
+        "current_fingerprint": {
+          "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+          "is_dirty": false,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 3,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+          }
+        }
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "RetainedDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        }
+      },
+      "milliseconds": 16.12,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "A complete property binding fingerprint is required",
+        "_command": "umg.set_property_binding",
+        "current_fingerprint": {
+          "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+          "is_dirty": false,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 3,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+          }
+        }
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "RetainedDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": true,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        }
+      },
+      "milliseconds": 15.69,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "A complete property binding fingerprint is required",
+        "_command": "umg.set_property_binding",
+        "current_fingerprint": {
+          "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+          "is_dirty": false,
+          "dirty_epoch": "0",
+          "not_ready": false,
+          "compiled_signature_crc": 3,
+          "domain_signature": {
+            "version": 1,
+            "scope": "umg.property_binding",
+            "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+            "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+          }
+        }
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": 1
+        }
+      },
+      "milliseconds": 2.91,
+      "result": {
+        "_error": "INVALID_FIELD",
+        "_message": "include_property_bindings must be boolean."
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "RetainedDisplay",
+          "property_name": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        }
+      },
+      "milliseconds": 12.1,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "Target names exceed Unreal's native name bounds",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "widget_name": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        }
+      },
+      "milliseconds": 15.63,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "Target names exceed Unreal's native name bounds",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "set_property_binding",
+        "params": {
+          "asset_path": "/Game/Temp/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+          "widget_name": "RetainedDisplay",
+          "property_name": "Percent",
+          "binding": null,
+          "expected_fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        }
+      },
+      "milliseconds": 16.36,
+      "result": {
+        "success": false,
+        "_error": "INVALID_FIELD",
+        "_message": "Target names exceed Unreal's native name bounds",
+        "_command": "umg.set_property_binding"
+      }
+    },
+    {
+      "tool": "umg_cmd",
+      "args": {
+        "command": "get_tree",
+        "params": {
+          "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+          "include_property_bindings": true
+        }
+      },
+      "milliseconds": 16.12,
+      "result": {
+        "property_binding_state": {
+          "reader_complete": true,
+          "scope": "asset",
+          "total": 1,
+          "bindings": [
+            {
+              "widget_name": "RetainedDisplay",
+              "property_name": "Percent",
+              "kind": "property",
+              "kind_value": 1,
+              "function_name": "None",
+              "source_property": "None",
+              "member_guid": "00000000-0000-0000-0000-000000000000",
+              "source_path": [
+                {
+                  "owner_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke.WBP_BindingSmoke_C",
+                  "member_name": "RenderOpacity",
+                  "member_guid": "00000000-0000-0000-0000-000000000000",
+                  "is_property": true,
+                  "resolved": true
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "fingerprint": {
+            "package_saved_hash": "85ed356f819374a8b7835cae0b222b4567013be1",
+            "is_dirty": false,
+            "dirty_epoch": "0",
+            "not_ready": false,
+            "compiled_signature_crc": 3,
+            "domain_signature": {
+              "version": 1,
+              "scope": "umg.property_binding",
+              "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke",
+              "digest": "0269284cfb2326d5c005eead500b9fb99706930728b8ee26dfcd3fe81ea0c297"
+            }
+          }
+        },
+        "root": {
+          "name": "Root",
+          "class": "CanvasPanel",
+          "children": [
+            {
+              "name": "ProgressDisplay",
+              "class": "ProgressBar",
+              "children": []
+            },
+            {
+              "name": "RetainedDisplay",
+              "class": "ProgressBar",
+              "children": []
+            }
+          ]
+        },
+        "total_widgets": 3
+      }
+    },
+    {
+      "check": "fresh native compiled guard, strict JSON and name-bound refusals preserve exact state",
+      "pass": true
+    },
+    {
+      "check": "fresh editor persisted absence, retained raw identity, hierarchy/default/style/animation",
+      "pass": true
+    }
+  ],
+  "cleanup": {
+    "verified_editor_pid": 73256,
+    "command": "core.delete_asset",
+    "result": {
+      "deleted": true,
+      "asset_path": "/Game/Temp/Issue167/Smoke_20261007_090327/WBP_BindingSmoke"
+    },
+    "physical_file_absent": true,
+    "owned_editor_exit_code": 0
+  }
+}

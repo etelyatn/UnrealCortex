@@ -23,7 +23,7 @@ namespace
             return Copy;
         }
 
-        for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+        for (const auto& Pair : Source->Values)
         {
             Copy->SetField(Pair.Key, Pair.Value);
         }
@@ -183,7 +183,8 @@ namespace
         }
     }
 
-    TSharedPtr<FJsonObject> SerializeComponent(UActorComponent* Component, const USceneComponent* RootComponent)
+    /** Metadata-only component summary; reflected values are only read when the caller opts in. */
+    TSharedPtr<FJsonObject> SerializeComponent(UActorComponent* Component, const USceneComponent* RootComponent, bool bIncludeProperties)
     {
         TSharedPtr<FJsonObject> ComponentJson = MakeShared<FJsonObject>();
         ComponentJson->SetStringField(TEXT("name"), Component->GetName());
@@ -191,9 +192,18 @@ namespace
         ComponentJson->SetBoolField(TEXT("is_root"), Component == RootComponent);
         ComponentJson->SetStringField(TEXT("creation_method"), CreationMethodToString(Component->CreationMethod));
 
+        if (!bIncludeProperties)
+        {
+            return ComponentJson;
+        }
+
+        // Count every admitted editable property, but serialize at most this many values.
+        constexpr int32 MaxSerializedPropertyCount = 20;
+
         TSharedPtr<FJsonObject> PropertiesJson = MakeShared<FJsonObject>();
-        int32 PropertyCount = 0;
-        for (TFieldIterator<FProperty> It(Component->GetClass()); It && PropertyCount < 20; ++It)
+        int32 TotalPropertyCount = 0;
+        int32 ReturnedPropertyCount = 0;
+        for (TFieldIterator<FProperty> It(Component->GetClass()); It; ++It)
         {
             FProperty* Property = *It;
             if (!Property->HasAnyPropertyFlags(CPF_Edit | CPF_BlueprintVisible))
@@ -201,12 +211,21 @@ namespace
                 continue;
             }
 
+            ++TotalPropertyCount;
+            if (ReturnedPropertyCount >= MaxSerializedPropertyCount)
+            {
+                continue;
+            }
+
             void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Component);
             PropertiesJson->SetField(Property->GetName(), FCortexSerializer::PropertyToJson(Property, ValuePtr));
-            ++PropertyCount;
+            ++ReturnedPropertyCount;
         }
 
         ComponentJson->SetObjectField(TEXT("properties"), PropertiesJson);
+        ComponentJson->SetNumberField(TEXT("total_property_count"), TotalPropertyCount);
+        ComponentJson->SetNumberField(TEXT("returned_property_count"), ReturnedPropertyCount);
+        ComponentJson->SetBoolField(TEXT("properties_complete"), TotalPropertyCount == ReturnedPropertyCount);
         return ComponentJson;
     }
 
@@ -302,6 +321,9 @@ FCortexCommandResult FCortexLevelComponentOps::ListComponents(const TSharedPtr<F
     TArray<UActorComponent*> Components;
     Actor->GetComponents(Components);
 
+    bool bIncludeProperties = false;
+    Params->TryGetBoolField(TEXT("include_properties"), bIncludeProperties);
+
     const USceneComponent* RootComponent = Actor->GetRootComponent();
     TArray<TSharedPtr<FJsonValue>> ComponentArray;
 
@@ -312,7 +334,7 @@ FCortexCommandResult FCortexLevelComponentOps::ListComponents(const TSharedPtr<F
             continue;
         }
 
-        ComponentArray.Add(MakeShared<FJsonValueObject>(SerializeComponent(Component, RootComponent)));
+        ComponentArray.Add(MakeShared<FJsonValueObject>(SerializeComponent(Component, RootComponent, bIncludeProperties)));
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();

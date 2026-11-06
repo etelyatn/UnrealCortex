@@ -2,6 +2,7 @@
 
 #include "CortexCoreModule.h"
 #include "Containers/UnrealString.h"
+#include "CortexEngineCompat.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
@@ -174,12 +175,12 @@ bool FCortexCredentialStore::Load()
 		return false;
 	}
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : RootObject->Values)
+	for (const auto& Entry : RootObject->Values)
 	{
 		FString LoadedKey;
 		if (Entry.Value.IsValid() && Entry.Value->TryGetString(LoadedKey) && !LoadedKey.IsEmpty())
 		{
-			ApiKeys.Add(NormalizeProviderId(Entry.Key), LoadedKey);
+			ApiKeys.Add(NormalizeProviderId(CortexEngineCompat::JsonKeyToString(Entry.Key)), LoadedKey);
 		}
 	}
 

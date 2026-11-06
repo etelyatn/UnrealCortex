@@ -230,7 +230,7 @@ bool FCortexGenFalSubmitBodyQualityTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexGenFalExtractResultUrlTest,
-    "Cortex.Gen.Fal.ExtractResultUrl",
+    "Cortex.Gen.Fal.ExtractResultUrl.Basic",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -299,7 +299,7 @@ bool FCortexGenFalExtractResultUrlTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexGenFalPollMappingTest,
-    "Cortex.Gen.Fal.PollMapping",
+    "Cortex.Gen.Fal.PollMapping.Basic",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

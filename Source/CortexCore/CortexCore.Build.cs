@@ -41,5 +41,15 @@ public class CortexCore : ModuleRules
         {
             PublicSystemLibraries.Add("bcrypt.lib");
         }
+
+        // SHA-256 of file bytes (FCortexSafeFileContract::HashFileBytesSha256). Windows uses BCrypt
+        // above; Unix uses the engine's own OpenSSL module, the same way S3Client and the DDC S3 store
+        // do. Any other platform keeps the explicit "not implemented" error.
+        bool bUseOpenSslSha256 = Target.IsInPlatformGroup(UnrealPlatformGroup.Unix);
+        if (bUseOpenSslSha256)
+        {
+            AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
+        }
+        PrivateDefinitions.Add("CORTEX_SHA256_OPENSSL=" + (bUseOpenSslSha256 ? "1" : "0"));
     }
 }

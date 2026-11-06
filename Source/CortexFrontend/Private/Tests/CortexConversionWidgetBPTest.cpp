@@ -115,7 +115,7 @@ bool FCortexConversionWidgetPromptAssemblyTest::RunTest(const FString& Parameter
     FCortexConversionContext WidgetCtx(WidgetPayload);
 
     FString WidgetPrompt = FCortexConversionPromptAssembler::Assemble(
-        WidgetCtx, TEXT("{\"type\":\"WidgetBlueprint\"}"));
+        WidgetCtx, TEXT("{\"type\":\"Widget\"}"));
     TestTrue(TEXT("Widget prompt should contain BindWidget"),
         WidgetPrompt.Contains(TEXT("BindWidget")));
     TestTrue(TEXT("Widget prompt should contain NativeConstruct"),
@@ -145,9 +145,9 @@ bool FCortexConversionWidgetFragmentSelectionTest::RunTest(const FString& Parame
 {
     (void)Parameters;
 
-    // Widget Blueprint JSON should trigger UMG fragment
+    // Widget BP JSON (real analyze_for_migration shape: type "Widget", a non-UserWidget CommonUI parent) should trigger the UMG fragment
     TArray<FString> Fragments = FCortexConversionPromptAssembler::SelectFragments(
-        TEXT("{\"type\":\"WidgetBlueprint\",\"parent_class\":\"UserWidget\"}"));
+        TEXT("{\"type\":\"Widget\",\"parent_class\":\"CommonActivatableWidget\"}"));
 
     bool bHasUmg = false;
     for (const FString& F : Fragments)

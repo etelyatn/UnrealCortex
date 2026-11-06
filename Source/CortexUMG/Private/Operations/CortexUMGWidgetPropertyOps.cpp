@@ -300,6 +300,18 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetFont(const TSharedPtr<FJson
             FString::Printf(TEXT("Widget '%s' does not support font settings"), *WidgetName));
     }
 
+    if (!Params->HasField(TEXT("family"))
+        && !Params->HasField(TEXT("size"))
+        && !Params->HasField(TEXT("typeface"))
+        && !Params->HasField(TEXT("letter_spacing"))
+        && !Params->HasField(TEXT("outline_size"))
+        && !Params->HasField(TEXT("outline_color")))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidField,
+            TEXT("set_font requires at least one of: family, size, typeface, letter_spacing, outline_size, outline_color"));
+    }
+
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Font on %s"), *WidgetName)));
     WBP->Modify();
@@ -708,10 +720,6 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetAnchor(const TSharedPtr<FJs
             TEXT("Widget is not in a CanvasPanel - anchors only apply to CanvasPanel children"));
     }
 
-    FScopedTransaction Transaction(FText::FromString(
-        FString::Printf(TEXT("Cortex: Set Anchor on %s"), *WidgetName)));
-    WBP->Modify();
-
     static const TMap<FString, FAnchors> Presets = {
         { TEXT("TopLeft"), FAnchors(0.0f, 0.0f, 0.0f, 0.0f) },
         { TEXT("TopCenter"), FAnchors(0.5f, 0.0f, 0.5f, 0.0f) },
@@ -731,12 +739,37 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetAnchor(const TSharedPtr<FJs
     };
 
     FString Preset;
+    const FAnchors* PresetAnchors = nullptr;
     if (Params->TryGetStringField(TEXT("preset"), Preset))
     {
-        if (const FAnchors* Found = Presets.Find(Preset))
+        PresetAnchors = Presets.Find(Preset);
+        if (PresetAnchors == nullptr)
         {
-            CanvasSlot->SetAnchors(*Found);
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::InvalidPropertyValue,
+                FString::Printf(TEXT("Unknown anchor preset '%s'. Valid presets: TopLeft, TopCenter, TopRight, CenterLeft, Center, CenterRight, BottomLeft, BottomCenter, BottomRight, TopStretch, CenterStretch, BottomStretch, LeftStretch, RightStretch, FullStretch"), *Preset));
         }
+    }
+
+    // A request that names no anchor input must not report success.
+    if (PresetAnchors == nullptr
+        && !Params->HasField(TEXT("min"))
+        && !Params->HasField(TEXT("max"))
+        && !Params->HasField(TEXT("alignment"))
+        && !Params->HasField(TEXT("offset")))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidField,
+            TEXT("set_anchor requires at least one of: preset, min, max, alignment, offset"));
+    }
+
+    FScopedTransaction Transaction(FText::FromString(
+        FString::Printf(TEXT("Cortex: Set Anchor on %s"), *WidgetName)));
+    WBP->Modify();
+
+    if (PresetAnchors != nullptr)
+    {
+        CanvasSlot->SetAnchors(*PresetAnchors);
     }
 
     const TSharedPtr<FJsonObject>* MinObj = nullptr;
@@ -823,14 +856,17 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetAlignment(const TSharedPtr<
             FString::Printf(TEXT("Widget not found: %s"), *WidgetName));
     }
 
-    FScopedTransaction Transaction(FText::FromString(
-        FString::Printf(TEXT("Cortex: Set Alignment on %s"), *WidgetName)));
-    WBP->Modify();
-
     FString Horizontal;
     FString Vertical;
-    Params->TryGetStringField(TEXT("horizontal"), Horizontal);
-    Params->TryGetStringField(TEXT("vertical"), Vertical);
+    const bool bHasHorizontal = Params->TryGetStringField(TEXT("horizontal"), Horizontal);
+    const bool bHasVertical = Params->TryGetStringField(TEXT("vertical"), Vertical);
+
+    if (!bHasHorizontal && !bHasVertical)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidField,
+            TEXT("set_alignment requires at least one of: horizontal, vertical"));
+    }
 
     auto ParseHAlign = [](const FString& S) -> TOptional<EHorizontalAlignment>
     {
@@ -849,6 +885,26 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetAlignment(const TSharedPtr<
         if (S == TEXT("Fill")) return EVerticalAlignment::VAlign_Fill;
         return {};
     };
+
+    // Reject an unusable token before the slot is touched. A supplied token is judged on what was
+    // sent, not on its emptiness: treating an explicit empty string as an omission would apply the
+    // other axis while silently discarding what the caller asked for.
+    if (bHasHorizontal && !ParseHAlign(Horizontal).IsSet())
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidPropertyValue,
+            FString::Printf(TEXT("Unknown horizontal alignment '%s'. Valid values: Left, Center, Right, Fill"), *Horizontal));
+    }
+    if (bHasVertical && !ParseVAlign(Vertical).IsSet())
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidPropertyValue,
+            FString::Printf(TEXT("Unknown vertical alignment '%s'. Valid values: Top, Center, Bottom, Fill"), *Vertical));
+    }
+
+    FScopedTransaction Transaction(FText::FromString(
+        FString::Printf(TEXT("Cortex: Set Alignment on %s"), *WidgetName)));
+    WBP->Modify();
 
     if (Widget->Slot)
     {
@@ -911,6 +967,23 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetSize(const TSharedPtr<FJson
         return FCortexCommandRouter::Error(
             CortexErrorCodes::WidgetNotFound,
             FString::Printf(TEXT("Widget not found: %s"), *WidgetName));
+    }
+
+    const bool bHasWidth = Params->HasField(TEXT("width"));
+    const bool bHasHeight = Params->HasField(TEXT("height"));
+    FString RequestedSizeRule;
+    const bool bHasSizeRule = Params->TryGetStringField(TEXT("size_rule"), RequestedSizeRule);
+    if (!bHasWidth && !bHasHeight && !bHasSizeRule)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidField,
+            TEXT("set_size requires at least one of: width, height, size_rule"));
+    }
+    if (bHasSizeRule && RequestedSizeRule != TEXT("Fill") && RequestedSizeRule != TEXT("Auto"))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidPropertyValue,
+            FString::Printf(TEXT("Unknown size rule '%s'. Valid values: Fill, Auto"), *RequestedSizeRule));
     }
 
     FScopedTransaction Transaction(FText::FromString(

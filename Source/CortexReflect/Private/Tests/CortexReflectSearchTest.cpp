@@ -133,12 +133,31 @@ bool FCortexReflectSearchBasicTest::RunTest(const FString& Parameters)
 
 	if (Result.Data.IsValid())
 	{
-		const TArray<TSharedPtr<FJsonValue>>* ResultsArray;
+		const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
 		TestTrue(TEXT("Should have results array"),
 			Result.Data->TryGetArrayField(TEXT("results"), ResultsArray));
 
-		TestTrue(TEXT("Should have total_results field"),
+		// Truthful metadata: the emitted page size and the matched count are separate fields, and
+		// no field is allowed to label the returned page length as a total.
+		TestTrue(TEXT("Should have returned field"),
+			Result.Data->HasField(TEXT("returned")));
+		TestTrue(TEXT("Should have total_matches field"),
+			Result.Data->HasField(TEXT("total_matches")));
+		TestTrue(TEXT("Should have truncated field"),
+			Result.Data->HasField(TEXT("truncated")));
+		TestFalse(TEXT("No returned length may be labelled as total matches"),
 			Result.Data->HasField(TEXT("total_results")));
+
+		if (ResultsArray)
+		{
+			int32 Returned = -1;
+			if (TestTrue(TEXT("returned must be a number"),
+				Result.Data->TryGetNumberField(TEXT("returned"), Returned)))
+			{
+				TestEqual(TEXT("returned must equal the emitted result count"),
+					Returned, ResultsArray->Num());
+			}
+		}
 
 		if (ResultsArray && ResultsArray->Num() > 0)
 		{
@@ -201,15 +220,81 @@ bool FCortexReflectSearchLimitTest::RunTest(const FString& Parameters)
 
 	TestTrue(TEXT("search with limit should succeed"), Result.bSuccess);
 
-	if (Result.Data.IsValid())
+	if (!Result.Data.IsValid())
 	{
-		int32 TotalResults;
-		if (Result.Data->TryGetNumberField(TEXT("total_results"), TotalResults))
-		{
-			TestTrue(TEXT("total_results should not exceed limit"),
-				TotalResults <= 2);
-		}
+		AddError(TEXT("Result data is invalid"));
+		return true;
 	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	TestTrue(TEXT("search with limit must return a results array"),
+		Result.Data->TryGetArrayField(TEXT("results"), ResultsArray));
+
+	int32 Returned = -1;
+	TestTrue(TEXT("returned must be present"),
+		Result.Data->TryGetNumberField(TEXT("returned"), Returned));
+	int32 TotalMatches = -1;
+	TestTrue(TEXT("total_matches must be present"),
+		Result.Data->TryGetNumberField(TEXT("total_matches"), TotalMatches));
+	bool bTruncated = false;
+	TestTrue(TEXT("truncated must be present"),
+		Result.Data->TryGetBoolField(TEXT("truncated"), bTruncated));
+
+	TestEqual(TEXT("returned must equal the emitted result count"),
+		Returned, ResultsArray ? ResultsArray->Num() : -1);
+	TestEqual(TEXT("a limit-capped page returns exactly the limit"), Returned, 2);
+	// The matched count is scanned before the limit is applied, so it is distinct from the
+	// emitted page length instead of repeating it.
+	TestTrue(TEXT("total_matches must exceed the emitted page"),
+		TotalMatches > Returned);
+	TestTrue(TEXT("a capped search must declare truncation"), bTruncated);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReflectSearchUnderLimitCompleteTest,
+	"Cortex.Reflect.Search.UnderLimitComplete",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReflectSearchUnderLimitCompleteTest::RunTest(const FString& Parameters)
+{
+	FCortexReflectCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	// A pattern no class can contain, so the matched count is known to be exactly zero.
+	Params->SetStringField(TEXT("pattern"), TEXT("CortexReflectSearchHonestyNoMatch"));
+	Params->SetBoolField(TEXT("include_engine"), true);
+
+	FCortexCommandResult Result = Handler.Execute(TEXT("search"), Params);
+	TestTrue(TEXT("search should succeed"), Result.bSuccess);
+
+	if (!Result.Data.IsValid())
+	{
+		AddError(TEXT("Result data is invalid"));
+		return true;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+	TestTrue(TEXT("search must return a results array"),
+		Result.Data->TryGetArrayField(TEXT("results"), ResultsArray));
+
+	int32 Returned = -1;
+	int32 TotalMatches = -1;
+	TestTrue(TEXT("returned must be present"),
+		Result.Data->TryGetNumberField(TEXT("returned"), Returned));
+	TestTrue(TEXT("total_matches must be present"),
+		Result.Data->TryGetNumberField(TEXT("total_matches"), TotalMatches));
+	bool bTruncated = true;
+	TestTrue(TEXT("truncated must be present"),
+		Result.Data->TryGetBoolField(TEXT("truncated"), bTruncated));
+
+	TestEqual(TEXT("an unmatched search returns no rows"), Returned, 0);
+	TestEqual(TEXT("an unmatched search matches nothing"), TotalMatches, 0);
+	TestEqual(TEXT("returned must equal the emitted result count"),
+		Returned, ResultsArray ? ResultsArray->Num() : -1);
+	// Honest in both directions: a fully returned page must not be labelled truncated.
+	TestFalse(TEXT("a fully returned page must not declare truncation"), bTruncated);
 
 	return true;
 }
@@ -626,6 +711,8 @@ bool FCortexReflectClassHierarchyProjectPluginBlueprintVisibleTest::RunTest(cons
 	Params->SetNumberField(TEXT("depth"), 2);
 	Params->SetBoolField(TEXT("include_blueprint"), true);
 	Params->SetBoolField(TEXT("include_engine"), false);
+	// Flat classes are opt-in; navigation by default is through the nested tree.
+	Params->SetBoolField(TEXT("include_flat_classes"), true);
 
 	const FCortexCommandResult Result = Handler.Execute(TEXT("class_hierarchy"), Params);
 	TestTrue(TEXT("Project-only class_hierarchy must succeed"), Result.bSuccess);

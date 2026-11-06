@@ -216,11 +216,12 @@ bool FCortexUMGRenameWidgetTest::RunTest(const FString& Parameters)
     WBP->Bindings.Add(Binding);
     TSharedPtr<FJsonObject> GetFingerprint = MakeShared<FJsonObject>();
     GetFingerprint->SetStringField(TEXT("asset_path"), WBP->GetPathName());
-    GetFingerprint->SetStringField(TEXT("widget_name"), TEXT("BodySizeBox"));
-    GetFingerprint->SetBoolField(TEXT("is_variable"), Widget->bIsVariable);
-    FCortexCommandResult State = Fixture.Router.Execute(TEXT("umg.set_widget_variable"), GetFingerprint);
-    if (!TestTrue(TEXT("tree fingerprint available"), State.bSuccess)) return false;
-    const TSharedPtr<FJsonObject> Before = State.Data->GetObjectField(TEXT("fingerprint"));
+    FCortexCommandResult State = Fixture.Router.Execute(TEXT("umg.get_tree"), GetFingerprint);
+    if (!TestTrue(TEXT("tree inspection succeeds"), State.bSuccess)) return false;
+    const TSharedPtr<FJsonObject>* BeforePtr = nullptr;
+    if (!TestTrue(TEXT("tree inspection supplies the rename fingerprint"),
+        State.Data->TryGetObjectField(TEXT("fingerprint"), BeforePtr))) return false;
+    const TSharedPtr<FJsonObject> Before = *BeforePtr;
     const bool bDirtyBefore = WBP->GetPackage()->IsDirty();
     UWidgetAnimation* Animation = WBP->Animations[0];
     const FGuid AnimationGuid = Animation->AnimationBindings[0].AnimationGuid;
