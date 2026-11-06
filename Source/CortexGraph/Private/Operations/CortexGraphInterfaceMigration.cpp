@@ -622,7 +622,7 @@ FString FCortexGraphInterfaceMigration::ClassPath(const UClass* Interface)
 	return Interface ? Interface->GetAuthoritativeClass()->GetPathName() : FString();
 }
 
-bool FCortexGraphInterfaceMigration::ResolveInterfaceClass(const FString& Identifier, UClass*& OutClass, FCortexCommandResult& OutError)
+bool FCortexGraphInterfaceMigration::ResolveClassIdentifier(const FString& Identifier, UClass*& OutClass, FCortexCommandResult& OutError)
 {
 	OutClass = nullptr;
 	UClass* Resolved = nullptr;
@@ -630,7 +630,7 @@ bool FCortexGraphInterfaceMigration::ResolveInterfaceClass(const FString& Identi
 	bool bResolved = FCortexGraphSymbolResolver::ResolveClass(Identifier, Resolved, ResolveError);
 	if (!bResolved && Identifier.StartsWith(TEXT("/")) && !Identifier.Contains(TEXT(".")))
 	{
-		// A bare asset path names the Blueprint interface by its package: try its asset object.
+		// A bare asset path names the Blueprint class by its package: try its asset object.
 		const FString Asset = Identifier + TEXT(".") + FPackageName::GetShortName(Identifier);
 		FCortexCommandResult RetryError;
 		bResolved = FCortexGraphSymbolResolver::ResolveClass(Asset, Resolved, RetryError);
@@ -638,7 +638,21 @@ bool FCortexGraphInterfaceMigration::ResolveInterfaceClass(const FString& Identi
 	if (!bResolved || !Resolved)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-			FString::Printf(TEXT("interface '%s' does not resolve to a class: %s"), *Identifier, *ResolveError.ErrorMessage));
+			FString::Printf(TEXT("'%s' does not resolve to a class: %s"), *Identifier, *ResolveError.ErrorMessage));
+		return false;
+	}
+	OutClass = const_cast<UClass*>(Resolved->GetAuthoritativeClass());
+	return true;
+}
+
+bool FCortexGraphInterfaceMigration::ResolveInterfaceClass(const FString& Identifier, UClass*& OutClass, FCortexCommandResult& OutError)
+{
+	OutClass = nullptr;
+	UClass* Resolved = nullptr;
+	FCortexCommandResult ResolveError;
+	if (!ResolveClassIdentifier(Identifier, Resolved, ResolveError))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("interface ") + ResolveError.ErrorMessage);
 		return false;
 	}
 	if (!Resolved->HasAnyClassFlags(CLASS_Interface))
@@ -647,7 +661,7 @@ bool FCortexGraphInterfaceMigration::ResolveInterfaceClass(const FString& Identi
 			FString::Printf(TEXT("'%s' is not an interface class"), *Identifier));
 		return false;
 	}
-	OutClass = const_cast<UClass*>(Resolved->GetAuthoritativeClass());
+	OutClass = Resolved;
 	return true;
 }
 

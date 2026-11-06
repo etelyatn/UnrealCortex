@@ -5,6 +5,7 @@
 #include "Operations/CortexGraphMigrationOps.h"
 #include "Operations/CortexGraphNodeContract.h"
 #include "Operations/CortexGraphNodeOps.h"
+#include "Operations/CortexGraphRetargetOps.h"
 #include "Operations/CortexGraphPatchState.h"
 #include "Operations/CortexGraphPinDefaults.h"
 #include "Operations/CortexGraphSymbolResolver.h"
@@ -1183,6 +1184,26 @@ bool FCortexGraphPatchOps::ResolveGraphKindByGuid(
 	return true;
 }
 
+void FCortexGraphPatchOps::CollectAddressableGraphs(UBlueprint* Blueprint, TArray<FCortexGraphPatchGraphRef>& OutGraphs)
+{
+	OutGraphs.Reset();
+	if (!Blueprint)
+	{
+		return;
+	}
+	TArray<FCortexGraphChoice> Choices;
+	CollectAllGraphChoices(Blueprint, Choices);
+	for (const FCortexGraphChoice& Choice : Choices)
+	{
+		FCortexGraphPatchGraphRef Ref;
+		Ref.Graph = Choice.Graph;
+		Ref.SubgraphPath = Choice.RootRelativePath;
+		Ref.Kind = FCortexGraphNodeOps::GraphKindToString(Choice.Kind);
+		Ref.bMutable = FCortexGraphNodeOps::IsMutableGraphKind(Choice.Kind);
+		OutGraphs.Add(MoveTemp(Ref));
+	}
+}
+
 TSharedPtr<FJsonObject> FCortexGraphPatchOps::MakePinSignatureDescriptor(const UEdGraphPin& Pin)
 {
 	TSharedPtr<FJsonObject> Descriptor = MakePinSignatureDescriptorForType(Pin.PinType);
@@ -1385,11 +1406,103 @@ bool FCortexGraphPatchOps::Preflight(
 			const bool bIsRetireOp = MigrationOp == TEXT("retire_entries");
 			const bool bIsCallOutputOp = MigrationOp == TEXT("replace_call_output");
 			const bool bIsInterfaceOp = MigrationOp == TEXT("replace_interface");
-			if (!bIsTransferOp && !bIsPruneOp && !bIsRetireOp && !bIsCallOutputOp && !bIsInterfaceOp)
+			const bool bIsRetargetOp = MigrationOp == TEXT("retarget_calls");
+			if (!bIsTransferOp && !bIsPruneOp && !bIsRetireOp && !bIsCallOutputOp && !bIsInterfaceOp && !bIsRetargetOp)
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
-					FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph, move_subgraph, prune_island, retire_entries, replace_call_output and replace_interface"), *MigrationOp));
+					FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph, move_subgraph, prune_island, retire_entries, replace_call_output, replace_interface and retarget_calls"), *MigrationOp));
 				return false;
+			}
+			if (bIsRetargetOp)
+			{
+				// The call retargeting addresses every graph of the Blueprint through the discovered sites, so the
+				// implementation target of `replace_entry` must be absent instead of ignored.
+				if (Params->HasField(TEXT("target")))
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						TEXT("a retarget_calls request addresses every graph through the sites it discovers; 'target' must be absent"));
+					return false;
+				}
+				FCortexGraphMigrationRetargetPlan RetargetPlan;
+				if (!FCortexGraphRetargetOps::PlanRetarget(Blueprint, *MigrationPtr, OutPrepared.PatchId, RetargetPlan, OutError))
+				{
+					return false;
+				}
+				if (!bDryRun && RetargetPlan.bAwaitingApproval)
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						TEXT("a retarget_calls apply requires the migration.sites of the preview; the preview that published the site inventory must be reviewed before anything is retargeted"));
+					return false;
+				}
+				if (!bDryRun && RetargetPlan.HasBlockedSite())
+				{
+					FString FirstBlocked;
+					for (const FCortexGraphRetargetSite& Site : RetargetPlan.Sites)
+					{
+						if (!Site.Blocked.IsEmpty())
+						{
+							FirstBlocked = FString::Printf(TEXT("%s (%s): %s"), *Site.NodeGuid, *Site.Kind, *Site.Blocked);
+							break;
+						}
+					}
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+						FString::Printf(TEXT("the retarget_calls plan has blocked sites and is refused without changing the asset; first blocked site %s"), *FirstBlocked));
+					return false;
+				}
+				OutPrepared.RetargetPlan = RetargetPlan.ToJson();
+				OutPrepared.bHasEntryNode = false;
+				OutPrepared.GraphGuid = RetargetPlan.Sites[0].GraphGuid;
+				OutPrepared.SubgraphPath = RetargetPlan.Sites[0].SubgraphPath;
+				for (const FCortexGraphRetargetSite& Site : RetargetPlan.Sites)
+				{
+					FGuid Replacement;
+					if (!Site.ReplacementGuid.IsEmpty() && FGuid::Parse(Site.ReplacementGuid, Replacement))
+					{
+						OutPrepared.NodeGuidByClientId.Add(FString(TEXT("retarget:")) + Site.NodeGuid, Replacement);
+						OutPrepared.PlannedNodeIds.Add(FString(TEXT("retarget:")) + Site.NodeGuid);
+					}
+				}
+				// A preview that only publishes the site inventory has nothing to apply.
+				OutPrepared.bFullyReused = RetargetPlan.bAwaitingApproval;
+				OutPrepared.bChanged = !OutPrepared.bFullyReused;
+
+				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
+				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+				Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
+				Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+				Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetBoolField(TEXT("compile"), bCompile);
+				Normalized->SetObjectField(TEXT("migration"), OutPrepared.RetargetPlan);
+				OutPrepared.NormalizedRequest = Normalized;
+
+				FString RetargetIntent;
+				RetargetIntent += TEXT("graph_patch_v1|");
+				RetargetIntent += CanonicalObject(Normalized);
+				RetargetIntent += TEXT("|fingerprint=");
+				RetargetIntent += OutPrepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
+				RetargetIntent += TEXT("|engine=UE5.8|schema=K2");
+				FTCHARToUTF8 RetargetUtf8(*RetargetIntent);
+				const FIoHash RetargetDigest = FIoHash::HashBuffer(
+					reinterpret_cast<const uint8*>(RetargetUtf8.Get()), RetargetUtf8.Length());
+				OutPrepared.ValidationHash = LexToString(RetargetDigest);
+				// Whether the request carried the reviewed sites is not part of the intent the hash binds: the preview that
+				// publishes the inventory and the apply that echoes it must agree on one hash.
+				OutPrepared.RetargetPlan->SetBoolField(TEXT("awaiting_approval"), RetargetPlan.bAwaitingApproval);
+
+				if (!bDryRun)
+				{
+					FString ExpectedToken;
+					Params->TryGetStringField(TEXT("expected_validation_hash"), ExpectedToken);
+					if (ExpectedToken != OutPrepared.ValidationHash)
+					{
+						OutError = FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+							TEXT("expected_validation_hash does not match current preflight intent"));
+						return false;
+					}
+				}
+				return true;
 			}
 			if (bIsInterfaceOp)
 			{
@@ -5799,6 +5912,7 @@ bool FCortexGraphPatchOps::Execute(
 	OutOutcome.RetirementInventory = FCortexGraphMigrationOps::MakeRetirementInventory(Prepared.RetirementPlan);
 	OutOutcome.RewireInventory = FCortexGraphMigrationOps::MakeCallOutputInventory(Prepared.RewirePlan);
 	OutOutcome.InterfaceInventory = FCortexGraphInterfaceMigration::MakeInventory(Prepared.InterfacePlan);
+	OutOutcome.RetargetInventory = FCortexGraphRetargetOps::MakeInventory(Prepared.RetargetPlan);
 	OutOutcome.bChanged = Prepared.bChanged;
 	OutOutcome.ReusedClientIds = Prepared.ReusedClientIds;
 	OutOutcome.bReplayedWithAbsentSource = Prepared.bReplayedWithAbsentSource;

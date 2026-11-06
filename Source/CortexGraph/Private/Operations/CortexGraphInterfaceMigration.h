@@ -115,6 +115,9 @@ struct FCortexGraphInterfaceStateCapture
 class FCortexGraphInterfaceMigration
 {
 public:
+	/** Resolves a class identifier (Blueprint asset path, class path or native class path) to its authoritative class; any class kind. */
+	static bool ResolveClassIdentifier(const FString& Identifier, UClass*& OutClass, FCortexCommandResult& OutError);
+
 	/** Resolves an interface identifier (BPI asset path, class path or native class path) to its authoritative class. */
 	static bool ResolveInterfaceClass(const FString& Identifier, UClass*& OutClass, FCortexCommandResult& OutError);
 

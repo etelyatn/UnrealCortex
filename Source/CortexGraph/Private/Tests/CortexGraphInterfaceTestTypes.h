@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 
+#include "GameFramework/Actor.h"
 #include "UObject/Interface.h"
 
 #include "CortexGraphInterfaceTestTypes.generated.h"
@@ -27,4 +28,28 @@ public:
 
 	UFUNCTION(BlueprintImplementableEvent, BlueprintCallable, Category = "CortexIssue122")
 	void Notify(int32 Amount);
+};
+
+/**
+ * Test-only class that is unrelated to every interface of the #122 coverage but declares a function with the same name as the
+ * interfaces' `GetValue`: the retarget coverage proves such a call is never reported or rewritten (matching is by resolved owner).
+ */
+UCLASS()
+class UCortexIssue122RetargetUnrelated : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintCallable, Category = "CortexIssue122")
+	static double GetValue() { return 0.0; }
+};
+
+/**
+ * Test-only actor class for the retarget coverage. Calls to a function of an editor module (the native test interface lives in one)
+ * compile only in Blueprints whose base class is itself part of an editor module (`UK2Node_CallFunction::ValidateNodeDuringCompilation`).
+ */
+UCLASS(Blueprintable)
+class ACortexIssue122RetargetCaller : public AActor
+{
+	GENERATED_BODY()
 };
