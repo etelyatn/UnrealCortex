@@ -69,8 +69,6 @@ namespace CortexAdoptSCSPrivate
 		/** ich route: the parent Blueprint's SCS node that keys the override. */
 		USCS_Node* ParentNode = nullptr;
 		UClass* Class = nullptr;
-		/** The override record was created by this resolution. */
-		bool bCreated = false;
 		FString FailureCode;
 		FString FailureMessage;
 	};
@@ -109,7 +107,6 @@ namespace CortexAdoptSCSPrivate
 				{
 					Handler->Modify();
 					Out.Template = Handler->CreateOverridenComponentTemplate(Key);
-					Out.bCreated = Out.Template != nullptr;
 				}
 			}
 			Out.Reading = Out.Template != nullptr ? Out.Template : Node->ComponentTemplate.Get();
@@ -174,7 +171,7 @@ namespace CortexAdoptSCSPrivate
 		{
 			if (Request.ScsNode != Request.NativeComponent)
 			{
-				return false;
+				continue;
 			}
 			Mapped.Add(FName(*Request.ScsNode));
 		}
@@ -188,7 +185,7 @@ namespace CortexAdoptSCSPrivate
 			}
 			Colliding.Add(Collision.SCSNodeName);
 		}
-		if (!Colliding.Includes(Mapped))
+		if (Mapped.IsEmpty() || !Colliding.Includes(Mapped))
 		{
 			return false;
 		}
@@ -221,13 +218,10 @@ namespace CortexAdoptSCSPrivate
 			/** Full copy of the target template before the call (restored after a recovery compile). */
 			TStrongObjectPtr<UActorComponent> TargetBefore;
 			bool bOverrideExisted = false;
-			bool bOverrideCreated = false;
 			/** Source template content as it was before the call: property text, or the digest of an instanced subobject. */
 			TMap<FName, FString> Expected;
-			TArray<FString> ChildrenReattached;
 		};
 		TArray<FMappingState> Mappings;
-		bool bCompiled = false;
 	};
 
 	FString OperationDigest(UBlueprint* Blueprint, const FOps::FAdoptPlan& Plan)
@@ -501,6 +495,13 @@ FCortexBPAdoptSCSOps::FAdoptPlan FCortexBPAdoptSCSOps::BuildPlan(
 		}
 
 		// Children that follow the component.
+		for (const USCS_Node* Child : Node->GetChildNodes())
+		{
+			if (Child != nullptr)
+			{
+				Mapping.Children.Add(Child->GetVariableName().ToString());
+			}
+		}
 		if (Copy.bAttach)
 		{
 			for (const USCS_Node* Child : Node->GetChildNodes())
@@ -655,7 +656,7 @@ namespace CortexAdoptSCSPrivate
 		{
 			Keys.Add(TEXT("scs:") + Mapping.ScsNode);
 			Keys.Add(TEXT("inherited:") + Mapping.NativeComponent);
-			for (const FString& Child : Mapping.ChildrenToReattach)
+			for (const FString& Child : Mapping.Children)
 			{
 				Keys.Add(TEXT("scs:") + Child);
 			}
@@ -949,7 +950,6 @@ namespace CortexAdoptSCSPrivate
 
 		Spec.Verify = [State, Plan, bRemoveScs](UBlueprint* Target, bool bCompiled, FString& OutError)
 		{
-			State->bCompiled = bCompiled;
 			if (bCompiled && !IsUpToDate(Target))
 			{
 				OutError = TEXT("The Blueprint is not up to date after the compile");
@@ -972,7 +972,9 @@ namespace CortexAdoptSCSPrivate
 				const FName NativeName(*Mapping.NativeComponent);
 
 				const FResolvedTarget Resolved = ResolveTarget(Target, NativeName, /*bCreateOverride=*/false);
-				if (!Resolved.FailureCode.IsEmpty() || Resolved.Template == nullptr)
+				// An override record that equals the inherited template is dropped by the compile; the effective template is what is read back.
+				const UActorComponent* Effective = Resolved.Template != nullptr ? Resolved.Template : Resolved.Reading;
+				if (!Resolved.FailureCode.IsEmpty() || Effective == nullptr)
 				{
 					OutError = FString::Printf(TEXT("The target template '%s' is missing after the adoption"), *Mapping.NativeComponent);
 					return false;
@@ -983,7 +985,7 @@ namespace CortexAdoptSCSPrivate
 				{
 					for (const FCortexBPSCSTemplateCopy::FDiff& Diff : *Diffs)
 					{
-						const FProperty* Property = Resolved.Template->GetClass()->FindPropertyByName(Diff.Name);
+						const FProperty* Property = Effective->GetClass()->FindPropertyByName(Diff.Name);
 						const FString* ExpectedValue = Mapped.Expected.Find(Diff.Name);
 						if (Property == nullptr || ExpectedValue == nullptr)
 						{
@@ -993,16 +995,17 @@ namespace CortexAdoptSCSPrivate
 						if (Diff.bInstanced)
 						{
 							const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property);
-							const UObject* Sub = ObjectProperty != nullptr ? ObjectProperty->GetObjectPropertyValue_InContainer(Resolved.Template) : nullptr;
+							const UObject* Sub = ObjectProperty != nullptr ? ObjectProperty->GetObjectPropertyValue_InContainer(Effective) : nullptr;
 							const FString SubDigest = FCortexBPSCSTemplateCopy::Digest(Sub);
-							if (Sub == nullptr || Sub->GetOuter() != Resolved.Template || SubDigest != *ExpectedValue)
+							const bool bOwned = Resolved.Template == nullptr || (Sub != nullptr && Sub->GetOuter() == Resolved.Template);
+							if (Sub == nullptr || !bOwned || SubDigest != *ExpectedValue)
 							{
 								OutError = FString::Printf(TEXT("The instanced subobject '%s' was not duplicated onto '%s' (%s)"), *Diff.Name.ToString(), *Mapping.NativeComponent,
-									Sub == nullptr ? TEXT("null") : (Sub->GetOuter() != Resolved.Template ? TEXT("outer is not the target template") : TEXT("content differs")));
+									Sub == nullptr ? TEXT("null") : (!bOwned ? TEXT("outer is not the target template") : TEXT("content differs")));
 								return false;
 							}
 						}
-						else if (!PropertyTextEquals(Property, Resolved.Template, *ExpectedValue))
+						else if (!PropertyTextEquals(Property, Effective, *ExpectedValue))
 						{
 							OutError = FString::Printf(TEXT("Property '%s' on '%s' does not hold the source value after the adoption"), *Diff.Name.ToString(), *Mapping.NativeComponent);
 							return false;
@@ -1096,7 +1099,6 @@ namespace CortexAdoptSCSPrivate
 		// The journal does not carry bound-event property names.
 		Spec.Restore = [State, Plan](UBlueprint* Target, FString& OutError)
 		{
-			bool bRestored = true;
 			TArray<UK2Node_ComponentBoundEvent*> Events;
 			FBlueprintEditorUtils::GetAllNodesOfClass(Target, Events);
 			for (UK2Node_ComponentBoundEvent* Event : Events)
@@ -1129,7 +1131,7 @@ namespace CortexAdoptSCSPrivate
 					Handler->RemoveOverridenComponentTemplate(FComponentKey(Resolved.ParentNode));
 				}
 			}
-			return bRestored;
+			return true;
 		};
 
 		// The recovery compile rebuilds the CDO from the post-adoption state; the template data goes back afterwards.

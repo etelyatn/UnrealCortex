@@ -4,6 +4,7 @@
 
 #include "Components/PrimitiveComponent.h"
 #include "Editor.h"
+#include "UObject/UObjectGlobals.h"
 #include "Editor/Transactor.h"
 #include "Components/StaticMeshComponent.h"
 #include "CortexBPReparentTestSupport.h"
@@ -20,27 +21,32 @@ namespace CortexAdoptSCSTest
 	using namespace CortexReparentTest;
 
 	/** Releases every object of the Blueprint's package together, so a later GC never scans a class whose Blueprint was retired alone. */
-	inline void ScsRetire(UBlueprint* Blueprint)
+	inline void ScsRetire(UBlueprint* Blueprint, UBlueprint* Related = nullptr, UBlueprint* Third = nullptr, UBlueprint* Fourth = nullptr)
 	{
-		if (Blueprint == nullptr)
-		{
-			return;
-		}
 		// The guarded runs leave undo records that name these objects; a GC scanning them after the package is retired crashes.
 		if (GEditor != nullptr && GEditor->Trans != nullptr)
 		{
 			GEditor->Trans->Reset(FText::FromString(TEXT("Retire SCS test fixture")));
 		}
-		UPackage* Package = Blueprint->GetOutermost();
-		ForEachObjectWithOuter(Package, [](UObject* Object)
+		// A child and its parent are released together, then collected, so no class outlives the one it derives from.
+		for (const UBlueprint* Retired : {Blueprint, Related, Third, Fourth})
 		{
-			Object->ClearFlags(RF_Public | RF_Standalone);
-			if (!Object->IsA<UField>() || Object->IsA<UClass>())
+			if (Retired == nullptr)
 			{
-				Object->MarkAsGarbage();
+				continue;
 			}
-		});
-		Package->MarkAsGarbage();
+			UPackage* Package = Retired->GetOutermost();
+			ForEachObjectWithOuter(Package, [](UObject* Object)
+			{
+				Object->ClearFlags(RF_Public | RF_Standalone);
+				if (!Object->IsA<UField>() || Object->IsA<UClass>())
+				{
+					Object->MarkAsGarbage();
+				}
+			});
+			Package->MarkAsGarbage();
+		}
+		CollectGarbage(RF_NoFlags);
 	}
 
 	/** A Blueprint on ACortexBPAdoptComponentParent with an SCS node whose template carries data worth moving. */

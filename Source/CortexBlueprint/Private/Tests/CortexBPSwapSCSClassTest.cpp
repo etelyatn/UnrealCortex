@@ -162,8 +162,7 @@ bool FCortexBPSwapSCSSwapTest::RunTest(const FString& Parameters)
 	UStaticMeshComponent* OldTemplate = Cast<UStaticMeshComponent>(Host.Swapper->ComponentTemplate);
 	if (!TestTrue(TEXT("Engine content and template"), Mesh != nullptr && Material != nullptr && OldTemplate != nullptr))
 	{
-		CortexAdoptSCSTest::ScsRetire(Blueprint);
-		CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
+		CortexAdoptSCSTest::ScsRetire(Blueprint, ComponentBlueprint);
 		return false;
 	}
 	OldTemplate->SetStaticMesh(Mesh);
@@ -254,8 +253,7 @@ bool FCortexBPSwapSCSSwapTest::RunTest(const FString& Parameters)
 	const FObjectProperty* Declared = CastField<FObjectProperty>(Blueprint->GeneratedClass->FindPropertyByName(TEXT("Swapper")));
 	TestTrue(TEXT("The compiled variable has the new class"), Declared != nullptr && Declared->PropertyClass == UCortexBPAdoptNativeComponent::StaticClass());
 
-	CortexAdoptSCSTest::ScsRetire(Blueprint);
-	CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
+	CortexAdoptSCSTest::ScsRetire(Blueprint, ComponentBlueprint);
 	return true;
 }
 
@@ -288,8 +286,7 @@ bool FCortexBPSwapSCSPayloadTest::RunTest(const FString& Parameters)
 	UCortexBPAdoptNativeComponent* OldTemplate = Cast<UCortexBPAdoptNativeComponent>(Host.Swapper->ComponentTemplate);
 	if (!TestNotNull(TEXT("Old template"), OldTemplate))
 	{
-		CortexAdoptSCSTest::ScsRetire(Blueprint);
-		CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
+		CortexAdoptSCSTest::ScsRetire(Blueprint, ComponentBlueprint);
 		return false;
 	}
 	OldTemplate->bFilled = true;
@@ -335,8 +332,7 @@ bool FCortexBPSwapSCSPayloadTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	CortexAdoptSCSTest::ScsRetire(Blueprint);
-	CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
+	CortexAdoptSCSTest::ScsRetire(Blueprint, ComponentBlueprint);
 	return true;
 }
 
@@ -408,12 +404,16 @@ bool FCortexBPSwapSCSRefusalsTest::RunTest(const FString& Parameters)
 	}
 
 	// A child Blueprint that overrides the node through its InheritableComponentHandler.
+	UBlueprint* ChildForRetire = nullptr;
+	UBlueprint* ParentForRetire = nullptr;
 	{
 		UBlueprint* Parent = MakeBlueprint(TEXT("SwapOverrideParent"), AActor::StaticClass());
+		ParentForRetire = Parent;
 		USCS_Node* ParentNode = Parent->SimpleConstructionScript->CreateNode(ComponentBlueprint->GeneratedClass, TEXT("Swapper"));
 		Parent->SimpleConstructionScript->AddNode(ParentNode);
 		FKismetEditorUtilities::CompileBlueprint(Parent);
 		UBlueprint* Child = MakeBlueprint(TEXT("SwapOverrideChild"), Parent->GeneratedClass);
+		ChildForRetire = Child;
 		UInheritableComponentHandler* Handler = Child != nullptr ? Child->GetInheritableComponentHandler(true) : nullptr;
 		UStaticMeshComponent* Override = Handler != nullptr ? Cast<UStaticMeshComponent>(Handler->CreateOverridenComponentTemplate(FComponentKey(ParentNode))) : nullptr;
 		if (TestNotNull(TEXT("Override template"), Override))
@@ -427,11 +427,50 @@ bool FCortexBPSwapSCSRefusalsTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("The child is listed"), ReadStrings(Result.ErrorDetails, TEXT("child_overrides")), TArray<FString>{Child->GetPathName()});
 			TestTrue(TEXT("Nothing changed"), ParentBefore == FStateDigest::Of(Parent));
 		}
-		CortexAdoptSCSTest::ScsRetire(Child);
-		CortexAdoptSCSTest::ScsRetire(Parent);
 	}
 
-	CortexAdoptSCSTest::ScsRetire(Blueprint);
-	CortexAdoptSCSTest::ScsRetire(ComponentBlueprint);
+	CortexAdoptSCSTest::ScsRetire(Blueprint, ComponentBlueprint, ChildForRetire, ParentForRetire);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPSwapSCSClassDefaultTest,
+	"Cortex.Blueprint.SwapSCS.ClassDefaultKept",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPSwapSCSClassDefaultTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexAdoptSCSTest;
+	using namespace CortexSwapSCSTestPrivate;
+	using CortexAdoptMemberTest::Explain;
+
+	// The mesh lives only in the component Blueprint's class defaults; the SCS template does not override it.
+	UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+	UBlueprint* ComponentBlueprint = ScsSwapMakeComponentBlueprint(TEXT("SwapCompBP4"), UStaticMeshComponent::StaticClass(), TEXT("bFilled"), BoolPin(), TEXT("true"));
+	if (!TestTrue(TEXT("Fixture"), Mesh != nullptr && ComponentBlueprint != nullptr))
+	{
+		return false;
+	}
+	Cast<UStaticMeshComponent>(ComponentBlueprint->GeneratedClass->GetDefaultObject())->SetStaticMesh(Mesh);
+	FKismetEditorUtilities::CompileBlueprint(ComponentBlueprint);
+	FScsSwapHost Host = ScsSwapMakeHost(TEXT("SwapHost4"), ComponentBlueprint->GeneratedClass);
+	if (!TestNotNull(TEXT("Host"), Host.Blueprint))
+	{
+		return false;
+	}
+	UStaticMeshComponent* OldTemplate = Cast<UStaticMeshComponent>(Host.Swapper->ComponentTemplate);
+	TestTrue(TEXT("The template inherits the class default mesh"), OldTemplate != nullptr && OldTemplate->GetStaticMesh() == Mesh);
+
+	const FCortexCommandResult Result = FCortexBPSwapSCSClassOps::Execute(ScsSwapParams(Host.Blueprint, TEXT("Swapper"), UCortexBPAdoptNativeComponent::StaticClass()->GetPathName()));
+	if (!Result.bSuccess)
+	{
+		AddInfo(Explain(Result));
+	}
+	TestTrue(TEXT("The swap succeeds"), Result.bSuccess);
+	const USCS_Node* Node = Host.Blueprint->SimpleConstructionScript->FindSCSNode(TEXT("Swapper"));
+	UStaticMeshComponent* NewTemplate = Node != nullptr ? Cast<UStaticMeshComponent>(Node->ComponentTemplate) : nullptr;
+	TestTrue(TEXT("The class-default mesh is kept, not silently dropped"), NewTemplate != nullptr && NewTemplate->GetStaticMesh() == Mesh);
+	CortexAdoptSCSTest::ScsRetire(Host.Blueprint, ComponentBlueprint);
 	return true;
 }

@@ -3,6 +3,7 @@
 #include "Components/ActorComponent.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Engine.h"
+#include "Components/StaticMeshComponent.h"
 #include "Misc/SecureHash.h"
 #include "UObject/Package.h"
 #include "UObject/UnrealType.h"
@@ -77,11 +78,11 @@ TSharedRef<FJsonObject> FCortexBPSCSTemplateCopy::FDiff::ToJson() const
 	return Json;
 }
 
-void FCortexBPSCSTemplateCopy::CollectDifferences(const UActorComponent* Source, const UClass* TargetClass, const UActorComponent* TargetOrNull, TArray<FDiff>& OutDiffs)
+void FCortexBPSCSTemplateCopy::CollectDifferences(const UActorComponent* Source, const UClass* TargetClass, const UActorComponent* TargetOrNull, TArray<FDiff>& OutDiffs, const UObject* DeltaArchetype)
 {
 	using namespace CortexSCSTemplateCopyPrivate;
 	OutDiffs.Reset();
-	const UObject* Archetype = Source != nullptr ? Source->GetArchetype() : nullptr;
+	const UObject* Archetype = DeltaArchetype != nullptr ? DeltaArchetype : (Source != nullptr ? Source->GetArchetype() : nullptr);
 	if (Archetype == nullptr)
 	{
 		return;
@@ -176,7 +177,18 @@ bool FCortexBPSCSTemplateCopy::CopyByName(const UActorComponent* Source, UActorC
 			continue;
 		}
 		Target->Modify();
-		To->CopyCompleteValue(To->ContainerPtrToValuePtr<void>(Target), From->ContainerPtrToValuePtr<void>(Source));
+		// The mesh has change tracking the engine ensures on; it goes through its setter.
+		UStaticMeshComponent* TargetMesh = Cast<UStaticMeshComponent>(Target);
+		const UStaticMeshComponent* SourceMesh = Cast<UStaticMeshComponent>(Source);
+		if (Name == FName(TEXT("StaticMesh")) && TargetMesh != nullptr && SourceMesh != nullptr)
+		{
+			TargetMesh->SetStaticMesh(SourceMesh->GetStaticMesh());
+			continue;
+		}
+		// Through text, so a Blueprint bool lands correctly in a native bitfield (CopyCompleteValue would use the target's bit mask on the source byte).
+		FString Text;
+		From->ExportText_InContainer(0, Text, Source, nullptr, const_cast<UActorComponent*>(Source), PPF_None);
+		To->ImportText_InContainer(*Text, Target, Target, PPF_None);
 	}
 	return true;
 }

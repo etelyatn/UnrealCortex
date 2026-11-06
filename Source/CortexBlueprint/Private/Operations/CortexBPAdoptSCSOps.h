@@ -55,6 +55,8 @@ public:
 		TArray<FString> InstancedKeys;
 		/** Differing properties the target class does not declare (a Blueprint component class's own variables). */
 		TArray<FString> DroppedProperties;
+		/** Every child SCS node of the source, whether or not it is re-attached (removing the node promotes them). */
+		TArray<FString> Children;
 		TArray<FString> ChildrenToReattach;
 		TArray<FCortexMemberReference> Nodes;
 		TArray<FGuid> BoundEvents;

@@ -107,8 +107,7 @@ bool FCortexBPAdoptSCSPlanTest::RunTest(const FString& Parameters)
 	}
 
 	// A second Blueprint-parent child of the node would be the acknowledgment's other half; the plan reports per child.
-	CortexAdoptSCSTest::ScsRetire(ChildBlueprint);
-	CortexAdoptSCSTest::ScsRetire(Blueprint);
+	CortexAdoptSCSTest::ScsRetire(ChildBlueprint, Blueprint);
 	return true;
 }
 
@@ -175,10 +174,25 @@ bool FCortexBPAdoptSCSPlanRefusalsTest::RunTest(const FString& Parameters)
 		AddExpectedErrorPlain(TEXT("Tried to create a property NativeMirror in scope"), EAutomationExpectedErrorFlags::Contains, -1);
 		FMirrorFixture Same = MakeSameNameMirror(TEXT("AdoptSCSSameName"));
 		UBlueprint* Blueprint = Same.Blueprint;
-		AddInfo(FString::Printf(TEXT("Same-name Blueprint status after compile: %d"), static_cast<int32>(Blueprint->Status)));
+		TestEqual(TEXT("The same-name Blueprint is in error"), Blueprint->Status, BS_Error);
 		const FCortexCommandResult Result = DryRun(Blueprint, TEXT("NativeMirror"), TEXT("NativeMirror"));
 		TestFalse(TEXT("A same-named node without remove_scs refuses"), Result.bSuccess);
 		TestEqual(TEXT("INVALID_OPERATION"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+		TestTrue(TEXT("It is the same-name rule that refused, not the error gate"), Result.ErrorMessage.Contains(TEXT("must be removed")));
+
+		// A node-level compiler error next to the collision makes the error gate refuse.
+		if (Same.Get != nullptr)
+		{
+			Same.Get->bHasCompilerMessage = true;
+			Same.Get->ErrorType = EMessageSeverity::Error;
+			TSharedPtr<FJsonObject> Gate = AdoptSCSParams(Blueprint, TEXT("NativeMirror"), TEXT("NativeMirror"), true);
+			Gate->SetBoolField(TEXT("remove_scs"), true);
+			const FCortexCommandResult Gated = FCortexBPAdoptSCSOps::Execute(Gate);
+			TestFalse(TEXT("An extra node error refuses"), Gated.bSuccess);
+			TestTrue(TEXT("The error gate refused"), Gated.ErrorMessage.Contains(TEXT("compiler errors")));
+			Same.Get->bHasCompilerMessage = false;
+			Same.Get->ErrorType = EMessageSeverity::Info;
+		}
 
 		TSharedPtr<FJsonObject> Removing = AdoptSCSParams(Blueprint, TEXT("NativeMirror"), TEXT("NativeMirror"), true);
 		Removing->SetBoolField(TEXT("remove_scs"), true);
@@ -241,7 +255,6 @@ bool FCortexBPAdoptSCSPlanIchTest::RunTest(const FString& Parameters)
 	UInheritableComponentHandler* Handler = Fixture.Blueprint->GetInheritableComponentHandler(false);
 	TestTrue(TEXT("No override exists after the dry run"), Handler == nullptr || Handler->GetOverridenComponentTemplate(FComponentKey(ParentNode)) == nullptr);
 
-	CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint);
-	CortexAdoptSCSTest::ScsRetire(Parent);
+	CortexAdoptSCSTest::ScsRetire(Fixture.Blueprint, Parent);
 	return true;
 }

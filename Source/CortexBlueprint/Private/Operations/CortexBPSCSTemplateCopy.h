@@ -39,8 +39,10 @@ public:
 	/**
 	 * Differences of Source against its archetype, sorted by name. TargetClass decides bOnTarget; TargetOrNull supplies
 	 * TargetText when it declares the property. Engine-owned placement data (attachment, creation method) is not template data.
+	 * DeltaArchetype is what the differences are measured against (default: the source's own archetype). A swap passes the new class's
+	 * defaults, so values the old class carried in its defaults count as data.
 	 */
-	static void CollectDifferences(const UActorComponent* Source, const UClass* TargetClass, const UActorComponent* TargetOrNull, TArray<FDiff>& OutDiffs);
+	static void CollectDifferences(const UActorComponent* Source, const UClass* TargetClass, const UActorComponent* TargetOrNull, TArray<FDiff>& OutDiffs, const UObject* DeltaArchetype = nullptr);
 
 	/**
 	 * Copies the Selected properties of Source onto Target; every other property of Target is left alone. Instanced

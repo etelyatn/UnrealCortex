@@ -273,7 +273,7 @@ bool FCortexBPAdoptSCSSameNameTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	UBlueprint* Blueprint = Fixture.Blueprint;
-	AddInfo(FString::Printf(TEXT("Fixture status %d"), static_cast<int32>(Blueprint->Status)));
+	TestEqual(TEXT("The fixture is in error (the collision)"), Blueprint->Status, BS_Error);
 	const TSet<FGuid> NodesBefore = ScsNodeGuids(Blueprint);
 
 	TSharedPtr<FJsonObject> Params = AdoptSCSParams(Blueprint, TEXT("NativeMirror"), TEXT("NativeMirror"));
@@ -371,8 +371,7 @@ bool FCortexBPAdoptSCSIchTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("The get node names ParentComp"), Fixture.Get->GetVarName(), FName(TEXT("ParentComp")));
 	TestTrue(TEXT("Blueprint compiled"), ScsIsUpToDate(Blueprint));
 
-	CortexAdoptSCSTest::ScsRetire(Blueprint);
-	CortexAdoptSCSTest::ScsRetire(Parent);
+	CortexAdoptSCSTest::ScsRetire(Blueprint, Parent);
 	return true;
 }
 
@@ -537,6 +536,85 @@ bool FCortexBPAdoptSCSNoCompileTest::RunTest(const FString& Parameters)
 		TestNotNull(TEXT("Payload duplicated on the CDO subobject"), Target->Payload.Get());
 	}
 	TestEqual(TEXT("The get node names NativeMirror"), Fixture.Get->GetVarName(), FName(TEXT("NativeMirror")));
+	CortexAdoptSCSTest::ScsRetire(Blueprint);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAdoptSCSIchDuplicateTest,
+	"Cortex.Blueprint.AdoptSCS.IchPlainDuplicate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAdoptSCSIchDuplicateTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexAdoptSCSTest;
+	using namespace CortexAdoptSCSApplyTestPrivate;
+	using CortexAdoptMemberTest::Explain;
+
+	// A duplicate that already equals the inherited component: the engine drops an identical override record at compile,
+	// and the adoption must still succeed (the effective value is what is read back).
+	UBlueprint* Parent = MakeBlueprint(TEXT("AdoptSCSIchDupParent"), AActor::StaticClass());
+	USCS_Node* ParentNode = Parent->SimpleConstructionScript->CreateNode(UCortexBPAdoptNativeComponent::StaticClass(), TEXT("ParentComp"));
+	Parent->SimpleConstructionScript->AddNode(ParentNode);
+	FKismetEditorUtilities::CompileBlueprint(Parent);
+	UBlueprint* Child = MakeBlueprint(TEXT("AdoptSCSIchDupChild"), Parent->GeneratedClass);
+	USCS_Node* Dup = Child->SimpleConstructionScript->CreateNode(UCortexBPAdoptNativeComponent::StaticClass(), TEXT("DupComp"));
+	Child->SimpleConstructionScript->AddNode(Dup);
+	FKismetEditorUtilities::CompileBlueprint(Child);
+
+	TSharedPtr<FJsonObject> Params = AdoptSCSParams(Child, TEXT("DupComp"), TEXT("ParentComp"));
+	Params->SetBoolField(TEXT("remove_scs"), true);
+	const FCortexCommandResult Result = FCortexBPAdoptSCSOps::Execute(Params);
+	if (!Result.bSuccess)
+	{
+		AddInfo(Explain(Result));
+	}
+	TestTrue(TEXT("Nothing differs from the inherited component and the adoption still succeeds"), Result.bSuccess);
+	TestNull(TEXT("The node is removed"), Child->SimpleConstructionScript->FindSCSNode(TEXT("DupComp")));
+	TestTrue(TEXT("Compiled"), ScsIsUpToDate(Child));
+	CortexAdoptSCSTest::ScsRetire(Child, Parent);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAdoptSCSRemoveNoAttachTest,
+	"Cortex.Blueprint.AdoptSCS.RemoveWithoutAttach",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAdoptSCSRemoveNoAttachTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexAdoptTest;
+	using namespace CortexAdoptSCSTest;
+	using namespace CortexAdoptSCSApplyTestPrivate;
+	using CortexAdoptMemberTest::Explain;
+
+	FMirrorFixture Fixture = MakeMirror(TEXT("AdoptSCSRemoveNoAttach"), TEXT("MirrorBP"), true, true, false);
+	if (!TestNotNull(TEXT("Fixture"), Fixture.Blueprint) || !TestTrue(TEXT("Nodes"), Fixture.Mirror != nullptr && Fixture.Child != nullptr))
+	{
+		return false;
+	}
+	UBlueprint* Blueprint = Fixture.Blueprint;
+	// The source is a root node attached to the native root; removing it promotes the child with that parent link.
+	USceneComponent* NativeRoot = ScsNativeMirrorOf(Blueprint);
+	if (!TestNotNull(TEXT("Native root"), NativeRoot))
+	{
+		return false;
+	}
+	Fixture.Mirror->SetParent(NativeRoot);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	TSharedPtr<FJsonObject> Params = AdoptSCSParams(Blueprint, TEXT("MirrorBP"), TEXT("NativeMirror"));
+	SetStrings(Params, TEXT("copy"), {TEXT("properties")});
+	Params->SetBoolField(TEXT("remove_scs"), true);
+	const FCortexCommandResult Result = FCortexBPAdoptSCSOps::Execute(Params);
+	if (!Result.bSuccess)
+	{
+		AddInfo(Explain(Result));
+	}
+	TestTrue(TEXT("The promoted child's parent link change is part of the planned scope"), Result.bSuccess);
+	const USCS_Node* Child = Blueprint->SimpleConstructionScript->FindSCSNode(TEXT("MirrorChild"));
+	TestTrue(TEXT("The child was promoted to the removed node's parent"), Child != nullptr && Child->bIsParentComponentNative);
 	CortexAdoptSCSTest::ScsRetire(Blueprint);
 	return true;
 }

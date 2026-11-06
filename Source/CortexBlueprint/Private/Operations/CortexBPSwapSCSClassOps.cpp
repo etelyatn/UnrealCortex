@@ -361,7 +361,8 @@ FCortexBPSwapSCSClassOps::FSwapPlan FCortexBPSwapSCSClassOps::BuildPlan(UBluepri
 
 	// Template data by property name.
 	TArray<FCortexBPSCSTemplateCopy::FDiff> Differences;
-	FCortexBPSCSTemplateCopy::CollectDifferences(Source, NewClass, nullptr, Differences);
+	// Measured against the new class's defaults: a value the old component Blueprint carries in its class defaults is data too.
+	FCortexBPSCSTemplateCopy::CollectDifferences(Source, NewClass, nullptr, Differences, NewClass->GetDefaultObject());
 	TSet<FName> Handled;
 	TArray<FString> Keys;
 	for (const FCortexBPSCSTemplateCopy::FDiff& Diff : Differences)
@@ -687,6 +688,11 @@ namespace CortexSwapSCSPrivate
 			for (const FOps::FMoved& Moved : Plan->Moved)
 			{
 				MovedNames.Add(Moved.Property);
+			}
+			// The harvest copy is a delta against the old archetype and skips values the old class defaults supply; kept values move by name.
+			for (const FCortexBPSCSTemplateCopy::FDiff& Kept : Plan->Kept)
+			{
+				MovedNames.AddUnique(Kept.Name);
 			}
 			if ((!Selected.IsEmpty() && !FCortexBPSCSTemplateCopy::CopySelected(OldTemplate, NewTemplate, Selected, OutError))
 				|| !FCortexBPSCSTemplateCopy::CopyByName(OldTemplate, NewTemplate, MovedNames, OutError))
