@@ -365,6 +365,97 @@ bool FCortexGraphBindingStorage::IsAnimNode(const UEdGraphNode* Node)
 	return Node != nullptr && NodeBase != nullptr && Node->IsA(NodeBase);
 }
 
+bool FCortexGraphBindingStorage::CloneBindingMap(const FCortexBindingMapSnapshot& Source, FCortexBindingMapSnapshot& OutClone)
+{
+	if (!Source.IsValid())
+	{
+		return false;
+	}
+	OutClone.Reset();
+	OutClone.Memory = static_cast<uint8*>(FMemory::Malloc(Source.Property->GetSize(), Source.Property->GetMinAlignment()));
+	OutClone.Property = Source.Property;
+	Source.Property->InitializeValue(OutClone.Memory);
+	Source.Property->CopyCompleteValue(OutClone.Memory, Source.Memory);
+	return true;
+}
+
+bool FCortexGraphBindingStorage::RewriteSnapshotEntry(FCortexBindingMapSnapshot& Snapshot, FName PropertyName, int32 ArrayIndex, const TArray<FString>& NewPath, const FText& NewPathText)
+{
+	using namespace CortexGraphBindingStoragePrivate;
+	if (!Snapshot.IsValid())
+	{
+		return false;
+	}
+	const FFields& F = Fields();
+	FScriptMapHelper Helper(Snapshot.Property, Snapshot.Memory);
+	for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
+	{
+		if (!Helper.IsValidIndex(Index))
+		{
+			continue;
+		}
+		uint8* Value = Helper.GetValuePtr(Index);
+		const FCortexBindingEntry Entry = ToEntry(Value);
+		if (Entry.PropertyName != PropertyName || Entry.ArrayIndex != ArrayIndex)
+		{
+			continue;
+		}
+		FScriptArrayHelper Path(F.EntryPath, F.EntryPath->ContainerPtrToValuePtr<void>(Value));
+		Path.EmptyValues();
+		for (const FString& Segment : NewPath)
+		{
+			F.EntryPathElement->SetPropertyValue(Path.GetRawPtr(Path.AddValue()), Segment);
+		}
+		F.EntryPathText->SetPropertyValue_InContainer(Value, NewPathText);
+		return true;
+	}
+	return false;
+}
+
+bool FCortexGraphBindingStorage::BindingMapMatchesContent(const UK2Node* Node, const FCortexBindingMapSnapshot& Snapshot)
+{
+	using namespace CortexGraphBindingStoragePrivate;
+	UObject* Binding = LocateBinding(Node);
+	if (Binding == nullptr || !Snapshot.IsValid())
+	{
+		return false;
+	}
+	const FFields& F = Fields();
+	auto ExportEntries = [&F](const FMapProperty* Map, void* MapMemory)
+	{
+		TMap<FString, FString> Out;
+		FScriptMapHelper Helper(Map, MapMemory);
+		for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
+		{
+			if (!Helper.IsValidIndex(Index))
+			{
+				continue;
+			}
+			FString Key;
+			F.BindingMapKey->ExportText_Direct(Key, Helper.GetKeyPtr(Index), Helper.GetKeyPtr(Index), nullptr, PPF_None);
+			FString Text;
+			F.BindingMapValue->ExportText_Direct(Text, Helper.GetValuePtr(Index), Helper.GetValuePtr(Index), nullptr, PPF_None);
+			Out.Add(Key, Text);
+		}
+		return Out;
+	};
+	const TMap<FString, FString> Live = ExportEntries(F.BindingMap, MapPtr(Binding));
+	const TMap<FString, FString> Expected = ExportEntries(Snapshot.Property, Snapshot.Memory);
+	if (Live.Num() != Expected.Num())
+	{
+		return false;
+	}
+	for (const TPair<FString, FString>& Pair : Expected)
+	{
+		const FString* Current = Live.Find(Pair.Key);
+		if (Current == nullptr || *Current != Pair.Value)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 void FCortexGraphBindingStorage::MarkBindingModified(UK2Node* Node)
 {
 	using namespace CortexGraphBindingStoragePrivate;

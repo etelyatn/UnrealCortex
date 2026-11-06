@@ -35,6 +35,9 @@ public:
 
 	static FPathResolution ResolvePath(const UBlueprint* Blueprint, const TArray<FString>& Path);
 
+	/** The display text the engine gives a binding path on the Blueprint's skeleton class (IPropertyAccessEditor::MakeTextPath). */
+	static FText MakePathText(const UBlueprint* Blueprint, const TArray<FString>& Path);
+
 	/**
 	 * The path segments that resolve to the Blueprint-declared function named FunctionName, split by ownership with the engine's own
 	 * rename predicate (AnimGraphNodeBinding_Base.cpp HandleFunctionRenamed: same name and a declaring class that is a child of the

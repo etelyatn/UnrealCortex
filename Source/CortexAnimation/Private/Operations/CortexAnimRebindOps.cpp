@@ -385,7 +385,7 @@ namespace CortexAnimRebindPrivate
 					}
 					const bool bSame = Current->Path == ExpectedPath && Current->bFunction == Before.bFunction && Current->bIsBound == Before.bIsBound
 						&& Current->bIsPromotion == Before.bIsPromotion && Current->bOnlyUpdateWhenActive == Before.bOnlyUpdateWhenActive
-						&& (Owned != nullptr || Current->PathText == Before.PathText);
+						&& Current->PathText == (Owned != nullptr ? FCortexAnimBindingReport::MakePathText(AnimBlueprint, ExpectedPath).ToString() : Before.PathText);
 					if (!bSame)
 					{
 						OutMismatches.Add(FString::Printf(TEXT("binding %s of %s is not the planned result"), *Before.PropertyName.ToString(), *GuidText(Node->NodeGuid)));
@@ -681,6 +681,45 @@ FCortexCommandResult FCortexAnimRebindOps::RebindFunction(const TSharedPtr<FJson
 		}
 	}
 
+	// The edits must equal the plan exactly: every planned node's binding map is compared, entry by entry and field by field (paths,
+	// display text, flags, pin types, contexts), with a copy of the journal in which only the planned rewrites were applied.
+	auto VerifyEdits = [&](TArray<FString>& OutMismatches)
+	{
+		for (const FNodePlan& Plan : Plans)
+		{
+			if (Plan.OwnedBindings.Num() == 0)
+			{
+				continue;
+			}
+			const FNodeJournal* Entry = Journal.Nodes.FindByPredicate([&Plan](const FNodeJournal& Candidate) { return Candidate.Node.Get() == Plan.Node; });
+			FCortexBindingMapSnapshot Expected;
+			if (Entry == nullptr || !FCortexAnimBindingReflection::CloneBindingMap(Entry->Bindings, Expected))
+			{
+				OutMismatches.Add(FString::Printf(TEXT("no journal copy of %s"), *GuidText(Plan.Node->NodeGuid)));
+				continue;
+			}
+			for (const FBindingOccurrence& Owned : Plan.OwnedBindings)
+			{
+				const FCortexAnimBindingEntry* Before = Entry->EntriesBefore.FindByPredicate([&Owned](const FCortexAnimBindingEntry& Candidate) { return SameKey(Candidate, FCortexAnimBindingEntry{ Owned.PropertyName, Owned.ArrayIndex }); });
+				if (Before == nullptr)
+				{
+					OutMismatches.Add(FString::Printf(TEXT("planned binding %s of %s is not in the journal"), *Owned.PropertyName.ToString(), *GuidText(Plan.Node->NodeGuid)));
+					continue;
+				}
+				TArray<FString> NewPath = Before->Path;
+				for (const int32 Segment : Owned.Segments)
+				{
+					NewPath[Segment] = ToName.ToString();
+				}
+				FCortexAnimBindingReflection::RewriteSnapshotEntry(Expected, Owned.PropertyName, Owned.ArrayIndex, NewPath, FCortexAnimBindingReport::MakePathText(AnimBlueprint, NewPath));
+			}
+			if (!FCortexAnimBindingReflection::BindingMapMatchesContent(Plan.Node, Expected))
+			{
+				OutMismatches.Add(FString::Printf(TEXT("the binding map of %s is not exactly the planned result"), *GuidText(Plan.Node->NodeGuid)));
+			}
+		}
+	};
+
 	// The single failure route.
 	auto Recover = [&](const TCHAR* Phase, const FString& Reason, const FString& ErrorCode) -> FCortexCommandResult
 	{
@@ -738,6 +777,15 @@ FCortexCommandResult FCortexAnimRebindOps::RebindFunction(const TSharedPtr<FJson
 	if (Fault(EPhase::AfterMutation, AnimBlueprint))
 	{
 		return Recover(TEXT("mutation"), TEXT("injected failure after the edits"), CortexErrorCodes::VerificationFailed);
+	}
+
+	{
+		TArray<FString> EditMismatches;
+		VerifyEdits(EditMismatches);
+		if (EditMismatches.Num() > 0)
+		{
+			return Recover(TEXT("readback"), FString::Join(EditMismatches, TEXT("; ")), CortexErrorCodes::VerificationFailed);
+		}
 	}
 
 	if (bCompile)

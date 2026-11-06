@@ -5,6 +5,7 @@
 #include "Animation/AnimExecutionContext.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimNodeReference.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "UObject/Object.h"
 #include "CortexAnimationTestNativeInstance.generated.h"
 
@@ -63,4 +64,29 @@ public:
 
 	UFUNCTION()
 	void AnimNotify_WithParam(float Value) {}
+};
+
+/** A function library whose class carries BlueprintThreadSafe: its functions are thread safe unless one opts out with NotBlueprintThreadSafe. */
+UCLASS(meta = (BlueprintThreadSafe))
+class UCortexAnimTestSafeLibrary : public UBlueprintFunctionLibrary
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintPure, Category = "Cortex")
+	static float SafeByClass() { return 0.0f; }
+
+	UFUNCTION(BlueprintPure, Category = "Cortex", meta = (NotBlueprintThreadSafe))
+	static float UnsafeByClass() { return 0.0f; }
+};
+
+/** A plain function library: nothing in it is thread safe. */
+UCLASS()
+class UCortexAnimTestPlainLibrary : public UBlueprintFunctionLibrary
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintPure, Category = "Cortex")
+	static float PlainUnsafe() { return 0.0f; }
 };

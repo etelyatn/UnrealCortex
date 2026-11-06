@@ -10,6 +10,7 @@
 #include "Editor.h"
 #include "Editor/Transactor.h"
 #include "K2Node_CallFunction.h"
+#include "Operations/CortexAnimBindingReport.h"
 #include "Operations/CortexAnimRebindOps.h"
 
 namespace
@@ -92,6 +93,15 @@ bool FCortexAnimationRebindFunctionTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("no owned occurrence of the source remains"), Player->ReferencesFunction(TEXT("GetDir"), nullptr));
 		TestTrue(TEXT("the K2 call node still names GetDir"), CallNode != nullptr && CallNode->FunctionReference.GetMemberName() == FName(TEXT("GetDir")));
 		TestTrue(TEXT("the Anim Blueprint compiled"), AnimBlueprint->Status != BS_Error);
+	}
+
+	// ── One editor undo restores the rewritten function binding ──
+	{
+		const bool bUndone = GEditor != nullptr && GEditor->UndoTransaction();
+		TestTrue(TEXT("the editor undo runs"), bUndone);
+		TestTrue(TEXT("the function binding is back on the Blueprint getter after the undo"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
+		TestTrue(TEXT("the engine virtual agrees after the undo"), Player->ReferencesFunction(TEXT("GetDir"), nullptr));
+		TestTrue(TEXT("the K2 call node was never touched"), CallNode != nullptr && CallNode->FunctionReference.GetMemberName() == FName(TEXT("GetDir")));
 	}
 
 	return true;
@@ -380,6 +390,100 @@ bool FCortexAnimationRebindSlotTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("the slot is back after the undo"), Player->UpdateFunction.GetMemberName() == FName(TEXT("OnUpdate")));
 		TestTrue(TEXT("the variable binding survived the undo"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("Speed") });
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationRebindExactEditsTest,
+	"Cortex.Animation.RebindMember.ExactEdits",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationRebindExactEditsTest::RunTest(const FString& Parameters)
+{
+	using EPhase = FCortexAnimRebindOps::EPhase;
+
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
+	{
+		return false;
+	}
+	FFixtureGuard Guard(AnimBlueprint);
+
+	TestTrue(TEXT("Speed variable"), AddVariable(AnimBlueprint, TEXT("Speed"), FloatPinType(), TEXT("0.0")));
+	if (!TestNotNull(TEXT("Blueprint getter"), AddBlueprintFloatGetter(AnimBlueprint, TEXT("GetDir"))))
+	{
+		return false;
+	}
+	CompileAndAssertClean(*this, AnimBlueprint);
+	UAnimGraphNode_SequencePlayer* Player = AddSequencePlayerNode(AnimBlueprint);
+	if (!TestNotNull(TEXT("sequence player"), Player))
+	{
+		return false;
+	}
+	// A planned entry (PlayRate -> GetDir) next to an unplanned one (StartPosition -> Speed) on the same node.
+	TestTrue(TEXT("source binding"), BindPropertyByReflection(Player, TEXT("PlayRate"), { TEXT("GetDir") }, /*bFunction=*/true));
+	TestTrue(TEXT("unplanned binding"), BindPropertyByReflection(Player, TEXT("StartPosition"), { TEXT("Speed") }));
+	AnimBlueprint->GetPackage()->SetDirtyFlag(false);
+	FCortexCommandRouter Router = MakeAnimGraphRouter();
+
+	const FString OwnedTextBefore = ReadBindingField(Player, TEXT("PlayRate"), TEXT("PathAsText"));
+	const FString ContextBefore = ReadBindingField(Player, TEXT("PlayRate"), TEXT("ContextId"));
+	const FString FlagBefore = ReadBindingField(Player, TEXT("StartPosition"), TEXT("bOnlyUpdateWhenActive"));
+
+	struct FTamper
+	{
+		const TCHAR* Label;
+		FName Key;
+		const TCHAR* Field;
+		const TCHAR* Value;
+	};
+	// Each fault changes a field the plan does not authorize, between the edits and their verification: an unplanned entry's flag, the owned
+	// entry's display text (which only the engine's own text for the new path may produce), and a field no projection ever looked at.
+	const FTamper Tampers[] = {
+		{ TEXT("an unplanned entry's flag"), TEXT("StartPosition"), TEXT("bOnlyUpdateWhenActive"), TEXT("True") },
+		{ TEXT("the owned entry's display text"), TEXT("PlayRate"), TEXT("PathAsText"), TEXT("INVTEXT(\"tampered\")") },
+		{ TEXT("a field the projection never compared"), TEXT("PlayRate"), TEXT("ContextId"), TEXT("Tampered") },
+	};
+	for (const FTamper& Tamper : Tampers)
+	{
+		FCortexAnimRebindOps::SetFaultHookForTest([&](EPhase Called, UAnimBlueprint*)
+		{
+			if (Called == EPhase::AfterMutation)
+			{
+				TestTrue(FString(Tamper.Label) + TEXT(": the fault is injected"), TamperBindingField(Player, Tamper.Key, Tamper.Field, Tamper.Value));
+			}
+			return false;
+		});
+		const FCortexCommandResult Failed = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
+		FCortexAnimRebindOps::ClearFaultHookForTest();
+
+		TestFalse(FString(Tamper.Label) + TEXT(": the exact edit verification fails the call"), Failed.bSuccess);
+		TestEqual(FString(Tamper.Label) + TEXT(": the error code"), Failed.ErrorCode, CortexErrorCodes::VerificationFailed);
+		FString Phase;
+		FString RollbackStatus;
+		if (Failed.ErrorDetails.IsValid())
+		{
+			Failed.ErrorDetails->TryGetStringField(TEXT("failed_phase"), Phase);
+			Failed.ErrorDetails->TryGetStringField(TEXT("rollback_status"), RollbackStatus);
+		}
+		TestEqual(FString(Tamper.Label) + TEXT(": caught by the readback"), Phase, FString(TEXT("readback")));
+		TestEqual(FString(Tamper.Label) + TEXT(": rollback_status"), RollbackStatus, FString(TEXT("restored")));
+		TestTrue(FString(Tamper.Label) + TEXT(": the source binding is back"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
+		TestEqual(FString(Tamper.Label) + TEXT(": the owned display text is back"), ReadBindingField(Player, TEXT("PlayRate"), TEXT("PathAsText")), OwnedTextBefore);
+		TestEqual(FString(Tamper.Label) + TEXT(": the context is back"), ReadBindingField(Player, TEXT("PlayRate"), TEXT("ContextId")), ContextBefore);
+		TestEqual(FString(Tamper.Label) + TEXT(": the unplanned flag is back"), ReadBindingField(Player, TEXT("StartPosition"), TEXT("bOnlyUpdateWhenActive")), FlagBefore);
+		TestFalse(FString(Tamper.Label) + TEXT(": the dirty flag is restored"), AnimBlueprint->GetPackage()->IsDirty());
+	}
+
+	// Without a fault the same call passes the same verification, and the owned entry carries the engine's text for the new path.
+	const FCortexCommandResult Apply = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
+	TestTrue(*FString::Printf(TEXT("the unfaulted apply succeeds (%s: %s)"), *Apply.ErrorCode, *Apply.ErrorMessage), Apply.bSuccess);
+	FString ExpectedText;
+	FTextStringHelper::WriteToBuffer(ExpectedText, FCortexAnimBindingReport::MakePathText(AnimBlueprint, { TEXT("GetNativeDirection") }));
+	TestEqual(TEXT("the owned display text is the engine's text of the new path"), ReadBindingField(Player, TEXT("PlayRate"), TEXT("PathAsText")), ExpectedText);
+	TestEqual(TEXT("the unplanned entry kept its flag"), ReadBindingField(Player, TEXT("StartPosition"), TEXT("bOnlyUpdateWhenActive")), FlagBefore);
 
 	return true;
 }

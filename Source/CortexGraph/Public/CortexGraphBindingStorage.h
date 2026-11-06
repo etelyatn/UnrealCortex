@@ -90,6 +90,18 @@ public:
 	/** Whether the node is an animation graph node (class UAnimGraphNode_Base, found by path so no animation module is linked). */
 	static bool IsAnimNode(const UEdGraphNode* Node);
 
+	/** An independent copy of a snapshot (the basis of an expected state: copy the journal, apply the planned edits, compare). */
+	static bool CloneBindingMap(const FCortexBindingMapSnapshot& Source, FCortexBindingMapSnapshot& OutClone);
+
+	/** Rewrites one entry of a snapshot to a new path and display text; every other field of the entry is kept. False when the entry is absent. */
+	static bool RewriteSnapshotEntry(FCortexBindingMapSnapshot& Snapshot, FName PropertyName, int32 ArrayIndex, const TArray<FString>& NewPath, const FText& NewPathText);
+
+	/**
+	 * Whether the node's binding map has exactly the content of the snapshot: the same entries (by key) and, per entry, the same exported
+	 * text of every field (paths, display text, flags, pin types, contexts). Unlike BindingMapMatches it does not depend on FText identity.
+	 */
+	static bool BindingMapMatchesContent(const UK2Node* Node, const FCortexBindingMapSnapshot& Snapshot);
+
 	/**
 	 * Records the node's Binding sub-object in the active editor transaction. The sub-object is created without
 	 * RF_Transactional, so a plain Modify() records nothing and an undo would leave the map as it was.

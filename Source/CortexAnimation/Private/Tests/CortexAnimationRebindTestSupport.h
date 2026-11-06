@@ -83,6 +83,51 @@ namespace CortexAnimTest
 		return false;
 	}
 
+	/** The value memory of one binding-map entry (test-only reflection, like BindPropertyByReflection). */
+	inline uint8* FindBindingEntry(UAnimGraphNode_Base* Node, const FName Key, const FStructProperty*& OutValueStruct)
+	{
+		UObject* Binding = nullptr;
+		const FMapProperty* Map = FindBindingMap(Node, Binding);
+		const FNameProperty* KeyProperty = Map != nullptr ? CastField<FNameProperty>(Map->KeyProp) : nullptr;
+		OutValueStruct = Map != nullptr ? CastField<FStructProperty>(Map->ValueProp) : nullptr;
+		if (KeyProperty == nullptr || OutValueStruct == nullptr)
+		{
+			return nullptr;
+		}
+		FScriptMapHelper Helper(Map, Map->ContainerPtrToValuePtr<void>(Binding));
+		for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
+		{
+			if (Helper.IsValidIndex(Index) && KeyProperty->GetPropertyValue(Helper.GetKeyPtr(Index)) == Key)
+			{
+				return Helper.GetValuePtr(Index);
+			}
+		}
+		return nullptr;
+	}
+
+	/** Sets one field of one binding entry from its exported text (a fault injected behind the plan's back). */
+	inline bool TamperBindingField(UAnimGraphNode_Base* Node, const FName Key, const TCHAR* Field, const FString& ImportText)
+	{
+		const FStructProperty* ValueStruct = nullptr;
+		uint8* Value = FindBindingEntry(Node, Key, ValueStruct);
+		const FProperty* Property = Value != nullptr ? ValueStruct->Struct->FindPropertyByName(Field) : nullptr;
+		return Property != nullptr && Property->ImportText_Direct(*ImportText, Property->ContainerPtrToValuePtr<void>(Value), nullptr, PPF_None) != nullptr;
+	}
+
+	/** The exported text of one field of one binding entry; empty when absent. */
+	inline FString ReadBindingField(UAnimGraphNode_Base* Node, const FName Key, const TCHAR* Field)
+	{
+		const FStructProperty* ValueStruct = nullptr;
+		uint8* Value = FindBindingEntry(Node, Key, ValueStruct);
+		const FProperty* Property = Value != nullptr ? ValueStruct->Struct->FindPropertyByName(Field) : nullptr;
+		FString Text;
+		if (Property != nullptr)
+		{
+			Property->ExportText_Direct(Text, Property->ContainerPtrToValuePtr<void>(Value), Property->ContainerPtrToValuePtr<void>(Value), nullptr, PPF_None);
+		}
+		return Text;
+	}
+
 	/** Counts the compiles of one Blueprint (UBlueprint::OnCompiled fires once per compile). */
 	struct FCompileCounter
 	{

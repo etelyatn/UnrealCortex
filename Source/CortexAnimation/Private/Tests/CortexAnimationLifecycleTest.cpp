@@ -3,6 +3,7 @@
 #include "Animation/AnimInstance.h"
 #include "CortexAnimationTestAnimBlueprint.h"
 #include "CortexAnimationTestNativeInstance.h"
+#include "CortexAnimationRebindTestSupport.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Event.h"
@@ -125,8 +126,7 @@ bool FCortexAnimationAnimBlueprintLifecycleTest::RunTest(const FString& Paramete
 		TestEqual(TEXT("native_equivalent"), ThreadSafe->GetStringField(TEXT("native_equivalent")), FString(TEXT("NativeThreadSafeUpdateAnimation")));
 		TestTrue(TEXT("node_count counts the graph"), static_cast<int32>(ThreadSafe->GetNumberField(TEXT("node_count"))) >= 3);
 		const TArray<FString> UnthreadSafe = CalledFunctions(ThreadSafe);
-		TestTrue(TEXT("PrintString is reported as a non-thread-safe call"), UnthreadSafe.Contains(TEXT("PrintString")));
-		TestFalse(TEXT("the thread-safe getter is not reported"), UnthreadSafe.Contains(TEXT("GetNativeSpeed")));
+		TestTrue(TEXT("exactly PrintString is reported as a non-thread-safe call"), UnthreadSafe == TArray<FString>{ TEXT("PrintString") });
 	}
 
 	const TSharedPtr<FJsonObject> Update = LifecycleEntry(Info.Data, TEXT("BlueprintUpdateAnimation"));
@@ -151,6 +151,124 @@ bool FCortexAnimationAnimBlueprintLifecycleTest::RunTest(const FString& Paramete
 	const FCortexCommandResult Bare = Router.Execute(TEXT("anim.get_animbp_info"), MakeAssetParams(AnimBlueprint));
 	TestFalse(TEXT("no lifecycle without include"), Bare.bSuccess && Bare.Data->HasField(TEXT("lifecycle")));
 	TestFalse(TEXT("no uses_multithreaded_update without include"), Bare.bSuccess && Bare.Data->HasField(TEXT("uses_multithreaded_update")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationAnimBlueprintLifecycleCallsTest,
+	"Cortex.Animation.AnimBlueprint.LifecycleCalls",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationAnimBlueprintLifecycleCallsTest::RunTest(const FString& Parameters)
+{
+	// ── The exact non-thread-safe list: function metadata, class metadata, and a function that opts out of its class ──
+	{
+		UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+		if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
+		{
+			return false;
+		}
+		FFixtureGuard Guard(AnimBlueprint);
+
+		UEdGraph* Graph = AddBlueprintFunction(AnimBlueprint, TEXT("BlueprintThreadSafeUpdateAnimation"));
+		const UFunction* FunctionSafe = UCortexAnimTestNativeInstance::StaticClass()->FindFunctionByName(TEXT("GetNativeSpeed"));
+		const UFunction* ClassSafe = UCortexAnimTestSafeLibrary::StaticClass()->FindFunctionByName(TEXT("SafeByClass"));
+		const UFunction* ClassOptOut = UCortexAnimTestSafeLibrary::StaticClass()->FindFunctionByName(TEXT("UnsafeByClass"));
+		const UFunction* Plain = UCortexAnimTestPlainLibrary::StaticClass()->FindFunctionByName(TEXT("PlainUnsafe"));
+		const UFunction* Print = FindObject<UFunction>(nullptr, TEXT("/Script/Engine.KismetSystemLibrary.PrintString"));
+		if (!TestTrue(TEXT("the graph and all five functions exist"), Graph != nullptr && FunctionSafe != nullptr && ClassSafe != nullptr && ClassOptOut != nullptr && Plain != nullptr && Print != nullptr))
+		{
+			return false;
+		}
+		// Thread safe by the function's own metadata, thread safe by the class's metadata; then three that are not, in this order.
+		AddCallNode(Graph, FunctionSafe);
+		AddCallNode(Graph, ClassSafe);
+		AddCallNode(Graph, ClassOptOut);
+		AddCallNode(Graph, Plain);
+		AddCallNode(Graph, Print);
+
+		FCortexCommandRouter Router = MakeAnimGraphRouter();
+		TSharedPtr<FJsonObject> Params = MakeAssetParams(AnimBlueprint);
+		Params->SetArrayField(TEXT("include"), { MakeShared<FJsonValueString>(TEXT("lifecycle")) });
+		const FCortexCommandResult Info = Router.Execute(TEXT("anim.get_animbp_info"), Params);
+		if (!TestTrue(TEXT("lifecycle info succeeds"), Info.bSuccess) || !TestTrue(TEXT("data"), Info.Data.IsValid()))
+		{
+			return false;
+		}
+		TSharedPtr<FJsonObject> Entry;
+		for (const TSharedPtr<FJsonObject>& Candidate : CollectionItems(Info.Data, TEXT("lifecycle")))
+		{
+			if (Candidate->GetStringField(TEXT("name")) == TEXT("BlueprintThreadSafeUpdateAnimation"))
+			{
+				Entry = Candidate;
+			}
+		}
+		if (TestTrue(TEXT("the thread-safe update hook is reported"), Entry.IsValid()))
+		{
+			TArray<FString> Calls;
+			for (const TSharedPtr<FJsonObject>& Call : CollectionItems(Entry, TEXT("non_thread_safe_calls")))
+			{
+				Calls.Add(Call->GetStringField(TEXT("function_name")));
+			}
+			TestTrue(TEXT("exactly the three non-thread-safe calls, in node order"), Calls == TArray<FString>{ TEXT("UnsafeByClass"), TEXT("PlainUnsafe"), TEXT("PrintString") });
+			const TSharedPtr<FJsonObject>* Collection = nullptr;
+			if (TestTrue(TEXT("the collection shape"), Entry->TryGetObjectField(TEXT("non_thread_safe_calls"), Collection)))
+			{
+				TestEqual(TEXT("count"), static_cast<int32>((*Collection)->GetNumberField(TEXT("count"))), 3);
+				TestFalse(TEXT("not truncated"), (*Collection)->GetBoolField(TEXT("truncated")));
+			}
+		}
+	}
+
+	// ── More than 50 non-thread-safe calls are cut at 50 and the cut is reported ──
+	{
+		UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+		if (!TestNotNull(TEXT("Anim Blueprint fixture for the bound"), AnimBlueprint))
+		{
+			return false;
+		}
+		FFixtureGuard Guard(AnimBlueprint);
+
+		UEdGraph* Graph = AddBlueprintFunction(AnimBlueprint, TEXT("BlueprintThreadSafeUpdateAnimation"));
+		const UFunction* Print = FindObject<UFunction>(nullptr, TEXT("/Script/Engine.KismetSystemLibrary.PrintString"));
+		if (!TestTrue(TEXT("graph and PrintString"), Graph != nullptr && Print != nullptr))
+		{
+			return false;
+		}
+		for (int32 Index = 0; Index < 55; ++Index)
+		{
+			AddCallNode(Graph, Print);
+		}
+
+		FCortexCommandRouter Router = MakeAnimGraphRouter();
+		TSharedPtr<FJsonObject> Params = MakeAssetParams(AnimBlueprint);
+		Params->SetArrayField(TEXT("include"), { MakeShared<FJsonValueString>(TEXT("lifecycle")) });
+		const FCortexCommandResult Info = Router.Execute(TEXT("anim.get_animbp_info"), Params);
+		if (!TestTrue(TEXT("lifecycle info succeeds"), Info.bSuccess) || !TestTrue(TEXT("data"), Info.Data.IsValid()))
+		{
+			return false;
+		}
+		bool bFound = false;
+		for (const TSharedPtr<FJsonObject>& Candidate : CollectionItems(Info.Data, TEXT("lifecycle")))
+		{
+			if (Candidate->GetStringField(TEXT("name")) != TEXT("BlueprintThreadSafeUpdateAnimation"))
+			{
+				continue;
+			}
+			bFound = true;
+			const TSharedPtr<FJsonObject>* Collection = nullptr;
+			if (TestTrue(TEXT("the collection shape"), Candidate->TryGetObjectField(TEXT("non_thread_safe_calls"), Collection)))
+			{
+				TestEqual(TEXT("all 55 calls are counted"), static_cast<int32>((*Collection)->GetNumberField(TEXT("count"))), 55);
+				TestEqual(TEXT("50 are returned"), static_cast<int32>((*Collection)->GetNumberField(TEXT("returned"))), 50);
+				TestTrue(TEXT("the cut is reported"), (*Collection)->GetBoolField(TEXT("truncated")));
+				TestEqual(TEXT("the items array holds 50"), JsonObjectArray(*Collection, TEXT("items")).Num(), 50);
+			}
+		}
+		TestTrue(TEXT("the hook is reported"), bFound);
+	}
 
 	return true;
 }

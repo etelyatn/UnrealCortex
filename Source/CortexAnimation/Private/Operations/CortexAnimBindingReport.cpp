@@ -190,6 +190,16 @@ FCortexAnimBindingReport::FPathResolution FCortexAnimBindingReport::ResolvePath(
 	return Resolution;
 }
 
+FText FCortexAnimBindingReport::MakePathText(const UBlueprint* Blueprint, const TArray<FString>& Path)
+{
+	if (Blueprint == nullptr || !IModularFeatures::Get().IsModularFeatureAvailable(TEXT("PropertyAccessEditor")))
+	{
+		return FText::GetEmpty();
+	}
+	IPropertyAccessEditor& PropertyAccessEditor = IModularFeatures::Get().GetModularFeature<IPropertyAccessEditor>(TEXT("PropertyAccessEditor"));
+	return PropertyAccessEditor.MakeTextPath(Path, Blueprint->SkeletonGeneratedClass);
+}
+
 void FCortexAnimBindingReport::ResolveFunctionSegments(const UBlueprint* Blueprint, const TArray<FString>& Path, const FName FunctionName,
 	TArray<int32>& OutOwned, TArray<int32>& OutForeign)
 {

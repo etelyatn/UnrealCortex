@@ -28,7 +28,7 @@ public:
 	/** Where fault injection can intervene. */
 	enum class EPhase : uint8
 	{
-		/** After the edits, before the compile: true fails the operation here. */
+		/** After the edits, before the exact edit verification and the compile: true fails the operation here; the hook may also corrupt state to be caught by the verification. */
 		AfterMutation,
 		/** In place of the compile: true simulates a compile failure. */
 		Compile,

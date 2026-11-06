@@ -42,6 +42,12 @@ public:
 	static bool RestoreBindingMap(UAnimGraphNode_Base* Node, const FCortexBindingMapSnapshot& Snapshot);
 	static bool BindingMapMatches(const UAnimGraphNode_Base* Node, const FCortexBindingMapSnapshot& Snapshot);
 	static void MarkBindingModified(UAnimGraphNode_Base* Node);
+	static bool CloneBindingMap(const FCortexBindingMapSnapshot& Source, FCortexBindingMapSnapshot& OutClone) { return FCortexGraphBindingStorage::CloneBindingMap(Source, OutClone); }
+	static bool RewriteSnapshotEntry(FCortexBindingMapSnapshot& Snapshot, FName PropertyName, int32 ArrayIndex, const TArray<FString>& NewPath, const FText& NewPathText)
+	{
+		return FCortexGraphBindingStorage::RewriteSnapshotEntry(Snapshot, PropertyName, ArrayIndex, NewPath, NewPathText);
+	}
+	static bool BindingMapMatchesContent(const UAnimGraphNode_Base* Node, const FCortexBindingMapSnapshot& Snapshot);
 
 	static bool IsPropertyAccessNode(const UEdGraphNode* Node) { return FCortexGraphBindingStorage::IsPropertyAccessNode(Node); }
 	static bool ReadPropertyAccessNode(const UEdGraphNode* Node, TArray<FString>& OutPath, FString& OutTextPath)

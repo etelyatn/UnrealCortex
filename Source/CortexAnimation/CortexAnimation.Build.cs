@@ -12,6 +12,10 @@ public class CortexAnimation : ModuleRules
 			"CortexCore",
 		});
 
+		// The test-only alternative binding storage (Private/Tests/CortexAnimationTestAltBinding.h) derives from the engine's abstract
+		// UAnimGraphNodeBinding, which lives in AnimGraph's Internal folder.
+		PrivateIncludePaths.Add(System.IO.Path.Combine(EngineDirectory, "Source", "Editor", "AnimGraph", "Internal"));
+
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"CortexGraph",
@@ -24,6 +28,7 @@ public class CortexAnimation : ModuleRules
 			"AnimGraph",
 			"BlueprintGraph",
 			"Kismet",
+			"SlateCore",
 		});
 	}
 }
