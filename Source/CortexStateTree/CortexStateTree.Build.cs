@@ -25,6 +25,9 @@ public class CortexStateTree : ModuleRules
 			"GameplayStateTreeModule",
 			"StateTreeModule",
 			"StateTreeEditorModule",
+			"AIModule",
+			"BlueprintGraph",
+			"Kismet",
 		});
 
 		// UE 5.4: FStateTreeCompilerLog has no ToTokenizedMessages(); messages are

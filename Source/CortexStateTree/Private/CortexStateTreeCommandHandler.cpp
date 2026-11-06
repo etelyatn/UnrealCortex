@@ -3,6 +3,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 #include "Operations/CortexSTAssetOps.h"
+#include "Operations/CortexSTBindingOps.h"
 #include "Operations/CortexSTInspectOps.h"
 #include "Operations/CortexSTStateOps.h"
 #include "Operations/CortexSTTransitionOps.h"
@@ -82,6 +83,10 @@ FCortexCommandResult FCortexStateTreeCommandHandler::Execute(
 	if (Command == TEXT("set_transition_properties"))
 	{
 		return FCortexSTTransitionOps::SetTransitionProperties(Params);
+	}
+	if (Command == TEXT("get_node_bindings"))
+	{
+		return FCortexSTBindingOps::GetNodeBindings(Params);
 	}
 
 	return FCortexCommandRouter::Error(
@@ -207,5 +212,13 @@ TArray<FCortexCommandInfo> FCortexStateTreeCommandHandler::GetSupportedCommands(
 			.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after mutation"))
 			.Optional(TEXT("save"), TEXT("boolean"), TEXT("Persist package after mutation"))
 			.Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Required stale-write guard for transition mutation")),
+		FCortexCommandInfo{ TEXT("get_node_bindings"), TEXT("Report the stored property bindings of StateTree nodes (read-only; never validates, compiles or dirties the asset)") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path"))
+			.Optional(TEXT("node_id"), TEXT("string"), TEXT("Editor node ID (the binding struct ID); selects one node"))
+			.Optional(TEXT("state_id"), TEXT("string"), TEXT("State GUID; selects every node owned by the state, transition conditions included"))
+			.Optional(TEXT("state_path"), TEXT("string"), TEXT("State path; selects every node owned by the state"))
+			.Optional(TEXT("direction"), TEXT("string"), TEXT("target, source or both (default both)"))
+			.Optional(TEXT("limit"), TEXT("number"), TEXT("Nodes per page, default 50, maximum 200"))
+			.Optional(TEXT("offset"), TEXT("number"), TEXT("Nodes to skip, default 0")),
 	};
 }
