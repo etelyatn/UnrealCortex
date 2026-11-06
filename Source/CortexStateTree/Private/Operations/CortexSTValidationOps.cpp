@@ -78,7 +78,9 @@ bool IsWarningSeverity(const EMessageSeverity::Type Severity)
 	return Severity == EMessageSeverity::PerformanceWarning || Severity == EMessageSeverity::Warning;
 }
 
-TSharedPtr<FJsonObject> BuildCompilePayload(
+}
+
+TSharedPtr<FJsonObject> FCortexSTValidationOps::MakeCompilePayload(
 	const FString& AssetPath,
 	UStateTree* StateTree,
 	const FStateTreeCompilerLog& CompileLog,
@@ -130,6 +132,8 @@ TSharedPtr<FJsonObject> BuildCompilePayload(
 	return Payload;
 }
 
+namespace
+{
 bool SaveIfRequested(
 	const TSharedPtr<FJsonObject>& Params,
 	const FString& AssetPath,
@@ -254,7 +258,7 @@ FCortexCommandResult FCortexSTValidationOps::Compile(const TSharedPtr<FJsonObjec
 		Asset.StateTree->MarkPackageDirty();
 	}
 
-	TSharedPtr<FJsonObject> Data = BuildCompilePayload(Asset.AssetPath, Asset.StateTree, CompileLog, bCompiled);
+	TSharedPtr<FJsonObject> Data = MakeCompilePayload(Asset.AssetPath, Asset.StateTree, CompileLog, bCompiled);
 	if (!bCompiled)
 	{
 		return FCortexCommandRouter::Error(

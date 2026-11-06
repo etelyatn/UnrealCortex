@@ -29,4 +29,7 @@ public:
 
 	/** Number of stored editor bindings in the whole tree. */
 	static int32 CountTreeBindings(const FCortexSTAssetContext& Context);
+
+	/** Report of the named nodes (both directions, implicit context included) plus the whole-tree binding count; a node that no longer exists is reported {"node_id", "missing": true}. */
+	static TSharedPtr<FJsonObject> BuildNodesReport(const FCortexSTAssetContext& Context, const TArray<FGuid>& NodeIds);
 };

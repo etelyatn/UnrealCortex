@@ -13,8 +13,13 @@
 #include "CortexStateTreeModule.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Misc/PackageName.h"
+#include "Operations/CortexSTAssetOps.h"
 #include "Operations/CortexSTBindingOps.h"
+#include "Operations/CortexSTValidationOps.h"
+#include "ScopedTransaction.h"
 #include "StateTree.h"
+#include "StateTreeCompilerLog.h"
 #include "StateTreeConditionBase.h"
 #include "StateTreeConsiderationBase.h"
 #include "StateTreeEditorData.h"
@@ -665,6 +670,82 @@ UClass* RepNodeFindClass(const FString& Path)
 	}
 	return FindFirstObject<UClass>(*Path, EFindFirstObjectOptions::NativeFirst);
 }
+
+/** One replaced node's pre-call content: the whole editor node (Node, Instance, InstanceObject, execution runtime data, ID, expression fields) and where it lives. */
+struct FRepNodeJournalEntry
+{
+	FCortexSTNodeLocation Location;
+	FStateTreeEditorNode Copy;
+};
+
+/** Everything an apply overwrites, so a failure can be undone by content rather than by the transaction record. */
+struct FRepNodeJournal
+{
+	TArray<FRepNodeJournalEntry> Entries;
+	CortexSTCompat::FEditorBindingsJournal Bindings;
+	bool bWasDirty = false;
+	int32 BindingsBefore = 0;
+	/** Whole-tree report before the call: the content readback of the rollback compares against it. */
+	TSharedPtr<FJsonObject> TreeReport;
+};
+
+TOptional<FCortexSTReplaceNodeOps::EFaultPoint>& RepNodeFaultStorage()
+{
+	static TOptional<FCortexSTReplaceNodeOps::EFaultPoint> Point;
+	return Point;
+}
+
+bool RepNodeFault(const FCortexSTReplaceNodeOps::EFaultPoint Point)
+{
+	return RepNodeFaultStorage().IsSet() && RepNodeFaultStorage().GetValue() == Point;
+}
+
+void* RepNodeInstanceContainer(FStateTreeEditorNode& Node)
+{
+	return Node.InstanceObject != nullptr ? static_cast<void*>(Node.InstanceObject) : Node.Instance.GetMutableMemory();
+}
+
+const void* RepNodeInstanceContainer(const FStateTreeEditorNode& Node)
+{
+	return Node.InstanceObject != nullptr ? static_cast<const void*>(Node.InstanceObject) : Node.Instance.GetMemory();
+}
+
+FCortexSTNodeLocation LocateById(const TArray<FCortexSTNodeLocation>& Locations, const FGuid& NodeId)
+{
+	for (const FCortexSTNodeLocation& Location : Locations)
+	{
+		if (Location.Node != nullptr && Location.Node->ID == NodeId)
+		{
+			return Location;
+		}
+	}
+	return FCortexSTNodeLocation();
+}
+
+/** Keeps the wrapper node struct and points it at the new native Blueprint-base class (TaskClass/ConditionClass/EvaluatorClass/ConsiderationClass). */
+bool RepNodeSetWrapperClass(FStateTreeEditorNode& Node, const UClass* NewClass)
+{
+	UScriptStruct* Wrapper = const_cast<UScriptStruct*>(Node.Node.GetScriptStruct());
+	if (Wrapper == nullptr || NewClass == nullptr)
+	{
+		return false;
+	}
+	const FClassProperty* ClassProperty = nullptr;
+	for (const TCHAR* Candidate : { TEXT("TaskClass"), TEXT("ConditionClass"), TEXT("EvaluatorClass"), TEXT("ConsiderationClass") })
+	{
+		ClassProperty = FindFProperty<FClassProperty>(Wrapper, FName(Candidate));
+		if (ClassProperty != nullptr)
+		{
+			break;
+		}
+	}
+	if (ClassProperty == nullptr || ClassProperty->MetaClass == nullptr || !NewClass->IsChildOf(ClassProperty->MetaClass))
+	{
+		return false;
+	}
+	ClassProperty->SetObjectPropertyValue_InContainer(Node.Node.GetMutableMemory(), const_cast<UClass*>(NewClass));
+	return true;
+}
 }
 
 bool FCortexSTReplacePlan::HasMismatches() const
@@ -985,8 +1066,379 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 		return FCortexCommandRouter::Success(PlanJson);
 	}
 
-	return FCortexCommandRouter::Error(
-		CortexErrorCodes::UnsupportedOperation,
-		TEXT("replace_node apply is not available in this build"),
-		PlanJson);
+	// ── Journal, then apply (design decision 2 steps 5-6) ──
+	FRepNodeJournal Journal;
+	Journal.BindingsBefore = Plan.BindingsBefore;
+	Journal.Bindings.Count = Plan.BindingsBefore;
+	CortexSTCompat::CaptureEditorBindings(*Context.EditorData, Journal.Bindings);
+	UPackage* Package = Context.StateTree->GetOutermost();
+	Journal.bWasDirty = Package != nullptr && Package->IsDirty();
+	Journal.TreeReport = FCortexSTBindingOps::BuildTreeReport(Context);
+	TArray<FGuid> ReplacedIds;
+	Journal.Entries.Reserve(Plan.Nodes.Num());
+	for (const FCortexSTNodeReplacePlan& NodePlan : Plan.Nodes)
+	{
+		FRepNodeJournalEntry& Entry = Journal.Entries.AddDefaulted_GetRef();
+		Entry.Location = LocateById(Locations, NodePlan.NodeId);
+		Entry.Copy = *Entry.Location.Node;
+		ReplacedIds.Add(NodePlan.NodeId);
+	}
+
+	TUniquePtr<FScopedTransaction> Transaction = MakeUnique<FScopedTransaction>(FText::FromString(
+		FString::Printf(TEXT("Cortex: replace StateTree nodes %s"), *FPackageName::GetShortName(Context.AssetPath))));
+	Context.StateTree->Modify();
+	Context.EditorData->Modify();
+	{
+		TSet<UObject*> ModifiedStates;
+		for (const FRepNodeJournalEntry& Entry : Journal.Entries)
+		{
+			if (Entry.Location.OwnerState != nullptr && !ModifiedStates.Contains(Entry.Location.OwnerState))
+			{
+				ModifiedStates.Add(Entry.Location.OwnerState);
+				Entry.Location.OwnerState->Modify();
+			}
+		}
+	}
+
+	bool bTouchedCompile = false;
+	for (int32 Index = 0; Index < Plan.Nodes.Num(); ++Index)
+	{
+		const FCortexSTNodeReplacePlan& NodePlan = Plan.Nodes[Index];
+		FRepNodeJournalEntry& Entry = Journal.Entries[Index];
+		FStateTreeEditorNode& Node = *Entry.Location.Node;
+		if (!NodePlan.bWouldChange)
+		{
+			continue;
+		}
+
+		if (Request.Target.NodeStruct != nullptr)
+		{
+			// Node.Node.InitializeAs, not FStateTreeEditorNode::InitializeAs: the editor node ID is what every binding is keyed by.
+			CortexSTCompat::InitializeNodeAs(Node, Request.Target.NodeStruct);
+		}
+		else if (!RepNodeSetWrapperClass(Node, Request.Target.NodeClass))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("The Blueprint wrapper does not accept the requested class"),
+				RepNodeDetails(TEXT("new_node_class"), Request.Target.NodeClass->GetPathName()));
+		}
+		// The owning state for state slots, the editor data for global tasks and evaluators (StateTreeState.cpp, FixObjectNodes).
+		CortexSTCompat::ReallocInstanceDataKeepingId(Node, Entry.Location.InstanceOuter);
+
+		// Values come from the journal copy, which still holds the old instance data and object.
+		for (const FCortexSTReplaceProperty& Property : NodePlan.Properties)
+		{
+			if (Property.Status != ECortexSTReplacePropertyStatus::Copied || Property.OldProperty == nullptr || Property.NewProperty == nullptr)
+			{
+				continue;
+			}
+			const bool bNodeStructTarget = Property.Kind == ECortexSTReplacePropertyKind::NodeFlag && Request.Target.NodeStruct != nullptr;
+			void* NewContainer = bNodeStructTarget ? Node.Node.GetMutableMemory() : RepNodeInstanceContainer(Node);
+			void* OldContainer = bNodeStructTarget
+				? const_cast<void*>(static_cast<const void*>(Entry.Copy.Node.GetMemory()))
+				: const_cast<void*>(RepNodeInstanceContainer(Entry.Copy));
+			if (NewContainer == nullptr || OldContainer == nullptr)
+			{
+				continue;
+			}
+			Property.OldProperty->CopyCompleteValue(
+				Property.NewProperty->ContainerPtrToValuePtr<void>(NewContainer),
+				Property.OldProperty->ContainerPtrToValuePtr<void>(OldContainer));
+		}
+		// Keeps the node's own name (a Blueprint node is named after its class until the user renames it).
+		Node.SetNodeName(Entry.Copy.GetName());
+	}
+
+	for (const FCortexSTNodeReplacePlan& NodePlan : Plan.Nodes)
+	{
+		for (const FCortexSTReplaceRewrite& Rewrite : NodePlan.Rewrites)
+		{
+			if (!CortexSTCompat::RemapBindingSegments(*Context.EditorData, Rewrite.BindingIndex, Rewrite.Side, Rewrite.NewFirstSegment))
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::VerificationFailed,
+					FString::Printf(TEXT("Binding %d could not be rewritten"), Rewrite.BindingIndex),
+					PlanJson);
+			}
+		}
+	}
+
+	// One failure route for every phase after the first mutation.
+	auto Recover = [&](const TCHAR* Phase, const FString& Reason, const FString& ErrorCode) -> FCortexCommandResult
+	{
+		TArray<FString> Problems;
+		bool bRestoreOk = true;
+		if (RepNodeFault(EFaultPoint::SkipJournalRestore))
+		{
+			Problems.Add(TEXT("journal restore skipped"));
+			bRestoreOk = false;
+		}
+		else
+		{
+			for (FRepNodeJournalEntry& Entry : Journal.Entries)
+			{
+				if (Entry.Location.Node != nullptr)
+				{
+					*Entry.Location.Node = Entry.Copy;
+				}
+			}
+			if (!CortexSTCompat::RestoreEditorBindings(*Context.EditorData, Journal.Bindings))
+			{
+				Problems.Add(TEXT("the stored binding array could not be restored in place"));
+				bRestoreOk = false;
+			}
+		}
+		if (RepNodeFault(EFaultPoint::AfterRestore))
+		{
+			Problems.Add(TEXT("injected restore failure"));
+			bRestoreOk = false;
+		}
+		// Cancel() only drops the undo record; the restored content is what reverts the state (ScopedTransaction.cpp:42-48).
+		Transaction->Cancel();
+		Transaction.Reset();
+
+		bool bRecoveryCompiled = false;
+		if (bTouchedCompile)
+		{
+			FStateTreeCompilerLog RecoveryLog;
+			bRecoveryCompiled = CortexSTCompat::CompileStateTree(Context.StateTree, RecoveryLog);
+		}
+		if (Package != nullptr)
+		{
+			Package->SetDirtyFlag(Journal.bWasDirty);
+		}
+
+		const TSharedPtr<FJsonObject> After = FCortexSTBindingOps::BuildTreeReport(Context);
+		const bool bContentEqual = Journal.TreeReport.IsValid() && After.IsValid()
+			&& FJsonValue::CompareEqual(
+				*MakeShared<FJsonValueObject>(Journal.TreeReport),
+				*MakeShared<FJsonValueObject>(After));
+		if (!bContentEqual)
+		{
+			Problems.Add(TEXT("the whole-tree binding report differs from the pre-call report"));
+		}
+		const bool bRestored = bRestoreOk && bContentEqual;
+		if (!bRestored)
+		{
+			FCortexAssetMutationGuard::Block(Context.StateTree, FString::Printf(
+				TEXT("statetree.replace_node: the pre-call state could not be restored and verified after a %s failure"), Phase));
+		}
+
+		TSharedPtr<FJsonObject> Failure = RepNodeDetails(TEXT("asset_path"), Context.AssetPath);
+		Failure->SetStringField(TEXT("failed_phase"), Phase);
+		Failure->SetStringField(TEXT("failure"), Reason);
+		Failure->SetStringField(TEXT("rollback_status"), bRestored ? TEXT("restored") : TEXT("verification_failed"));
+		Failure->SetStringField(TEXT("recovery_compile"), bRecoveryCompiled ? TEXT("succeeded") : (bTouchedCompile ? TEXT("failed") : TEXT("not_needed")));
+		Failure->SetBoolField(TEXT("content_restored"), bRestored);
+		Failure->SetBoolField(TEXT("asset_blocked"), !bRestored);
+		Failure->SetArrayField(TEXT("restore_problems"), RepNodeStringValues(Problems));
+		Failure->SetObjectField(TEXT("fingerprint"), CortexST::MakeFingerprint(Context.StateTree));
+		return FCortexCommandRouter::Error(
+			bRestored ? ErrorCode : CortexErrorCodes::VerificationFailed,
+			FString::Printf(TEXT("Replacing StateTree nodes failed in the %s phase (%s); %s"), Phase, *Reason,
+				bRestored ? TEXT("the pre-call content was restored and verified") : TEXT("the pre-call content could not be verified and the asset is blocked")),
+			Failure);
+	};
+
+	// ── Compile ──
+	TSharedPtr<FJsonObject> CompilePayload;
+	if (bCompile)
+	{
+		bTouchedCompile = true;
+		if (RepNodeFault(EFaultPoint::Compile))
+		{
+			return Recover(TEXT("compile"), TEXT("injected compile failure"), CortexErrorCodes::CompileFailed);
+		}
+		FStateTreeCompilerLog CompileLog;
+		const bool bCompiled = CortexSTCompat::CompileStateTree(Context.StateTree, CompileLog);
+		CompilePayload = FCortexSTValidationOps::MakeCompilePayload(Context.AssetPath, Context.StateTree, CompileLog, bCompiled);
+		const int32 ErrorCount = static_cast<int32>(CompilePayload->GetNumberField(TEXT("error_count")));
+		if (!bCompiled || ErrorCount > 0 || !Context.StateTree->IsReadyToRun())
+		{
+			return Recover(TEXT("compile"),
+				FString::Printf(TEXT("%d compile error(s) after the replacement"), ErrorCount),
+				CortexErrorCodes::CompileFailed);
+		}
+	}
+
+	// ── Readback: the whole-tree binding count and every rewritten path ──
+	TArray<FString> Mismatches;
+	{
+		const int32 AfterCount = FCortexSTBindingOps::CountTreeBindings(Context);
+		if (AfterCount != Journal.BindingsBefore)
+		{
+			Mismatches.Add(FString::Printf(TEXT("the whole-tree binding count changed from %d to %d"), Journal.BindingsBefore, AfterCount));
+		}
+		const TSharedPtr<FJsonObject> NodeReport = FCortexSTBindingOps::BuildNodesReport(Context, ReplacedIds);
+		const TArray<TSharedPtr<FJsonValue>>* NodeValues = nullptr;
+		NodeReport->TryGetArrayField(TEXT("nodes"), NodeValues);
+		if (NodeValues == nullptr || NodeValues->Num() != Plan.Nodes.Num())
+		{
+			Mismatches.Add(TEXT("a replaced node is missing from the readback"));
+		}
+		else
+		{
+			for (int32 Index = 0; Index < Plan.Nodes.Num(); ++Index)
+			{
+				const FCortexSTNodeReplacePlan& NodePlan = Plan.Nodes[Index];
+				const TSharedPtr<FJsonObject> NodeJson = (*NodeValues)[Index]->AsObject();
+				bool bMissingNode = false;
+				if (NodeJson.IsValid())
+				{
+					NodeJson->TryGetBoolField(TEXT("missing"), bMissingNode);
+				}
+				if (!NodeJson.IsValid() || bMissingNode)
+				{
+					Mismatches.Add(FString::Printf(TEXT("node %s is missing"), *RepNodeGuidText(NodePlan.NodeId)));
+					continue;
+				}
+				const TSharedPtr<FJsonObject> NodeType = NodeJson->HasTypedField<EJson::Object>(TEXT("node_type"))
+					? NodeJson->GetObjectField(TEXT("node_type")) : nullptr;
+				if (!NodeType.IsValid())
+				{
+					Mismatches.Add(FString::Printf(TEXT("node %s has no node_type"), *RepNodeGuidText(NodePlan.NodeId)));
+					continue;
+				}
+				const FString ExpectedType = Request.Target.NodeStruct != nullptr
+					? Request.Target.NodeStruct->GetPathName()
+					: Request.Target.NodeClass->GetPathName();
+				const FString ReportedType = Request.Target.NodeStruct != nullptr
+					? NodeType->GetStringField(TEXT("struct_path"))
+					: NodeType->GetStringField(TEXT("class_path"));
+				if (ReportedType != ExpectedType)
+				{
+					Mismatches.Add(FString::Printf(TEXT("node %s is %s, expected %s"), *RepNodeGuidText(NodePlan.NodeId), *ReportedType, *ExpectedType));
+				}
+				if (NodeType->GetBoolField(TEXT("is_blueprint")))
+				{
+					Mismatches.Add(FString::Printf(TEXT("node %s is still a Blueprint class"), *RepNodeGuidText(NodePlan.NodeId)));
+				}
+
+				for (const FCortexSTReplaceRewrite& Rewrite : NodePlan.Rewrites)
+				{
+					const TCHAR* SideField = Rewrite.Side == CortexSTCompat::EBindingSide::Target ? TEXT("as_target") : TEXT("as_source");
+					const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+					if (!NodeJson->TryGetArrayField(SideField, Entries) || Entries == nullptr)
+					{
+						Mismatches.Add(FString::Printf(TEXT("node %s has no %s"), *RepNodeGuidText(NodePlan.NodeId), SideField));
+						continue;
+					}
+					bool bFound = false;
+					for (const TSharedPtr<FJsonValue>& Value : *Entries)
+					{
+						const TSharedPtr<FJsonObject> Entry = Value->AsObject();
+						if (!Entry.IsValid() || static_cast<int32>(Entry->GetNumberField(TEXT("binding_index"))) != Rewrite.BindingIndex)
+						{
+							continue;
+						}
+						const TCHAR* SideObjectField = Rewrite.Side == CortexSTCompat::EBindingSide::Target ? TEXT("target") : TEXT("source");
+						if (!Entry->HasTypedField<EJson::Object>(SideObjectField))
+						{
+							continue;
+						}
+						const TSharedPtr<FJsonObject> SideObject = Entry->GetObjectField(SideObjectField);
+						const bool bResolved = SideObject->GetBoolField(TEXT("resolved"));
+						const FString Path = SideObject->GetStringField(TEXT("path"));
+						bFound = bResolved && (Rewrite.NewFirstSegment.IsNone()
+							? true
+							: Path == Rewrite.NewFirstSegment.ToString() || Path.StartsWith(Rewrite.NewFirstSegment.ToString() + TEXT(".")));
+						if (bFound)
+						{
+							break;
+						}
+					}
+					if (!bFound)
+					{
+						Mismatches.Add(FString::Printf(TEXT("binding %d (%s) of node %s does not resolve as %s"),
+							Rewrite.BindingIndex, Rewrite.Side == CortexSTCompat::EBindingSide::Target ? TEXT("target") : TEXT("source"),
+							*RepNodeGuidText(NodePlan.NodeId), *Rewrite.NewFirstSegment.ToString()));
+					}
+				}
+			}
+		}
+	}
+	if (RepNodeFault(EFaultPoint::Readback))
+	{
+		Mismatches.Add(TEXT("injected readback mismatch"));
+	}
+	if (!Mismatches.IsEmpty())
+	{
+		return Recover(TEXT("readback"), FString::Join(Mismatches, TEXT("; ")), CortexErrorCodes::VerificationFailed);
+	}
+
+	// ── Save only after the readback ──
+	bool bSaved = false;
+	TSharedPtr<FJsonObject> SavedFingerprint;
+	if (bSave)
+	{
+		const FCortexCommandResult SaveResult = FCortexSTAssetOps::SaveAsset(Context.AssetPath);
+		if (!SaveResult.bSuccess)
+		{
+			return Recover(TEXT("save"), SaveResult.ErrorMessage, CortexErrorCodes::SaveFailed);
+		}
+		bSaved = true;
+		if (SaveResult.Data.IsValid() && SaveResult.Data->HasTypedField<EJson::Object>(TEXT("fingerprint")))
+		{
+			SavedFingerprint = SaveResult.Data->GetObjectField(TEXT("fingerprint"));
+		}
+	}
+	Transaction.Reset();
+
+	TArray<TSharedPtr<FJsonValue>> ReplacedValues;
+	for (const FCortexSTNodeReplacePlan& NodePlan : Plan.Nodes)
+	{
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("node_id"), RepNodeGuidText(NodePlan.NodeId));
+		Entry->SetStringField(TEXT("name"), NodePlan.NodeName);
+		Entry->SetStringField(TEXT("slot"), CortexST::LexNodeSlot(NodePlan.Slot));
+		Entry->SetStringField(TEXT("owner_state_path"), NodePlan.OwnerStatePath);
+		Entry->SetStringField(TEXT("old_type_path"), NodePlan.OldTypePath);
+		Entry->SetStringField(TEXT("new_type_path"), Request.Target.NodeStruct != nullptr
+			? Request.Target.NodeStruct->GetPathName() : Request.Target.NodeClass->GetPathName());
+		ReplacedValues.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> BindingsJson = PlanJson->GetObjectField(TEXT("bindings"));
+	BindingsJson->SetNumberField(TEXT("after_count"), FCortexSTBindingOps::CountTreeBindings(Context));
+
+	PlanJson->SetBoolField(TEXT("dry_run"), false);
+	PlanJson->SetArrayField(TEXT("replaced"), ReplacedValues);
+	if (CompilePayload.IsValid())
+	{
+		PlanJson->SetObjectField(TEXT("compile"), CompilePayload);
+		PlanJson->SetStringField(TEXT("compile_status"), CompilePayload->GetStringField(TEXT("status")));
+		PlanJson->SetNumberField(TEXT("error_count"), static_cast<int32>(CompilePayload->GetNumberField(TEXT("error_count"))));
+	}
+	else
+	{
+		PlanJson->SetStringField(TEXT("compile_status"), TEXT("not_run"));
+		PlanJson->SetNumberField(TEXT("error_count"), 0);
+	}
+	PlanJson->SetBoolField(TEXT("ready_to_run"), Context.StateTree->IsReadyToRun());
+	PlanJson->SetBoolField(TEXT("saved"), bSaved);
+	PlanJson->SetBoolField(TEXT("dirty"), Package != nullptr && Package->IsDirty());
+	if (SavedFingerprint.IsValid())
+	{
+		PlanJson->SetObjectField(TEXT("fingerprint"), SavedFingerprint);
+	}
+	else
+	{
+		PlanJson->SetObjectField(TEXT("fingerprint"), CortexST::MakeFingerprint(Context.StateTree));
+	}
+
+	UE_LOG(LogCortexStateTree, Log, TEXT("Replaced %d StateTree node(s) in %s"), ReplacedValues.Num(), *Context.AssetPath);
+	return FCortexCommandRouter::Success(PlanJson);
 }
+
+#if WITH_AUTOMATION_TESTS
+void FCortexSTReplaceNodeOps::SetFaultPointForTesting(const EFaultPoint Point)
+{
+	RepNodeFaultStorage() = Point;
+}
+
+void FCortexSTReplaceNodeOps::ClearFaultPointForTesting()
+{
+	RepNodeFaultStorage().Reset();
+}
+#endif

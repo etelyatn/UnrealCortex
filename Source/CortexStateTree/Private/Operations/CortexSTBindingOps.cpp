@@ -385,6 +385,31 @@ TSharedPtr<FJsonObject> FCortexSTBindingOps::BuildTreeReport(const FCortexSTAsse
 	return Report;
 }
 
+TSharedPtr<FJsonObject> FCortexSTBindingOps::BuildNodesReport(const FCortexSTAssetContext& Context, const TArray<FGuid>& NodeIds)
+{
+	const FBindingReportState State(Context);
+	TArray<TSharedPtr<FJsonValue>> NodeValues;
+	for (const FGuid& NodeId : NodeIds)
+	{
+		const int32* NodeIndex = State.NodeIndexByStructId.Find(NodeId);
+		if (NodeIndex == nullptr || State.Nodes[*NodeIndex].Node->ID != NodeId)
+		{
+			TSharedPtr<FJsonObject> Missing = MakeShared<FJsonObject>();
+			Missing->SetStringField(TEXT("node_id"), BindingReportGuidText(NodeId));
+			Missing->SetBoolField(TEXT("missing"), true);
+			NodeValues.Add(MakeShared<FJsonValueObject>(Missing));
+			continue;
+		}
+		bool bHasBindings = false;
+		NodeValues.Add(MakeShared<FJsonValueObject>(BindingReportNodeJson(State, *NodeIndex, EBindingReportDirection::Both, bHasBindings)));
+	}
+
+	TSharedPtr<FJsonObject> Report = MakeShared<FJsonObject>();
+	Report->SetArrayField(TEXT("nodes"), NodeValues);
+	Report->SetNumberField(TEXT("whole_tree_binding_count"), State.Bindings.Num());
+	return Report;
+}
+
 FCortexCommandResult FCortexSTBindingOps::GetNodeBindings(const TSharedPtr<FJsonObject>& Params)
 {
 	if (!CortexSTCompat::bNodeBindingsAvailable)

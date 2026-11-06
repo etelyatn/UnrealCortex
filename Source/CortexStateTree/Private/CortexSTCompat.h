@@ -260,7 +260,8 @@ enum class EPropertyUsage : uint8
 struct FEditorBindingsJournal
 {
 #if !UE_VERSION_OLDER_THAN(5, 7, 0)
-	TOptional<FStateTreeEditorPropertyBindings> Bindings;
+	/** Copy of the stored binding array: restoring writes it back in place (the collection's own vtable lives in the editor module). */
+	TArray<FStateTreePropertyPathBinding> Bindings;
 #endif
 	int32 Count = 0;
 };
@@ -536,20 +537,28 @@ inline void CaptureEditorBindings(const UStateTreeEditorData& EditorData, FEdito
 {
 	OutJournal.Count = GetEditorBindingCount(EditorData);
 #if !UE_VERSION_OLDER_THAN(5, 7, 0)
-	OutJournal.Bindings = EditorData.EditorBindings;
+	OutJournal.Bindings = TArray<FStateTreePropertyPathBinding>(EditorData.EditorBindings.GetBindings());
 #endif
 }
 
-inline void RestoreEditorBindings(UStateTreeEditorData& EditorData, const FEditorBindingsJournal& Journal)
+/** Writes the journaled binding array back in place; false when the count changed (a binding was added or dropped) so nothing is restored blindly. */
+inline bool RestoreEditorBindings(UStateTreeEditorData& EditorData, const FEditorBindingsJournal& Journal)
 {
 #if UE_VERSION_OLDER_THAN(5, 7, 0)
 	(void)EditorData;
 	(void)Journal;
+	return false;
 #else
-	if (Journal.Bindings.IsSet())
+	TArrayView<FStateTreePropertyPathBinding> Mutable = EditorData.EditorBindings.GetMutableBindings();
+	if (Mutable.Num() != Journal.Bindings.Num())
 	{
-		EditorData.EditorBindings = Journal.Bindings.GetValue();
+		return false;
 	}
+	for (int32 Index = 0; Index < Mutable.Num(); ++Index)
+	{
+		Mutable[Index] = Journal.Bindings[Index];
+	}
+	return true;
 #endif
 }
 

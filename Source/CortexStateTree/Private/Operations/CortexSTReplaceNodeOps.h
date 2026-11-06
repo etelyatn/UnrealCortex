@@ -149,4 +149,22 @@ public:
 		const FCortexSTReplaceRequest& Request,
 		FCortexSTReplacePlan& OutPlan,
 		FCortexCommandResult& OutError);
+
+	/** Where fault injection can intervene (test-only; the same pattern as SetApplyFaultPointForTesting in CortexGraphPatchOps). */
+	enum class EFaultPoint : uint8
+	{
+		/** In place of the compile: true simulates a failed compile after the apply. */
+		Compile,
+		/** After the compile, before the readback verdict: true simulates a readback mismatch. */
+		Readback,
+		/** Inside the rollback: the journal restore is skipped (proves Cancel() alone restores nothing). */
+		SkipJournalRestore,
+		/** After the journal restore, before its verification: true marks the restore step as failed. */
+		AfterRestore,
+	};
+
+#if WITH_AUTOMATION_TESTS
+	static void SetFaultPointForTesting(EFaultPoint Point);
+	static void ClearFaultPointForTesting();
+#endif
 };
