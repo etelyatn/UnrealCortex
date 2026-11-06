@@ -40,6 +40,7 @@ public:
 	/** Copies the node's whole binding map (rollback journal). False when the storage is unsupported. */
 	static bool CaptureBindingMap(const UAnimGraphNode_Base* Node, FCortexBindingMapSnapshot& OutSnapshot);
 	static bool RestoreBindingMap(UAnimGraphNode_Base* Node, const FCortexBindingMapSnapshot& Snapshot);
+	/** Whether the node's binding map equals the snapshot in every authoring field of every entry; the compiler's feedback fields are not compared. */
 	static bool BindingMapMatches(const UAnimGraphNode_Base* Node, const FCortexBindingMapSnapshot& Snapshot);
 	static void MarkBindingModified(UAnimGraphNode_Base* Node);
 	static bool CloneBindingMap(const FCortexBindingMapSnapshot& Source, FCortexBindingMapSnapshot& OutClone) { return FCortexGraphBindingStorage::CloneBindingMap(Source, OutClone); }
@@ -47,7 +48,6 @@ public:
 	{
 		return FCortexGraphBindingStorage::RewriteSnapshotEntry(Snapshot, PropertyName, ArrayIndex, NewPath, NewPathText);
 	}
-	static bool BindingMapMatchesContent(const UAnimGraphNode_Base* Node, const FCortexBindingMapSnapshot& Snapshot);
 
 	static bool IsPropertyAccessNode(const UEdGraphNode* Node) { return FCortexGraphBindingStorage::IsPropertyAccessNode(Node); }
 	static bool ReadPropertyAccessNode(const UEdGraphNode* Node, TArray<FString>& OutPath, FString& OutTextPath)

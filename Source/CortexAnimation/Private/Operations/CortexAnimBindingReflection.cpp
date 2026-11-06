@@ -23,11 +23,6 @@ bool FCortexAnimBindingReflection::BindingMapMatches(const UAnimGraphNode_Base* 
 	return FCortexGraphBindingStorage::BindingMapMatches(Node, Snapshot);
 }
 
-bool FCortexAnimBindingReflection::BindingMapMatchesContent(const UAnimGraphNode_Base* Node, const FCortexBindingMapSnapshot& Snapshot)
-{
-	return FCortexGraphBindingStorage::BindingMapMatchesContent(Node, Snapshot);
-}
-
 void FCortexAnimBindingReflection::MarkBindingModified(UAnimGraphNode_Base* Node)
 {
 	FCortexGraphBindingStorage::MarkBindingModified(Node);

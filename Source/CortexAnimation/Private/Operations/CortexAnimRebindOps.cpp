@@ -279,7 +279,7 @@ namespace CortexAnimRebindPrivate
 		return OutFailedSteps.Num() == 0;
 	}
 
-	/** Compares the live state with the journal in every captured field; true when nothing differs. */
+	/** Compares the live state with the journal in every captured authoring field (the compiler's binding feedback excluded); true when nothing differs. */
 	bool JournalMatches(const FJournal& Journal, TArray<FString>& OutDifferences)
 	{
 		for (const FNodeJournal& Entry : Journal.Nodes)
@@ -343,8 +343,9 @@ namespace CortexAnimRebindPrivate
 			const FNodePlan* Plan = Plans.FindByPredicate([Node](const FNodePlan& Candidate) { return Candidate.Node == Node; });
 
 			// The binding map must be exactly the journal copy with only the planned rewrites applied: the owned entries carry the new path
-			// and the engine's text for it, every other field of every entry (pin types, contexts, flags, keys) and every unplanned entry
-			// must equal what was captured. The comparison is by exported field content, entry by entry.
+			// and the engine's text for it, every other authoring field of every entry (pin types, contexts, flags, keys) and every unplanned
+			// entry must equal what was captured. The comparison is by exported field content, entry by entry; the anim compiler's own
+			// feedback (CompiledContext, CompiledContextDesc) is rewritten by every compile and is not compared.
 			if (Entry.bHasBindings)
 			{
 				FCortexBindingMapSnapshot Expected;
@@ -375,7 +376,7 @@ namespace CortexAnimRebindPrivate
 							FCortexAnimBindingReflection::RewriteSnapshotEntry(Expected, Owned.PropertyName, Owned.ArrayIndex, NewPath, FCortexAnimBindingReport::MakePathText(AnimBlueprint, NewPath));
 						}
 					}
-					if (!FCortexAnimBindingReflection::BindingMapMatchesContent(Node, Expected))
+					if (!FCortexAnimBindingReflection::BindingMapMatches(Node, Expected))
 					{
 						OutMismatches.Add(FString::Printf(TEXT("the binding map of %s is not exactly the planned result"), *GuidText(Node->NodeGuid)));
 					}

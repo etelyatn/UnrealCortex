@@ -5,6 +5,7 @@
 #include "K2Node.h"
 #include "UObject/Class.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/StructOnScope.h"
 #include "UObject/UnrealType.h"
 
 namespace CortexGraphBindingStoragePrivate
@@ -65,6 +66,8 @@ namespace CortexGraphBindingStoragePrivate
 		const FArrayProperty* EntryPath = nullptr;
 		const FStrProperty* EntryPathElement = nullptr;
 		const FTextProperty* EntryPathText = nullptr;
+		const FTextProperty* EntryCompiledContext = nullptr;
+		const FTextProperty* EntryCompiledContextDesc = nullptr;
 		FString BindingMissing;
 
 		const UClass* PropertyAccessClass = nullptr;
@@ -124,6 +127,10 @@ namespace CortexGraphBindingStoragePrivate
 		F.EntryPath = EntryField<FArrayProperty>(Struct, TEXT("PropertyPath"));
 		F.EntryPathElement = F.EntryPath != nullptr ? CastField<FStrProperty>(F.EntryPath->Inner) : nullptr;
 		F.EntryPathText = EntryField<FTextProperty>(Struct, TEXT("PathAsText"));
+		// Optional: the compiler's feedback fields (AnimGraphNode_Base.h:171-175, written by AnimBlueprintExtension_Base.cpp:205-240).
+		// An engine without them has nothing to exclude from authoring equality.
+		F.EntryCompiledContext = EntryField<FTextProperty>(Struct, TEXT("CompiledContext"));
+		F.EntryCompiledContextDesc = EntryField<FTextProperty>(Struct, TEXT("CompiledContextDesc"));
 		const struct { const void* Field; const TCHAR* Name; } Required[] = {
 			{ F.EntryName, TEXT("FAnimGraphNodePropertyBinding.PropertyName") },
 			{ F.EntryArrayIndex, TEXT("FAnimGraphNodePropertyBinding.ArrayIndex") },
@@ -326,13 +333,6 @@ bool FCortexGraphBindingStorage::RestoreBindingMap(UK2Node* Node, const FCortexB
 	return true;
 }
 
-bool FCortexGraphBindingStorage::BindingMapMatches(const UK2Node* Node, const FCortexBindingMapSnapshot& Snapshot)
-{
-	using namespace CortexGraphBindingStoragePrivate;
-	UObject* Binding = LocateBinding(Node);
-	return Binding != nullptr && Snapshot.IsValid() && Fields().BindingMap->Identical(MapPtr(Binding), Snapshot.Memory, PPF_None);
-}
-
 bool FCortexGraphBindingStorage::ExportBindingText(const UK2Node* Node, FString& OutText)
 {
 	using namespace CortexGraphBindingStoragePrivate;
@@ -412,7 +412,7 @@ bool FCortexGraphBindingStorage::RewriteSnapshotEntry(FCortexBindingMapSnapshot&
 	return false;
 }
 
-bool FCortexGraphBindingStorage::BindingMapMatchesContent(const UK2Node* Node, const FCortexBindingMapSnapshot& Snapshot)
+bool FCortexGraphBindingStorage::BindingMapMatches(const UK2Node* Node, const FCortexBindingMapSnapshot& Snapshot)
 {
 	using namespace CortexGraphBindingStoragePrivate;
 	UObject* Binding = LocateBinding(Node);
@@ -433,8 +433,18 @@ bool FCortexGraphBindingStorage::BindingMapMatchesContent(const UK2Node* Node, c
 			}
 			FString Key;
 			F.BindingMapKey->ExportText_Direct(Key, Helper.GetKeyPtr(Index), Helper.GetKeyPtr(Index), nullptr, PPF_None);
+			// The entry is exported with the compiler's feedback fields cleared: they are the compiler's output, not authoring state.
+			FStructOnScope Authoring(F.BindingMapValue->Struct);
+			F.BindingMapValue->Struct->CopyScriptStruct(Authoring.GetStructMemory(), Helper.GetValuePtr(Index));
+			for (const FTextProperty* Feedback : { F.EntryCompiledContext, F.EntryCompiledContextDesc })
+			{
+				if (Feedback != nullptr)
+				{
+					Feedback->SetPropertyValue_InContainer(Authoring.GetStructMemory(), FText::GetEmpty());
+				}
+			}
 			FString Text;
-			F.BindingMapValue->ExportText_Direct(Text, Helper.GetValuePtr(Index), Helper.GetValuePtr(Index), nullptr, PPF_None);
+			F.BindingMapValue->ExportText_Direct(Text, Authoring.GetStructMemory(), Authoring.GetStructMemory(), nullptr, PPF_None);
 			Out.Add(Key, Text);
 		}
 		return Out;

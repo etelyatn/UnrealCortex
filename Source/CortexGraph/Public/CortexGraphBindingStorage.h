@@ -78,7 +78,12 @@ public:
 	/** Replaces the node's whole binding map with the snapshot. False when the storage is unsupported. */
 	static bool RestoreBindingMap(UK2Node* Node, const FCortexBindingMapSnapshot& Snapshot);
 
-	/** Whether the node's binding map equals the snapshot in every field of every entry. */
+	/**
+	 * Whether the node's binding map has exactly the content of the snapshot: the same entries (by key) and, per entry, the same exported
+	 * text of every authoring field (paths, display text, flags, pin types, contexts); it does not depend on FText identity. The compiler's
+	 * feedback fields of an entry (CompiledContext, CompiledContextDesc: the anim compiler writes them back onto the original node's
+	 * bindings on every compile, AnimBlueprintExtension_Base.cpp:205-240) are not authoring state and are not compared.
+	 */
 	static bool BindingMapMatches(const UK2Node* Node, const FCortexBindingMapSnapshot& Snapshot);
 
 	/** The node's whole binding map as the engine's exported text (journal text); false when the storage is unsupported. */
@@ -95,12 +100,6 @@ public:
 
 	/** Rewrites one entry of a snapshot to a new path and display text; every other field of the entry is kept. False when the entry is absent. */
 	static bool RewriteSnapshotEntry(FCortexBindingMapSnapshot& Snapshot, FName PropertyName, int32 ArrayIndex, const TArray<FString>& NewPath, const FText& NewPathText);
-
-	/**
-	 * Whether the node's binding map has exactly the content of the snapshot: the same entries (by key) and, per entry, the same exported
-	 * text of every field (paths, display text, flags, pin types, contexts). Unlike BindingMapMatches it does not depend on FText identity.
-	 */
-	static bool BindingMapMatchesContent(const UK2Node* Node, const FCortexBindingMapSnapshot& Snapshot);
 
 	/**
 	 * Records the node's Binding sub-object in the active editor transaction. The sub-object is created without

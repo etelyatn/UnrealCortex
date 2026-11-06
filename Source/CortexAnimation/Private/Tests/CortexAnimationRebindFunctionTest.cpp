@@ -524,3 +524,107 @@ bool FCortexAnimationRebindExactEditsTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationRebindCompilerFeedbackTest,
+	"Cortex.Animation.RebindMember.CompilerFeedback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationRebindCompilerFeedbackTest::RunTest(const FString& Parameters)
+{
+	using EPhase = FCortexAnimRebindOps::EPhase;
+
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
+	{
+		return false;
+	}
+	FFixtureGuard Guard(AnimBlueprint);
+
+	if (!TestNotNull(TEXT("Blueprint getter"), AddBlueprintFloatGetter(AnimBlueprint, TEXT("GetDir"))))
+	{
+		return false;
+	}
+	// A node the anim compiler consumes: only a consumed node's bindings receive the compiler's feedback (CompiledContext/CompiledContextDesc,
+	// AnimBlueprintExtension_Base.cpp:205-240).
+	UAnimGraphNode_SequencePlayer* Player = AddSequencePlayerNode(AnimBlueprint);
+	if (!TestTrue(TEXT("a sequence player the compiler consumes"), Player != nullptr && ConnectToResult(AnimBlueprint, Player)))
+	{
+		return false;
+	}
+	CompileAndAssertClean(*this, AnimBlueprint);
+	FCortexCommandRouter Router = MakeAnimGraphRouter();
+
+	// A binding the compiler has not seen yet: a fresh entry holds no compiler feedback until the next compile writes it back.
+	FString EmptyFeedback;
+	FString EmptyFeedbackDesc;
+	auto BindUncompiled = [&]()
+	{
+		RemoveBindingByReflection(Player, TEXT("PlayRate"));
+		TestTrue(TEXT("function-typed binding to the Blueprint getter"), BindPropertyByReflection(Player, TEXT("PlayRate"), { TEXT("GetDir") }, /*bFunction=*/true));
+		AnimBlueprint->GetPackage()->SetDirtyFlag(false);
+		EmptyFeedback = ReadBindingField(Player, TEXT("PlayRate"), TEXT("CompiledContext"));
+		EmptyFeedbackDesc = ReadBindingField(Player, TEXT("PlayRate"), TEXT("CompiledContextDesc"));
+	};
+	auto ExpectRestored = [&](const TCHAR* Label)
+	{
+		const FString Prefix(Label);
+		TestTrue(Prefix + TEXT(": the source binding is back"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
+		TestFalse(Prefix + TEXT(": the dirty flag is restored"), AnimBlueprint->GetPackage()->IsDirty());
+		TestTrue(Prefix + TEXT(": the asset is not blocked"), Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), true).bSuccess);
+	};
+
+	// ── Recovery: the journal's empty feedback is restored, the recovery compile writes it again, and the verification accepts that ──
+	struct FCase
+	{
+		const TCHAR* Label;
+		EPhase Phase;
+		FString ExpectedCode;
+		int32 ExpectedCompiles;
+	};
+	const FCase Cases[] = {
+		{ TEXT("readback"), EPhase::Readback, CortexErrorCodes::VerificationFailed, 2 },
+		{ TEXT("compile"), EPhase::Compile, CortexErrorCodes::CompileFailed, 1 },
+	};
+	for (const FCase& Case : Cases)
+	{
+		BindUncompiled();
+		FCortexAnimRebindOps::SetFaultHookForTest([Phase = Case.Phase](EPhase Called, UAnimBlueprint*) { return Called == Phase; });
+		FCompileCounter Compiles(AnimBlueprint);
+		const FCortexCommandResult Failed = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
+		FCortexAnimRebindOps::ClearFaultHookForTest();
+
+		TestFalse(FString(Case.Label) + TEXT(": the call fails"), Failed.bSuccess);
+		TestEqual(FString(Case.Label) + TEXT(": the error code"), Failed.ErrorCode, Case.ExpectedCode);
+		FString RollbackStatus;
+		FString RecoveryCompile;
+		if (Failed.ErrorDetails.IsValid())
+		{
+			Failed.ErrorDetails->TryGetStringField(TEXT("rollback_status"), RollbackStatus);
+			Failed.ErrorDetails->TryGetStringField(TEXT("recovery_compile"), RecoveryCompile);
+		}
+		TestEqual(FString(Case.Label) + TEXT(": the restore is verified despite the recovery compile's feedback"), RollbackStatus, FString(TEXT("restored")));
+		TestEqual(FString(Case.Label) + TEXT(": a recovery compile ran"), RecoveryCompile, FString(TEXT("run")));
+		TestEqual(FString(Case.Label) + TEXT(": compile count"), Compiles.Count, Case.ExpectedCompiles);
+		ExpectRestored(Case.Label);
+	}
+
+	// ── The normal compile writes feedback onto the original node; that is not an unauthorized edit ──
+	{
+		BindUncompiled();
+		FCompileCounter Compiles(AnimBlueprint);
+		const FCortexCommandResult Apply = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
+		TestTrue(*FString::Printf(TEXT("apply succeeds (%s: %s)"), *Apply.ErrorCode, *Apply.ErrorMessage), Apply.bSuccess);
+		if (Apply.Data.IsValid())
+		{
+			TestEqual(TEXT("readback_status"), Apply.Data->GetStringField(TEXT("readback_status")), FString(TEXT("matched")));
+		}
+		TestEqual(TEXT("exactly one compile ran"), Compiles.Count, 1);
+		TestTrue(TEXT("the binding path follows the native function"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetNativeDirection") });
+		TestTrue(TEXT("the compile wrote its feedback onto the binding (the premise of this test)"),
+			ReadBindingField(Player, TEXT("PlayRate"), TEXT("CompiledContext")) != EmptyFeedback || ReadBindingField(Player, TEXT("PlayRate"), TEXT("CompiledContextDesc")) != EmptyFeedbackDesc);
+	}
+
+	return true;
+}
