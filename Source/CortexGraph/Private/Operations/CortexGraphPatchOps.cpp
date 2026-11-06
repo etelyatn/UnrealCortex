@@ -2771,6 +2771,20 @@ struct FGraphPatchJournal
 	FString InterfaceDiagnostic;
 	/** The per-function replace_entry plans a `replace_interface` apply computed after its interface swap, for the readback. */
 	TArray<FCortexGraphMigrationPlan> InterfaceEntryPlans;
+	/** True when the apply is a `retarget_calls` apply, so recovery replays the node-level reversal before the pin snapshots. */
+	bool bRetargetApply = false;
+	/** One call or cast node a `retarget_calls` apply re-pointed: the exact reference to put back. */
+	struct FRetargetNodeState
+	{
+		FGuid GraphGuid;
+		FGuid NodeGuid;
+		bool bIsCast = false;
+		FMemberReference FunctionReference;
+		TWeakObjectPtr<UClass> CastTargetType;
+	};
+	TArray<FRetargetNodeState> RetargetStates;
+	/** The replacement nodes a `retarget_calls` apply created (message -> call), by graph and identity. */
+	TArray<FAddedNodeEntry> RetargetCreated;
 
 	bool WasNodeCreated(const FGuid& NodeGuid) const
 	{
@@ -3394,6 +3408,58 @@ bool RestoreNodePinState(
 	return true;
 }
 
+/**
+ * Reverses the node-level changes of a `retarget_calls` apply that the pin snapshots cannot express: the function reference
+ * or cast target of every re-pointed node returns (and the node is reconstructed from it), the replacement nodes are
+ * destroyed and the replaced message nodes are registered again at their exact positions. Every link of a touched node is
+ * broken first, so the reconstruction neither orphans nor re-links anything; the pin snapshots re-make the links.
+ */
+bool RestoreRetargetNodes(UBlueprint* Blueprint, const FGraphPatchJournal& Journal)
+{
+	for (int32 Index = Journal.RetargetStates.Num() - 1; Index >= 0; --Index)
+	{
+		const FGraphPatchJournal::FRetargetNodeState& State = Journal.RetargetStates[Index];
+		UEdGraph* const Graph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, State.GraphGuid);
+		UEdGraphNode* const Node = FCortexGraphMigrationOps::FindNodeByGuidInGraph(Graph, State.NodeGuid);
+		if (!Node) return false;
+		Node->Modify();
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin) Pin->BreakAllPinLinks();
+		}
+		bool bRestored = false;
+		if (State.bIsCast)
+		{
+			if (UK2Node_DynamicCast* const CastNode = Cast<UK2Node_DynamicCast>(Node))
+			{
+				UClass* const Target = State.CastTargetType.Get();
+				if (!Target) return false;
+				CastNode->TargetType = Target;
+				bRestored = true;
+			}
+		}
+		else if (UK2Node_CallFunction* const Call = Cast<UK2Node_CallFunction>(Node))
+		{
+			Call->FunctionReference = State.FunctionReference;
+			bRestored = true;
+		}
+		if (!bRestored) return false;
+		const bool bPreviousOrphanSaving = Node->bDisableOrphanPinSaving;
+		Node->bDisableOrphanPinSaving = true;
+		Node->ReconstructNode();
+		Node->bDisableOrphanPinSaving = bPreviousOrphanSaving;
+	}
+	for (int32 Index = Journal.RetargetCreated.Num() - 1; Index >= 0; --Index)
+	{
+		UEdGraph* const Graph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, Journal.RetargetCreated[Index].GraphGuid);
+		if (UEdGraphNode* const Created = FCortexGraphMigrationOps::FindNodeByGuidInGraph(Graph, Journal.RetargetCreated[Index].NodeGuid))
+		{
+			Created->DestroyNode();
+		}
+	}
+	return RestoreRemovedNodes(Blueprint, Journal);
+}
+
 /** Reverses the journal in reverse order. Returns false when a recorded change cannot be undone. */
 bool RestoreJournal(UBlueprint* Blueprint, FGraphPatchJournal& Journal)
 {
@@ -3424,6 +3490,11 @@ bool RestoreJournal(UBlueprint* Blueprint, FGraphPatchJournal& Journal)
 			SourcePin->BreakLinkTo(TargetPin);
 		}
 	}
+
+	// A retarget re-pointed call and cast nodes and (message -> call) replaced nodes by new ones. Before any snapshot is
+	// replayed, the old references return, the replacement nodes are gone and the replaced nodes are registered again, so
+	// every pin the snapshots name exists under its original name.
+	if (Journal.bRetargetApply && !RestoreRetargetNodes(Blueprint, Journal)) return false;
 
 	// Existing nodes are restored by full pin identity first: a class-pin apply rebuilds the
 	// class-dependent pin set, which a default-only restore leaves diverged.
@@ -4508,6 +4579,18 @@ bool VerifyAppliedState(
 		}
 		return FCortexGraphMigrationOps::VerifyCallOutputAgainstNative(Blueprint, Plan, OutFailure);
 	}
+	if (Prepared.RetargetPlan.IsValid())
+	{
+		FCortexGraphMigrationRetargetPlan Plan;
+		FCortexCommandResult PlanError;
+		if (!FCortexGraphMigrationRetargetPlan::FromJson(Prepared.RetargetPlan, Plan, PlanError))
+		{
+			OutFailure = PlanError.ErrorMessage;
+			return false;
+		}
+		return FCortexGraphRetargetOps::VerifyRetargetAgainstNative(Blueprint, Plan,
+			[](const TCHAR* Field) { return ShouldInjectReadbackFault(FName(Field)); }, OutFailure);
+	}
 	if (Prepared.InterfacePlan.IsValid())
 	{
 		FCortexGraphMigrationInterfacePlan Plan;
@@ -5202,6 +5285,256 @@ bool ApplyPrepared(
 			return Fail(TEXT("Test fault injected after the orphan output pin was removed"));
 		}
 		RewireGraph->NotifyGraphChanged();
+		return true;
+	}
+
+	if (Prepared.RetargetPlan.IsValid())
+	{
+		// The call retargeting: every reviewed message, typed call and cast of the old endpoint is re-pointed at the new one
+		// (a message -> call site is replaced by a direct typed call at a derived identity) and the reviewed links are re-made
+		// through the schema - never with BREAK_OTHERS - all inside this one transaction, with one caller compile.
+		FCortexGraphMigrationRetargetPlan Plan;
+		if (!FCortexGraphMigrationRetargetPlan::FromJson(Prepared.RetargetPlan, Plan, OutError))
+		{
+			return false;
+		}
+		UClass* FromOwner = nullptr;
+		UClass* ToOwner = nullptr;
+		UFunction* ToFunction = nullptr;
+		if (!FCortexGraphRetargetOps::ResolveEndpoints(Plan, FromOwner, ToOwner, ToFunction, OutError))
+		{
+			return false;
+		}
+		if (Plan.Sites.IsEmpty() || Plan.HasBlockedSite())
+		{
+			return Fail(TEXT("the retarget plan carries no site or a blocked site"));
+		}
+		const UEdGraphSchema_K2* const Schema = GetDefault<UEdGraphSchema_K2>();
+		Journal.bRetargetApply = true;
+		Journal.PreservationContracts = Plan.Preservations;
+		FGuid::Parse(Plan.Sites[0].GraphGuid, Journal.Locators.GraphGuid);
+		Journal.Locators.SubgraphPath = Plan.Sites[0].SubgraphPath;
+		for (const FCortexGraphRetargetSite& Site : Plan.Sites)
+		{
+			FGuid Replacement;
+			if (!Site.ReplacementGuid.IsEmpty() && FGuid::Parse(Site.ReplacementGuid, Replacement))
+			{
+				Journal.Locators.NodeGuidByClientId.Add(FString(TEXT("retarget:")) + Site.NodeGuid, Replacement);
+			}
+		}
+		// A failed apply restores every node and rebuilds the generated class through its one recovery compile.
+		Journal.bCompileAttempted = Prepared.bCompile;
+
+		struct FRetargetStep
+		{
+			const FCortexGraphRetargetSite* Site = nullptr;
+			UEdGraph* Graph = nullptr;
+			UEdGraphNode* Node = nullptr;
+			UEdGraphNode* After = nullptr;
+			FGuid ReplacementGuid;
+			FGuid OldGuid;
+			int32 NodeIndex = INDEX_NONE;
+		};
+		TArray<FRetargetStep> Steps;
+		for (const FCortexGraphRetargetSite& Site : Plan.Sites)
+		{
+			FRetargetStep Step;
+			Step.Site = &Site;
+			FGuid GraphGuid;
+			FGuid NodeGuid;
+			FGuid::Parse(Site.GraphGuid, GraphGuid);
+			FGuid::Parse(Site.NodeGuid, NodeGuid);
+			Step.Graph = FCortexGraphMigrationOps::FindGraphByGuid(Blueprint, GraphGuid);
+			Step.Node = FCortexGraphMigrationOps::FindNodeByGuidInGraph(Step.Graph, NodeGuid);
+			if (!Step.Node)
+			{
+				return Fail(FString::Printf(TEXT("the reviewed site '%s' no longer resolves in its graph"), *Site.NodeGuid));
+			}
+			FString Kind;
+			bool bUnsupportedClass = false;
+			if (Step.Node->GetClass()->GetPathName() != Site.NodeClassPath
+				|| !FCortexGraphRetargetOps::ClassifySite(Step.Node, FromOwner, Plan.FromFunction, Kind, bUnsupportedClass)
+				|| Kind != Site.Kind || bUnsupportedClass)
+			{
+				return Fail(FString::Printf(TEXT("the reviewed site '%s' is no longer a %s site of the old endpoint"), *Site.NodeGuid, *Site.Kind));
+			}
+			if (!Site.ReplacementGuid.IsEmpty())
+			{
+				FGuid::Parse(Site.ReplacementGuid, Step.ReplacementGuid);
+			}
+			Step.OldGuid = NodeGuid;
+			Step.NodeIndex = Step.Graph->Nodes.IndexOfByKey(Step.Node);
+			Steps.Add(Step);
+		}
+		auto FindStep = [&Steps](const FString& NodeGuid) -> FRetargetStep*
+		{
+			return Steps.FindByPredicate([&NodeGuid](const FRetargetStep& Candidate) { return Candidate.Site->NodeGuid == NodeGuid; });
+		};
+
+		// Journal before the first mutation. The replaced message nodes are journaled for removal, highest index first within a
+		// graph, so recovery re-inserts every one of them at its exact recorded position; the re-pointed nodes keep a full pin
+		// snapshot and the reference to put back; every node a site links to keeps a pin snapshot of its own.
+		TArray<int32> RemovalOrder;
+		for (int32 Index = 0; Index < Steps.Num(); ++Index)
+		{
+			if (Steps[Index].ReplacementGuid.IsValid())
+			{
+				RemovalOrder.Add(Index);
+			}
+		}
+		RemovalOrder.Sort([&Steps](const int32 A, const int32 B)
+		{
+			const FString GraphA = Steps[A].Graph->GraphGuid.ToString();
+			const FString GraphB = Steps[B].Graph->GraphGuid.ToString();
+			return GraphA != GraphB ? GraphA < GraphB : Steps[A].NodeIndex > Steps[B].NodeIndex;
+		});
+		for (const int32 Index : RemovalOrder)
+		{
+			JournalNodeRemoved(Steps[Index].Node, Journal);
+		}
+		for (FRetargetStep& Step : Steps)
+		{
+			if (!Step.ReplacementGuid.IsValid())
+			{
+				JournalNodePins(Step.Node, Journal);
+				FGraphPatchJournal::FRetargetNodeState State;
+				State.GraphGuid = Step.Graph->GraphGuid;
+				State.NodeGuid = Step.Node->NodeGuid;
+				if (const UK2Node_DynamicCast* const CastNode = Cast<UK2Node_DynamicCast>(Step.Node))
+				{
+					State.bIsCast = true;
+					State.CastTargetType = CastNode->TargetType;
+				}
+				else if (const UK2Node_CallFunction* const Call = Cast<UK2Node_CallFunction>(Step.Node))
+				{
+					State.FunctionReference = Call->FunctionReference;
+				}
+				Journal.RetargetStates.Add(MoveTemp(State));
+			}
+			JournalRemovalLinkOrders(Step.Node, Journal);
+			for (const UEdGraphPin* Pin : Step.Node->Pins)
+			{
+				if (!Pin) continue;
+				for (const UEdGraphPin* Linked : Pin->LinkedTo)
+				{
+					UEdGraphNode* const Far = Linked ? Linked->GetOwningNode() : nullptr;
+					if (Far && !FindStep(Far->NodeGuid.ToString()))
+					{
+						JournalNodePins(Far, Journal);
+					}
+				}
+			}
+		}
+
+		// Every link of every site is broken first (never through a connection response), so the reconstruction of a
+		// re-pointed node orphans nothing and the reviewed links are re-made once, against the final pins.
+		for (FRetargetStep& Step : Steps)
+		{
+			Step.Node->Modify();
+			Step.Graph->Modify();
+			for (UEdGraphPin* Pin : Step.Node->Pins)
+			{
+				if (Pin) Pin->BreakAllPinLinks();
+			}
+		}
+		for (int32 Index = 0; Index < Steps.Num(); ++Index)
+		{
+			FRetargetStep& Step = Steps[Index];
+			FString StepFailure;
+			if (Step.ReplacementGuid.IsValid())
+			{
+				UK2Node_CallFunction* const Created = FCortexGraphRetargetOps::CreateCallReplacement(
+					Step.Graph, Step.Node, *Step.Site, Step.ReplacementGuid, ToOwner, Plan.ToFunction, StepFailure);
+				if (!Created)
+				{
+					return Fail(StepFailure);
+				}
+				Journal.RetargetCreated.Add({ Step.Graph->GraphGuid, Step.ReplacementGuid });
+				Step.After = Created;
+			}
+			else
+			{
+				if (!FCortexGraphRetargetOps::ApplyNodeRetarget(Step.Node, *Step.Site, ToOwner, Plan.ToFunction, StepFailure))
+				{
+					return Fail(StepFailure);
+				}
+				Step.After = Step.Node;
+			}
+			if (Index == 0 && ShouldInjectApplyFault(TEXT("migration_retarget_after_first_site")))
+			{
+				return Fail(TEXT("Test fault injected after the first retargeted site"));
+			}
+		}
+
+		// The reviewed links, re-made through the schema between the final nodes. A link between two sites is made once.
+		for (FRetargetStep& Step : Steps)
+		{
+			for (const FCortexGraphRetargetPin& Reviewed : Step.Site->Pins)
+			{
+				if (Reviewed.Links.IsEmpty()) continue;
+				const EEdGraphPinDirection Direction = static_cast<EEdGraphPinDirection>(Reviewed.Direction);
+				UEdGraphPin* const NewPin = Reviewed.MapsTo.IsEmpty() ? nullptr : Step.After->FindPin(FName(*Reviewed.MapsTo), Direction);
+				if (!NewPin)
+				{
+					return Fail(FString::Printf(TEXT("the replacement pin of '%s' on %s does not exist"), *Reviewed.Name, *Step.Site->NodeGuid));
+				}
+				for (const FCortexGraphRetargetLink& Link : Reviewed.Links)
+				{
+					const EEdGraphPinDirection FarDirection = Direction == EGPD_Input ? EGPD_Output : EGPD_Input;
+					UEdGraphNode* FarNode = nullptr;
+					FString FarPinName = Link.Pin;
+					if (FRetargetStep* const FarStep = FindStep(Link.NodeGuid))
+					{
+						FarNode = FarStep->After;
+						for (const FCortexGraphRetargetPin& FarReviewed : FarStep->Site->Pins)
+						{
+							if (FarReviewed.Name == Link.Pin && FarReviewed.Direction == static_cast<int32>(FarDirection))
+							{
+								FarPinName = FarReviewed.MapsTo;
+							}
+						}
+					}
+					else
+					{
+						FGuid FarGuid;
+						FGuid::Parse(Link.NodeGuid, FarGuid);
+						FarNode = FCortexGraphMigrationOps::FindNodeByGuidInGraph(Step.Graph, FarGuid);
+					}
+					UEdGraphPin* const FarPin = FarNode && !FarPinName.IsEmpty() ? FarNode->FindPin(FName(*FarPinName), FarDirection) : nullptr;
+					if (!FarPin)
+					{
+						return Fail(FString::Printf(TEXT("the reviewed link target %s.%s no longer resolves"), *Link.NodeGuid, *Link.Pin));
+					}
+					if (NewPin->LinkedTo.Contains(FarPin)) continue;
+					const FPinConnectionResponse Response = Schema->CanCreateConnection(NewPin, FarPin);
+					if (Response.Response != CONNECT_RESPONSE_MAKE || !Schema->TryCreateConnection(NewPin, FarPin))
+					{
+						return Fail(FString::Printf(TEXT("the reviewed link '%s' -> %s.%s is no longer a direct connection: %s"),
+							*Reviewed.MapsTo, *FarNode->NodeGuid.ToString(), *FarPin->PinName.ToString(), *Response.Message.ToString()));
+					}
+					Journal.Links.Add({ NewPin->GetOwningNode()->NodeGuid, NewPin->PinName, FarPin->GetOwningNode()->NodeGuid, FarPin->PinName });
+				}
+			}
+		}
+
+		// The replaced message nodes leave last, highest index first, exactly as they were journaled.
+		for (const int32 Index : RemovalOrder)
+		{
+			FRetargetStep& Step = Steps[Index];
+			FBlueprintEditorUtils::RemoveNode(Blueprint, Step.Node, /*bDontRecompile=*/true);
+			if (FCortexGraphMigrationOps::FindNodeByGuidInGraph(Step.Graph, Step.OldGuid))
+			{
+				return Fail(FString::Printf(TEXT("the replaced message node '%s' could not be removed"), *Step.Site->NodeGuid));
+			}
+		}
+		if (ShouldInjectApplyFault(TEXT("migration_retarget_after_sites")))
+		{
+			return Fail(TEXT("Test fault injected after every site was retargeted"));
+		}
+		for (FRetargetStep& Step : Steps)
+		{
+			Step.Graph->NotifyGraphChanged();
+		}
 		return true;
 	}
 
