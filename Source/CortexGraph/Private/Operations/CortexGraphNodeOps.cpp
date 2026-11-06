@@ -1292,26 +1292,67 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 
 		if (FoundGraph == nullptr)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::GraphNotFound,
-				FString::Printf(TEXT("Graph with GUID %s not found on Blueprint"), *TargetGuidStr));
-		}
+			// Not a root graph: a nested graph (composite body, Animation Blueprint state, transition or conduit graph)
+			// resolves read-only; the identity is never guessed when several nested graphs share the GUID.
+			TArray<FCortexGraphTreeEntry> Tree;
+			FCortexGraphTree::Collect(Blueprint, Tree);
+			TArray<const FCortexGraphTreeEntry*> Matches;
+			for (const FCortexGraphTreeEntry& Entry : Tree)
+			{
+				if (!Entry.bRoot && Entry.Graph->GraphGuid == TargetGuid)
+				{
+					Matches.Add(&Entry);
+				}
+			}
+			if (Matches.IsEmpty())
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::GraphNotFound,
+					FString::Printf(TEXT("Graph with GUID %s not found on Blueprint"), *TargetGuidStr));
+			}
+			if (Matches.Num() > 1)
+			{
+				TArray<FString> Paths;
+				for (const FCortexGraphTreeEntry* Match : Matches)
+				{
+					Paths.Add(Match->Path);
+				}
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("graph_guid %s is shared by %d nested graphs: %s"),
+						*TargetGuidStr, Matches.Num(), *FString::Join(Paths, TEXT(", "))));
+			}
 
-		if (FoundKind == ECortexGraphKind::Delegate || !IsMutableGraphKind(FoundKind))
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidOperation,
-				TEXT("Delegate signature graphs are read-only and cannot be targeted for authoring"));
+			const FCortexGraphTreeEntry& Nested = *Matches[0];
+			ResolvedTargetObj = MakeShared<FJsonObject>();
+			ResolvedTargetObj->SetStringField(TEXT("graph_guid"), Nested.Graph->GraphGuid.ToString());
+			ResolvedTargetObj->SetStringField(TEXT("graph_name"), Nested.Graph->GetName());
+			ResolvedTargetObj->SetStringField(TEXT("graph_kind"), Nested.Kind);
+			ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), false);
+			ResolvedTargetObj->SetStringField(TEXT("graph_path"), Nested.Path);
+			if (!Nested.SubgraphPath.IsEmpty())
+			{
+				ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), Nested.SubgraphPath);
+			}
 		}
-
-		ResolvedTargetObj = MakeShared<FJsonObject>();
-		ResolvedTargetObj->SetStringField(TEXT("graph_guid"), FoundGraph->GraphGuid.ToString());
-		ResolvedTargetObj->SetStringField(TEXT("graph_name"), FoundGraph->GetName());
-		ResolvedTargetObj->SetStringField(TEXT("graph_kind"), GraphKindToString(FoundKind));
-		ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), IsMutableGraphKind(FoundKind));
-		if (!SubgraphPath.IsEmpty())
+		else
 		{
-			ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+			if (FoundKind == ECortexGraphKind::Delegate || !IsMutableGraphKind(FoundKind))
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidOperation,
+					TEXT("Delegate signature graphs are read-only and cannot be targeted for authoring"));
+			}
+
+			ResolvedTargetObj = MakeShared<FJsonObject>();
+			ResolvedTargetObj->SetStringField(TEXT("graph_guid"), FoundGraph->GraphGuid.ToString());
+			ResolvedTargetObj->SetStringField(TEXT("graph_name"), FoundGraph->GetName());
+			ResolvedTargetObj->SetStringField(TEXT("graph_kind"), GraphKindToString(FoundKind));
+			ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), IsMutableGraphKind(FoundKind));
+			if (!SubgraphPath.IsEmpty())
+			{
+				ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), SubgraphPath);
+			}
 		}
 	}
 
