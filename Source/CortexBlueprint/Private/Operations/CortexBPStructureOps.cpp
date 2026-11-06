@@ -1,8 +1,12 @@
 #include "Operations/CortexBPStructureOps.h"
 #include "Operations/CortexBPRemoveGraphOps.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPGuardedRun.h"
+#include "Operations/CortexBPSaveGameGuard.h"
 #include "Operations/CortexBPTypeUtils.h"
 #include "CortexBlueprintModule.h"
+#include "CortexGraphMemberReferences.h"
+#include "CortexTypes.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
@@ -20,6 +24,108 @@
 
 using CortexBPTypeUtils::ResolveVariableType;
 using CortexBPTypeUtils::FriendlyTypeName;
+
+namespace
+{
+	/** The node with this GUID in any graph of the Blueprint, or null. */
+	UEdGraphNode* FindNodeByGuid(UBlueprint* Blueprint, const FGuid& NodeGuid)
+	{
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+		for (UEdGraph* Graph : Graphs)
+		{
+			if (Graph == nullptr)
+			{
+				continue;
+			}
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node != nullptr && Node->NodeGuid == NodeGuid)
+				{
+					return Node;
+				}
+			}
+		}
+		return nullptr;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ToJsonStrings(const TArray<FString>& Values)
+	{
+		TArray<TSharedPtr<FJsonValue>> Array;
+		for (const FString& Value : Values)
+		{
+			Array.Add(MakeShared<FJsonValueString>(Value));
+		}
+		return Array;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ReferencesToJson(const TArray<FCortexMemberReference>& References)
+	{
+		TArray<TSharedPtr<FJsonValue>> Array;
+		for (const FCortexMemberReference& Reference : References)
+		{
+			Array.Add(MakeShared<FJsonValueObject>(FCortexGraphMemberReferences::ReferenceToJson(Reference)));
+		}
+		return Array;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> FindingsToJson(const TArray<FCortexBPSaveGameGuard::FFinding>& Findings)
+	{
+		TArray<TSharedPtr<FJsonValue>> Array;
+		for (const FCortexBPSaveGameGuard::FFinding& Finding : Findings)
+		{
+			Array.Add(MakeShared<FJsonValueObject>(Finding.ToJson()));
+		}
+		return Array;
+	}
+
+	/** The CDO value of a Blueprint variable's compiled property, in the export format. */
+	FString ReadCdoText(UBlueprint* Blueprint, const FName Name, bool& bOutValid)
+	{
+		bOutValid = false;
+		UObject* Cdo = Blueprint->GeneratedClass != nullptr ? Blueprint->GeneratedClass->GetDefaultObject(false) : nullptr;
+		const FProperty* Property = Cdo != nullptr ? FindFProperty<FProperty>(Cdo->GetClass(), Name) : nullptr;
+		if (Property == nullptr)
+		{
+			return FString();
+		}
+		FString Text;
+		bOutValid = FBlueprintEditorUtils::PropertyValueToString(Property, reinterpret_cast<const uint8*>(Cdo), Text);
+		return Text;
+	}
+
+	bool WriteCdoText(UBlueprint* Blueprint, const FName Name, const FString& Text)
+	{
+		UObject* Cdo = Blueprint->GeneratedClass != nullptr ? Blueprint->GeneratedClass->GetDefaultObject(false) : nullptr;
+		const FProperty* Property = Cdo != nullptr ? FindFProperty<FProperty>(Cdo->GetClass(), Name) : nullptr;
+		return Property != nullptr
+			&& FBlueprintEditorUtils::PropertyValueFromString(Property, Text, reinterpret_cast<uint8*>(Cdo), Cdo);
+	}
+
+	/** Presence and exact type: a string, a number for a boolean field, or null are all refused. */
+	bool ReadOptionalBool(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, bool Default, bool& OutValue, FCortexCommandResult& OutError)
+	{
+		OutValue = Default;
+		if (!Params->HasField(Field))
+		{
+			return true;
+		}
+		const TSharedPtr<FJsonValue> Value = Params->TryGetField(Field);
+		if (!Value.IsValid() || Value->Type != EJson::Boolean || !Params->TryGetBoolField(Field, OutValue))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s must be a boolean"), Field));
+			return false;
+		}
+		return true;
+	}
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+namespace
+{
+	TFunction<void(UBlueprint*)> GRemoveVariablePostApplyHookForTest;
+}
+#endif
 
 FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonObject>& Params)
 {
@@ -171,12 +277,69 @@ FCortexCommandResult FCortexBPStructureOps::RemoveVariable(const TSharedPtr<FJso
 
 	if (!Params.IsValid()
 		|| !Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-		|| !Params->TryGetStringField(TEXT("name"), VarName))
+		|| !Params->TryGetStringField(TEXT("name"), VarName)
+		|| VarName.IsEmpty())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required params: asset_path, name")
 		);
+	}
+
+	FCortexCommandResult ParamError;
+	bool bDryRun = false;
+	bool bCompile = false;
+	bool bSave = false;
+	bool bRemoveReferencingNodes = false;
+	if (!ReadOptionalBool(Params, TEXT("dry_run"), false, bDryRun, ParamError)
+		|| !ReadOptionalBool(Params, TEXT("compile"), false, bCompile, ParamError)
+		|| !ReadOptionalBool(Params, TEXT("save"), false, bSave, ParamError)
+		|| !ReadOptionalBool(Params, TEXT("remove_referencing_nodes"), false, bRemoveReferencingNodes, ParamError))
+	{
+		return ParamError;
+	}
+	if (bDryRun && bSave)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("A dry run must use save=false"));
+	}
+	if (bSave && !bCompile)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("save=true requires compile=true"));
+	}
+
+	TArray<FString> Acknowledged;
+	if (Params->HasField(TEXT("acknowledged_losses")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (!Params->TryGetArrayField(TEXT("acknowledged_losses"), Values) || Values == nullptr)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("acknowledged_losses must be an array of strings"));
+		}
+		for (const TSharedPtr<FJsonValue>& Value : *Values)
+		{
+			FString Key;
+			if (!Value.IsValid() || Value->Type != EJson::String || !Value->TryGetString(Key))
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("acknowledged_losses must be an array of strings"));
+			}
+			if (!Key.StartsWith(TEXT("save_game:")))
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("Unknown acknowledgment '%s' (allowed: save_game:<variable>)"), *Key));
+			}
+			Acknowledged.Add(Key);
+		}
+	}
+
+	TSharedPtr<FJsonObject> Expected;
+	if (Params->HasField(TEXT("expected_fingerprint")))
+	{
+		const TSharedPtr<FJsonObject>* ExpectedField = nullptr;
+		if (!Params->TryGetObjectField(TEXT("expected_fingerprint"), ExpectedField) || ExpectedField == nullptr || !ExpectedField->IsValid())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("expected_fingerprint must be an object"));
+		}
+		Expected = *ExpectedField;
 	}
 
 	FString ValidationError;
@@ -192,18 +355,9 @@ FCortexCommandResult FCortexBPStructureOps::RemoveVariable(const TSharedPtr<FJso
 		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
-	// Check if variable exists
-	bool bFound = false;
-	for (const FBPVariableDescription& Var : Blueprint->NewVariables)
-	{
-		if (Var.VarName == FName(*VarName))
-		{
-			bFound = true;
-			break;
-		}
-	}
-
-	if (!bFound)
+	const FName VarFName(*VarName);
+	const int32 VariableIndex = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, VarFName);
+	if (VariableIndex == INDEX_NONE)
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::VariableNotFound,
@@ -211,20 +365,181 @@ FCortexCommandResult FCortexBPStructureOps::RemoveVariable(const TSharedPtr<FJso
 		);
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex:Remove Variable %s"), *VarName)
-	));
+	// Read-only preflight: the nodes the engine's RemoveMemberVariable would destroy, and the SaveGame data at risk.
+	const FBPVariableDescription Variable = Blueprint->NewVariables[VariableIndex];
+	TArray<FCortexMemberReference> References;
+	FCortexGraphMemberReferences::FindVariableReferences(Blueprint, VarFName, References);
+	TArray<FCortexBPSaveGameGuard::FFinding> Findings;
+	FCortexBPSaveGameGuard::Evaluate(Variable, nullptr, Findings);
+	const TArray<FString> RequiredAcknowledgment = FCortexBPSaveGameGuard::RequiredAcknowledgment(Findings);
+	// A full compile moves the variable's DefaultValue into the CDO and clears it, so the value only exists on the
+	// compiled class. The recovery compile rebuilds a class whose default is the property type's zero; the captured
+	// value is written back once that class exists again (operation-owned state, design C3).
+	bool bValueValid = false;
+	const FString ValueBefore = ReadCdoText(Blueprint, VarFName, bValueValid);
 
-	FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, FName(*VarName));
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	const auto DescribePlan = [&](const TSharedRef<FJsonObject>& Data)
+	{
+		Data->SetStringField(TEXT("name"), VarName);
+		Data->SetNumberField(TEXT("reference_count"), References.Num());
+		Data->SetArrayField(TEXT("referencing_nodes"), ReferencesToJson(References));
+		Data->SetArrayField(TEXT("save_game_findings"), FindingsToJson(Findings));
+		Data->SetArrayField(TEXT("required_acknowledgment"), ToJsonStrings(RequiredAcknowledgment));
+	};
 
-	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	if (bDryRun)
+	{
+		FCortexBPGuardedRun::FSpec Spec;
+		Spec.OpName = TEXT("remove_variable");
+		Spec.Blueprint = Blueprint;
+		Spec.bDryRun = true;
+		Spec.bCompile = bCompile;
+		Spec.Expected = Expected;
+		FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			DescribePlan(Result.Data.ToSharedRef());
+			Result.Data->SetBoolField(TEXT("removed"), false);
+			Result.Data->SetBoolField(TEXT("can_apply"),
+				RequiredAcknowledgment.IsEmpty() && (References.IsEmpty() || bRemoveReferencingNodes));
+		}
+		return Result;
+	}
+
+	if (!References.IsEmpty() && !bRemoveReferencingNodes)
+	{
+		const TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
+		DescribePlan(Details);
+		Details->SetBoolField(TEXT("removed"), false);
+		Details->SetBoolField(TEXT("can_apply"), false);
+		return FCortexCommandRouter::Error(CortexErrorCodes::MemberReferenced,
+			FString::Printf(TEXT("Variable '%s' is referenced by %d graph node(s); removing it would destroy them. "
+				"Pass remove_referencing_nodes=true to remove the nodes together with the variable."),
+				*VarName, References.Num()),
+			Details);
+	}
+
+	FCortexCommandResult AcknowledgmentError;
+	if (!FCortexBPSaveGameGuard::Check(Findings, Acknowledged, AcknowledgmentError))
+	{
+		if (!AcknowledgmentError.ErrorDetails.IsValid())
+		{
+			AcknowledgmentError.ErrorDetails = MakeShared<FJsonObject>();
+		}
+		DescribePlan(AcknowledgmentError.ErrorDetails.ToSharedRef());
+		AcknowledgmentError.ErrorDetails->SetBoolField(TEXT("removed"), false);
+		return AcknowledgmentError;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> RemovedNodes;
+
+	FCortexBPGuardedRun::FSpec Spec;
+	Spec.OpName = TEXT("remove_variable");
+	Spec.Blueprint = Blueprint;
+	Spec.bCompile = bCompile;
+	Spec.bSave = bSave;
+	Spec.Expected = Expected;
+
+	Spec.Apply = [&RemovedNodes, VarFName, References](UBlueprint* Target, FString& OutError)
+	{
+		RemovedNodes.Reset();
+		// RemoveNode breaks the node's links first, so a chain the variable sat in is cut at this node, not silently mangled
+		// by FBlueprintEditorUtils::RemoveMemberVariable.
+		for (const FCortexMemberReference& Reference : References)
+		{
+			UEdGraphNode* Node = FindNodeByGuid(Target, Reference.NodeGuid);
+			if (Node == nullptr)
+			{
+				OutError = FString::Printf(TEXT("Referencing node %s vanished before the removal"),
+					*Reference.NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
+				return false;
+			}
+			RemovedNodes.Add(MakeShared<FJsonValueObject>(FCortexGraphMemberReferences::ReferenceToJson(Reference)));
+			FBlueprintEditorUtils::RemoveNode(Target, Node, /*bDontRecompile=*/true);
+		}
+
+		if (FBlueprintEditorUtils::FindNewVariableIndex(Target, VarFName) == INDEX_NONE)
+		{
+			OutError = FString::Printf(TEXT("Variable '%s' vanished before the removal"), *VarFName.ToString());
+			return false;
+		}
+		FBlueprintEditorUtils::RemoveMemberVariable(Target, VarFName);
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Target);
+
+#if WITH_DEV_AUTOMATION_TESTS
+		if (GRemoveVariablePostApplyHookForTest)
+		{
+			GRemoveVariablePostApplyHookForTest(Target);
+		}
+#endif
+		return true;
+	};
+
+	Spec.PostRecovery = [VarFName, ValueBefore, bValueValid](UBlueprint* Target, FString& OutError)
+	{
+		if (bValueValid && !WriteCdoText(Target, VarFName, ValueBefore))
+		{
+			OutError = FString::Printf(TEXT("Could not restore the compiled default of '%s'"), *VarFName.ToString());
+			return false;
+		}
+		return true;
+	};
+
+	Spec.Verify = [VarFName, References](UBlueprint* Target, bool bCompiled, FString& OutError)
+	{
+		if (FBlueprintEditorUtils::FindNewVariableIndex(Target, VarFName) != INDEX_NONE)
+		{
+			OutError = FString::Printf(TEXT("Variable '%s' is still declared by the Blueprint"), *VarFName.ToString());
+			return false;
+		}
+		for (const FCortexMemberReference& Reference : References)
+		{
+			if (FindNodeByGuid(Target, Reference.NodeGuid) != nullptr)
+			{
+				OutError = FString::Printf(TEXT("Referencing node %s was not removed"),
+					*Reference.NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
+				return false;
+			}
+		}
+		if (bCompiled)
+		{
+			if (Target->Status != BS_UpToDate && Target->Status != BS_UpToDateWithWarnings)
+			{
+				OutError = TEXT("The Blueprint is not up to date after the compile");
+				return false;
+			}
+			const FProperty* Property = Target->GeneratedClass != nullptr
+				? Target->GeneratedClass->FindPropertyByName(VarFName) : nullptr;
+			if (Property != nullptr && Property->GetOwnerClass() == Target->GeneratedClass)
+			{
+				OutError = FString::Printf(TEXT("The compiled class still declares '%s'"), *VarFName.ToString());
+				return false;
+			}
+		}
+		return true;
+	};
+
+	FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
+	if (!Result.bSuccess)
+	{
+		if (!Result.ErrorDetails.IsValid())
+		{
+			Result.ErrorDetails = MakeShared<FJsonObject>();
+		}
+		DescribePlan(Result.ErrorDetails.ToSharedRef());
+		Result.ErrorDetails->SetBoolField(TEXT("removed"), false);
+		Result.ErrorDetails->SetArrayField(TEXT("removed_nodes"), RemovedNodes);
+		return Result;
+	}
+
+	const TSharedRef<FJsonObject> Data = Result.Data.ToSharedRef();
+	DescribePlan(Data);
 	Data->SetBoolField(TEXT("removed"), true);
-	Data->SetStringField(TEXT("name"), VarName);
+	Data->SetArrayField(TEXT("removed_nodes"), RemovedNodes);
 
-	UE_LOG(LogCortexBlueprint, Log, TEXT("Removed variable '%s' from %s"), *VarName, *AssetPath);
+	UE_LOG(LogCortexBlueprint, Log, TEXT("Removed variable '%s' from %s (%d referencing node(s))"), *VarName, *AssetPath, RemovedNodes.Num());
 
-	return FCortexCommandRouter::Success(Data);
+	return Result;
 }
 
 FCortexCommandResult FCortexBPStructureOps::AddFunction(const TSharedPtr<FJsonObject>& Params)
@@ -428,3 +743,15 @@ FCortexCommandResult FCortexBPStructureOps::RemoveGraph(const TSharedPtr<FJsonOb
 {
 	return FCortexBPRemoveGraphOps::Execute(Params);
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FCortexBPStructureOps::SetRemoveVariablePostApplyHookForTest(TFunction<void(UBlueprint*)> Hook)
+{
+	GRemoveVariablePostApplyHookForTest = MoveTemp(Hook);
+}
+
+void FCortexBPStructureOps::ClearRemoveVariablePostApplyHookForTest()
+{
+	GRemoveVariablePostApplyHookForTest = nullptr;
+}
+#endif

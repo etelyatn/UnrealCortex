@@ -326,9 +326,17 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("default_value"), TEXT("string"), TEXT("Optional default value"))
 		.Optional(TEXT("is_exposed"), TEXT("boolean"), TEXT("Expose on spawn / instance"))
 		.Optional(TEXT("category"), TEXT("string"), TEXT("Variable category")));
-	Commands.Add(FCortexCommandInfo{TEXT("remove_variable"), TEXT("Remove a variable from a Blueprint")}
+	Commands.Add(FCortexCommandInfo{TEXT("remove_variable"),
+		TEXT("Remove a Blueprint variable on the guarded-run skeleton: a dry_run that lists the referencing nodes and the SaveGame findings, a stale-write fingerprint, an explicit compile/save and a fail-closed readback. Refuses MEMBER_REFERENCED while a get/set node names the variable unless remove_referencing_nodes removes the nodes with it, and POTENTIAL_DATA_LOSS for a SaveGame variable until acknowledged_losses carries its save_game:<variable> keys")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
-		.Required(TEXT("name"), TEXT("string"), TEXT("Variable name")));
+		.Required(TEXT("name"), TEXT("string"), TEXT("Variable name"))
+		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true = report the reference list and SaveGame findings, mutate and dirty nothing (default false)"))
+		.OptionalExpectedFingerprint(TEXT("Stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}; read it from a dry run"))
+		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the removal (default false; required for save)"))
+		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default false; requires compile)"))
+		.Optional(TEXT("remove_referencing_nodes"), TEXT("boolean"), TEXT("Remove the graph nodes that name the variable together with it (default false = refuse)"))
+		.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("Exactly the required_acknowledgment keys of a SaveGame variable (save_game:<variable>)"))
+		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("add_function"), TEXT("Add a function to a Blueprint")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("name"), TEXT("string"), TEXT("Function name"))
