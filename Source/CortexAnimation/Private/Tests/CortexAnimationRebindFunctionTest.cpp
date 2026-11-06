@@ -477,6 +477,43 @@ bool FCortexAnimationRebindExactEditsTest::RunTest(const FString& Parameters)
 		TestFalse(FString(Tamper.Label) + TEXT(": the dirty flag is restored"), AnimBlueprint->GetPackage()->IsDirty());
 	}
 
+	// The same faults injected after the exact edit check, while the compile proceeds normally: only the final readback, which runs
+	// after the compile and before any save, can catch them.
+	const FTamper LateTampers[] = {
+		{ TEXT("a field the projection never compared, around the compile"), TEXT("PlayRate"), TEXT("ContextId"), TEXT("Tampered") },
+		{ TEXT("an unplanned entry's context, around the compile"), TEXT("StartPosition"), TEXT("ContextId"), TEXT("Tampered") },
+	};
+	for (const FTamper& Tamper : LateTampers)
+	{
+		FCortexAnimRebindOps::SetFaultHookForTest([&](EPhase Called, UAnimBlueprint*)
+		{
+			if (Called == EPhase::Compile || Called == EPhase::AfterCompile)
+			{
+				TestTrue(FString(Tamper.Label) + TEXT(": the fault is injected"), TamperBindingField(Player, Tamper.Key, Tamper.Field, Tamper.Value));
+			}
+			return false;
+		});
+		FCompileCounter Compiles(AnimBlueprint);
+		const FCortexCommandResult Failed = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
+		FCortexAnimRebindOps::ClearFaultHookForTest();
+
+		TestFalse(FString(Tamper.Label) + TEXT(": the final readback fails the call"), Failed.bSuccess);
+		TestEqual(FString(Tamper.Label) + TEXT(": the error code"), Failed.ErrorCode, CortexErrorCodes::VerificationFailed);
+		FString Phase;
+		FString RollbackStatus;
+		if (Failed.ErrorDetails.IsValid())
+		{
+			Failed.ErrorDetails->TryGetStringField(TEXT("failed_phase"), Phase);
+			Failed.ErrorDetails->TryGetStringField(TEXT("rollback_status"), RollbackStatus);
+		}
+		TestEqual(FString(Tamper.Label) + TEXT(": caught by the readback"), Phase, FString(TEXT("readback")));
+		TestEqual(FString(Tamper.Label) + TEXT(": rollback_status"), RollbackStatus, FString(TEXT("restored")));
+		TestEqual(FString(Tamper.Label) + TEXT(": the normal compile and exactly one recovery compile ran"), Compiles.Count, 2);
+		TestEqual(FString(Tamper.Label) + TEXT(": the owned context is back"), ReadBindingField(Player, TEXT("PlayRate"), TEXT("ContextId")), ContextBefore);
+		TestTrue(FString(Tamper.Label) + TEXT(": the source binding is back"), ReportedBindingPath(Router, AnimBlueprint, Player->NodeGuid, TEXT("PlayRate")) == TArray<FString>{ TEXT("GetDir") });
+		TestFalse(FString(Tamper.Label) + TEXT(": the dirty flag is restored"), AnimBlueprint->GetPackage()->IsDirty());
+	}
+
 	// Without a fault the same call passes the same verification, and the owned entry carries the engine's text for the new path.
 	const FCortexCommandResult Apply = Rebind(Router, AnimBlueprint, TEXT("GetDir"), TEXT("GetNativeDirection"), false);
 	TestTrue(*FString::Printf(TEXT("the unfaulted apply succeeds (%s: %s)"), *Apply.ErrorCode, *Apply.ErrorMessage), Apply.bSuccess);

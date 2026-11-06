@@ -32,6 +32,8 @@ public:
 		AfterMutation,
 		/** In place of the compile: true simulates a compile failure. */
 		Compile,
+		/** After the compile, before the final readback: the hook may corrupt state to be caught by the readback (its result is ignored). */
+		AfterCompile,
 		/** Before the readback verdict: true simulates a readback mismatch. */
 		Readback,
 		/** In place of the save: true simulates a failed save. */
