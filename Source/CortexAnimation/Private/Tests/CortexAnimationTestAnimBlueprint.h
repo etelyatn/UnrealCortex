@@ -39,7 +39,7 @@
  */
 namespace CortexAnimTest
 {
-	inline FString MakeSuffix()
+	inline FString MakeFixtureSuffix()
 	{
 		return FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	}

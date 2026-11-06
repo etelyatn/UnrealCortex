@@ -87,7 +87,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexAnimationAnimBlueprintLifecycleTest::RunTest(const FString& Parameters)
 {
-	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
 	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
 	{
 		return false;

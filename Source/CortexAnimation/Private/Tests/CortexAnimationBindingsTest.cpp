@@ -88,7 +88,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexAnimationAnimBlueprintBindingsTest::RunTest(const FString& Parameters)
 {
-	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
 	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
 	{
 		return false;
@@ -234,7 +234,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexAnimationAnimBlueprintPropertyAccessTest::RunTest(const FString& Parameters)
 {
-	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeSuffix());
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix());
 	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
 	{
 		return false;
@@ -305,7 +305,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexAnimationMemberReferencesAnimKindsTest::RunTest(const FString& Parameters)
 {
-	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
 	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
 	{
 		return false;

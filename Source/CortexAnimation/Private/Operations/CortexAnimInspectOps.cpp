@@ -20,6 +20,7 @@
 #include "Engine/SkeletalMeshSocket.h"
 #include "Operations/CortexAnimBindingReport.h"
 #include "Operations/CortexAnimLifecycleReport.h"
+#include "Operations/CortexAnimNotifyHandlerReport.h"
 #include "Operations/CortexAnimAssetUtils.h"
 
 namespace
@@ -88,11 +89,12 @@ struct FAnimBlueprintInfoIncludes
 	bool bNodeFunctions = false;
 	bool bPropertyAccess = false;
 	bool bLifecycle = false;
+	bool bNotifyHandlers = false;
 };
 
 bool TryReadAnimBlueprintInfoIncludes(const TSharedPtr<FJsonObject>& Params, FAnimBlueprintInfoIncludes& OutIncludes, FCortexCommandResult& OutError)
 {
-	static const TCHAR* Allowed = TEXT("bindings, node_functions, property_access, lifecycle");
+	static const TCHAR* Allowed = TEXT("bindings, node_functions, property_access, lifecycle, notify_handlers");
 	if (!Params.IsValid() || !Params->HasField(TEXT("include")))
 	{
 		return true;
@@ -135,6 +137,10 @@ bool TryReadAnimBlueprintInfoIncludes(const TSharedPtr<FJsonObject>& Params, FAn
 		else if (Entry == TEXT("lifecycle"))
 		{
 			OutIncludes.bLifecycle = true;
+		}
+		else if (Entry == TEXT("notify_handlers"))
+		{
+			OutIncludes.bNotifyHandlers = true;
 		}
 		else
 		{
@@ -637,6 +643,10 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 		return Error;
 	}
 	if (Includes.bLifecycle && !FCortexAnimLifecycleReport::AppendLifecycle(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
+	if (Includes.bNotifyHandlers && !FCortexAnimNotifyHandlerReport::AppendNotifyHandlers(AnimBlueprint, BindingLimit, Data, Error))
 	{
 		return Error;
 	}

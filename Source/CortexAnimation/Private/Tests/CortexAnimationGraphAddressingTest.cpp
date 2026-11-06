@@ -12,7 +12,7 @@ bool FCortexAnimationGraphAddressingTest::RunTest(const FString& Parameters)
 {
 	using namespace CortexAnimTest;
 
-	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeSuffix());
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix());
 	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
 	{
 		return false;
