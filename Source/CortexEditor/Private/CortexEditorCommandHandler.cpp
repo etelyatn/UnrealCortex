@@ -195,10 +195,11 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("allow_during_pie"), TEXT("boolean"), TEXT("Allow transient editor-client change during possessed PIE; does not control game camera")),
 		FCortexCommandInfo{ TEXT("focus_actor"), TEXT("Frame actor in viewport") }
 			.Required(TEXT("actor_path"), TEXT("string"), TEXT("Actor path to frame (alias: actor_name, actor)")),
-		FCortexCommandInfo{ TEXT("focus_node"), TEXT("Open Blueprint editor and focus a specific graph node") }
+		FCortexCommandInfo{ TEXT("focus_node"), TEXT("Open Blueprint editor and focus a specific graph node; graph_guid selects the graph when several graphs share a name (graph_guid is published by graph.list_graphs)") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Graph node identifier"))
-			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Optional graph name")),
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Optional graph name; with graph_guid it must name that graph (INVALID_FIELD otherwise)"))
+			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("Optional GraphGuid of the graph holding the node, any graph of the Blueprint including nested graphs; GRAPH_NOT_FOUND when unknown, INVALID_FIELD when malformed or shared by several graphs")),
 		FCortexCommandInfo{ TEXT("set_viewport_mode"), TEXT("Change view mode") }
 			.Required(TEXT("mode"), TEXT("string"), TEXT("Viewport mode name")),
 		FCortexCommandInfo{ TEXT("execute_console_command"), TEXT("Run console command in PIE") }
