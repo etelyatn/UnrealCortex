@@ -119,6 +119,20 @@ UClass* FCortexReflectOps::FindClassByName(const FString& ClassName, FCortexComm
 		return nullptr;
 	}
 
+	// A /Script/Module.Class path names a native class directly.
+	if (ClassName.StartsWith(TEXT("/Script/")))
+	{
+		if (UClass* NativeClass = FindObject<UClass>(nullptr, *ClassName))
+		{
+			return NativeClass;
+		}
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::ClassNotFound,
+			FString::Printf(TEXT("Native class not found: %s"), *ClassName)
+		);
+		return nullptr;
+	}
+
 	// 1. Try asset path (starts with /)
 	if (ClassName.StartsWith(TEXT("/")))
 	{
@@ -207,6 +221,20 @@ UClass* FCortexReflectOps::FindClassByName(const FString& ClassName, FCortexComm
 		if (UClass** Result = Found.Find(Name))
 		{
 			return *Result;
+		}
+	}
+
+	// The C++ spelling of an interface (IRipX) names the native interface class URipX; only an interface class matches it.
+	if (ClassName.Len() > 1 && ClassName.StartsWith(TEXT("I")))
+	{
+		const FString InterfaceName = ClassName.Mid(1);
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* Candidate = *It;
+			if (IsValid(Candidate) && Candidate->HasAnyClassFlags(CLASS_Interface) && Candidate->GetName() == InterfaceName)
+			{
+				return Candidate;
+			}
 		}
 	}
 
@@ -1324,6 +1352,12 @@ FCortexCommandResult FCortexReflectOps::FindOverrides(const TSharedPtr<FJsonObje
 	if (!ParentClass)
 	{
 		return FindError;
+	}
+
+	// An interface has no derived classes; its implementing Blueprints are what a caller means by overrides.
+	if (ParentClass->HasAnyClassFlags(CLASS_Interface))
+	{
+		return FCortexReflectInterfaceOps::FindOverridesOfInterface(Params, ParentClass);
 	}
 
 	int32 Depth = 2;

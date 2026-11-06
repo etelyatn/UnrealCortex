@@ -80,6 +80,16 @@ namespace CortexIssue122ReflectTest
 		return Out;
 	}
 
+	inline TArray<TSharedPtr<FJsonValue>> JsonValues(const TArray<FString>& Strings)
+	{
+		TArray<TSharedPtr<FJsonValue>> Values;
+		for (const FString& String : Strings)
+		{
+			Values.Add(MakeShared<FJsonValueString>(String));
+		}
+		return Values;
+	}
+
 	inline FCortexCommandResult Run(const TCHAR* Command, const TSharedPtr<FJsonObject>& Params)
 	{
 		FCortexReflectCommandHandler Handler;
@@ -272,6 +282,20 @@ namespace CortexIssue122ReflectTest
 				}
 			}
 			return Event;
+		}
+
+		/**
+		 * Points an event's parent at Parent exactly as given. SetExternalMember normalises a skeleton class to its authoritative
+		 * class, but a loaded Blueprint can hold the skeleton class in memory (the engine resolves with the Blueprint's own class for
+		 * that reason), so the fixture writes the raw reference.
+		 */
+		static void SetEventParentRaw(UK2Node_Event* Event, UClass* Parent)
+		{
+			const FObjectProperty* Property = CastField<FObjectProperty>(FMemberReference::StaticStruct()->FindPropertyByName(TEXT("MemberParent")));
+			if (Property)
+			{
+				Property->SetObjectPropertyValue_InContainer(&Event->EventReference, Parent);
+			}
 		}
 
 		/** Unloads the packages of Assets (which must be saved and clean) so a command meets them as not loaded. */

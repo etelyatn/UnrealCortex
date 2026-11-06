@@ -5,6 +5,7 @@
 #include "Operations/CortexReflectDependencyGraphOps.h"
 #include "Operations/CortexReflectNameLookupOps.h"
 #include "Operations/CortexReflectDuplicateGraphOps.h"
+#include "Operations/CortexReflectInterfaceOps.h"
 
 namespace
 {
@@ -85,6 +86,11 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 		return FCortexReflectDuplicateGraphOps::FindDuplicateGraphs(Params);
 	}
 
+	if (Command == TEXT("find_interface_implementers"))
+	{
+		return FCortexReflectInterfaceOps::FindInterfaceImplementers(Params);
+	}
+
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
 		FString::Printf(TEXT("Unknown reflect command: %s"), *Command)
@@ -117,7 +123,8 @@ TArray<FCortexCommandInfo> ReflectCommandInfos()
 		FCortexCommandInfo{ TEXT("find_overrides"), TEXT("Find Blueprint overrides of a class") }
 			.Required(TEXT("class_name"), TEXT("string"), TEXT("Base class to inspect for overrides"))
 			.Optional(TEXT("depth"), TEXT("number"), TEXT("Inheritance depth to search"))
-			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum overrides to return")),
+			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum overrides to return"))
+			.Optional(TEXT("path_prefixes"), TEXT("array"), TEXT("Interface classes only: mounted content folders searched for implementing Blueprints (default /Game)")),
 		FCortexCommandInfo{ TEXT("find_usages"), TEXT("Find cross-references to a symbol") }
 			.Required(TEXT("symbol"), TEXT("string"), TEXT("Symbol name to search for"))
 			.Optional(TEXT("class_name"), TEXT("string"), TEXT("Restrict search to a class context"))
@@ -156,6 +163,12 @@ TArray<FCortexCommandInfo> ReflectCommandInfos()
 			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose Blueprints are compared (e.g. /Game/MyFeature)"))
 			.Optional(TEXT("min_nodes"), TEXT("number"), TEXT("Smallest graph (or widget tree) size considered, integer greater than 0 (default 5)"))
 			.Optional(TEXT("similarity"), TEXT("number"), TEXT("Jaccard threshold for similar groups, greater than 0 and at most 1 (default 0.9)"))
+			.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full result to this file (under Project Saved, Content or Config) and return only a compact summary; use it when the inline result would be too large"))
+			.StrictParams(),
+		FCortexCommandInfo{ TEXT("find_interface_implementers"), TEXT("List the Blueprints that implement an interface (a Blueprint Interface asset, a /Script/ class path, or a U/I class name). Implementers come from the Asset Registry ImplementedInterfaces tag, so only candidates are loaded; a Blueprint that inherits the interface from a parent Blueprint is listed with direct=false and via naming the declaring ancestor. Per interface function the implementation is function_graph (a graph of the interface description: graph_name, graph_guid, entry_node_guid, node_count), event (an event node: graph_guid, entry_node_guid, has_body) or none.") }
+			.Required(TEXT("interface"), TEXT("string"), TEXT("Blueprint Interface asset path, /Script/Module.Name, or interface class name (URipX or RipX; the C++ spelling IRipX is accepted)"))
+			.Required(TEXT("path_prefixes"), TEXT("array"), TEXT("Mounted content folders whose Blueprints are searched (e.g. /Game/MyFeature)"))
+			.Optional(TEXT("function"), TEXT("string"), TEXT("Restrict the reported functions to one interface function"))
 			.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full result to this file (under Project Saved, Content or Config) and return only a compact summary; use it when the inline result would be too large"))
 			.StrictParams(),
 	};
