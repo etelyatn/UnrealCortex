@@ -90,6 +90,7 @@ TSharedRef<FJsonObject> FCortexDataTypeReplacementPlan::ToJson(const bool bInclu
 		TSharedRef<FJsonObject> MemberJson = MakeShared<FJsonObject>();
 		MemberJson->SetStringField(TEXT("user_name"), Member.UserName);
 		MemberJson->SetStringField(TEXT("friendly_name"), Member.FriendlyName);
+		MemberJson->SetStringField(TEXT("display_name"), Member.DisplayName);
 		MemberJson->SetStringField(TEXT("native_name"), Member.NativeName);
 		MemberValues.Add(MakeShared<FJsonValueObject>(MemberJson));
 		MemberMapJson->SetStringField(Member.UserName, Member.NativeName);
@@ -148,6 +149,7 @@ TSharedRef<FJsonObject> FCortexDataTypeReplacementPlan::ToJson(const bool bInclu
 			TSharedRef<FJsonObject> MemberJson = MakeShared<FJsonObject>();
 			MemberJson->SetStringField(TEXT("user_name"), Member.UserName);
 			MemberJson->SetStringField(TEXT("friendly_name"), Member.FriendlyName);
+		MemberJson->SetStringField(TEXT("display_name"), Member.DisplayName);
 			MemberJson->SetStringField(TEXT("native_name"), Member.NativeName);
 			InnerMembers.Add(MakeShared<FJsonValueObject>(MemberJson));
 		}
@@ -206,6 +208,11 @@ bool FCortexDataTypeReplacementPlan::FromJson(const TSharedPtr<FJsonObject>& Jso
 		{
 			OutError = TEXT("a plan member lacks user_name, friendly_name or native_name");
 			return false;
+		}
+		// Plans written before display_name existed fall back to the friendly name.
+		if (!Object->TryGetStringField(TEXT("display_name"), Member.DisplayName))
+		{
+			Member.DisplayName = Member.FriendlyName;
 		}
 		OutPlan.Members.Add(Member);
 	}
@@ -298,6 +305,10 @@ bool FCortexDataTypeReplacementPlan::FromJson(const TSharedPtr<FJsonObject>& Jso
 			{
 				OutError = TEXT("a prerequisite member lacks user_name, friendly_name or native_name");
 				return false;
+			}
+			if (!MemberJson->TryGetStringField(TEXT("display_name"), Member.DisplayName))
+			{
+				Member.DisplayName = Member.FriendlyName;
 			}
 			Prerequisite.Members.Add(Member);
 		}

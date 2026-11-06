@@ -7,6 +7,12 @@
 #include "CortexDataTypeReplacementTestTypes.h"
 #include "CortexAssetMutationGuard.h"
 #include "CortexTypes.h"
+#include "K2Node_BreakStruct.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_Event.h"
+#include "K2Node_SetFieldsInStruct.h"
+#include "K2Node_VariableGet.h"
+#include "Kismet/KismetSystemLibrary.h"
 
 namespace CortexIssue122DataTest
 {
@@ -1133,5 +1139,253 @@ bool FCortexIssue122VerifyChainTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("Unloaded again"), FFixture::Unload({ Reloaded }));
 		}
 	}
+	return true;
+}
+
+namespace CortexIssue122DataTest
+{
+	namespace Verify
+	{
+		UEdGraphPin* FindInputByType(UEdGraphNode* Node, const FName Category)
+		{
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin->Direction == EGPD_Input && Pin->PinType.PinCategory == Category)
+				{
+					return Pin;
+				}
+			}
+			return nullptr;
+		}
+
+		/** BeginPlay -> Set members (Flag shown, non-default true) -> Print; Payload -> Break; Break.Label -> Print.InString. */
+		struct FNodeGraph
+		{
+			UK2Node_SetFieldsInStruct* Set = nullptr;
+			UK2Node_BreakStruct* Break = nullptr;
+			UK2Node_CallFunction* Print = nullptr;
+		};
+
+		bool BuildNodeGraph(FAutomationTestBase& Test, UBlueprint* Blueprint, UUserDefinedStruct* Uds, FNodeGraph& Out)
+		{
+			const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
+			UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+			int32 PosY = 0;
+			UK2Node_Event* Begin = FKismetEditorUtilities::AddDefaultEventNode(Blueprint, Graph, FName(TEXT("ReceiveBeginPlay")), AActor::StaticClass(), PosY);
+			FGraphNodeCreator<UK2Node_VariableGet> GetCreator(*Graph);
+			UK2Node_VariableGet* Get = GetCreator.CreateNode();
+			Get->VariableReference.SetSelfMember(TEXT("Payload"));
+			GetCreator.Finalize();
+			FGraphNodeCreator<UK2Node_SetFieldsInStruct> SetCreator(*Graph);
+			Out.Set = SetCreator.CreateNode();
+			Out.Set->StructType = Uds;
+			SetCreator.Finalize();
+			const FName FlagName(*UserName(Uds, TEXT("Flag")));
+			for (FOptionalPinFromProperty& Entry : Out.Set->ShowPinForProperties)
+			{
+				if (Entry.PropertyName == FlagName)
+				{
+					Entry.bShowPin = true;
+				}
+			}
+			Out.Set->ReconstructNode();
+			FGraphNodeCreator<UK2Node_BreakStruct> BreakCreator(*Graph);
+			Out.Break = BreakCreator.CreateNode();
+			Out.Break->StructType = Uds;
+			BreakCreator.Finalize();
+			FGraphNodeCreator<UK2Node_CallFunction> PrintCreator(*Graph);
+			Out.Print = PrintCreator.CreateNode();
+			Out.Print->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, PrintString)));
+			PrintCreator.Finalize();
+
+			UEdGraphPin* FlagPin = Out.Set->FindPin(FlagName, EGPD_Input);
+			UEdGraphPin* GetOut = Get->GetValuePin();
+			UEdGraphPin* LabelOut = Out.Break->FindPin(FName(*UserName(Uds, TEXT("Label"))), EGPD_Output);
+			UEdGraphPin* PrintString = Out.Print->FindPin(TEXT("InString"), EGPD_Input);
+			UEdGraphPin* SetRef = FindInputByType(Out.Set, UEdGraphSchema_K2::PC_Struct);
+			UEdGraphPin* BreakIn = FindInputByType(Out.Break, UEdGraphSchema_K2::PC_Struct);
+			if (!Test.TestTrue(TEXT("Node pins exist"), Begin && FlagPin && GetOut && LabelOut && PrintString && SetRef && BreakIn))
+			{
+				return false;
+			}
+			Schema->TrySetDefaultValue(*FlagPin, TEXT("true"));
+			return Test.TestTrue(TEXT("Links made"),
+				Schema->TryCreateConnection(Begin->FindPin(UEdGraphSchema_K2::PN_Then), Out.Set->FindPin(UEdGraphSchema_K2::PN_Execute))
+				&& Schema->TryCreateConnection(Out.Set->FindPin(UEdGraphSchema_K2::PN_Then), Out.Print->FindPin(UEdGraphSchema_K2::PN_Execute))
+				&& Schema->TryCreateConnection(GetOut, SetRef) && Schema->TryCreateConnection(GetOut, BreakIn) && Schema->TryCreateConnection(LabelOut, PrintString));
+		}
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexIssue122VerifyStructNodesTest,
+	"Cortex.Data.TypeReplacement.VerifyStructNodes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexIssue122VerifyStructNodesTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexIssue122DataTest;
+	using namespace CortexIssue122DataTest::Verify;
+
+	FStructSetup Setup;
+	if (!PrepareStruct(*this, Setup))
+	{
+		return false;
+	}
+	// Loading the Blueprint under the redirects logs the engine's own warning about the pin it could not carry over: the stale state this repairs.
+	AddExpectedMessagePlain(TEXT("specifying non-default value no longer exists on node"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 0);
+	// The graph nodes of the Blueprint (the plan only needs its variable): compiled clean before the swap.
+	UBlueprint* Blueprint = FFixture::Reload<UBlueprint>(Setup.BlueprintPath);
+	FNodeGraph Nodes;
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint) || !BuildNodeGraph(*this, Blueprint, Setup.Uds, Nodes))
+	{
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	if (!TestTrue(TEXT("The Blueprint compiles before the swap"), Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings)
+		|| !TestTrue(TEXT("Saved"), Setup.Fixture.SaveAsset(Blueprint)) || !TestTrue(TEXT("Unloaded"), FFixture::Unload({ Blueprint })))
+	{
+		return false;
+	}
+	{
+		FRedirectScope Scope(MakeStructRedirects(Setup.UserPath, Setup.NativePath, Setup.Members), /*bAlreadyRegistered=*/true);
+		if (!TestTrue(TEXT("The plan's lines are registered through the ini reader"), RegisterLinesThroughIni(Setup.Lines)))
+		{
+			return false;
+		}
+		const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), VerifyParams(Setup.PlanPath, true));
+		if (!TestTrue(TEXT("verify (save:true) succeeds: the stale struct-node pins are repaired, the Blueprint compiles"), Result.bSuccess))
+		{
+			AddError(Result.ErrorMessage);
+			return false;
+		}
+		const TSharedPtr<FJsonObject> Entry = AssetEntry(Result, Setup.BlueprintPath);
+		if (TestTrue(TEXT("The Blueprint is reported"), Entry.IsValid()))
+		{
+			TestTrue(TEXT("ok"), Entry->GetBoolField(TEXT("ok")));
+			TestTrue(TEXT("pins_repaired is recorded and positive"), Entry->GetNumberField(TEXT("pins_repaired")) >= 1);
+			const FString Status = Entry->GetStringField(TEXT("compile_status"));
+			TestTrue(TEXT("compile succeeded"), Status == TEXT("up_to_date") || Status == TEXT("up_to_date_with_warnings"));
+			TestTrue(TEXT("saved"), Entry->GetBoolField(TEXT("saved")));
+		}
+		TestEqual(TEXT("No problems"), static_cast<int32>(Result.Data->GetNumberField(TEXT("problem_count"))), 0);
+		TestTrue(TEXT("Unloaded again"), FFixture::Unload({ FFixture::Reload<UDataTable>(Setup.TablePath), FFixture::Reload<UBlueprint>(Setup.BlueprintPath) }));
+	}
+
+	// Without any redirect: values and links survived the resave, nothing is orphaned.
+	UBlueprint* Reloaded = FFixture::Reload<UBlueprint>(Setup.BlueprintPath);
+	if (!TestNotNull(TEXT("Reloaded Blueprint"), Reloaded))
+	{
+		return false;
+	}
+	UK2Node_SetFieldsInStruct* Set = nullptr;
+	UK2Node_BreakStruct* Break = nullptr;
+	for (UEdGraphNode* Node : FBlueprintEditorUtils::FindEventGraph(Reloaded)->Nodes)
+	{
+		if (UK2Node_SetFieldsInStruct* Candidate = Cast<UK2Node_SetFieldsInStruct>(Node))
+		{
+			Set = Candidate;
+		}
+		else if (UK2Node_BreakStruct* BreakCandidate = Cast<UK2Node_BreakStruct>(Node))
+		{
+			Break = BreakCandidate;
+		}
+	}
+	if (TestNotNull(TEXT("Set members node"), Set) && TestNotNull(TEXT("Break node"), Break))
+	{
+		TestTrue(TEXT("Set members is typed with the native struct"), Set->StructType == FCortexIssue122Row::StaticStruct());
+		const UEdGraphPin* Flag = Set->FindPin(TEXT("bFlag"), EGPD_Input);
+		if (TestNotNull(TEXT("The native bFlag pin exists"), Flag))
+		{
+			TestEqual(TEXT("The non-default value survived"), Flag->DefaultValue, FString(TEXT("true")));
+			TestFalse(TEXT("... on a live pin"), Flag->bOrphanedPin);
+		}
+		const UEdGraphPin* Label = Break->FindPin(TEXT("Label"), EGPD_Output);
+		if (TestNotNull(TEXT("The Break node's Label pin"), Label))
+		{
+			TestEqual(TEXT("Its link to the Print node survived"), Label->LinkedTo.Num(), 1);
+		}
+		for (const UEdGraphPin* Pin : Set->Pins)
+		{
+			TestFalse(*FString::Printf(TEXT("Set members pin %s is not orphaned"), *Pin->PinName.ToString()), Pin->bOrphanedPin);
+		}
+		for (const UEdGraphPin* Pin : Break->Pins)
+		{
+			TestFalse(*FString::Printf(TEXT("Break pin %s is not orphaned"), *Pin->PinName.ToString()), Pin->bOrphanedPin);
+		}
+	}
+	FKismetEditorUtilities::CompileBlueprint(Reloaded);
+	TestTrue(TEXT("The reloaded Blueprint compiles"), Reloaded->Status == BS_UpToDate || Reloaded->Status == BS_UpToDateWithWarnings);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexIssue122VerifyStaleUnmappedPinTest,
+	"Cortex.Data.TypeReplacement.VerifyStaleUnmappedPin",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexIssue122VerifyStaleUnmappedPinTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexIssue122DataTest;
+	using namespace CortexIssue122DataTest::Verify;
+
+	FStructSetup Setup;
+	if (!PrepareStruct(*this, Setup))
+	{
+		return false;
+	}
+	AddExpectedMessagePlain(TEXT("specifying non-default value no longer exists on node"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 0);
+	AddExpectedMessagePlain(TEXT("no longer exists on node"), ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 0);
+	AddExpectedMessagePlain(TEXT("Failed to find a struct member for"), ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 0);
+	UBlueprint* Blueprint = FFixture::Reload<UBlueprint>(Setup.BlueprintPath);
+	FNodeGraph Nodes;
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint) || !BuildNodeGraph(*this, Blueprint, Setup.Uds, Nodes))
+	{
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	// A stale pin no plan member explains: a linked orphan on the Break node.
+	UEdGraphPin* Ghost = Nodes.Break->CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_String, TEXT("Ghost_9_00000000000000000000000000000000"));
+	Ghost->bOrphanedPin = true;
+	Ghost->SetSavePinIfOrphaned(true);
+	FGraphNodeCreator<UK2Node_CallFunction> SecondPrint(*FBlueprintEditorUtils::FindEventGraph(Blueprint));
+	UK2Node_CallFunction* Print2 = SecondPrint.CreateNode();
+	Print2->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, PrintString)));
+	SecondPrint.Finalize();
+	Ghost->MakeLinkTo(Print2->FindPin(TEXT("InString"), EGPD_Input));
+	const FString BreakGuid = Nodes.Break->NodeGuid.ToString();
+	if (!TestTrue(TEXT("Saved"), Setup.Fixture.SaveAsset(Blueprint)) || !TestTrue(TEXT("Unloaded"), FFixture::Unload({ Blueprint })))
+	{
+		return false;
+	}
+	const FString BlueprintFile = [&Setup]()
+	{
+		FString File;
+		FPackageName::TryConvertLongPackageNameToFilename(FPackageName::ObjectPathToPackageName(Setup.BlueprintPath), File, FPackageName::GetAssetPackageExtension());
+		return File;
+	}();
+	const FString BlueprintHash = FileBytesHash(BlueprintFile);
+
+	FRedirectScope Scope(MakeStructRedirects(Setup.UserPath, Setup.NativePath, Setup.Members), /*bAlreadyRegistered=*/true);
+	if (!TestTrue(TEXT("The plan's lines are registered through the ini reader"), RegisterLinesThroughIni(Setup.Lines)))
+	{
+		return false;
+	}
+	const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), VerifyParams(Setup.PlanPath, true));
+	if (!TestTrue(TEXT("verify runs"), Result.bSuccess))
+	{
+		AddError(Result.ErrorMessage);
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Entry = AssetEntry(Result, Setup.BlueprintPath);
+	if (TestTrue(TEXT("The Blueprint is reported"), Entry.IsValid()))
+	{
+		TestFalse(TEXT("The Blueprint is not ok (fail closed)"), Entry->GetBoolField(TEXT("ok")));
+		TestFalse(TEXT("... and not saved"), Entry->GetBoolField(TEXT("saved")));
+		const TArray<FString> Unmapped = Strings(Entry, TEXT("unmapped_pins"));
+		TestTrue(TEXT("... the unmapped pin is listed with its node GUID"), Unmapped.Num() == 1 && Unmapped[0].Contains(TEXT("Ghost_9_")) && Unmapped[0].Contains(BreakGuid));
+		TestFalse(TEXT("... no compile was run"), Entry->HasField(TEXT("compile_status")));
+	}
+	TestTrue(TEXT("The Blueprint file is unchanged"), FileBytesHash(BlueprintFile) == BlueprintHash);
 	return true;
 }

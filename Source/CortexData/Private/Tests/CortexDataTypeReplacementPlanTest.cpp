@@ -390,6 +390,14 @@ bool FCortexIssue122PlanStructTest::RunTest(const FString& Parameters)
 	const TSharedPtr<FJsonObject> MemberMap = Plan.Data->GetObjectField(TEXT("member_map"));
 	TestEqual(TEXT("member_map maps the GUID-suffixed Flag to bFlag"), MemberMap->GetStringField(FlagName), FString(TEXT("bFlag")));
 	TestEqual(TEXT("... and Count to Count"), MemberMap->GetStringField(CountName), FString(TEXT("Count")));
+	for (const TSharedPtr<FJsonObject>& Member : Objects(Plan.Data, TEXT("members")))
+	{
+		if (Member->GetStringField(TEXT("user_name")) == FlagName)
+		{
+			TestEqual(TEXT("The member records its display name (the text K2 struct-node pins carry)"), Member->GetStringField(TEXT("display_name")), FString(TEXT("Flag")));
+			TestEqual(TEXT("... next to the friendly name"), Member->GetStringField(TEXT("friendly_name")), FString(TEXT("Flag")));
+		}
+	}
 	TestTrue(TEXT("The GUID-suffixed name is not the friendly name"), FlagName != TEXT("Flag") && FlagName.StartsWith(TEXT("Flag_")));
 	TestEqual(TEXT("No native-only members"), Strings(Plan.Data, TEXT("native_only")).Num(), 0);
 

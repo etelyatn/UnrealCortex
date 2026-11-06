@@ -10,6 +10,8 @@ struct FCortexDataTypeReplacementMember
 	FString UserName;
 	/** The name shown in the editor (FStructVariableDescription::FriendlyName). */
 	FString FriendlyName;
+	/** The text the editor shows for the member (the property's display name): K2 struct-node pins carry it as their friendly name. */
+	FString DisplayName;
 	FString NativeName;
 };
 

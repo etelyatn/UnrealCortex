@@ -134,7 +134,8 @@ namespace
 					Missing.Add(FString::Printf(TEXT("property redirect for member %s"), *Variable.VarName.ToString()));
 					continue;
 				}
-				Out.Members.Add({ Variable.VarName.ToString(), Variable.FriendlyName, Redirected.ToString() });
+				const FProperty* InnerProperty = UserStruct->FindPropertyByName(Variable.VarName);
+				Out.Members.Add({ Variable.VarName.ToString(), Variable.FriendlyName, InnerProperty != nullptr ? InnerProperty->GetDisplayNameText().ToString() : Variable.FriendlyName, Redirected.ToString() });
 			}
 			FCortexDataTypeReplacementOps::ProbeStructContract(Out.UserType, Out.NativeType, NativeStruct, Out.Members, Failures);
 		}
@@ -338,7 +339,7 @@ namespace
 				continue;
 			}
 			Claimed.Add(NativeProperty, Variable.FriendlyName);
-			Plan.Members.Add({ UserName, Variable.FriendlyName, NativeName });
+			Plan.Members.Add({ UserName, Variable.FriendlyName, UserProperty->GetDisplayNameText().ToString(), NativeName });
 		}
 
 		TArray<FString> Unknown;
