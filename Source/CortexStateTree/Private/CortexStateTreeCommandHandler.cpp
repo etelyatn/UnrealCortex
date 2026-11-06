@@ -6,6 +6,7 @@
 #include "Operations/CortexSTBindingOps.h"
 #include "Operations/CortexSTInspectOps.h"
 #include "Operations/CortexSTReplaceNodeOps.h"
+#include "Operations/CortexSTRuntimeOps.h"
 #include "Operations/CortexSTStateOps.h"
 #include "Operations/CortexSTTransitionOps.h"
 #include "Operations/CortexSTValidationOps.h"
@@ -92,6 +93,10 @@ FCortexCommandResult FCortexStateTreeCommandHandler::Execute(
 	if (Command == TEXT("replace_node"))
 	{
 		return FCortexSTReplaceNodeOps::ReplaceNode(Params);
+	}
+	if (Command == TEXT("get_runtime_state"))
+	{
+		return FCortexSTRuntimeOps::GetRuntimeState(Params);
 	}
 
 	return FCortexCommandRouter::Error(
@@ -237,5 +242,8 @@ TArray<FCortexCommandInfo> FCortexStateTreeCommandHandler::GetSupportedCommands(
 			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Plan only (default false)"))
 			.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the replacement (default true)"))
 			.Optional(TEXT("save"), TEXT("boolean"), TEXT("Persist the package only on full success (default false)")),
+		FCortexCommandInfo{ TEXT("get_runtime_state"), TEXT("Report the StateTree components of the running PIE world (read-only)") }
+			.Optional(TEXT("asset_path"), TEXT("string"), TEXT("Only components using this StateTree asset"))
+			.Optional(TEXT("actor"), TEXT("string"), TEXT("Only this actor's components")),
 	};
 }
