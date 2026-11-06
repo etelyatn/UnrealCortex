@@ -9,6 +9,7 @@
 #include "CortexCoreModule.h"
 #include "CortexGraphFingerprint.h"
 #include "CortexGraphMemberReferences.h"
+#include "Operations/CortexAnimBindingReflection.h"
 #include "EdGraph/EdGraph.h"
 #include "K2Node_VariableGet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -331,6 +332,73 @@ bool FCortexAnimationAdoptNativeMemberSameNameTest::RunTest(const FString& Param
 		}
 	}
 	TestTrue(TEXT("the Anim Blueprint compiles"), AnimBlueprint->Status != BS_Error);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationAdoptNativeMemberStorageFailsClosedTest,
+	"Cortex.Animation.AdoptNativeMember.StorageFailsClosed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationAdoptNativeMemberStorageFailsClosedTest::RunTest(const FString& Parameters)
+{
+	// The adoption reads anim bindings through the shared storage owner: when the owner cannot resolve its reflected field, the
+	// adoption refuses naming the field and leaves the Blueprint untouched.
+	UAnimBlueprint* AnimBlueprint = MakeAnimBlueprint(MakeFixtureSuffix(), UCortexAnimTestNativeInstance::StaticClass());
+	if (!TestNotNull(TEXT("Anim Blueprint fixture"), AnimBlueprint))
+	{
+		return false;
+	}
+	FFixtureGuard Guard(AnimBlueprint);
+
+	TestTrue(TEXT("Speed variable"), AddVariable(AnimBlueprint, TEXT("Speed"), FloatPinType(), TEXT("0.0")));
+	CompileAndAssertClean(*this, AnimBlueprint);
+	UAnimGraphNode_SequencePlayer* Player = AddSequencePlayerNode(AnimBlueprint);
+	if (!TestNotNull(TEXT("sequence player"), Player))
+	{
+		return false;
+	}
+	TestTrue(TEXT("anim binding"), BindPropertyByReflection(Player, TEXT("PlayRate"), { TEXT("Speed") }));
+
+	const FAdoptProofRedirectScope Redirect(UCortexAnimTestNativeInstance::StaticClass(), TEXT("Speed"), TEXT("NativeSpeed"));
+	const TSharedRef<FJsonObject> Mapping = MakeShared<FJsonObject>();
+	Mapping->SetStringField(TEXT("bp_variable"), TEXT("Speed"));
+	Mapping->SetStringField(TEXT("native_property"), TEXT("NativeSpeed"));
+	TSharedPtr<FJsonObject> Params = MakeAssetParams(AnimBlueprint);
+	Params->SetArrayField(TEXT("mappings"), { MakeShared<FJsonValueObject>(Mapping) });
+
+	FCortexAnimBindingReflection::SetFieldNameForTest(TEXT("AnimGraphNodeBinding_Base.PropertyBindings"), TEXT("PropertyBindingsGone"));
+	const FCortexCommandResult Refused = CoreCommand(TEXT("blueprint.adopt_native_member"), Params);
+	FCortexAnimBindingReflection::ClearFieldNameOverridesForTest();
+
+	TestFalse(TEXT("the adoption refuses while the binding storage is unreadable"), Refused.bSuccess);
+	FString Everything = Refused.ErrorMessage;
+	if (Refused.ErrorDetails.IsValid())
+	{
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Everything, false);
+		FJsonSerializer::Serialize(Refused.ErrorDetails.ToSharedRef(), Writer);
+	}
+	TestTrue(*FString::Printf(TEXT("the refusal names the missing field (%s: %s)"), *Refused.ErrorCode, *Everything), Everything.Contains(TEXT("AnimGraphNodeBinding_Base.PropertyBindings")));
+	TestTrue(TEXT("the Blueprint variable is untouched"), FBlueprintEditorUtils::FindNewVariableIndex(AnimBlueprint, TEXT("Speed")) != INDEX_NONE);
+
+	FCortexCommandRouter Router = MakeAnimGraphRouter();
+	TSharedPtr<FJsonObject> InfoParams = MakeAssetParams(AnimBlueprint);
+	InfoParams->SetArrayField(TEXT("include"), { MakeShared<FJsonValueString>(TEXT("bindings")) });
+	const FCortexCommandResult Info = Router.Execute(TEXT("anim.get_animbp_info"), InfoParams);
+	bool bBindingIntact = false;
+	for (const TSharedPtr<FJsonObject>& Entry : CollectionItems(Info.Data, TEXT("bindings")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Path = nullptr;
+		FString First;
+		bBindingIntact = Entry->TryGetArrayField(TEXT("path"), Path) && Path != nullptr && Path->Num() == 1 && (*Path)[0]->TryGetString(First) && First == TEXT("Speed");
+	}
+	TestTrue(TEXT("the binding still names Speed"), bBindingIntact);
+
+	// With the owner healthy again the same adoption goes through.
+	const FCortexCommandResult Adopt = CoreCommand(TEXT("blueprint.adopt_native_member"), Params);
+	TestTrue(*FString::Printf(TEXT("the adoption succeeds once the storage is readable (%s: %s)"), *Adopt.ErrorCode, *Adopt.ErrorMessage), Adopt.bSuccess);
 
 	return true;
 }

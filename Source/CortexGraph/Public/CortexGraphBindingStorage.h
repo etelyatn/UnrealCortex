@@ -81,6 +81,15 @@ public:
 	/** Whether the node's binding map equals the snapshot in every field of every entry. */
 	static bool BindingMapMatches(const UK2Node* Node, const FCortexBindingMapSnapshot& Snapshot);
 
+	/** The node's whole binding map as the engine's exported text (journal text); false when the storage is unsupported. */
+	static bool ExportBindingText(const UK2Node* Node, FString& OutText);
+
+	/** Replaces the node's whole binding map from ExportBindingText output (the Binding sub-object is recorded in the transaction first). */
+	static bool ImportBindingText(UK2Node* Node, const FString& Text);
+
+	/** Whether the node is an animation graph node (class UAnimGraphNode_Base, found by path so no animation module is linked). */
+	static bool IsAnimNode(const UEdGraphNode* Node);
+
 	/**
 	 * Records the node's Binding sub-object in the active editor transaction. The sub-object is created without
 	 * RF_Transactional, so a plain Modify() records nothing and an undo would leave the map as it was.

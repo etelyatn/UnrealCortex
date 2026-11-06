@@ -333,6 +333,38 @@ bool FCortexGraphBindingStorage::BindingMapMatches(const UK2Node* Node, const FC
 	return Binding != nullptr && Snapshot.IsValid() && Fields().BindingMap->Identical(MapPtr(Binding), Snapshot.Memory, PPF_None);
 }
 
+bool FCortexGraphBindingStorage::ExportBindingText(const UK2Node* Node, FString& OutText)
+{
+	using namespace CortexGraphBindingStoragePrivate;
+	UObject* Binding = LocateBinding(Node);
+	if (Binding == nullptr)
+	{
+		return false;
+	}
+	OutText.Reset();
+	Fields().BindingMap->ExportText_InContainer(0, OutText, Binding, nullptr, Binding, PPF_None);
+	return true;
+}
+
+bool FCortexGraphBindingStorage::ImportBindingText(UK2Node* Node, const FString& Text)
+{
+	using namespace CortexGraphBindingStoragePrivate;
+	UObject* Binding = LocateBinding(Node);
+	if (Binding == nullptr)
+	{
+		return false;
+	}
+	MarkBindingModified(Node);
+	return Fields().BindingMap->ImportText_InContainer(*Text, Binding, Binding, PPF_None) != nullptr;
+}
+
+bool FCortexGraphBindingStorage::IsAnimNode(const UEdGraphNode* Node)
+{
+	using namespace CortexGraphBindingStoragePrivate;
+	const UClass* NodeBase = FindObject<UClass>(nullptr, NodeBaseClassPath);
+	return Node != nullptr && NodeBase != nullptr && Node->IsA(NodeBase);
+}
+
 void FCortexGraphBindingStorage::MarkBindingModified(UK2Node* Node)
 {
 	using namespace CortexGraphBindingStoragePrivate;
