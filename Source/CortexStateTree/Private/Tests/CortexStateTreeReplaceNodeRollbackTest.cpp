@@ -290,6 +290,51 @@ bool FCortexStateTreeReplaceNodeRollbackTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("a stale fingerprint leaves every binding alone"), CortexSTCompat::GetEditorBindingCount(*Fixture.Context.EditorData), 2);
 	}
 
+	// ── (d2) A legacy fingerprint without the editor-content signal can never authorise a StateTree mutation ──
+	{
+		CortexSTTest::FMigrationFixture Fixture;
+		if (!Fixture.Build(*this, /*bCompile=*/true))
+		{
+			return false;
+		}
+		const FString NameBefore = Fixture.StateA()->Name.ToString();
+		const auto Legacy = [](TSharedPtr<FJsonObject> Params)
+		{
+			Params->GetObjectField(TEXT("expected_fingerprint"))->RemoveField(TEXT("editor_content_hash"));
+			return Params;
+		};
+
+		FCortexCommandResult Helper;
+		TSharedPtr<FJsonObject> HelperParams = Legacy(Fixture.MutationParams());
+		TestFalse(TEXT("F4: a token without editor_content_hash fails the shared check"),
+			CortexST::CheckExpectedFingerprint(Fixture.Context.StateTree, HelperParams, Helper));
+		TestEqual(TEXT("F4: the shared check refuses with the stale code"), Helper.ErrorCode, CortexErrorCodes::StalePrecondition);
+		TestTrue(TEXT("F4: the refusal names the missing signal"), Helper.ErrorMessage.Contains(TEXT("editor_content_hash")));
+
+		TSharedPtr<FJsonObject> Rename = Legacy(Fixture.MutationParams());
+		Rename->SetStringField(TEXT("name"), TEXT("LegacyRenamed"));
+		Rename->SetStringField(TEXT("state_path"), TEXT("A"));
+		TSharedPtr<FJsonObject> Compile = Legacy(Fixture.MutationParams());
+		TSharedPtr<FJsonObject> Validate = Legacy(Fixture.MutationParams());
+		const int32 UndoBefore = MigRollbackUndoLength();
+		const TPair<const TCHAR*, TSharedPtr<FJsonObject>> Commands[] = {
+			{ TEXT("replace_node"), Legacy(MigRollbackParams(Fixture)) },
+			{ TEXT("rename_state"), Rename },
+			{ TEXT("compile"), Compile },
+			{ TEXT("validate_asset"), Validate },
+		};
+		for (const TPair<const TCHAR*, TSharedPtr<FJsonObject>>& Command : Commands)
+		{
+			const FCortexCommandResult Result = Fixture.Run(Command.Key, Command.Value);
+			TestFalse(FString::Printf(TEXT("F4: %s refuses a legacy fingerprint"), Command.Key), Result.bSuccess);
+			TestEqual(FString::Printf(TEXT("F4: %s refuses a legacy fingerprint with the stale code"), Command.Key),
+				Result.ErrorCode, CortexErrorCodes::StalePrecondition);
+		}
+		TestEqual(TEXT("F4: the legacy refusals open no transaction"), MigRollbackUndoLength(), UndoBefore);
+		TestEqual(TEXT("F4: the legacy refusals leave the state name alone"), Fixture.StateA()->Name.ToString(), NameBefore);
+		TestTrue(TEXT("F4: the legacy refusals leave the Blueprint node alone"), MigRollbackIsBlueprintNode(Fixture));
+	}
+
 	// ── (e) A binding that validation would silently remove is refused during planning, never during apply ──
 	{
 		CortexSTTest::FMigrationFixture Fixture;

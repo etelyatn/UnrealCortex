@@ -327,33 +327,78 @@ struct FCortexSTTestNestedTask : public FStateTreeTaskCommonBase
 };
 
 USTRUCT()
-struct FCortexSTTestNoLeafNested
+struct FCortexSTTestNestedOutputTaskInstanceData
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, Category = "Parameter")
-	int32 Other = 0;
-};
-
-USTRUCT()
-struct FCortexSTTestNestedSinkTaskInstanceData
-{
-	GENERATED_BODY()
-
-	/** Same first segment name as the source after the rename, but without Leaf: the nested segment cannot resolve. */
-	UPROPERTY(EditAnywhere, Category = "Parameter")
-	FCortexSTTestNoLeafNested RenamedNested;
+	UPROPERTY(EditAnywhere, Category = "Output")
+	FCortexSTTestNested Nested;
 
 	UPROPERTY(EditAnywhere, Category = "Output")
 	int32 ResultOut = 0;
 };
 
+/** The same Nested member as an Output: the source-side counterpart of FCortexSTTestNestedTask. */
 USTRUCT(meta = (Hidden))
-struct FCortexSTTestNestedSinkTask : public FStateTreeTaskCommonBase
+struct FCortexSTTestNestedOutputTask : public FStateTreeTaskCommonBase
 {
 	GENERATED_BODY()
 
-	using FInstanceDataType = FCortexSTTestNestedSinkTaskInstanceData;
+	using FInstanceDataType = FCortexSTTestNestedOutputTaskInstanceData;
+
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+};
+
+USTRUCT()
+struct FCortexSTTestPackedBoolTaskInstanceData
+{
+	GENERATED_BODY()
+
+	/** The bit order is the reverse of the Blueprint declaration order (bA, bB, bC), so no bit has the same mask on both sides. */
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	uint8 bC : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	uint8 bB : 1;
+
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	uint8 bA : 1;
+
+	/** Shares the byte with the three above and starts set: a copy that writes the wrong mask clears or sets it. */
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	uint8 bSentinel : 1;
+
+	FCortexSTTestPackedBoolTaskInstanceData()
+		: bC(false)
+		, bB(false)
+		, bA(false)
+		, bSentinel(true)
+	{
+	}
+};
+
+USTRUCT(meta = (Hidden))
+struct FCortexSTTestPackedBoolTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FCortexSTTestPackedBoolTaskInstanceData;
+
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+};
+
+/** The native-task instance data with the completion flag off by default, like FStateTreeDebugTextTask (StateTreeDebugTextTask.cpp:12-22). */
+USTRUCT(meta = (Hidden))
+struct FCortexSTTestBackgroundTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FCortexSTTestNativeTaskInstanceData;
+
+	FCortexSTTestBackgroundTask()
+	{
+		bConsideredForCompletion = false;
+	}
 
 	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
 };

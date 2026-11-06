@@ -5,6 +5,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "Editor.h"
+#include "HAL/IConsoleManager.h"
 #include "Editor/Transactor.h"
 
 #if !UE_VERSION_OLDER_THAN(5, 7, 0)
@@ -301,76 +302,95 @@ bool FCortexStateTreeReplaceNodePlanTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("the node is still the Blueprint node"), StillBlueprint != nullptr && StillBlueprint->InstanceObject != nullptr);
 	(void)BpIdText;
 
-	// ── A mapped property whose nested segment does not resolve on the new type is refused, never dropped ──
+	// ── A type-compatible first segment whose nested member does not resolve is refused, never dropped ──
+	// The stored path is stale (Nested.Missing on an unchanged Nested struct) and is planned without compiling it away, so the
+	// refusal can only come from the nested resolver; one case on the target side, one on the source side with source-path
+	// validation switched off so no earlier validation drop can account for the refusal.
+	for (const bool bSourceSide : { false, true })
 	{
 		CortexSTTest::FMigrationFixture NestedFixture;
 		TArray<CortexSTTest::FBlueprintVariable> Variables;
-		Variables.Add({ FName(TEXT("Nested")), UEdGraphSchema_K2::PC_Struct, FString(), FString(), true, FCortexSTTestNested::StaticStruct() });
+		Variables.Add({ FName(TEXT("Nested")), UEdGraphSchema_K2::PC_Struct, bSourceSide ? TEXT("Output") : TEXT(""), FString(), true, FCortexSTTestNested::StaticStruct() });
 		if (!NestedFixture.Build(*this, /*bCompile=*/false, Variables, /*bCreateBindings=*/false))
 		{
 			return false;
 		}
-		FStateTreeEditorNode* Node = NestedFixture.NodePtr(NestedFixture.BpTaskId);
-		if (!TestNotNull(TEXT("the nested fixture node exists"), Node)
-			|| !TestTrue(TEXT("the nested value is stored"), CortexSTTest::SetInstanceValueText(*Node, TEXT("Nested"), TEXT("(Leaf=5)"))))
+		FPropertyBindingPath NestedPath(NestedFixture.BpTaskId, FName(TEXT("Nested")));
+		NestedPath.AddPathSegment(FName(TEXT("Leaf")));
+		NestedFixture.Context.EditorData->AddPropertyBinding(
+			bSourceSide ? NestedPath : FPropertyBindingPath(NestedFixture.NativeAId, FName(TEXT("ResultOut"))),
+			bSourceSide ? FPropertyBindingPath(NestedFixture.NativeBId, FName(TEXT("Count"))) : NestedPath);
+		NestedFixture.Context.StateTree->MarkPackageDirty();
+		if (!TestTrue(TEXT("the nested fixture compiles while the path is still valid"), NestedFixture.Compile().bSuccess))
 		{
 			return false;
 		}
-		FPropertyBindingPath NestedTarget(NestedFixture.BpTaskId, FName(TEXT("Nested")));
-		NestedTarget.AddPathSegment(FName(TEXT("Leaf")));
-		NestedFixture.Context.EditorData->AddPropertyBinding(
-			FPropertyBindingPath(NestedFixture.NativeAId, FName(TEXT("ResultOut"))), NestedTarget);
-		NestedFixture.Context.StateTree->MarkPackageDirty();
-		if (!TestTrue(TEXT("the nested fixture compiles"), NestedFixture.Compile().bSuccess))
+
+		// The binding goes stale after the compile: the nested member of the stored path no longer exists on the type.
+		FStateTreePropertyPathBinding& Stored = NestedFixture.Context.EditorData->EditorBindings.GetMutableBindings()[0];
+		FPropertyBindingPath& StalePath = bSourceSide ? Stored.GetMutableSourcePath() : Stored.GetMutableTargetPath();
+		const TArrayView<FPropertyBindingPathSegment> StaleSegments = StalePath.GetMutableSegments();
+		if (!TestEqual(TEXT("the stored nested path has two segments"), StaleSegments.Num(), 2))
 		{
 			return false;
+		}
+		StaleSegments[1].SetName(FName(TEXT("Missing")));
+		StaleSegments[1].SetDisplayName(FName(TEXT("Missing")));
+		StaleSegments[1].SetPropertyGuid(FGuid());
+
+		IConsoleVariable* AutoRemoveSourcePath =
+			IConsoleManager::Get().FindConsoleVariable(TEXT("StateTree.Editor.AutoRemoveSourcePathInvalidEditorBindings"));
+		const bool bAutoRemoveBefore = AutoRemoveSourcePath != nullptr && AutoRemoveSourcePath->GetBool();
+		if (bSourceSide && AutoRemoveSourcePath != nullptr)
+		{
+			AutoRemoveSourcePath->Set(false, ECVF_SetByCode);
 		}
 
 		TSharedPtr<FJsonObject> Params = NestedFixture.MutationParams();
 		Params->SetStringField(TEXT("node_id"), NestedFixture.BpTaskId.ToString(EGuidFormats::DigitsWithHyphens));
-		Params->SetStringField(TEXT("new_node_struct"), FCortexSTTestNestedSinkTask::StaticStruct()->GetPathName());
+		Params->SetStringField(TEXT("new_node_struct"),
+			(bSourceSide ? FCortexSTTestNestedOutputTask::StaticStruct() : FCortexSTTestNestedTask::StaticStruct())->GetPathName());
 		Params->SetBoolField(TEXT("dry_run"), true);
 		TSharedPtr<FJsonObject> Map = MakeShared<FJsonObject>();
-		Map->SetStringField(TEXT("Nested"), TEXT("RenamedNested"));
+		Map->SetStringField(TEXT("Nested"), TEXT("Nested"));
 		Map->SetStringField(TEXT("ResultOut"), TEXT("ResultOut"));
 		Params->SetObjectField(TEXT("property_map"), Map);
 		const FCortexCommandResult Result = NestedFixture.Run(TEXT("replace_node"), Params);
-		TestFalse(TEXT("a nested segment that does not resolve refuses"), Result.bSuccess);
-		// The destination type of the mapped property differs too, so the property-pair rule refuses first; the binding itself is
-		// still reported as unresolved (an engine property model cannot produce a type-compatible first segment whose nested
-		// property is missing, which is why the resolution failure is only reachable behind this refusal).
-		TestEqual(TEXT("a nested segment refusal code"), Result.ErrorCode, CortexErrorCodes::TypeMismatch);
+		if (bSourceSide && AutoRemoveSourcePath != nullptr)
+		{
+			AutoRemoveSourcePath->Set(bAutoRemoveBefore, ECVF_SetByCode);
+		}
+
+		const TCHAR* Side = bSourceSide ? TEXT("source") : TEXT("target");
+		TestFalse(FString::Printf(TEXT("a stale nested %s path refuses"), Side), Result.bSuccess);
+		TestEqual(FString::Printf(TEXT("a stale nested %s path is a verification failure"), Side), Result.ErrorCode, CortexErrorCodes::VerificationFailed);
 		bool bNamed = false;
+		bool bFromResolver = false;
 		const TArray<TSharedPtr<FJsonValue>>* Unresolved = nullptr;
 		if (Result.ErrorDetails.IsValid()
 			&& Result.ErrorDetails->TryGetArrayField(TEXT("unresolved_bindings"), Unresolved) && Unresolved != nullptr)
 		{
-			TestEqual(TEXT("exactly the nested binding is unresolved"), Unresolved->Num(), 1);
+			// A stale target is also a tree-wide validation drop (a second entry for the same binding); a stale source is not.
+			TestEqual(FString::Printf(TEXT("only the stale nested %s binding is unresolved"), Side), Unresolved->Num(), bSourceSide ? 1 : 2);
 			for (const TSharedPtr<FJsonValue>& Value : *Unresolved)
 			{
 				const TSharedPtr<FJsonObject> Entry = Value->AsObject();
-				bNamed = bNamed || MigPlanString(Entry, TEXT("path")) == TEXT("Nested.Leaf");
+				const bool bStalePath = MigPlanString(Entry, TEXT("path")) == TEXT("Nested.Missing");
+				bNamed = bNamed || bStalePath;
+				const FString Reason = MigPlanString(Entry, TEXT("reason"));
+				// The first segment is mapped (Nested -> Nested), so an entry that is neither a validation drop nor a missing mapping
+				// can only have come from the nested resolver.
+				bFromResolver = bFromResolver || (bStalePath && !Reason.IsEmpty()
+					&& !Reason.Contains(TEXT("no counterpart")) && !Reason.StartsWith(TEXT("validation would remove")));
 			}
 		}
-		if (!bNamed)
-		{
-			FString Dump;
-			if (Unresolved != nullptr)
-			{
-				for (const TSharedPtr<FJsonValue>& Value : *Unresolved)
-				{
-					const TSharedPtr<FJsonObject> Entry = Value->AsObject();
-					Dump += FString::Printf(TEXT("[idx=%d path='%s' reason='%s']"),
-						static_cast<int32>(Entry->GetNumberField(TEXT("binding_index"))),
-						*MigPlanString(Entry, TEXT("path")), *MigPlanString(Entry, TEXT("reason")));
-				}
-			}
-			AddError(FString::Printf(TEXT("unresolved entries: %s"), *Dump));
-		}
-		TestTrue(TEXT("the unresolved entry names the nested path"), bNamed);
-		TestEqual(TEXT("the nested refusal leaves both bindings in place"), CortexSTCompat::GetEditorBindingCount(*NestedFixture.Context.EditorData), 1);
+		TestTrue(FString::Printf(TEXT("the unresolved entry names the stale nested %s path"), Side), bNamed);
+		TestTrue(FString::Printf(TEXT("the %s refusal comes from the nested resolver, not from a missing mapping"), Side), bFromResolver);
+		TestEqual(FString::Printf(TEXT("the nested %s refusal leaves the binding in place"), Side),
+			CortexSTCompat::GetEditorBindingCount(*NestedFixture.Context.EditorData), 1);
+		TestTrue(FString::Printf(TEXT("the nested %s refusal leaves the Blueprint node"), Side),
+			NestedFixture.NodePtr(NestedFixture.BpTaskId) != nullptr && NestedFixture.NodePtr(NestedFixture.BpTaskId)->InstanceObject != nullptr);
 	}
-
 
 	// ── Context usage parity: the compiler's implicit binding is a property of the usage, not of a stored binding ──
 	{
