@@ -9,20 +9,21 @@ public class CortexEditor : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
+			"CoreUObject",
+			"Engine",
 			"CortexCore",
+			"InputCore",
+			"SlateCore",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"CoreUObject",
-			"Engine",
+			"ApplicationCore",
 			"Json",
 			"JsonUtilities",
 			"UnrealEd",
 			"LevelEditor",
 			"Slate",
-			"SlateCore",
-			"InputCore",
 			"EnhancedInput",
 			"ImageWrapper",
 			"RenderCore",
