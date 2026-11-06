@@ -11,7 +11,10 @@
 #include "Engine/Blueprint.h"
 #include "GameFramework/Actor.h"
 #include "K2Node.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_Composite.h"
+#include "K2Node_CustomEvent.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
@@ -142,6 +145,26 @@ namespace CortexGraphTreeTest
 	inline FString TreeGuidString(const UEdGraph* Graph)
 	{
 		return Graph->GraphGuid.ToString();
+	}
+
+	inline UK2Node_CallFunction* AddTreeCallNode(UEdGraph* Graph)
+	{
+		UK2Node_CallFunction* Call = NewObject<UK2Node_CallFunction>(Graph);
+		Call->CreateNewGuid();
+		Call->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, PrintString)));
+		Graph->AddNode(Call, false, false);
+		Call->AllocateDefaultPins();
+		return Call;
+	}
+
+	inline UK2Node_CustomEvent* AddTreeEventNode(UEdGraph* Graph, const TCHAR* EventName)
+	{
+		UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(Graph);
+		Event->CreateNewGuid();
+		Event->CustomFunctionName = FName(EventName);
+		Graph->AddNode(Event, false, false);
+		Event->AllocateDefaultPins();
+		return Event;
 	}
 
 	/**

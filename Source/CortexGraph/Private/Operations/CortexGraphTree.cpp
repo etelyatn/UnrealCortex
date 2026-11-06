@@ -331,17 +331,14 @@ namespace
 	}
 }
 
-bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Params, UEdGraph*& OutGraph,
-	FCortexGraphTreeEntry* OutEntry, FCortexCommandResult& OutError)
+const FCortexGraphTreeEntry* FCortexGraphTree::ResolveInTree(const TArray<FCortexGraphTreeEntry>& Tree, const TSharedPtr<FJsonObject>& Params,
+	FCortexCommandResult& OutError)
 {
-	OutGraph = nullptr;
 	const FString GuidText = TreeResolveParam(Params, TEXT("graph_guid"));
 	const FString PathText = TreeResolveParam(Params, TEXT("graph_path"));
 	const FString GraphName = TreeResolveParam(Params, TEXT("graph_name"));
 	const FString SubgraphPath = TreeResolveParam(Params, TEXT("subgraph_path"));
 
-	TArray<FCortexGraphTreeEntry> Tree;
-	Collect(Blueprint, Tree);
 
 	const FCortexGraphTreeEntry* Found = nullptr;
 	if (!GuidText.IsEmpty() || !PathText.IsEmpty())
@@ -352,7 +349,7 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 			OutError = FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
 				FString::Printf(TEXT("Invalid graph_guid format: '%s'"), *GuidText));
-			return false;
+			return nullptr;
 		}
 
 		if (!PathText.IsEmpty())
@@ -370,7 +367,7 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 				OutError = FCortexCommandRouter::Error(
 					CortexErrorCodes::GraphNotFound,
 					FString::Printf(TEXT("Graph path not found: %s"), *PathText));
-				return false;
+				return nullptr;
 			}
 			if (!GuidText.IsEmpty() && Found->Graph->GraphGuid != Guid)
 			{
@@ -378,7 +375,7 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 					CortexErrorCodes::InvalidField,
 					FString::Printf(TEXT("graph_guid %s does not name the graph at graph_path '%s'; that graph's guid is %s"),
 						*GuidText, *PathText, *Found->Graph->GraphGuid.ToString()));
-				return false;
+				return nullptr;
 			}
 		}
 		else
@@ -396,7 +393,7 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 				OutError = FCortexCommandRouter::Error(
 					CortexErrorCodes::GraphNotFound,
 					FString::Printf(TEXT("Graph with GUID %s not found on Blueprint"), *GuidText));
-				return false;
+				return nullptr;
 			}
 			if (Matches.Num() > 1)
 			{
@@ -412,7 +409,7 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 					FString::Printf(TEXT("graph_guid %s is shared by %d graphs; address one with graph_path: %s"),
 						*GuidText, Matches.Num(), *FString::Join(Paths, TEXT(", "))),
 					Details);
-				return false;
+				return nullptr;
 			}
 			Found = Matches[0];
 		}
@@ -423,7 +420,7 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 				CortexErrorCodes::InvalidField,
 				FString::Printf(TEXT("subgraph_path '%s' does not name the graph identified by graph_guid/graph_path; that graph's subgraph_path is '%s'"),
 					*SubgraphPath, *Found->SubgraphPath));
-			return false;
+			return nullptr;
 		}
 		if (!GraphName.IsEmpty())
 		{
@@ -436,7 +433,7 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 					CortexErrorCodes::InvalidField,
 					FString::Printf(TEXT("graph_name '%s' does not name the graph identified by graph_guid/graph_path; that graph is '%s'"),
 						*GraphName, *Found->Graph->GetName()));
-				return false;
+				return nullptr;
 			}
 		}
 	}
@@ -475,7 +472,7 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 					: FString::Printf(TEXT("Graph not found: %s; %d nested graphs carry that name, address one by graph_guid or graph_path"),
 						*TargetName, Candidates.Num()),
 				Details);
-			return false;
+			return nullptr;
 		}
 
 		UEdGraph* Graph = Root->Graph;
@@ -484,7 +481,7 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 			Graph = FCortexGraphNodeOps::ResolveSubgraph(Graph, SubgraphPath, OutError);
 			if (Graph == nullptr)
 			{
-				return false;
+				return nullptr;
 			}
 		}
 		for (const FCortexGraphTreeEntry& Entry : Tree)
@@ -503,13 +500,68 @@ bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr
 		OutError = FCortexCommandRouter::Error(
 			CortexErrorCodes::GraphNotFound,
 			FString::Printf(TEXT("Graph '%s' (subgraph_path '%s') is outside the Blueprint's graph tree"), *GraphName, *SubgraphPath));
-		return false;
+		return nullptr;
 	}
 
+	return Found;
+}
+
+bool FCortexGraphTree::ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Params, UEdGraph*& OutGraph,
+	FCortexGraphTreeEntry* OutEntry, FCortexCommandResult& OutError)
+{
+	OutGraph = nullptr;
+	TArray<FCortexGraphTreeEntry> Tree;
+	Collect(Blueprint, Tree);
+	const FCortexGraphTreeEntry* Found = ResolveInTree(Tree, Params, OutError);
+	if (Found == nullptr)
+	{
+		return false;
+	}
 	OutGraph = Found->Graph;
 	if (OutEntry != nullptr)
 	{
 		*OutEntry = *Found;
+	}
+	return true;
+}
+
+bool FCortexGraphTree::HasGraphSelector(const TSharedPtr<FJsonObject>& Params)
+{
+	return !TreeResolveParam(Params, TEXT("graph_guid")).IsEmpty()
+		|| !TreeResolveParam(Params, TEXT("graph_path")).IsEmpty()
+		|| !TreeResolveParam(Params, TEXT("graph_name")).IsEmpty()
+		|| !TreeResolveParam(Params, TEXT("subgraph_path")).IsEmpty();
+}
+
+bool FCortexGraphTree::ResolveReadScope(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Params,
+	TArray<FCortexGraphTreeEntry>& OutEntries, FCortexCommandResult& OutError)
+{
+	TArray<FCortexGraphTreeEntry> Tree;
+	Collect(Blueprint, Tree);
+	if (!HasGraphSelector(Params))
+	{
+		OutEntries = MoveTemp(Tree);
+		return true;
+	}
+
+	const FCortexGraphTreeEntry* Target = ResolveInTree(Tree, Params, OutError);
+	if (Target == nullptr)
+	{
+		return false;
+	}
+
+	OutEntries.Reset();
+	for (const FCortexGraphTreeEntry& Entry : Tree)
+	{
+		for (const FCortexGraphTreeEntry* Ancestor = &Entry; Ancestor != nullptr;
+			Ancestor = Ancestor->ParentIndex == INDEX_NONE ? nullptr : &Tree[Ancestor->ParentIndex])
+		{
+			if (Ancestor->Graph == Target->Graph)
+			{
+				OutEntries.Add(Entry);
+				break;
+			}
+		}
 	}
 	return true;
 }

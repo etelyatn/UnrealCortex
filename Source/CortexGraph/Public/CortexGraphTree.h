@@ -99,6 +99,20 @@ public:
 	static bool ResolveReadTarget(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Params, UEdGraph*& OutGraph,
 		FCortexGraphTreeEntry* OutEntry, FCortexCommandResult& OutError);
 
+	/** ResolveReadTarget against an already collected tree; returns the entry inside Tree, or null with OutError set. */
+	static const FCortexGraphTreeEntry* ResolveInTree(const TArray<FCortexGraphTreeEntry>& Tree, const TSharedPtr<FJsonObject>& Params,
+		FCortexCommandResult& OutError);
+
+	/** True when Params names a graph through graph_guid, graph_path, graph_name or subgraph_path. */
+	static bool HasGraphSelector(const TSharedPtr<FJsonObject>& Params);
+
+	/**
+	 * The graphs a read command covers: the whole tree when Params carries no graph selector, otherwise the resolved graph
+	 * (ResolveReadTarget rules) and every graph nested below it, in collection order.
+	 */
+	static bool ResolveReadScope(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Params,
+		TArray<FCortexGraphTreeEntry>& OutEntries, FCortexCommandResult& OutError);
+
 	/** Report truncation of the collected entries into Data: truncated=true and truncated_parent_graph_guids; no-op when nothing was cut. */
 	static void AppendTruncation(const TArray<FCortexGraphTreeEntry>& Entries, const TSharedPtr<FJsonObject>& Data);
 };
