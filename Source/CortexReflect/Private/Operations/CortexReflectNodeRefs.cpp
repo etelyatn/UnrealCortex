@@ -1,6 +1,7 @@
 #include "Operations/CortexReflectNodeRefs.h"
 
 #include "EdGraph/EdGraphPin.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_ConstructObjectFromClass.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_SpawnActorFromClass.h"
@@ -44,5 +45,30 @@ UClass* GetCreatedWidgetClass(const UEdGraphNode* Node)
 		}
 	}
 	return nullptr;
+}
+
+FString GetNodeClassLabel(const UEdGraphNode* Node)
+{
+	if (!Node)
+	{
+		return FString();
+	}
+	const UClass* NodeClass = Node->GetClass();
+	return FString(NodeClass->GetPrefixCPP()) + NodeClass->GetName();
+}
+
+const UClass* GetCallMemberOwner(const UK2Node_CallFunction* Node, const UClass* Context)
+{
+	if (!Node)
+	{
+		return nullptr;
+	}
+	const UClass* Owner = Node->FunctionReference.GetMemberParentClass(const_cast<UClass*>(Context));
+	if (!Owner)
+	{
+		const UFunction* Function = Node->GetTargetFunction();
+		Owner = Function ? Function->GetOwnerClass() : nullptr;
+	}
+	return Owner ? Owner->GetAuthoritativeClass() : nullptr;
 }
 }
