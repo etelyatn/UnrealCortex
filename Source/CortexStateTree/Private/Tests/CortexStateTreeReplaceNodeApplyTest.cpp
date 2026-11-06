@@ -284,6 +284,54 @@ bool FCortexStateTreeReplaceNodeApplyTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("the restored node has both bindings"), MigApplyBindingPaths(Node).Num(), 2);
 		}
 	}
+	// ── The compiler's implicit Context binding is a property of the usage: it is listed before and after a same-usage rename ──
+	{
+		CortexSTTest::FMigrationFixture ContextFixture;
+		ContextFixture.SchemaPath = TEXT("/Script/CortexStateTree.CortexSTTestContextSchema");
+		TArray<CortexSTTest::FBlueprintVariable> Variables;
+		Variables.Add({ FName(TEXT("ContextData")), UEdGraphSchema_K2::PC_Struct, TEXT("Context"), FString(), true, FCortexSTTestContextData::StaticStruct() });
+		if (!ContextFixture.Build(*this, /*bCompile=*/true, Variables, /*bCreateBindings=*/false))
+		{
+			return false;
+		}
+
+		// Every implicit context target path of the node (no stored binding backs them).
+		auto ImplicitContextPaths = [](const TSharedPtr<FJsonObject>& Node)
+		{
+			TArray<FString> Paths;
+			for (const TSharedPtr<FJsonValue>& Value : MigApplyArray(Node, TEXT("as_target")))
+			{
+				const TSharedPtr<FJsonObject> Entry = Value->AsObject();
+				if (Entry->GetBoolField(TEXT("implicit_context")))
+				{
+					Paths.Add(MigApplyString(MigApplyObject(Entry, TEXT("target")), TEXT("path")));
+				}
+			}
+			return Paths;
+		};
+
+		const TArray<FString> BeforePaths = ImplicitContextPaths(MigApplyReadNode(ContextFixture));
+		TestTrue(TEXT("the implicit Context binding exists before the swap"), BeforePaths.Contains(TEXT("ContextData")));
+
+		TSharedPtr<FJsonObject> Params = ContextFixture.MutationParams();
+		Params->SetStringField(TEXT("node_id"), ContextFixture.BpTaskId.ToString(EGuidFormats::DigitsWithHyphens));
+		Params->SetStringField(TEXT("new_node_struct"), FCortexSTTestContextRenamedTask::StaticStruct()->GetPathName());
+		TSharedPtr<FJsonObject> Map = MakeShared<FJsonObject>();
+		Map->SetStringField(TEXT("ContextData"), TEXT("RenamedContext"));
+		Params->SetObjectField(TEXT("property_map"), Map);
+		const FCortexCommandResult Result = ContextFixture.Run(TEXT("replace_node"), Params);
+		if (!TestTrue(TEXT("the same-usage Context swap applies"), Result.bSuccess))
+		{
+			AddError(Result.ErrorMessage);
+			return false;
+		}
+		TestEqual(TEXT("the Context swap compiles"), MigApplyString(Result.Data, TEXT("compile_status")), FString(TEXT("success")));
+		TestEqual(TEXT("the Context swap stores no binding"), static_cast<int32>(MigApplyObject(Result.Data, TEXT("bindings"))->GetNumberField(TEXT("before_count"))), 0);
+
+		const TArray<FString> AfterPaths = ImplicitContextPaths(MigApplyReadNode(ContextFixture));
+		TestTrue(TEXT("the implicit Context binding exists after the swap"), AfterPaths.Contains(TEXT("RenamedContext")));
+		TestFalse(TEXT("the old Context property name is gone"), AfterPaths.Contains(TEXT("ContextData")));
+	}
 	return true;
 #endif
 }
