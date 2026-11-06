@@ -114,6 +114,10 @@ void FCortexBPDependentScan::Find(UBlueprint* Owner, FName Member, EMemberKind K
 	}
 
 	const FName OwnerPackage = Owner->GetOutermost()->GetFName();
+	// The class that declares the scanned member: a dependent's node naming it resolves to the owner's chain, not to
+	// an unrelated class that happens to share the member name.
+	UClass* const ScannedOwnerClass = Owner->GeneratedClass != nullptr
+		? Owner->GeneratedClass.Get() : Owner->SkeletonGeneratedClass.Get();
 	IAssetRegistry& Registry = FAssetRegistryModule::GetRegistry();
 	TMap<FName, FCandidate> Candidates;
 
@@ -257,11 +261,11 @@ void FCortexBPDependentScan::Find(UBlueprint* Owner, FName Member, EMemberKind K
 		Hit.bWasLoaded = bWasLoaded;
 		if (Kind == EMemberKind::Variable)
 		{
-			FCortexGraphMemberReferences::FindVariableReferences(Blueprint, Member, Hit.References);
+			FCortexGraphMemberReferences::FindVariableReferences(Blueprint, Member, Hit.References, ScannedOwnerClass);
 		}
 		else
 		{
-			FCortexGraphMemberReferences::FindFunctionReferences(Blueprint, Member, Hit.References);
+			FCortexGraphMemberReferences::FindFunctionReferences(Blueprint, Member, Hit.References, ScannedOwnerClass);
 		}
 
 		if (Hit.Role == TEXT("child") || Hit.References.Num() > 0)
@@ -302,11 +306,11 @@ void FCortexBPDependentScan::Find(UBlueprint* Owner, FName Member, EMemberKind K
 		Hit.bWasLoaded = true;
 		if (Kind == EMemberKind::Variable)
 		{
-			FCortexGraphMemberReferences::FindVariableReferences(Dependent, Member, Hit.References);
+			FCortexGraphMemberReferences::FindVariableReferences(Dependent, Member, Hit.References, ScannedOwnerClass);
 		}
 		else
 		{
-			FCortexGraphMemberReferences::FindFunctionReferences(Dependent, Member, Hit.References);
+			FCortexGraphMemberReferences::FindFunctionReferences(Dependent, Member, Hit.References, ScannedOwnerClass);
 		}
 		if (Hit.References.Num() > 0)
 		{

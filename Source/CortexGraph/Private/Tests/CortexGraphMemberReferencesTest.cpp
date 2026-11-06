@@ -34,6 +34,16 @@ namespace CortexGraphMemberReferencesTestPrivate
 		return PinType;
 	}
 
+	/** A get node on a member of another class (external scope). */
+	UK2Node_VariableGet* AddExternalGet(UEdGraph* Graph, FName Name, UClass* MemberParent)
+	{
+		FGraphNodeCreator<UK2Node_VariableGet> Creator(*Graph);
+		UK2Node_VariableGet* Node = Creator.CreateNode();
+		Node->VariableReference.SetExternalMember(Name, MemberParent);
+		Creator.Finalize();
+		return Node;
+	}
+
 	UK2Node_VariableGet* AddGet(UEdGraph* Graph, FName Name, bool bLocalScope)
 	{
 		FGraphNodeCreator<UK2Node_VariableGet> Creator(*Graph);
@@ -135,9 +145,29 @@ bool FCortexGraphMemberReferencesVariablesTest::RunTest(const FString& Parameter
 		TestEqual(TEXT("reference_count"), Count, 2);
 	}
 
-	TArray<FCortexMemberReference> OtherReferences;
-	FCortexGraphMemberReferences::FindVariableReferences(Blueprint, Other, OtherReferences);
-	TestEqual(TEXT("Unrelated variable has one reference"), OtherReferences.Num(), 1);
+	// A same-named member of a different Blueprint: the node names that class, so it is not a reference to the owner's
+	// member (it is exactly what the engine's RemoveMemberVariable leaves alone).
+	UBlueprint* Foreign = MakeBlueprint(TEXT("BP_MemberRefForeign"), AActor::StaticClass());
+	if (TestNotNull(TEXT("Foreign Blueprint"), Foreign))
+	{
+		FBlueprintEditorUtils::AddMemberVariable(Foreign, Other, BoolPin());
+		FKismetEditorUtilities::CompileBlueprint(Foreign);
+		UK2Node_VariableGet* ForeignNode = AddExternalGet(EventGraph, Other, Foreign->GeneratedClass);
+		TestNotNull(TEXT("Foreign node"), ForeignNode);
+
+		TArray<FCortexMemberReference> OtherReferences;
+		FCortexGraphMemberReferences::FindVariableReferences(Blueprint, Other, OtherReferences);
+		TestEqual(TEXT("Unrelated variable has one reference"), OtherReferences.Num(), 1);
+		for (const FCortexMemberReference& Reference : OtherReferences)
+		{
+			TestFalse(TEXT("Same-named member of another class is not a hit"), Reference.NodeGuid == ForeignNode->NodeGuid);
+			TestTrue(TEXT("Hit resolves to the owner"), Reference.bResolvesToOwner);
+		}
+	}
+	if (Foreign != nullptr)
+	{
+		Foreign->MarkAsGarbage();
+	}
 
 	// Native parent declaring the same name.
 	UBlueprint* NativeChild = MakeBlueprint(TEXT("BP_MemberRefNativeChild"), ACortexGraphMemberRefNativeActor::StaticClass());

@@ -110,7 +110,7 @@ bool FCortexBPDependentScanTest::RunTest(const FString& Parameters)
 	}
 	FBlueprintEditorUtils::AddMemberVariable(OtherOwner, Tracked, BoolPin);
 	FKismetEditorUtilities::CompileBlueprint(OtherOwner);
-	const FGuid SameNameNode = ScanAddGet(SameName, Tracked, OtherOwner->GeneratedClass)->NodeGuid;
+	ScanAddGet(SameName, Tracked, OtherOwner->GeneratedClass);
 	ScanAddGet(Unrelated, Tracked, nullptr);
 	FBlueprintEditorUtils::AddMemberVariable(Missing, TEXT("Holder"), ScanObjectPin(OwnerClass));
 
@@ -175,15 +175,9 @@ bool FCortexBPDependentScanTest::RunTest(const FString& Parameters)
 		}
 	}
 
-	const FCortexBPDependentHit* SameNameHit = ScanFindHit(Hits, SameNamePath);
-	if (TestNotNull(TEXT("Same-named variable of an unrelated class is reported (conservative)"), SameNameHit))
-	{
-		if (TestEqual(TEXT("Same-name reference count"), SameNameHit->References.Num(), 1))
-		{
-			TestEqual(TEXT("Same-name node GUID"), SameNameHit->References[0].NodeGuid, SameNameNode);
-			TestEqual(TEXT("Kind stays intact"), SameNameHit->References[0].Kind, FString(TEXT("k2_variable_node")));
-		}
-	}
+	// The shared query resolves each hit against the owner's member chain, so a node naming another class's
+	// same-named member is not a reference (the same predicate the engine's RemoveMemberVariable applies).
+	TestNull(TEXT("Same-named member of another class is not a reference"), ScanFindHit(Hits, SameNamePath));
 
 	TestNull(TEXT("Unrelated Blueprint is not reported"), ScanFindHit(Hits, UnrelatedPath));
 	TestNull(TEXT("Unrelated package was not loaded"), FindPackage(nullptr, *UnrelatedPackage.ToString()));

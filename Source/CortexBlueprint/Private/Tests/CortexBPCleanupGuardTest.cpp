@@ -182,6 +182,42 @@ bool FCortexBPCleanupGuardedCdoOrderTest::RunTest(const FString& Parameters)
 		RetireBlueprint(Blueprint);
 	}
 
+	// --- I2: a numeric-convertible adoption is read back (double 2.5 -> native float) ---
+	{
+		UBlueprint* Blueprint = MakeBlueprint(TEXT("CleanupGuardConvertible"), AActor::StaticClass());
+		if (!TestNotNull(TEXT("Convertible Blueprint"), Blueprint))
+		{
+			return false;
+		}
+		AddVariable(Blueprint, TEXT("Speed"), DoublePin(), TEXT("2.5"));
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+		TSharedPtr<FJsonObject> Params = CleanupParams(Blueprint);
+		Params->SetStringField(TEXT("new_parent_class"), Target);
+		SetStrings(Params, TEXT("remove_variables"), {TEXT("Speed")});
+		Params->SetBoolField(TEXT("compile"), true);
+		Params->SetBoolField(TEXT("save"), false);
+		const FCortexCommandResult Result = FCortexBPCleanupOps::CleanupMigration(Params);
+		TestTrue(TEXT("Convertible adoption succeeds"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			TestTrue(TEXT("Convertible adoption reported"), ReadStrings(Result.Data, TEXT("adopted_by_engine")).Contains(TEXT("Speed")));
+			const TSharedPtr<FJsonObject> Readback = ReadNamedEntry(Result.Data, TEXT("cdo_readback"), TEXT("Speed"));
+			if (TestTrue(TEXT("Convertible adoption is read back"), Readback.IsValid()))
+			{
+				TestTrue(TEXT("Convertible adoption is checked"), Readback->GetBoolField(TEXT("checked")));
+				TestTrue(TEXT("Convertible value preserved"), Readback->GetBoolField(TEXT("preserved")));
+			}
+		}
+		const ACortexBPAdoptParent* Defaults = AdoptDefaults(Blueprint);
+		if (TestNotNull(TEXT("Convertible CDO"), Defaults))
+		{
+			TestEqual(TEXT("Converted value"), Defaults->Speed, 2.5f);
+			TestFalse(TEXT("No renamed variable left"), HasVariable(Blueprint, TEXT("Speed_0")));
+		}
+		RetireBlueprint(Blueprint);
+	}
+
 	// --- A same-named incompatible variable is renamed by the engine and removed explicitly ---
 	{
 		UBlueprint* Blueprint = MakeBlueprint(TEXT("CleanupGuardMismatch"), AActor::StaticClass());
@@ -283,6 +319,22 @@ bool FCortexBPCleanupGuardedCdoOrderTest::RunTest(const FString& Parameters)
 		AckParams->SetStringField(TEXT("new_parent_class"), Target);
 		AckParams->SetBoolField(TEXT("compile"), true);
 		AckParams->SetBoolField(TEXT("save"), false);
+
+		// I1: the dry run reports the plan and can_apply instead of refusing with the acknowledgment error.
+		TSharedPtr<FJsonObject> DryAckParams = CleanupParams(Adoptable);
+		DryAckParams->SetStringField(TEXT("new_parent_class"), Target);
+		DryAckParams->SetBoolField(TEXT("dry_run"), true);
+		DryAckParams->SetBoolField(TEXT("save"), false);
+		const FCortexCommandResult DryPlan = FCortexBPCleanupOps::CleanupMigration(DryAckParams);
+		if (TestTrue(TEXT("Unacknowledged dry run reports a plan"), DryPlan.bSuccess && DryPlan.Data.IsValid()))
+		{
+			TestEqual(TEXT("Dry run applies nothing"), DryPlan.Data->GetStringField(TEXT("apply_status")), FString(TEXT("dry_run")));
+			TestFalse(TEXT("Dry run cannot apply without the acknowledgment"), DryPlan.Data->GetBoolField(TEXT("can_apply")));
+			TestTrue(TEXT("Dry run lists the required key"),
+				ReadStrings(DryPlan.Data, TEXT("required_acknowledgment")).Contains(TEXT("variable:bPowerOn")));
+		}
+		TestTrue(TEXT("Dry run keeps the variable"), HasVariable(Adoptable, TEXT("bPowerOn")));
+
 		const FCortexCommandResult NeedsAck = FCortexBPCleanupOps::CleanupMigration(AckParams);
 		TestFalse(TEXT("Engine-replaced variable needs acknowledgment"), NeedsAck.bSuccess);
 		TestEqual(TEXT("Acknowledgment code"), NeedsAck.ErrorCode, CortexErrorCodes::PotentialDataLoss);
@@ -299,6 +351,18 @@ bool FCortexBPCleanupGuardedCdoOrderTest::RunTest(const FString& Parameters)
 		if (Acknowledged.bSuccess && Acknowledged.Data.IsValid())
 		{
 			TestTrue(TEXT("Adoption reported"), ReadStrings(Acknowledged.Data, TEXT("adopted_by_engine")).Contains(TEXT("bPowerOn")));
+			// I2: an adopted variable that was not listed in remove_variables is verified too.
+			const TSharedPtr<FJsonObject> Readback = ReadNamedEntry(Acknowledged.Data, TEXT("cdo_readback"), TEXT("bPowerOn"));
+			if (TestTrue(TEXT("Unlisted adoption is read back"), Readback.IsValid()))
+			{
+				TestTrue(TEXT("Unlisted adoption is checked"), Readback->GetBoolField(TEXT("checked")));
+				TestTrue(TEXT("Unlisted adoption is preserved"), Readback->GetBoolField(TEXT("preserved")));
+			}
+			const TSharedPtr<FJsonObject> Expectations = ReadObject(Acknowledged.Data, TEXT("cdo_expectations"));
+			if (TestTrue(TEXT("Unlisted adoption carries an expectation"), Expectations.IsValid()))
+			{
+				TestEqual(TEXT("Unlisted expectation value"), Expectations->GetStringField(TEXT("bPowerOn")), FString(TEXT("True")));
+			}
 		}
 		TestFalse(TEXT("Acknowledged variable adopted away"), HasVariable(Adoptable, TEXT("bPowerOn")));
 		RetireBlueprint(Adoptable);

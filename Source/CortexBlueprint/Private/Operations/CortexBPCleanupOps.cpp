@@ -476,10 +476,10 @@ namespace CortexCleanupOps
 		/** Captured before the parent assignment: the engine may rename the variable at the skeleton rebuild (M5). */
 		FGuid VarGuid;
 		bool bExists = false;
+		/** The caller listed it in remove_variables (the plan-only adopted entries are not listed). */
+		bool bRequested = false;
 		/** A native member of the new parent replaces it; the nodes keep resolving to the inherited member (E1). */
 		bool bAdoptedByEngine = false;
-		/** Same-named incompatible variable: the engine renames it, then it is removed explicitly. */
-		bool bEngineRenames = false;
 		TArray<FCortexMemberReference> References;
 		FProperty* Native = nullptr;
 		FString BeforeValue;
@@ -676,6 +676,7 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 
 		FCleanupVariableWork Item;
 		Item.Name = Name;
+		Item.bRequested = true;
 		const int32 Index = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, FName(*Name));
 		Item.bExists = Index != INDEX_NONE;
 		if (Item.bExists)
@@ -695,17 +696,51 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 				continue;
 			}
 			Item.bAdoptedByEngine = Collision.ReplacesVariable();
-			Item.bEngineRenames = !Item.bAdoptedByEngine;
 		}
 		const FProperty* OldProperty = Blueprint->GeneratedClass != nullptr
 			? Blueprint->GeneratedClass->FindPropertyByName(FName(*Name)) : nullptr;
+		// A numeric pair (Blueprint double -> native float) is checked too: the compile converts the value and
+		// CleanupValuesMatch compares the two export texts numerically.
+		const bool bNumericPair = OldProperty != nullptr && Item.Native != nullptr
+			&& OldProperty->IsA<FNumericProperty>() && Item.Native->IsA<FNumericProperty>();
 		Item.bCdoChecked = Item.Native != nullptr && OldProperty != nullptr
-			&& OldProperty->GetClass() == Item.Native->GetClass();
+			&& (OldProperty->GetClass() == Item.Native->GetClass() || bNumericPair);
 		if (!Item.bExists)
 		{
 			Outcome.Warnings.Add(MakeShared<FJsonValueString>(
 				FString::Printf(TEXT("Variable '%s' not found, skipped"), *Name)));
 		}
+		Work.Add(MoveTemp(Item));
+	}
+
+	// I2: every variable the plan hands to a native member is read back, whether or not the caller listed it.
+	for (const FString& Name : Outcome.AdoptedByEngine)
+	{
+		if (Work.ContainsByPredicate([&Name](const FCleanupVariableWork& Item) { return Item.Name == Name; }))
+		{
+			continue;
+		}
+		FCleanupVariableWork Item;
+		Item.Name = Name;
+		Item.bAdoptedByEngine = true;
+		const int32 Index = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, FName(*Name));
+		Item.bExists = Index != INDEX_NONE;
+		if (Item.bExists)
+		{
+			Item.VarGuid = Blueprint->NewVariables[Index].VarGuid;
+			FCortexGraphMemberReferences::FindVariableReferences(Blueprint, FName(*Name), Item.References);
+			Item.BeforeValue = CleanupCdoText(Blueprint->GeneratedClass, FName(*Name), Item.bBeforeValid);
+		}
+		if (bReparent)
+		{
+			Item.Native = FindFProperty<FProperty>(NewParent, FName(*Name));
+		}
+		const FProperty* OldProperty = Blueprint->GeneratedClass != nullptr
+			? Blueprint->GeneratedClass->FindPropertyByName(FName(*Name)) : nullptr;
+		const bool bNumericPair = OldProperty != nullptr && Item.Native != nullptr
+			&& OldProperty->IsA<FNumericProperty>() && Item.Native->IsA<FNumericProperty>();
+		Item.bCdoChecked = Item.Native != nullptr && OldProperty != nullptr
+			&& (OldProperty->GetClass() == Item.Native->GetClass() || bNumericPair);
 		Work.Add(MoveTemp(Item));
 	}
 
@@ -748,7 +783,10 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 	const auto IsListedVariableKey = [&Work](const FString& Key)
 	{
 		return Key.StartsWith(TEXT("variable:")) && Work.ContainsByPredicate(
-			[&Key](const FCleanupVariableWork& Item) { return Key == FString::Printf(TEXT("variable:%s"), *Item.Name); });
+			[&Key](const FCleanupVariableWork& Item)
+			{
+				return Item.bRequested && Key == FString::Printf(TEXT("variable:%s"), *Item.Name);
+			});
 	};
 	TArray<FString> RequiredCollisions = Plan.RequiredAcknowledgment;
 	RequiredCollisions.RemoveAll(IsListedVariableKey);
@@ -813,6 +851,57 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 		}
 	}
 
+	// The caller's acknowledgments, and the report-only path: a dry run answers the plan (apply_status:"dry_run",
+	// can_apply, required_acknowledgment, referencing_nodes, cdo_readback) instead of refusing, exactly as reparent and
+	// remove_variable do. The gates below only stop an apply.
+	TArray<FString> Acknowledged = AcknowledgedCollisions;
+	Acknowledged.Append(AcknowledgedLosses);
+	Acknowledged = CleanupSortedUnique(Acknowledged);
+
+	const auto DescribeInto = [&](const TSharedRef<FJsonObject>& Data)
+	{
+		Outcome.AppendTo(Data);
+		if (bReparent)
+		{
+			const TSharedRef<FJsonObject> PlanJson = MakeShared<FJsonObject>();
+			Plan.AppendTo(PlanJson);
+			PlanJson->SetArrayField(TEXT("blocking"), CleanupJsonStrings(Blocking));
+			Data->SetObjectField(TEXT("reparent_plan"), PlanJson);
+		}
+		Data->SetBoolField(TEXT("compiled"), bCompile);
+	};
+
+	if (bDryRun)
+	{
+		const bool bReferencesBlocked = !bRemoveReferencingNodes && Work.ContainsByPredicate(
+			[](const FCleanupVariableWork& Item)
+			{
+				return Item.bRequested && Item.bExists && !Item.bAdoptedByEngine && !Item.References.IsEmpty();
+			});
+		FCortexBPGuardedRun::FSpec DrySpec;
+		DrySpec.OpName = TEXT("cleanup_migration");
+		DrySpec.Blueprint = Blueprint;
+		DrySpec.bDryRun = true;
+		DrySpec.bCompile = bCompile;
+		DrySpec.Expected = Expected;
+		FCortexCommandResult Result = FCortexBPGuardedRun::Execute(DrySpec);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			DescribeInto(Result.Data.ToSharedRef());
+			Result.Data->SetBoolField(TEXT("reparented"), false);
+			Result.Data->SetBoolField(TEXT("can_apply"), Blocking.IsEmpty()
+				&& !(bReparent && Plan.bHasScsCollision && bCompile)
+				&& !bReferencesBlocked
+				&& Acknowledged == Outcome.RequiredAcknowledgment);
+			bool bDryDirty = false;
+			if (Result.Data->TryGetBoolField(TEXT("dirty_after"), bDryDirty))
+			{
+				Result.Data->SetBoolField(TEXT("is_dirty"), bDryDirty);
+			}
+		}
+		return Result;
+	}
+
 	// An SCS node named like a component of the new parent would compile into a duplicate (mirrors reparent).
 	if (bReparent && Plan.bHasScsCollision && bCompile)
 	{
@@ -843,7 +932,7 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 		TArray<FString> Referencing;
 		for (const FCleanupVariableWork& Item : Work)
 		{
-			if (Item.bExists && !Item.bAdoptedByEngine && !Item.References.IsEmpty())
+			if (Item.bRequested && Item.bExists && !Item.bAdoptedByEngine && !Item.References.IsEmpty())
 			{
 				Referencing.Add(FString::Printf(TEXT("%s (%d node(s))"), *Item.Name, Item.References.Num()));
 			}
@@ -862,9 +951,7 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 		}
 	}
 
-	TArray<FString> Acknowledged = AcknowledgedCollisions;
-	Acknowledged.Append(AcknowledgedLosses);
-	Acknowledged = CleanupSortedUnique(Acknowledged);
+
 	if (Acknowledged != Outcome.RequiredAcknowledgment)
 	{
 		const TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
@@ -879,49 +966,6 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 			Details);
 	}
 
-	const auto DescribeInto = [&](const TSharedRef<FJsonObject>& Data)
-	{
-		Outcome.AppendTo(Data);
-		if (bReparent)
-		{
-			const TSharedRef<FJsonObject> PlanJson = MakeShared<FJsonObject>();
-			Plan.AppendTo(PlanJson);
-			PlanJson->SetArrayField(TEXT("blocking"), CleanupJsonStrings(Blocking));
-			Data->SetObjectField(TEXT("reparent_plan"), PlanJson);
-		}
-		Data->SetBoolField(TEXT("compiled"), bCompile);
-	};
-
-	if (bDryRun)
-	{
-		FCortexBPGuardedRun::FSpec Spec;
-		Spec.OpName = TEXT("cleanup_migration");
-		Spec.Blueprint = Blueprint;
-		Spec.bDryRun = true;
-		Spec.bCompile = bCompile;
-		Spec.Expected = Expected;
-		FCortexCommandResult Result = FCortexBPGuardedRun::Execute(Spec);
-		if (Result.bSuccess && Result.Data.IsValid())
-		{
-			DescribeInto(Result.Data.ToSharedRef());
-			Result.Data->SetBoolField(TEXT("reparented"), false);
-			Result.Data->SetBoolField(TEXT("can_apply"), Blocking.IsEmpty()
-				&& Acknowledged == Outcome.RequiredAcknowledgment
-				&& (bRemoveReferencingNodes || !Outcome.ReferencingNodes.ContainsByPredicate(
-					[](const TSharedPtr<FJsonValue>& Value)
-					{
-						const TSharedPtr<FJsonObject>* Node = nullptr;
-						return Value->TryGetObject(Node) && Node != nullptr
-							&& (*Node)->GetStringField(TEXT("resolution")) == TEXT("removed");
-					})));
-			bool bDryDirty = false;
-			if (Result.Data->TryGetBoolField(TEXT("dirty_after"), bDryDirty))
-			{
-				Result.Data->SetBoolField(TEXT("is_dirty"), bDryDirty);
-			}
-		}
-		return Result;
-	}
 
 	const FString OldParentName = FCortexBPAssetOps::ParentClassDisplayName(Blueprint->ParentClass);
 
@@ -966,7 +1010,10 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 				continue;
 			}
 			Target->NewVariables.RemoveAt(Index);
-			if (Work.ContainsByPredicate([&Name](const FCleanupVariableWork& Item) { return Item.Name == Name; }))
+			if (Work.ContainsByPredicate([&Name](const FCleanupVariableWork& Item)
+				{
+					return Item.bRequested && Item.Name == Name;
+				}))
 			{
 				Outcome.RemovedVariables.Add(Name);
 			}

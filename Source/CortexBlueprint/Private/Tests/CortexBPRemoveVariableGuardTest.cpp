@@ -208,6 +208,44 @@ bool FCortexBPRemoveVariableGuardTest::RunTest(const FString& Parameters)
 		RetireBlueprint(Blueprint);
 	}
 
+	// --- A same-named member of an unrelated class is not a reference and is never destroyed ---
+	{
+		UBlueprint* Blueprint = MakeBlueprint(TEXT("GuardedRemoveForeignName"), AActor::StaticClass());
+		UBlueprint* Foreign = MakeBlueprint(TEXT("GuardedRemoveForeignOwner"), AActor::StaticClass());
+		if (!TestNotNull(TEXT("Foreign-name Blueprint"), Blueprint) || !TestNotNull(TEXT("Foreign Blueprint"), Foreign))
+		{
+			return false;
+		}
+		AddVariable(Foreign, TEXT("Health"), DoublePin(), TEXT("1.0"));
+		FKismetEditorUtilities::CompileBlueprint(Foreign);
+		AddVariable(Blueprint, TEXT("Health"), DoublePin(), TEXT("2.0"));
+		UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+		FGraphNodeCreator<UK2Node_VariableGet> ForeignCreator(*EventGraph);
+		UK2Node_VariableGet* ForeignNode = ForeignCreator.CreateNode();
+		ForeignNode->VariableReference.SetExternalMember(TEXT("Health"), Foreign->GeneratedClass);
+		ForeignCreator.Finalize();
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+		TSharedPtr<FJsonObject> DryParams = RemoveVariableParams(Blueprint, TEXT("Health"));
+		DryParams->SetBoolField(TEXT("dry_run"), true);
+		DryParams->SetBoolField(TEXT("save"), false);
+		const FCortexCommandResult Dry = FCortexBPStructureOps::RemoveVariable(DryParams);
+		if (TestTrue(TEXT("Foreign-name dry run succeeds"), Dry.bSuccess && Dry.Data.IsValid()))
+		{
+			TestEqual(TEXT("The foreign node is not a reference"), CountArray(Dry.Data, TEXT("referencing_nodes")), 0);
+			TestTrue(TEXT("The foreign node can be removed with the variable"), Dry.Data->GetBoolField(TEXT("can_apply")));
+		}
+
+		TSharedPtr<FJsonObject> OptInParams = RemoveVariableParams(Blueprint, TEXT("Health"));
+		OptInParams->SetBoolField(TEXT("remove_referencing_nodes"), true);
+		const FCortexCommandResult Removed = FCortexBPStructureOps::RemoveVariable(OptInParams);
+		TestTrue(TEXT("Foreign-name removal succeeds"), Removed.bSuccess);
+		TestFalse(TEXT("Variable removed"), HasVariable(Blueprint, TEXT("Health")));
+		TestTrue(TEXT("The foreign node survives"), HasNodeGuid(Blueprint, ForeignNode->NodeGuid));
+		RetireBlueprint(Foreign);
+		RetireBlueprint(Blueprint);
+	}
+
 	// --- A SaveGame variable refuses POTENTIAL_DATA_LOSS until acknowledged ---
 	{
 		UBlueprint* Blueprint = MakeBlueprint(TEXT("GuardedRemoveSaveGame"), AActor::StaticClass());
