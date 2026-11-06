@@ -715,7 +715,7 @@ static bool ApplyDefaults(UEdGraphNode& Node, const TArray<FCortexGraphRetargetD
 			OutFailure = FString::Printf(TEXT("the literal of the pin '%s' cannot reach the replacement pin '%s'"), *Default.OldPin, *Default.NewPin);
 			return false;
 		}
-		if (Pin->GetDefaultAsString().Equals(Default.AsString, ESearchCase::IgnoreCase))
+		if (Pin->GetDefaultAsString().Equals(Default.AsString, ESearchCase::CaseSensitive))
 		{
 			continue;
 		}
@@ -733,7 +733,7 @@ static bool ApplyDefaults(UEdGraphNode& Node, const TArray<FCortexGraphRetargetD
 		{
 			Schema->TrySetDefaultValue(*Pin, Default.Value);
 		}
-		if (!Pin->GetDefaultAsString().Equals(Default.AsString, ESearchCase::IgnoreCase))
+		if (!Pin->GetDefaultAsString().Equals(Default.AsString, ESearchCase::CaseSensitive))
 		{
 			OutFailure = FString::Printf(TEXT("the literal '%s' of the pin '%s' did not reach the replacement pin '%s' (it holds '%s')"),
 				*Default.AsString, *Default.OldPin, *Default.NewPin, *Pin->GetDefaultAsString());

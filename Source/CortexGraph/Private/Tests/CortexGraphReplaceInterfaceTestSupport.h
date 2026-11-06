@@ -88,7 +88,7 @@ namespace CortexGraphReplaceInterfaceTest
 		return FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	}
 
-	inline UEdGraph* AddInterfaceFunction(UBlueprint* Interface, const FName Name, const bool bWithOutput, const bool bWithAmount = false, const bool bWithInput = false)
+	inline UEdGraph* AddInterfaceFunction(UBlueprint* Interface, const FName Name, const bool bWithOutput, const bool bWithAmount = false, const bool bWithInput = false, const int32 OutputKind = 0)
 	{
 		UEdGraph* Graph = FBlueprintEditorUtils::CreateNewGraph(Interface, Name, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
 		if (Graph == nullptr)
@@ -123,6 +123,17 @@ namespace CortexGraphReplaceInterfaceTest
 			FEdGraphPinType DoubleType;
 			DoubleType.PinCategory = UEdGraphSchema_K2::PC_Real;
 			DoubleType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+			if (OutputKind == 1)
+			{
+				DoubleType = FEdGraphPinType();
+				DoubleType.PinCategory = UEdGraphSchema_K2::PC_String;
+			}
+			else if (OutputKind == 2)
+			{
+				DoubleType = FEdGraphPinType();
+				DoubleType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+				DoubleType.PinSubCategoryObject = TBaseStructure<FVector>::Get();
+			}
 			UK2Node_FunctionResult* Result = NewObject<UK2Node_FunctionResult>(Graph);
 			Result->FunctionReference = Entry->FunctionReference;
 			Result->CreateNewGuid();
@@ -135,7 +146,7 @@ namespace CortexGraphReplaceInterfaceTest
 
 	/** A compiled BPI: GetValue (double output, function-style), Notify(Amount) (void, event-style) and an optional extra function-style function. */
 	inline UBlueprint* MakeInterface(FScope& Scope, const TCHAR* Name, const TCHAR* FunctionStyle = TEXT("GetValue"), const TCHAR* EventStyle = TEXT("Notify"),
-		const TCHAR* ExtraFunctionStyle = nullptr, const bool bFunctionInput = false)
+		const TCHAR* ExtraFunctionStyle = nullptr, const bool bFunctionInput = false, const int32 OutputKind = 0)
 	{
 		UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Game/Temp/%s_%s"), Name, *UniqueSuffix()));
 		UBlueprint* Interface = FKismetEditorUtilities::CreateBlueprint(
@@ -145,7 +156,7 @@ namespace CortexGraphReplaceInterfaceTest
 			return nullptr;
 		}
 		Scope.Blueprints.Add(Interface);
-		if (AddInterfaceFunction(Interface, FName(FunctionStyle), true, false, bFunctionInput) == nullptr
+		if (AddInterfaceFunction(Interface, FName(FunctionStyle), true, false, bFunctionInput, OutputKind) == nullptr
 			|| AddInterfaceFunction(Interface, FName(EventStyle), false, true) == nullptr
 			|| (ExtraFunctionStyle != nullptr && AddInterfaceFunction(Interface, FName(ExtraFunctionStyle), true) == nullptr))
 		{

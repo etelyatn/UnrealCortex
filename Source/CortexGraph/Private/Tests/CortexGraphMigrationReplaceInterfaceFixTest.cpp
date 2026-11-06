@@ -81,6 +81,36 @@ bool FCortexGraphMigrationReplaceInterfaceImplementedTest::RunTest(const FString
 			}
 		}
 	}
+	// A string return authored as "0", "false" or "None" is a real literal, not a plain default.
+	for (const TCHAR* Literal : { TEXT("0"), TEXT("false"), TEXT("None") })
+	{
+		UBlueprint* const Interface = MakeInterface(Scope, TEXT("BPI_Issue122StringConst"), TEXT("GetValue"), TEXT("Notify"), nullptr, false, 1);
+		FImplementer Impl;
+		if (TestNotNull(TEXT("String BPI"), Interface)
+			&& TestTrue(TEXT("String implementer"), MakeImplementer(Scope, Interface, TEXT("BP_Issue122StringConst"), Impl, nullptr, false)))
+		{
+			UEdGraphPin* const Value = Impl.FunctionResult->FindPin(TEXT("Value"), EGPD_Input);
+			if (TestNotNull(TEXT("The string result input"), Value))
+			{
+				GetDefault<UEdGraphSchema_K2>()->TrySetDefaultValue(*Value, Literal);
+				ExpectOmissionRefused(*this, Interface, Impl, TEXT("GetValue"), Literal);
+			}
+		}
+	}
+	// A genuine struct-typed empty stub stays droppable.
+	{
+		UBlueprint* const Interface = MakeInterface(Scope, TEXT("BPI_Issue122VectorStub"), TEXT("GetValue"), TEXT("Notify"), nullptr, false, 2);
+		FImplementer Impl;
+		if (TestNotNull(TEXT("Vector BPI"), Interface)
+			&& TestTrue(TEXT("Vector implementer"), MakeImplementer(Scope, Interface, TEXT("BP_Issue122VectorStub"), Impl, nullptr, false)))
+		{
+			FCortexGraphPreparedPatch Prepared;
+			FCortexCommandResult Error;
+			TestTrue(FString::Printf(TEXT("A struct-typed empty stub may be omitted: %s"), *Error.ErrorMessage),
+				FCortexGraphPatchOps::Preflight(Impl.Blueprint,
+					Request(Impl.Blueprint, TEXT("00000000-0000-0000-0000-000000122503"), MigrationJson(Interface->GetPathName(), NativePath(), OnlyNotify())), Prepared, Error));
+		}
+	}
 	// A genuine engine-made empty stub stays droppable.
 	{
 		UBlueprint* const Interface = MakeInterface(Scope, TEXT("BPI_Issue122Stub"));
