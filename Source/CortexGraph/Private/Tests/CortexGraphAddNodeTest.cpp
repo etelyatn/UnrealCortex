@@ -11,7 +11,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphAddNodeTest,
-	"Cortex.Graph.AddNode",
+	"Cortex.Graph.AddNode.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

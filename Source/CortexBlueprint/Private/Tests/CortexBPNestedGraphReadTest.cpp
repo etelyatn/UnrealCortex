@@ -155,7 +155,7 @@ namespace CortexBPNestedGraphReadTestSupport
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPNestedGraphReadTest,
-	"Cortex.Blueprint.NestedGraphRead",
+	"Cortex.Blueprint.NestedGraphRead.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

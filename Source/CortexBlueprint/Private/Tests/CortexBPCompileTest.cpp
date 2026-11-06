@@ -20,7 +20,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCompileTest,
-	"Cortex.Blueprint.Compile",
+	"Cortex.Blueprint.Compile.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 

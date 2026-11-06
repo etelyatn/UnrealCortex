@@ -67,7 +67,7 @@ namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPDependentScanTest,
-	"Cortex.Blueprint.DependentScan",
+	"Cortex.Blueprint.DependentScan.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexBPDependentScanTest::RunTest(const FString& Parameters)

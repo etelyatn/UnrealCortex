@@ -5,7 +5,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphDescribeNodeTest,
-	"Cortex.Graph.DescribeNode",
+	"Cortex.Graph.DescribeNode.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 namespace

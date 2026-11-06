@@ -111,7 +111,7 @@ namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPGuardedRunTest,
-	"Cortex.Blueprint.GuardedRun",
+	"Cortex.Blueprint.GuardedRun.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FCortexBPGuardedRunTest::RunTest(const FString& Parameters)
