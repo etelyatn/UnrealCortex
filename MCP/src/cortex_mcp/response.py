@@ -213,8 +213,16 @@ def _bound_replace_node_outcome(data: dict) -> str:
     bounded = dict(data)
     omitted: list[str] = []
 
+    def finalized(extra_omitted: tuple[str, ...] = ()) -> dict:
+        """The exact object that would be returned: the omission metadata counts against the budget."""
+        result = dict(bounded)
+        result["reader_complete"] = False
+        result["_outcome_detail_omitted"] = omitted + list(extra_omitted)
+        result["_suggestion"] = _REPLACE_NODE_REFERRAL
+        return result
+
     def fits() -> bool:
-        return len(compact_json(bounded)) <= MAX_RESPONSE_CHARS
+        return len(compact_json(finalized())) <= MAX_RESPONSE_CHARS
 
     bindings = bounded.get("bindings")
     if isinstance(bindings, dict) and isinstance(bindings.get("remapped"), list):
@@ -242,13 +250,10 @@ def _bound_replace_node_outcome(data: dict) -> str:
         lo, hi, best = 0, total, 0
         while lo <= hi:
             mid = (lo + hi) // 2
-            trial = dict(bounded)
+            trial = finalized(("replaced",))
             trial["replaced"] = replaced[:mid]
             trial["replaced_count"] = total
             trial["replaced_truncated"] = True
-            trial["reader_complete"] = False
-            trial["_outcome_detail_omitted"] = omitted + ["replaced"]
-            trial["_suggestion"] = _REPLACE_NODE_REFERRAL
             if len(compact_json(trial)) <= MAX_RESPONSE_CHARS:
                 best = mid
                 lo = mid + 1
@@ -259,10 +264,7 @@ def _bound_replace_node_outcome(data: dict) -> str:
         bounded["replaced_truncated"] = True
         omitted.append("replaced")
 
-    bounded["reader_complete"] = False
-    bounded["_outcome_detail_omitted"] = omitted
-    bounded["_suggestion"] = _REPLACE_NODE_REFERRAL
-    return compact_json(bounded)
+    return compact_json(finalized())
 
 
 # Names a refusal field owns: context from the request or the native echo can never overwrite them.

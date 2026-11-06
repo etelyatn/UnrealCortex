@@ -213,3 +213,52 @@ class TestNodeBindingsPageOwnership:
 
         assert payload["_error"] == "INVALID_CURSOR"
         connection.send_command.assert_not_called()
+
+
+def _threshold_applied_result(slack: int) -> dict:
+    """Applied result whose size after dropping bindings.remapped is exactly MAX_RESPONSE_CHARS - slack."""
+    data = _applied_bulk_result(rewrites=40, property_plan=0, nodes=3)
+    data["note"] = ""
+
+    def trimmed_size() -> int:
+        trimmed = json.loads(json.dumps(data))
+        trimmed["bindings"]["remapped_count"] = len(trimmed["bindings"].pop("remapped"))
+        trimmed["bindings"]["_remapped_omitted"] = True
+        return len(compact_json(trimmed))
+
+    data["note"] = "n" * (MAX_RESPONSE_CHARS - slack - trimmed_size())
+    assert trimmed_size() == MAX_RESPONSE_CHARS - slack
+    assert len(compact_json(data)) > MAX_RESPONSE_CHARS
+    return data
+
+
+class TestReplaceNodeOutcomeBudgetIncludesOmissionMetadata:
+    @pytest.mark.parametrize("slack", [1, 10, 100, 250])
+    def test_result_just_under_the_cap_after_dropping_remapped_stays_within_budget(self, slack):
+        data = _threshold_applied_result(slack)
+        router, _ = _router(data)
+
+        text = router("replace_node", {"asset_path": "/Game/AI/ST_Tutorial", "blueprint_class": "C"})
+        payload = json.loads(text)
+
+        assert len(text) <= MAX_RESPONSE_CHARS
+        assert payload.get("_error") is None
+        assert payload["saved"] is True
+        assert payload["compile_status"] == "success"
+        assert payload["fingerprint"] == FINGERPRINT
+        assert payload["bindings"]["before_count"] == 72
+        assert payload["bindings"]["after_count"] == 72
+        assert payload["bindings"]["remapped_count"] == 40
+        assert payload["reader_complete"] is False
+        assert "bindings.remapped" in payload["_outcome_detail_omitted"]
+        assert payload["_suggestion"]
+
+    def test_dry_run_keeps_the_generic_path(self):
+        data = _threshold_applied_result(10)
+        data["dry_run"] = True
+        router, _ = _router(data)
+
+        payload = json.loads(router("replace_node", {"asset_path": "/Game/AI/ST_Tutorial", "blueprint_class": "C", "dry_run": True}))
+
+        assert "_outcome_detail_omitted" not in payload
+        assert "replaced_truncated" not in payload
