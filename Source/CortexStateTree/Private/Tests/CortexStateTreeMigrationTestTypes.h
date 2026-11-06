@@ -4,6 +4,7 @@
 #include "Blueprint/StateTreeConditionBlueprintBase.h"
 #include "Blueprint/StateTreeTaskBlueprintBase.h"
 #include "StateTreeConditionBase.h"
+#include "StateTreeEvaluatorBase.h"
 #include "StateTreeExecutionTypes.h"
 #include "StateTreeTaskBase.h"
 #include "Tests/CortexStateTreeTestSchema.h"
@@ -264,4 +265,24 @@ public:
 
 private:
 	TArray<FStateTreeExternalDataDesc> ContextDataDescs;
+};
+
+/** A global evaluator with a bool output: conditions cannot take task instance data as their binding source. */
+USTRUCT()
+struct FCortexSTTestEvaluatorInstanceData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Output")
+	bool bResult = true;
+};
+
+USTRUCT(meta = (Hidden))
+struct FCortexSTTestNativeEvaluator : public FStateTreeEvaluatorBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FCortexSTTestEvaluatorInstanceData;
+
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
 };
