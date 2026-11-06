@@ -825,6 +825,149 @@ void AddCanonicalEdge(TArray<FCortexGraphMigrationEdge>& InOutEdges, TSet<FStrin
 	InOutKeys.Add(Key);
 	InOutEdges.Add(MoveTemp(Edge));
 }
+
+/**
+ * Fail-closed pin_map coverage of one replacement declaration: every request entry names an existing replacement pin of the
+ * declared direction and an existing, type-compatible stale pin, no replacement pin is mapped twice and every visible
+ * replacement pin is mapped. Shared by replace_entry and the replace_interface preview.
+ */
+bool BuildPinMapping(
+	const TArray<TSharedPtr<FJsonValue>>& PinMapValues,
+	const FTransientTerminators& Terminators,
+	UEdGraphNode* SourceEntry,
+	UEdGraphNode* SourceResult,
+	const FString& FunctionName,
+	TArray<FCortexGraphMigrationPinMapping>& OutPinMap,
+	FCortexCommandResult& OutError)
+{
+	TSet<FString> Covered;
+	for (const TSharedPtr<FJsonValue>& Value : PinMapValues)
+	{
+		const TSharedPtr<FJsonObject> MappingJson = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!MappingJson.IsValid()
+			|| !FCortexGraphPatchOps::HasOnlyFields(MappingJson, { TEXT("entry"), TEXT("from_pin"), TEXT("to_pin") }, OutError, TEXT("migration.pin_map entry")))
+		{
+			if (OutError.ErrorCode.IsEmpty())
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration.pin_map entries must be objects"));
+			}
+			return false;
+		}
+		FString DeclaredEntry;
+		FString FromPin;
+		FString ToPin;
+		if (!FCortexGraphPatchOps::ReadRequiredString(MappingJson, TEXT("entry"), DeclaredEntry, OutError)) return false;
+		if (DeclaredEntry != InputDirection && DeclaredEntry != OutputDirection)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				TEXT("migration.pin_map.entry must be 'input' or 'output'"));
+			return false;
+		}
+		if (!FCortexGraphPatchOps::ReadRequiredString(MappingJson, TEXT("from_pin"), FromPin, OutError)) return false;
+		if (!FCortexGraphPatchOps::ReadRequiredString(MappingJson, TEXT("to_pin"), ToPin, OutError)) return false;
+
+		UEdGraphPin* const EntryPin = FindMappablePin(Terminators.Entry, FName(*ToPin));
+		UEdGraphPin* const ResultPin = FindMappablePin(Terminators.Result, FName(*ToPin));
+		const bool bDeclaredInput = DeclaredEntry == InputDirection;
+		UEdGraphPin* Matching = nullptr;
+		UEdGraphPin* DirectionConflict = nullptr;
+		int32 MatchingRole = INDEX_NONE;
+		for (int32 Role = 0; Role < 2; ++Role)
+		{
+			UEdGraphPin* const Candidate = Role == 0 ? EntryPin : ResultPin;
+			if (!Candidate) continue;
+			if ((Candidate->Direction == EGPD_Input) == bDeclaredInput)
+			{
+				if (Matching)
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						FString::Printf(TEXT("migration.pin_map target '%s' is ambiguous: both replacement terminators own a %s pin with that name"),
+							*ToPin, *DeclaredEntry));
+					return false;
+				}
+				Matching = Candidate;
+				MatchingRole = Role;
+			}
+			else
+			{
+				DirectionConflict = Candidate;
+			}
+		}
+		if (!Matching)
+		{
+			if (DirectionConflict)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::TypeMismatch,
+					FString::Printf(TEXT("pin '%s': incompatible direction (declared %s but the replacement pin is %s)"),
+						*ToPin, *DeclaredEntry, DirectionString(DirectionConflict->Direction)));
+				return false;
+			}
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::PinNotFound,
+				FString::Printf(TEXT("pin '%s' does not exist on the replacement terminator of declaration '%s'"),
+					*ToPin, *FunctionName));
+			return false;
+		}
+		const FString CoverKey = FString::Printf(TEXT("%s:%s"), *RoleString(MatchingRole == 1), *ToPin);
+		if (Covered.Contains(CoverKey))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("migration.pin_map maps the replacement pin '%s' more than once"), *ToPin));
+			return false;
+		}
+		Covered.Add(CoverKey);
+
+		FCortexGraphMigrationPinMapping Mapping;
+		Mapping.Entry = DeclaredEntry;
+		Mapping.TargetRole = RoleString(MatchingRole == 1);
+		Mapping.FromPin = FromPin;
+		Mapping.ToPin = ToPin;
+		Mapping.FromDirection = static_cast<int32>(Matching->Direction);
+
+		UEdGraphNode* const StaleTerminator = MatchingRole == 1 ? SourceResult : SourceEntry;
+		if (StaleTerminator)
+		{
+			UEdGraphPin* const StalePin = FindMappablePin(StaleTerminator, FName(*FromPin));
+			if (!StalePin)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::PinNotFound,
+					FString::Printf(TEXT("pin '%s' does not exist on the stale %s terminator %s"),
+						*FromPin, MatchingRole == 1 ? TEXT("result") : TEXT("entry"), *StaleTerminator->NodeGuid.ToString()));
+				return false;
+			}
+			FString Dimension;
+			FString Detail;
+			if (!CompareMappedPins(*StalePin, *Matching, DeclaredEntry, Dimension, Detail))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::TypeMismatch,
+					FString::Printf(TEXT("pin '%s': incompatible %s (%s)"), *ToPin, *Dimension, *Detail));
+				return false;
+			}
+			Mapping.FromDirection = static_cast<int32>(StalePin->Direction);
+		}
+		OutPinMap.Add(MoveTemp(Mapping));
+	}
+
+	const TCHAR* const RoleNames[2] = { EntryRole, ResultRole };
+	UEdGraphNode* const TerminatorNodes[2] = { Terminators.Entry, Terminators.Result };
+	for (int32 Role = 0; Role < 2; ++Role)
+	{
+		UEdGraphNode* const Terminator = TerminatorNodes[Role];
+		if (!Terminator) continue;
+		for (UEdGraphPin* Pin : Terminator->Pins)
+		{
+			if (!IsMappablePin(Pin)) continue;
+			const FString CoverKey = FString::Printf(TEXT("%s:%s"), RoleNames[Role], *Pin->PinName.ToString());
+			if (!Covered.Contains(CoverKey))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("every pin of the replacement terminator must be mapped exactly once; pin '%s' has no pin_map entry"),
+						*Pin->PinName.ToString()));
+				return false;
+			}
+		}
+	}
+	return true;
+}
 }
 
 namespace
@@ -1013,7 +1156,8 @@ bool FCortexGraphMigrationOps::Plan(
 	const FCortexGraphMigrationIdentity& Identity,
 	FCortexGraphMigrationPlan& OutPlan,
 	bool& bOutReused,
-	FCortexCommandResult& OutError)
+	FCortexCommandResult& OutError,
+	const FCortexGraphMigrationPlanOptions* Options)
 {
 	OutPlan = FCortexGraphMigrationPlan();
 	OutError = FCortexCommandResult();
@@ -1141,7 +1285,14 @@ bool FCortexGraphMigrationOps::Plan(
 	// reference that cannot be resolved to a concrete owner blocks instead of looking like absence.
 	{
 		FDeclarationInventory Inventory;
-		if (!CollectDeclarationReferences(Blueprint, DeclarationName, DeclaredSymbolDeclaringClass, Inventory, OutError)) return false;
+		if (Options && Options->bSkipLoadedPackageInventory)
+		{
+			// replace_interface relies on its own in-asset caller refusal and leaves external callers to retarget_calls.
+			int32 ScannedNodes = 0;
+			ScanDeclarationReferences(Blueprint, DeclarationName, DeclaredSymbolDeclaringClass, false, ScannedNodes, Inventory, OutError);
+			if (!OutError.ErrorCode.IsEmpty()) return false;
+		}
+		else if (!CollectDeclarationReferences(Blueprint, DeclarationName, DeclaredSymbolDeclaringClass, Inventory, OutError)) return false;
 		if (Inventory.Unresolved.Num() > 0)
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
@@ -1343,6 +1494,9 @@ bool FCortexGraphMigrationOps::Plan(
 				*SourceEntryGuid.ToString(), *Identity.EntryGuid.ToString()));
 		return false;
 	}
+	// replace_interface points the stale entry at the declaration of the interface it leaves, not at the target declaration.
+	const FName SourceName = (Options && !Options->SourceDeclarationName.IsNone()) ? Options->SourceDeclarationName : DeclarationName;
+	const UClass* const ExpectedOwner = (Options && Options->SourceDeclarationOwner) ? Options->SourceDeclarationOwner : FunctionClass;
 	if (SourceEntry)
 	{
 		if (SourceEntry->GetGraph() != SourceGraph)
@@ -1371,11 +1525,11 @@ bool FCortexGraphMigrationOps::Plan(
 					? SourceEvent->EventReference.GetMemberParentClass(SourceEvent->GetBlueprintClassFromNode())
 					: SourceEvent->EventReference.GetMemberParentClass());
 			if (!SourceEvent
-				|| SourceEvent->EventReference.GetMemberName() != DeclarationName
+				|| SourceEvent->EventReference.GetMemberName() != SourceName
 				|| !SourceOwner
-				|| !FunctionClass
-				|| (SourceOwner != FunctionClass && !SourceOwner->IsChildOf(FunctionClass)
-					&& !(ImplPlan.bInterfaceImplementation && SourceOwner->GetAuthoritativeClass() == FunctionClass->GetAuthoritativeClass())))
+				|| !ExpectedOwner
+				|| (SourceOwner != ExpectedOwner && !SourceOwner->IsChildOf(ExpectedOwner)
+					&& !(ImplPlan.bInterfaceImplementation && SourceOwner->GetAuthoritativeClass() == ExpectedOwner->GetAuthoritativeClass())))
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 					FString::Printf(TEXT("migration source node %s is not an entry of the replaced declaration '%s' on '%s'"),
@@ -1387,7 +1541,7 @@ bool FCortexGraphMigrationOps::Plan(
 		else
 		{
 			const UK2Node_FunctionEntry* const SourceFunctionEntry = Cast<UK2Node_FunctionEntry>(SourceEntry);
-			if (!SourceFunctionEntry || SourceFunctionEntry->FunctionReference.GetMemberName() != DeclarationName)
+			if (!SourceFunctionEntry || SourceFunctionEntry->FunctionReference.GetMemberName() != SourceName)
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 					FString::Printf(TEXT("migration source node %s is not the function entry of the replaced declaration '%s'"),
@@ -1479,131 +1633,12 @@ bool FCortexGraphMigrationOps::Plan(
 	OutPlan.EntryPins = DescribePins(Terminators.Entry);
 	OutPlan.ResultPins = DescribePins(Terminators.Result);
 
-	TSet<FString> Covered;
-	for (const TSharedPtr<FJsonValue>& Value : *PinMapValues)
+	// A complete replay has no stale terminator left: the mapped from_pins name pins that were consumed with it, so only the
+	// replacement side of the map is validated.
+	if (!BuildPinMapping(*PinMapValues, Terminators, bReused ? nullptr : SourceEntry, bReused ? nullptr : SourceResult,
+			FunctionName, OutPlan.PinMap, OutError))
 	{
-		const TSharedPtr<FJsonObject> MappingJson = Value.IsValid() ? Value->AsObject() : nullptr;
-		if (!MappingJson.IsValid()
-			|| !FCortexGraphPatchOps::HasOnlyFields(MappingJson, { TEXT("entry"), TEXT("from_pin"), TEXT("to_pin") }, OutError, TEXT("migration.pin_map entry")))
-		{
-			if (OutError.ErrorCode.IsEmpty())
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration.pin_map entries must be objects"));
-			}
-			return false;
-		}
-		FString DeclaredEntry;
-		FString FromPin;
-		FString ToPin;
-		if (!FCortexGraphPatchOps::ReadRequiredString(MappingJson, TEXT("entry"), DeclaredEntry, OutError)) return false;
-		if (DeclaredEntry != InputDirection && DeclaredEntry != OutputDirection)
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				TEXT("migration.pin_map.entry must be 'input' or 'output'"));
-			return false;
-		}
-		if (!FCortexGraphPatchOps::ReadRequiredString(MappingJson, TEXT("from_pin"), FromPin, OutError)) return false;
-		if (!FCortexGraphPatchOps::ReadRequiredString(MappingJson, TEXT("to_pin"), ToPin, OutError)) return false;
-
-		UEdGraphPin* const EntryPin = FindMappablePin(Terminators.Entry, FName(*ToPin));
-		UEdGraphPin* const ResultPin = FindMappablePin(Terminators.Result, FName(*ToPin));
-		const bool bDeclaredInput = DeclaredEntry == InputDirection;
-		UEdGraphPin* Matching = nullptr;
-		UEdGraphPin* DirectionConflict = nullptr;
-		int32 MatchingRole = INDEX_NONE;
-		for (int32 Role = 0; Role < 2; ++Role)
-		{
-			UEdGraphPin* const Candidate = Role == 0 ? EntryPin : ResultPin;
-			if (!Candidate) continue;
-			if ((Candidate->Direction == EGPD_Input) == bDeclaredInput)
-			{
-				if (Matching)
-				{
-					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-						FString::Printf(TEXT("migration.pin_map target '%s' is ambiguous: both replacement terminators own a %s pin with that name"),
-							*ToPin, *DeclaredEntry));
-					return false;
-				}
-				Matching = Candidate;
-				MatchingRole = Role;
-			}
-			else
-			{
-				DirectionConflict = Candidate;
-			}
-		}
-		if (!Matching)
-		{
-			if (DirectionConflict)
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::TypeMismatch,
-					FString::Printf(TEXT("pin '%s': incompatible direction (declared %s but the replacement pin is %s)"),
-						*ToPin, *DeclaredEntry, DirectionString(DirectionConflict->Direction)));
-				return false;
-			}
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::PinNotFound,
-				FString::Printf(TEXT("pin '%s' does not exist on the replacement terminator of declaration '%s'"),
-					*ToPin, *FunctionName));
-			return false;
-		}
-		const FString CoverKey = FString::Printf(TEXT("%s:%s"), *RoleString(MatchingRole == 1), *ToPin);
-		if (Covered.Contains(CoverKey))
-		{
-			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-				FString::Printf(TEXT("migration.pin_map maps the replacement pin '%s' more than once"), *ToPin));
-			return false;
-		}
-		Covered.Add(CoverKey);
-
-		FCortexGraphMigrationPinMapping Mapping;
-		Mapping.Entry = DeclaredEntry;
-		Mapping.TargetRole = RoleString(MatchingRole == 1);
-		Mapping.FromPin = FromPin;
-		Mapping.ToPin = ToPin;
-		Mapping.FromDirection = static_cast<int32>(Matching->Direction);
-
-		UEdGraphNode* const StaleTerminator = MatchingRole == 1 ? SourceResult : SourceEntry;
-		if (StaleTerminator)
-		{
-			UEdGraphPin* const StalePin = FindMappablePin(StaleTerminator, FName(*FromPin));
-			if (!StalePin)
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::PinNotFound,
-					FString::Printf(TEXT("pin '%s' does not exist on the stale %s terminator %s"),
-						*FromPin, MatchingRole == 1 ? TEXT("result") : TEXT("entry"), *StaleTerminator->NodeGuid.ToString()));
-				return false;
-			}
-			FString Dimension;
-			FString Detail;
-			if (!CompareMappedPins(*StalePin, *Matching, DeclaredEntry, Dimension, Detail))
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::TypeMismatch,
-					FString::Printf(TEXT("pin '%s': incompatible %s (%s)"), *ToPin, *Dimension, *Detail));
-				return false;
-			}
-			Mapping.FromDirection = static_cast<int32>(StalePin->Direction);
-		}
-		OutPlan.PinMap.Add(MoveTemp(Mapping));
-	}
-
-	const TCHAR* const RoleNames[2] = { EntryRole, ResultRole };
-	UEdGraphNode* const TerminatorNodes[2] = { Terminators.Entry, Terminators.Result };
-	for (int32 Role = 0; Role < 2; ++Role)
-	{
-		UEdGraphNode* const Terminator = TerminatorNodes[Role];
-		if (!Terminator) continue;
-		for (UEdGraphPin* Pin : Terminator->Pins)
-		{
-			if (!IsMappablePin(Pin)) continue;
-			const FString CoverKey = FString::Printf(TEXT("%s:%s"), RoleNames[Role], *Pin->PinName.ToString());
-			if (!Covered.Contains(CoverKey))
-			{
-				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-					FString::Printf(TEXT("every pin of the replacement terminator must be mapped exactly once; pin '%s' has no pin_map entry"),
-						*Pin->PinName.ToString()));
-				return false;
-			}
-		}
+		return false;
 	}
 
 	// Boundary links: every mapped stale pin keeps its far endpoints, and no stale link is dropped.
@@ -1645,6 +1680,7 @@ bool FCortexGraphMigrationOps::Plan(
 	{
 		// Every stale pin that carries a link must be mapped, otherwise the replacement would
 		// silently drop user wiring.
+		const TCHAR* const RoleNames[2] = { EntryRole, ResultRole };
 		UEdGraphNode* const StaleTerminators[2] = { SourceEntry, SourceResult };
 		for (int32 Role = 0; Role < 2; ++Role)
 		{
@@ -1805,6 +1841,82 @@ bool FCortexGraphMigrationOps::Plan(
 	OutPlan.FunctionName = FunctionName;
 	OutPlan.OwnerClassPath = FunctionClass->GetPathName();
 	bOutReused = bReused;
+	return true;
+}
+
+bool FCortexGraphMigrationOps::ValidateReplacementPinMap(
+	UBlueprint* Blueprint,
+	UFunction* Function,
+	UClass* FunctionClass,
+	UEdGraphNode* StaleEntry,
+	UEdGraphNode* StaleResult,
+	const TArray<TSharedPtr<FJsonValue>>& PinMapValues,
+	TArray<FCortexGraphMigrationPinMapping>& OutPinMap,
+	FCortexCommandResult& OutError)
+{
+	OutError = FCortexCommandResult();
+	OutPinMap.Reset();
+	if (!Blueprint || !Function || !FunctionClass || !StaleEntry)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("the pin_map validation needs a Blueprint, the replacement declaration and the stale entry"));
+		return false;
+	}
+	if (PinMapValues.Num() > MaxMigrationPins)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded,
+			TEXT("migration.pin_map exceeds the bounded pin limit"));
+		return false;
+	}
+	const bool bIsEvent = UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function);
+	const bool bHasResult = !bIsEvent && DeclarationHasOutParameter(Function);
+	const FString FunctionName = Function->GetFName().ToString();
+	if (!bHasResult && StaleResult)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("the replacement declaration '%s' declares no out parameters, but the stale implementation owns a function result terminator"),
+				*FunctionName));
+		return false;
+	}
+	FTransientTerminators Terminators;
+	if (!BuildTransientTerminators(Blueprint, Function, FunctionClass, bIsEvent, bHasResult, Terminators) || !Terminators.Entry)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("failed to model the replacement terminators for the target declaration"));
+		return false;
+	}
+	if (!BuildPinMapping(PinMapValues, Terminators, StaleEntry, StaleResult, FunctionName, OutPinMap, OutError))
+	{
+		return false;
+	}
+	// No stale link may be dropped: every linked stale pin has to be mapped.
+	const TCHAR* const RoleNames[2] = { EntryRole, ResultRole };
+	UEdGraphNode* const StaleTerminators[2] = { StaleEntry, StaleResult };
+	for (int32 Role = 0; Role < 2; ++Role)
+	{
+		UEdGraphNode* const Stale = StaleTerminators[Role];
+		if (!Stale) continue;
+		for (UEdGraphPin* StalePin : Stale->Pins)
+		{
+			if (!IsMappablePin(StalePin) || StalePin->LinkedTo.Num() == 0) continue;
+			bool bMapped = false;
+			for (const FCortexGraphMigrationPinMapping& Mapping : OutPinMap)
+			{
+				if (Mapping.TargetRole == RoleNames[Role] && Mapping.FromPin == StalePin->PinName.ToString())
+				{
+					bMapped = true;
+					break;
+				}
+			}
+			if (!bMapped)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("the stale pin '%s' on terminator %s carries %d link(s) but has no pin_map entry; the replacement must not drop user wiring"),
+						*StalePin->PinName.ToString(), *Stale->NodeGuid.ToString(), StalePin->LinkedTo.Num()));
+				return false;
+			}
+		}
+	}
 	return true;
 }
 

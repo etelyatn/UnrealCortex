@@ -64,6 +64,11 @@ struct FCortexGraphPreparedPatch
 	 */
 	TSharedPtr<FJsonObject> RewirePlan;
 	/**
+	 * Durable `replace_interface` plan when the request selected the interface swap shell: both interfaces, the per-function
+	 * mapping, the dropped and new stubs and the preservation contracts of every touched graph.
+	 */
+	TSharedPtr<FJsonObject> InterfacePlan;
+	/**
 	 * True when an accepted replay named a source locator that no longer exists. The apply consumed
 	 * the stale entry and that provenance is not inventoried, so it is reported instead of inferred.
 	 */
@@ -73,6 +78,7 @@ struct FCortexGraphPreparedPatch
 	bool bIsPrune() const { return PrunePlan.IsValid(); }
 	bool bIsRetirement() const { return RetirementPlan.IsValid(); }
 	bool bIsRewire() const { return RewirePlan.IsValid(); }
+	bool bIsInterfaceReplacement() const { return InterfacePlan.IsValid(); }
 
 	/** Prepared state never owns transient UObject pointers. */
 	bool HasTransientObjects() const { return false; }
@@ -149,6 +155,11 @@ struct FCortexGraphPatchOutcome
 	 * the exact rewired edges instead of reading the durable plan.
 	 */
 	TSharedPtr<FJsonObject> RewireInventory;
+	/**
+	 * Bounded inventory of a `replace_interface` request (the per-function plan, dropped and new stubs, the
+	 * in-asset caller and derived-override lists), published with preview and apply results.
+	 */
+	TSharedPtr<FJsonObject> InterfaceInventory;
 	TArray<FString> Diagnostics;
 	FCortexGraphPatchLocators Locators;
 };

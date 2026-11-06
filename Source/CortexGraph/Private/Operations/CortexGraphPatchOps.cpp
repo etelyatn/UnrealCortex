@@ -1,6 +1,7 @@
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphAuthoringContext.h"
 #include "Operations/CortexGraphImplementationOps.h"
+#include "Operations/CortexGraphInterfaceMigration.h"
 #include "Operations/CortexGraphMigrationOps.h"
 #include "Operations/CortexGraphNodeContract.h"
 #include "Operations/CortexGraphNodeOps.h"
@@ -1383,11 +1384,91 @@ bool FCortexGraphPatchOps::Preflight(
 			const bool bIsPruneOp = MigrationOp == TEXT("prune_island");
 			const bool bIsRetireOp = MigrationOp == TEXT("retire_entries");
 			const bool bIsCallOutputOp = MigrationOp == TEXT("replace_call_output");
-			if (!bIsTransferOp && !bIsPruneOp && !bIsRetireOp && !bIsCallOutputOp)
+			const bool bIsInterfaceOp = MigrationOp == TEXT("replace_interface");
+			if (!bIsTransferOp && !bIsPruneOp && !bIsRetireOp && !bIsCallOutputOp && !bIsInterfaceOp)
 			{
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::UnsupportedOperation,
-					FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph, move_subgraph, prune_island, retire_entries and replace_call_output"), *MigrationOp));
+					FString::Printf(TEXT("Unsupported migration operation '%s'; the published migration operations are replace_entry, copy_subgraph, move_subgraph, prune_island, retire_entries, replace_call_output and replace_interface"), *MigrationOp));
 				return false;
+			}
+			if (bIsInterfaceOp)
+			{
+				// The interface swap addresses the whole Blueprint inside the migration object, so the
+				// implementation target of `replace_entry` must be absent instead of ignored.
+				if (Params->HasField(TEXT("target")))
+				{
+					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+						TEXT("a replace_interface request addresses the whole Blueprint through migration; 'target' must be absent"));
+					return false;
+				}
+				FCortexGraphMigrationInterfacePlan InterfacePlan;
+				bool bInterfaceReused = false;
+				if (!FCortexGraphInterfaceMigration::PlanInterfaceReplacement(
+					Blueprint, *MigrationPtr, OutPrepared.PatchId, InterfacePlan, bInterfaceReused, OutError))
+				{
+					return false;
+				}
+				OutPrepared.InterfacePlan = InterfacePlan.ToJson();
+				OutPrepared.bHasEntryNode = false;
+				if (InterfacePlan.Functions.Num() > 0)
+				{
+					OutPrepared.GraphGuid = InterfacePlan.Functions[0].SourceGraphGuid;
+				}
+				for (const FCortexGraphInterfaceFunctionPlan& Function : InterfacePlan.Functions)
+				{
+					FGuid EntryIdentity;
+					FGuid ResultIdentity;
+					FGuid::Parse(Function.EntryIdentity, EntryIdentity);
+					FGuid::Parse(Function.ResultIdentity, ResultIdentity);
+					OutPrepared.NodeGuidByClientId.Add(TEXT("entry:") + Function.To, EntryIdentity);
+					OutPrepared.PlannedNodeIds.Add(TEXT("entry:") + Function.To);
+					if (!Function.bToIsEvent && Function.bToHasResult)
+					{
+						OutPrepared.NodeGuidByClientId.Add(TEXT("result:") + Function.To, ResultIdentity);
+						OutPrepared.PlannedNodeIds.Add(TEXT("result:") + Function.To);
+					}
+					if (bInterfaceReused)
+					{
+						OutPrepared.ReusedClientIds.Add(TEXT("entry:") + Function.To);
+					}
+				}
+				OutPrepared.bFullyReused = bInterfaceReused;
+				OutPrepared.bChanged = !bInterfaceReused;
+
+				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
+				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
+				Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
+				Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+				Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
+				Normalized->SetBoolField(TEXT("compile"), bCompile);
+				Normalized->SetObjectField(TEXT("migration"), OutPrepared.InterfacePlan);
+				OutPrepared.NormalizedRequest = Normalized;
+
+				FString InterfaceIntent;
+				InterfaceIntent += TEXT("graph_patch_v1|");
+				InterfaceIntent += CanonicalObject(Normalized);
+				InterfaceIntent += TEXT("|fingerprint=");
+				InterfaceIntent += OutPrepared.FingerprintBefore->GetStringField(TEXT("graph_authoring_hash"));
+				InterfaceIntent += TEXT("|engine=UE5.8|schema=K2");
+				FTCHARToUTF8 InterfaceUtf8(*InterfaceIntent);
+				const FIoHash InterfaceDigest = FIoHash::HashBuffer(
+					reinterpret_cast<const uint8*>(InterfaceUtf8.Get()), InterfaceUtf8.Length());
+				OutPrepared.ValidationHash = LexToString(InterfaceDigest);
+
+				if (!bDryRun)
+				{
+					FString ExpectedToken;
+					Params->TryGetStringField(TEXT("expected_validation_hash"), ExpectedToken);
+					if (ExpectedToken != OutPrepared.ValidationHash)
+					{
+						OutError = FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
+							TEXT("expected_validation_hash does not match current preflight intent"));
+						return false;
+					}
+				}
+				return true;
 			}
 			if (bIsCallOutputOp)
 			{
@@ -5523,6 +5604,7 @@ bool FCortexGraphPatchOps::Execute(
 	OutOutcome.PruneInventory = FCortexGraphMigrationOps::MakePruneInventory(Prepared.PrunePlan);
 	OutOutcome.RetirementInventory = FCortexGraphMigrationOps::MakeRetirementInventory(Prepared.RetirementPlan);
 	OutOutcome.RewireInventory = FCortexGraphMigrationOps::MakeCallOutputInventory(Prepared.RewirePlan);
+	OutOutcome.InterfaceInventory = FCortexGraphInterfaceMigration::MakeInventory(Prepared.InterfacePlan);
 	OutOutcome.bChanged = Prepared.bChanged;
 	OutOutcome.ReusedClientIds = Prepared.ReusedClientIds;
 	OutOutcome.bReplayedWithAbsentSource = Prepared.bReplayedWithAbsentSource;
