@@ -36,6 +36,8 @@ struct FBlueprintVariable
 	FString DefaultValue;
 	/** False keeps the variable's default CPF_DisableEditOnInstance, i.e. a Blueprint-only (internal) member. */
 	bool bInstanceEditable = true;
+	/** Set with PC_Struct to declare a struct-typed variable. */
+	const UStruct* StructType = nullptr;
 };
 
 inline FString MakeFolder(const FString& Suffix)
@@ -74,6 +76,7 @@ inline UBlueprint* MakeTaskBlueprint(
 	{
 		FEdGraphPinType PinType;
 		PinType.PinCategory = Variable.PinCategory;
+		PinType.PinSubCategoryObject = const_cast<UStruct*>(Variable.StructType);
 		if (!FBlueprintEditorUtils::AddMemberVariable(Blueprint, Variable.Name, PinType, Variable.DefaultValue))
 		{
 			return nullptr;
@@ -150,6 +153,7 @@ struct FMigrationFixture
 	FString Suffix = CortexStateTreeTest::MakeSuffix();
 	FString Folder = MakeFolder(Suffix);
 	FString AssetPath = Folder / TEXT("ST_Migration");
+	FString SchemaPath = CortexStateTreeTest::GetTestSchemaClassPath();
 	FCortexSTAssetContext Context;
 	UBlueprint* TaskBlueprint = nullptr;
 	FGuid NativeAId;
@@ -208,11 +212,11 @@ struct FMigrationFixture
 	}
 
 	/** Creates the asset, the Blueprint task class and the three tasks; extra Blueprint variables are appended to the defaults. */
-	bool Build(FAutomationTestBase& Test, const bool bCompile, const TArray<FBlueprintVariable>& ExtraVariables = {})
+	bool Build(FAutomationTestBase& Test, const bool bCompile, const TArray<FBlueprintVariable>& ExtraVariables = {}, const bool bCreateBindings = true)
 	{
 		TSharedPtr<FJsonObject> Create = CortexStateTreeTest::Params();
 		Create->SetStringField(TEXT("asset_path"), AssetPath);
-		Create->SetStringField(TEXT("schema_class"), CortexStateTreeTest::GetTestSchemaClassPath());
+		Create->SetStringField(TEXT("schema_class"), SchemaPath);
 		Create->SetStringField(TEXT("root_name"), TEXT("A"));
 		const FCortexCommandResult Created = Handler.Execute(TEXT("create_asset"), Create);
 		if (!Test.TestTrue(TEXT("fixture asset is created"), Created.bSuccess))
@@ -262,12 +266,15 @@ struct FMigrationFixture
 		NativeB.SetNodeName(TEXT("NativeB"));
 		NativeBId = NativeB.ID;
 
-		Context.EditorData->AddPropertyBinding(
-			FPropertyBindingPath(NativeAId, FName(TEXT("ResultOut"))),
-			FPropertyBindingPath(BpTaskId, FName(TEXT("Count"))));
-		Context.EditorData->AddPropertyBinding(
-			FPropertyBindingPath(BpTaskId, FName(TEXT("ResultOut"))),
-			FPropertyBindingPath(NativeBId, FName(TEXT("Count"))));
+		if (bCreateBindings)
+		{
+			Context.EditorData->AddPropertyBinding(
+				FPropertyBindingPath(NativeAId, FName(TEXT("ResultOut"))),
+				FPropertyBindingPath(BpTaskId, FName(TEXT("Count"))));
+			Context.EditorData->AddPropertyBinding(
+				FPropertyBindingPath(BpTaskId, FName(TEXT("ResultOut"))),
+				FPropertyBindingPath(NativeBId, FName(TEXT("Count"))));
+		}
 		Context.StateTree->MarkPackageDirty();
 
 		if (bCompile)

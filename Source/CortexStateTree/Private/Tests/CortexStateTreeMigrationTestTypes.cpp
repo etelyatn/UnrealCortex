@@ -32,3 +32,11 @@ bool FCortexSTTestNativeCondition::TestCondition(FStateTreeExecutionContext& Con
 {
 	return Context.GetInstanceData(*this).bResult;
 }
+
+UCortexSTTestContextSchema::UCortexSTTestContextSchema()
+{
+	ContextDataDescs.Emplace(
+		FName(TEXT("TestContext")),
+		FCortexSTTestContextData::StaticStruct(),
+		FGuid::NewDeterministicGuid(TEXT("CortexStateTreeTestContext")));
+}

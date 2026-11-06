@@ -156,6 +156,7 @@ bool FCortexStateTreeModuleRegistrationTest::RunTest(const FString& Parameters)
 		TEXT("remove_transition"),
 		TEXT("set_transition_properties"),
 		TEXT("get_node_bindings"),
+		TEXT("replace_node"),
 	};
 
 	TestEqual(TEXT("statetree command set matches v1"), CommandNames.Num(), ExpectedNames.Num());

@@ -4,7 +4,9 @@
 #include "Blueprint/StateTreeConditionBlueprintBase.h"
 #include "Blueprint/StateTreeTaskBlueprintBase.h"
 #include "StateTreeConditionBase.h"
+#include "StateTreeExecutionTypes.h"
 #include "StateTreeTaskBase.h"
+#include "Tests/CortexStateTreeTestSchema.h"
 #include "CortexStateTreeMigrationTestTypes.generated.h"
 
 struct FStateTreeExecutionContext;
@@ -181,4 +183,85 @@ UCLASS(Hidden, Abstract)
 class UCortexSTTestAbstractBlueprintTask : public UStateTreeTaskBlueprintBase
 {
 	GENERATED_BODY()
+};
+
+/** The schema's one context struct: a Context property takes it without any editor binding. */
+USTRUCT()
+struct FCortexSTTestContextData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	int32 ContextValue = 0;
+};
+
+USTRUCT()
+struct FCortexSTTestContextTaskInstanceData
+{
+	GENERATED_BODY()
+
+	/** Bound implicitly by the compiler to the schema's matching context struct (StateTreeCompiler.cpp:3140-3176). */
+	UPROPERTY(EditAnywhere, Category = "Context")
+	FCortexSTTestContextData ContextData;
+
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	int32 Payload = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Output")
+	int32 ResultOut = 0;
+};
+
+USTRUCT(meta = (Hidden))
+struct FCortexSTTestContextTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FCortexSTTestContextTaskInstanceData;
+
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+};
+
+USTRUCT()
+struct FCortexSTTestContextRenamedTaskInstanceData
+{
+	GENERATED_BODY()
+
+	/** Same usage as the source (Context): a rename to it keeps the implicit binding. */
+	UPROPERTY(EditAnywhere, Category = "Context")
+	FCortexSTTestContextData RenamedContext;
+
+	/** Same type, different usage (Parameter): mapping a Context property here must refuse with TYPE_MISMATCH. */
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	FCortexSTTestContextData AsParameter;
+
+	UPROPERTY(EditAnywhere, Category = "Output")
+	int32 ResultOut = 0;
+};
+
+USTRUCT(meta = (Hidden))
+struct FCortexSTTestContextRenamedTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FCortexSTTestContextRenamedTaskInstanceData;
+
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+};
+
+/** The test schema with exactly one context struct, so a Context property compiles without an editor binding. */
+UCLASS()
+class UCortexSTTestContextSchema : public UCortexStateTreeTestSchema
+{
+	GENERATED_BODY()
+
+public:
+	UCortexSTTestContextSchema();
+
+	virtual TConstArrayView<FStateTreeExternalDataDesc> GetContextDataDescs() const override
+	{
+		return ContextDataDescs;
+	}
+
+private:
+	TArray<FStateTreeExternalDataDesc> ContextDataDescs;
 };

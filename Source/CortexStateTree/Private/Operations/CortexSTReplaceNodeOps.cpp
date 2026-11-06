@@ -1,0 +1,992 @@
+#include "Operations/CortexSTReplaceNodeOps.h"
+
+#include "Blueprint/StateTreeConditionBlueprintBase.h"
+#include "Blueprint/StateTreeConsiderationBlueprintBase.h"
+#include "Blueprint/StateTreeEvaluatorBlueprintBase.h"
+#include "Blueprint/StateTreeNodeBlueprintBase.h"
+#include "Blueprint/StateTreeTaskBlueprintBase.h"
+#include "CortexAssetMutationGuard.h"
+#include "CortexCommandRouter.h"
+#include "CortexSTCompat.h"
+#include "CortexSTNodeLocator.h"
+#include "CortexSTTypes.h"
+#include "CortexStateTreeModule.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Operations/CortexSTBindingOps.h"
+#include "StateTree.h"
+#include "StateTreeConditionBase.h"
+#include "StateTreeConsiderationBase.h"
+#include "StateTreeEditorData.h"
+#include "StateTreeEditorNode.h"
+#include "StateTreeEvaluatorBase.h"
+#include "StateTreeNodeBase.h"
+#include "StateTreeState.h"
+#include "StateTreeTaskBase.h"
+#include "StructUtils/InstancedStruct.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
+
+namespace
+{
+constexpr int32 RepNodeSchemaVersion = 1;
+
+FString RepNodeGuidText(const FGuid& Guid)
+{
+	return Guid.ToString(EGuidFormats::DigitsWithHyphens);
+}
+
+TSharedPtr<FJsonValue> RepNodeGuidValue(const FGuid& Guid)
+{
+	if (!Guid.IsValid())
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+	return MakeShared<FJsonValueString>(RepNodeGuidText(Guid));
+}
+
+TSharedPtr<FJsonValue> RepNodeNameValue(const FName Name)
+{
+	if (Name.IsNone())
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+	return MakeShared<FJsonValueString>(Name.ToString());
+}
+
+TArray<TSharedPtr<FJsonValue>> RepNodeStringValues(const TArray<FString>& Strings)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const FString& String : Strings)
+	{
+		Values.Add(MakeShared<FJsonValueString>(String));
+	}
+	return Values;
+}
+
+const UScriptStruct* RepNodeSlotBaseStruct(const ECortexSTNodeSlot Slot)
+{
+	switch (Slot)
+	{
+	case ECortexSTNodeSlot::GlobalTask:
+	case ECortexSTNodeSlot::Task:
+	case ECortexSTNodeSlot::SingleTask:
+		return FStateTreeTaskBase::StaticStruct();
+	case ECortexSTNodeSlot::Evaluator:
+		return FStateTreeEvaluatorBase::StaticStruct();
+	case ECortexSTNodeSlot::EnterCondition:
+	case ECortexSTNodeSlot::TransitionCondition:
+		return FStateTreeConditionBase::StaticStruct();
+	case ECortexSTNodeSlot::Consideration:
+		return FStateTreeConsiderationBase::StaticStruct();
+	default:
+		return nullptr;
+	}
+}
+
+const UClass* RepNodeSlotBaseClass(const ECortexSTNodeSlot Slot)
+{
+	switch (Slot)
+	{
+	case ECortexSTNodeSlot::GlobalTask:
+	case ECortexSTNodeSlot::Task:
+	case ECortexSTNodeSlot::SingleTask:
+		return UStateTreeTaskBlueprintBase::StaticClass();
+	case ECortexSTNodeSlot::Evaluator:
+		return UStateTreeEvaluatorBlueprintBase::StaticClass();
+	case ECortexSTNodeSlot::EnterCondition:
+	case ECortexSTNodeSlot::TransitionCondition:
+		return UStateTreeConditionBlueprintBase::StaticClass();
+	case ECortexSTNodeSlot::Consideration:
+		return UStateTreeConsiderationBlueprintBase::StaticClass();
+	default:
+		return nullptr;
+	}
+}
+
+/** The classes that declare the node-level flags a Blueprint node exposes (bConsideredForCompletion, bShouldStateChangeOnReselect, ...). */
+bool RepNodeIsBlueprintBaseClass(const UClass* Class)
+{
+	return Class == UStateTreeNodeBlueprintBase::StaticClass()
+		|| Class == UStateTreeTaskBlueprintBase::StaticClass()
+		|| Class == UStateTreeEvaluatorBlueprintBase::StaticClass()
+		|| Class == UStateTreeConditionBlueprintBase::StaticClass()
+		|| Class == UStateTreeConsiderationBlueprintBase::StaticClass();
+}
+
+/** Value assignability: SameType, or an object property whose old class is the new property's class or a subclass of it. */
+bool RepNodeArePropertiesCompatible(const FProperty* Old, const FProperty* New, FString& OutReason)
+{
+	if (Old->SameType(New))
+	{
+		return true;
+	}
+	// FBoolProperty::SameType also compares the bit position inside the container, which legitimately differs between a Blueprint
+	// class variable and a native struct flag; a bool copies completely in both directions regardless.
+	if (CastField<FBoolProperty>(Old) != nullptr && CastField<FBoolProperty>(New) != nullptr)
+	{
+		return true;
+	}
+	const FObjectPropertyBase* OldObject = CastField<FObjectPropertyBase>(Old);
+	const FObjectPropertyBase* NewObject = CastField<FObjectPropertyBase>(New);
+	if (OldObject != nullptr && NewObject != nullptr && Old->GetClass() == New->GetClass()
+		&& OldObject->PropertyClass != nullptr && NewObject->PropertyClass != nullptr
+		&& OldObject->PropertyClass->IsChildOf(NewObject->PropertyClass))
+	{
+		return true;
+	}
+	OutReason = FString::Printf(TEXT("'%s' is %s but '%s' is %s"),
+		*Old->GetName(), *Old->GetCPPType(), *New->GetName(), *New->GetCPPType());
+	return false;
+}
+
+FString RepNodeUsageName(const CortexSTCompat::EPropertyUsage Usage)
+{
+	switch (Usage)
+	{
+	case CortexSTCompat::EPropertyUsage::Input: return TEXT("Input");
+	case CortexSTCompat::EPropertyUsage::Output: return TEXT("Output");
+	case CortexSTCompat::EPropertyUsage::Context: return TEXT("Context");
+	case CortexSTCompat::EPropertyUsage::Parameter: return TEXT("Parameter");
+	default: return TEXT("Invalid");
+	}
+}
+
+FString RepNodeStatusName(const ECortexSTReplacePropertyStatus Status)
+{
+	switch (Status)
+	{
+	case ECortexSTReplacePropertyStatus::Copied: return TEXT("copied");
+	case ECortexSTReplacePropertyStatus::DefaultEqual: return TEXT("default_equal");
+	case ECortexSTReplacePropertyStatus::DroppedDefault: return TEXT("dropped_default");
+	case ECortexSTReplacePropertyStatus::UnmappedNonDefault: return TEXT("unmapped_non_default");
+	case ECortexSTReplacePropertyStatus::DroppedAcknowledged: return TEXT("dropped_acknowledged");
+	default: return TEXT("unknown");
+	}
+}
+
+/** Types the nodes become, resolved once per call. */
+struct FRepNodeTargetTypes
+{
+	const UScriptStruct* NodeStruct = nullptr;
+	const UClass* NodeClass = nullptr;
+	/** Type of the new instance data (struct node: GetInstanceDataType(); class node: the class). */
+	const UStruct* InstanceType = nullptr;
+	/** Where node-level flags are looked up by name. */
+	const UStruct* FlagType = nullptr;
+};
+
+FRepNodeTargetTypes RepNodeResolveTargetTypes(const FCortexSTReplaceTarget& Target)
+{
+	FRepNodeTargetTypes Types;
+	Types.NodeStruct = Target.NodeStruct;
+	Types.NodeClass = Target.NodeClass;
+	if (Target.NodeStruct != nullptr)
+	{
+		FInstancedStruct Probe;
+		Probe.InitializeAs(Target.NodeStruct);
+		if (const FStateTreeNodeBase* NodeBase = Probe.GetPtr<FStateTreeNodeBase>())
+		{
+			Types.InstanceType = NodeBase->GetInstanceDataType();
+		}
+		Types.FlagType = Target.NodeStruct;
+	}
+	else
+	{
+		Types.InstanceType = Target.NodeClass;
+		Types.FlagType = Target.NodeClass;
+	}
+	return Types;
+}
+
+TSharedPtr<FJsonObject> RepNodeDetails(const TCHAR* Field, const FString& Value)
+{
+	TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+	Details->SetStringField(Field, Value);
+	return Details;
+}
+
+bool RepNodeValueDiffersFromDefault(const FProperty* Property, const UObject* Object, const UObject* Defaults)
+{
+	for (int32 Index = 0; Index < Property->ArrayDim; ++Index)
+	{
+		if (!Property->Identical_InContainer(Object, Defaults, Index, PPF_None))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FString RepNodeExportValue(const FProperty* Property, const UObject* Object)
+{
+	FString Text;
+	Property->ExportText_Direct(Text, Property->ContainerPtrToValuePtr<void>(Object), nullptr, nullptr, PPF_None);
+	return Text;
+}
+
+bool RepNodeIsDuplicateTarget(const TArray<FCortexSTReplaceProperty>& Properties, const ECortexSTReplacePropertyKind Kind, const FName NewName, FName& OutOtherOld)
+{
+	for (const FCortexSTReplaceProperty& Existing : Properties)
+	{
+		if (Existing.Kind == Kind && !Existing.NewName.IsNone() && Existing.NewName == NewName)
+		{
+			OutOtherOld = Existing.OldName;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool RepNodeBuildNodePlan(
+	const FCortexSTAssetContext& Context,
+	const FCortexSTNodeLocation& Location,
+	const FCortexSTReplaceRequest& Request,
+	const FRepNodeTargetTypes& Target,
+	const TArray<CortexSTCompat::FBindingInfo>& Bindings,
+	FCortexSTNodeReplacePlan& Plan,
+	FCortexCommandResult& OutError)
+{
+	const FStateTreeEditorNode& Node = *Location.Node;
+	Plan.NodeId = Node.ID;
+	Plan.Slot = Location.Slot;
+	Plan.NodeName = Node.GetName().ToString();
+	Plan.OwnerStatePath = Location.OwnerState != nullptr ? CortexSTCompat::GetStatePath(Location.OwnerState) : FString();
+
+	const UObject* OldObject = Node.InstanceObject;
+	const UClass* OldClass = OldObject != nullptr ? OldObject->GetClass() : nullptr;
+	if (OldClass == nullptr)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Node %s (%s) is not a Blueprint class node; replace_node replaces nodes that wrap a Blueprint-base class"), *Plan.NodeName, *RepNodeGuidText(Node.ID)),
+			RepNodeDetails(TEXT("node_id"), RepNodeGuidText(Node.ID)));
+		return false;
+	}
+	Plan.OldTypePath = OldClass->GetPathName();
+
+	// Slot kind: the new type must derive the slot's base.
+	if (Target.NodeStruct != nullptr)
+	{
+		const UScriptStruct* Base = RepNodeSlotBaseStruct(Location.Slot);
+		if (Base == nullptr || !Target.NodeStruct->IsChildOf(Base))
+		{
+			TSharedPtr<FJsonObject> Details = RepNodeDetails(TEXT("node_id"), RepNodeGuidText(Node.ID));
+			Details->SetStringField(TEXT("slot"), CortexST::LexNodeSlot(Location.Slot));
+			Details->SetStringField(TEXT("required_base_struct"), Base != nullptr ? Base->GetPathName() : FString());
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("%s does not derive %s, which the %s slot of node %s requires"),
+					*Target.NodeStruct->GetPathName(), Base != nullptr ? *Base->GetName() : TEXT("?"), CortexST::LexNodeSlot(Location.Slot), *Plan.NodeName),
+				Details);
+			return false;
+		}
+		Plan.bWouldChange = true;
+	}
+	else
+	{
+		const UClass* Base = RepNodeSlotBaseClass(Location.Slot);
+		if (Base == nullptr || !Target.NodeClass->IsChildOf(Base))
+		{
+			TSharedPtr<FJsonObject> Details = RepNodeDetails(TEXT("node_id"), RepNodeGuidText(Node.ID));
+			Details->SetStringField(TEXT("slot"), CortexST::LexNodeSlot(Location.Slot));
+			Details->SetStringField(TEXT("required_base_class"), Base != nullptr ? Base->GetPathName() : FString());
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("%s does not derive %s, which the %s slot of node %s requires"),
+					*Target.NodeClass->GetPathName(), Base != nullptr ? *Base->GetName() : TEXT("?"), CortexST::LexNodeSlot(Location.Slot), *Plan.NodeName),
+				Details);
+			return false;
+		}
+		Plan.bWouldChange = OldClass != Target.NodeClass;
+	}
+
+	const UObject* Defaults = OldClass->GetDefaultObject();
+
+	// ── Properties ──
+	TMap<FName, const FProperty*> OldProperties;
+	for (TFieldIterator<FProperty> It(OldClass); It; ++It)
+	{
+		OldProperties.Add((*It)->GetFName(), *It);
+	}
+	for (const TPair<FName, FName>& Entry : Request.PropertyMap)
+	{
+		if (!OldProperties.Contains(Entry.Key))
+		{
+			TSharedPtr<FJsonObject> Details = RepNodeDetails(TEXT("old_property"), Entry.Key.ToString());
+			Details->SetStringField(TEXT("node_id"), RepNodeGuidText(Node.ID));
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::PropertyNotFound,
+				FString::Printf(TEXT("property_map key '%s' is not a property of %s"), *Entry.Key.ToString(), *OldClass->GetName()),
+				Details);
+			return false;
+		}
+	}
+
+	for (TFieldIterator<FProperty> It(OldClass); It; ++It)
+	{
+		const FProperty* OldProperty = *It;
+		if (OldProperty->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+		{
+			continue;
+		}
+
+		const FName OldName = OldProperty->GetFName();
+		const bool bMapped = Request.PropertyMap.Contains(OldName);
+		const UClass* DeclaringClass = OldProperty->GetOwnerClass();
+		const bool bBlueprintDeclared = DeclaringClass != nullptr && DeclaringClass->HasAnyClassFlags(CLASS_CompiledFromBlueprint);
+		const bool bBaseFlag = DeclaringClass != nullptr && RepNodeIsBlueprintBaseClass(DeclaringClass);
+
+		ECortexSTReplacePropertyKind Kind = ECortexSTReplacePropertyKind::Instance;
+		if (bBaseFlag)
+		{
+			if (!OldProperty->HasAnyPropertyFlags(CPF_Edit) && !bMapped)
+			{
+				continue;
+			}
+			Kind = ECortexSTReplacePropertyKind::NodeFlag;
+		}
+		else
+		{
+			const bool bEditable = OldProperty->HasAnyPropertyFlags(CPF_Edit) && !OldProperty->HasAnyPropertyFlags(CPF_DisableEditOnInstance);
+			if (!bEditable && !bMapped)
+			{
+				if (bBlueprintDeclared)
+				{
+					Plan.BlueprintOnlyMembers.Add(OldName.ToString());
+				}
+				continue;
+			}
+		}
+
+		FCortexSTReplaceProperty Entry;
+		Entry.OldName = OldName;
+		Entry.Kind = Kind;
+		Entry.OldProperty = OldProperty;
+		Entry.bNonDefault = RepNodeValueDiffersFromDefault(OldProperty, OldObject, Defaults);
+		Entry.OldValue = RepNodeExportValue(OldProperty, OldObject);
+
+		const UStruct* TargetType = Kind == ECortexSTReplacePropertyKind::Instance ? Target.InstanceType : Target.FlagType;
+		const FName WantedName = bMapped ? Request.PropertyMap.FindChecked(OldName) : OldName;
+		const FProperty* NewProperty = TargetType != nullptr ? TargetType->FindPropertyByName(WantedName) : nullptr;
+		if (bMapped && NewProperty == nullptr)
+		{
+			TSharedPtr<FJsonObject> Details = RepNodeDetails(TEXT("old_property"), OldName.ToString());
+			Details->SetStringField(TEXT("new_property"), WantedName.ToString());
+			Details->SetStringField(TEXT("node_id"), RepNodeGuidText(Node.ID));
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::PropertyNotFound,
+				FString::Printf(TEXT("property_map target '%s' (for '%s') is not a property of %s"),
+					*WantedName.ToString(), *OldName.ToString(), TargetType != nullptr ? *TargetType->GetName() : TEXT("the new type")),
+				Details);
+			return false;
+		}
+
+		if (NewProperty != nullptr)
+		{
+			FString Reason;
+			if (!RepNodeArePropertiesCompatible(OldProperty, NewProperty, Reason))
+			{
+				FCortexSTReplaceMismatch& Mismatch = Plan.Mismatches.AddDefaulted_GetRef();
+				Mismatch.OldName = OldName;
+				Mismatch.NewName = WantedName;
+				Mismatch.Reason = Reason;
+				NewProperty = nullptr;
+			}
+			else if (Kind == ECortexSTReplacePropertyKind::Instance
+				&& CortexSTCompat::GetPropertyUsage(OldProperty) != CortexSTCompat::GetPropertyUsage(NewProperty))
+			{
+				// A Context property loses its implicit binding, an Input one its must-be-bound rule, when its usage changes (StateTreeCompiler.cpp:3126-3176).
+				FCortexSTReplaceMismatch& Mismatch = Plan.Mismatches.AddDefaulted_GetRef();
+				Mismatch.OldName = OldName;
+				Mismatch.NewName = WantedName;
+				Mismatch.Reason = FString::Printf(TEXT("usage differs: '%s' is %s but '%s' is %s"),
+					*OldName.ToString(), *RepNodeUsageName(CortexSTCompat::GetPropertyUsage(OldProperty)),
+					*WantedName.ToString(), *RepNodeUsageName(CortexSTCompat::GetPropertyUsage(NewProperty)));
+				NewProperty = nullptr;
+			}
+		}
+
+		if (NewProperty != nullptr)
+		{
+			FName OtherOld;
+			if (RepNodeIsDuplicateTarget(Plan.Properties, Kind, WantedName, OtherOld))
+			{
+				TSharedPtr<FJsonObject> Details = RepNodeDetails(TEXT("new_property"), WantedName.ToString());
+				Details->SetStringField(TEXT("node_id"), RepNodeGuidText(Node.ID));
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("'%s' and '%s' both map to '%s'; property_map must be injective"), *OtherOld.ToString(), *OldName.ToString(), *WantedName.ToString()),
+					Details);
+				return false;
+			}
+			Entry.NewName = WantedName;
+			Entry.NewProperty = NewProperty;
+			Entry.Status = (Kind == ECortexSTReplacePropertyKind::NodeFlag && !Entry.bNonDefault)
+				? ECortexSTReplacePropertyStatus::DefaultEqual
+				: ECortexSTReplacePropertyStatus::Copied;
+		}
+		else if (!Entry.bNonDefault)
+		{
+			Entry.Status = ECortexSTReplacePropertyStatus::DroppedDefault;
+		}
+		else if (Request.AcknowledgedLosses.Contains(OldName.ToString()))
+		{
+			Entry.Status = ECortexSTReplacePropertyStatus::DroppedAcknowledged;
+		}
+		else
+		{
+			Entry.Status = ECortexSTReplacePropertyStatus::UnmappedNonDefault;
+			Plan.RequiredAcknowledgment.Add(OldName.ToString());
+		}
+
+		// A property with a type mismatch has no counterpart for the loss rule, but the mismatch itself refuses the call first.
+		Plan.Properties.Add(Entry);
+	}
+
+	// ── Bindings: every stored binding side keyed by the node ID (instance data) or GetNodeID() (node struct) ──
+	const FGuid DefinitionId = CortexSTCompat::GetNodeDefinitionId(Node);
+	const UStruct* NodeSideType = Target.NodeStruct != nullptr ? static_cast<const UStruct*>(Target.NodeStruct) : static_cast<const UStruct*>(Node.Node.GetScriptStruct());
+
+	auto PlanSide = [&](const CortexSTCompat::FBindingInfo& Binding, const CortexSTCompat::EBindingSide SideKind)
+	{
+		const CortexSTCompat::FBindingSideInfo& Side = SideKind == CortexSTCompat::EBindingSide::Target ? Binding.Target : Binding.Source;
+		const bool bInstanceSide = Side.StructID == Node.ID;
+		const bool bNodeStructSide = !bInstanceSide && DefinitionId.IsValid() && Side.StructID == DefinitionId;
+		if ((!bInstanceSide && !bNodeStructSide) || Side.Segments.IsEmpty())
+		{
+			// Not this node, or a task-completion source (empty path, keyed by GetNodeID()): nothing to rewrite, it passes through unchanged.
+			return;
+		}
+
+		const FName OldFirst = Side.Segments[0].Name;
+		FName NewFirst = OldFirst;
+		const UStruct* NewBase = bInstanceSide ? Target.InstanceType : NodeSideType;
+		if (bInstanceSide)
+		{
+			for (const FCortexSTReplaceProperty& Property : Plan.Properties)
+			{
+				if (Property.Kind == ECortexSTReplacePropertyKind::Instance && Property.OldName == OldFirst)
+				{
+					if (Property.NewName.IsNone())
+					{
+						FCortexSTReplaceUnresolved& Unresolved = Plan.Unresolved.AddDefaulted_GetRef();
+						Unresolved.BindingIndex = Binding.Index;
+						Unresolved.Side = SideKind;
+						Unresolved.Path = Side.Path;
+						Unresolved.Reason = FString::Printf(TEXT("'%s' has no counterpart on the new type; map it with property_map"), *OldFirst.ToString());
+						return;
+					}
+					NewFirst = Property.NewName;
+					break;
+				}
+			}
+		}
+
+		FString Error;
+		if (NewBase == nullptr
+			|| !CortexSTCompat::ResolveRenamedBindingPath(*Context.EditorData, Binding.Index, SideKind, NewFirst, NewBase, Error))
+		{
+			FCortexSTReplaceUnresolved& Unresolved = Plan.Unresolved.AddDefaulted_GetRef();
+			Unresolved.BindingIndex = Binding.Index;
+			Unresolved.Side = SideKind;
+			Unresolved.Path = Side.Path;
+			Unresolved.Reason = NewBase == nullptr ? FString(TEXT("the new type has no instance data to bind to")) : Error;
+			return;
+		}
+
+		FCortexSTReplaceRewrite& Rewrite = Plan.Rewrites.AddDefaulted_GetRef();
+		Rewrite.BindingIndex = Binding.Index;
+		Rewrite.Side = SideKind;
+		Rewrite.bNodeStructSide = bNodeStructSide;
+		Rewrite.OldPath = Side.Path;
+		Rewrite.NewPath = Side.Path.StartsWith(OldFirst.ToString()) ? NewFirst.ToString() + Side.Path.RightChop(OldFirst.ToString().Len()) : Side.Path;
+		Rewrite.OldPropertyGuid = Side.Segments[0].PropertyGuid;
+		Rewrite.NewPropertyGuid = NewBase->ArePropertyGuidsAvailable() ? NewBase->FindPropertyGuidFromName(NewFirst) : FGuid();
+		Rewrite.NewFirstSegment = NewFirst;
+		Rewrite.bRenamed = NewFirst != OldFirst;
+	};
+
+	for (const CortexSTCompat::FBindingInfo& Binding : Bindings)
+	{
+		PlanSide(Binding, CortexSTCompat::EBindingSide::Source);
+		PlanSide(Binding, CortexSTCompat::EBindingSide::Target);
+	}
+	return true;
+}
+
+FString RepNodeSideName(const CortexSTCompat::EBindingSide Side)
+{
+	return Side == CortexSTCompat::EBindingSide::Target ? TEXT("target") : TEXT("source");
+}
+
+TSharedPtr<FJsonObject> RepNodePlanJson(const FCortexSTReplacePlan& Plan)
+{
+	TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
+
+	TArray<TSharedPtr<FJsonValue>> PropertyValues;
+	TArray<TSharedPtr<FJsonValue>> NodeValues;
+	TArray<TSharedPtr<FJsonValue>> RemappedValues;
+	TArray<TSharedPtr<FJsonValue>> UnresolvedValues;
+	TArray<TSharedPtr<FJsonValue>> MismatchValues;
+	TArray<FString> BlueprintOnly;
+	TArray<FString> Required;
+
+	for (const FCortexSTNodeReplacePlan& NodePlan : Plan.Nodes)
+	{
+		const FString NodeId = RepNodeGuidText(NodePlan.NodeId);
+
+		TSharedPtr<FJsonObject> NodeJson = MakeShared<FJsonObject>();
+		NodeJson->SetStringField(TEXT("node_id"), NodeId);
+		NodeJson->SetStringField(TEXT("name"), NodePlan.NodeName);
+		NodeJson->SetStringField(TEXT("slot"), CortexST::LexNodeSlot(NodePlan.Slot));
+		NodeJson->SetStringField(TEXT("owner_state_path"), NodePlan.OwnerStatePath);
+		NodeJson->SetStringField(TEXT("old_type_path"), NodePlan.OldTypePath);
+		NodeJson->SetBoolField(TEXT("would_change"), NodePlan.bWouldChange);
+		NodeValues.Add(MakeShared<FJsonValueObject>(NodeJson));
+
+		for (const FCortexSTReplaceProperty& Property : NodePlan.Properties)
+		{
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("node_id"), NodeId);
+			Entry->SetStringField(TEXT("old_property"), Property.OldName.ToString());
+			Entry->SetField(TEXT("new_property"), RepNodeNameValue(Property.NewName));
+			Entry->SetStringField(TEXT("kind"), Property.Kind == ECortexSTReplacePropertyKind::NodeFlag ? TEXT("node_flag") : TEXT("instance"));
+			Entry->SetStringField(TEXT("status"), RepNodeStatusName(Property.Status));
+			Entry->SetBoolField(TEXT("non_default"), Property.bNonDefault);
+			Entry->SetStringField(TEXT("old_value"), Property.OldValue);
+			PropertyValues.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+		for (const FString& Member : NodePlan.BlueprintOnlyMembers)
+		{
+			BlueprintOnly.AddUnique(Member);
+		}
+		for (const FString& Name : NodePlan.RequiredAcknowledgment)
+		{
+			Required.AddUnique(Name);
+		}
+		for (const FCortexSTReplaceRewrite& Rewrite : NodePlan.Rewrites)
+		{
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("node_id"), NodeId);
+			Entry->SetNumberField(TEXT("binding_index"), Rewrite.BindingIndex);
+			Entry->SetStringField(TEXT("side"), RepNodeSideName(Rewrite.Side));
+			Entry->SetBoolField(TEXT("node_struct_side"), Rewrite.bNodeStructSide);
+			Entry->SetStringField(TEXT("old_path"), Rewrite.OldPath);
+			Entry->SetStringField(TEXT("new_path"), Rewrite.NewPath);
+			Entry->SetField(TEXT("old_property_guid"), RepNodeGuidValue(Rewrite.OldPropertyGuid));
+			Entry->SetField(TEXT("new_property_guid"), RepNodeGuidValue(Rewrite.NewPropertyGuid));
+			Entry->SetBoolField(TEXT("renamed"), Rewrite.bRenamed);
+			RemappedValues.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+		for (const FCortexSTReplaceUnresolved& Unresolved : NodePlan.Unresolved)
+		{
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("node_id"), NodeId);
+			Entry->SetNumberField(TEXT("binding_index"), Unresolved.BindingIndex);
+			Entry->SetStringField(TEXT("side"), RepNodeSideName(Unresolved.Side));
+			Entry->SetStringField(TEXT("path"), Unresolved.Path);
+			Entry->SetStringField(TEXT("reason"), Unresolved.Reason);
+			UnresolvedValues.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+		for (const FCortexSTReplaceMismatch& Mismatch : NodePlan.Mismatches)
+		{
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("node_id"), NodeId);
+			Entry->SetStringField(TEXT("old_property"), Mismatch.OldName.ToString());
+			Entry->SetStringField(TEXT("new_property"), Mismatch.NewName.ToString());
+			Entry->SetStringField(TEXT("reason"), Mismatch.Reason);
+			MismatchValues.Add(MakeShared<FJsonValueObject>(Entry));
+		}
+	}
+
+	TSharedPtr<FJsonObject> BindingsJson = MakeShared<FJsonObject>();
+	BindingsJson->SetNumberField(TEXT("before_count"), Plan.BindingsBefore);
+	BindingsJson->SetArrayField(TEXT("remapped"), RemappedValues);
+	BindingsJson->SetArrayField(TEXT("unresolved"), UnresolvedValues);
+
+	Json->SetNumberField(TEXT("schema_version"), RepNodeSchemaVersion);
+	Json->SetArrayField(TEXT("nodes"), NodeValues);
+	Json->SetArrayField(TEXT("property_plan"), PropertyValues);
+	Json->SetObjectField(TEXT("bindings"), BindingsJson);
+	Json->SetArrayField(TEXT("blueprint_only_members"), RepNodeStringValues(BlueprintOnly));
+	Json->SetArrayField(TEXT("required_acknowledgment"), RepNodeStringValues(Required));
+	Json->SetArrayField(TEXT("type_mismatches"), MismatchValues);
+	Json->SetBoolField(TEXT("would_change"), Plan.WouldChange());
+	return Json;
+}
+
+bool RepNodeReadStringParam(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, FString& OutValue, bool& bOutPresent, FCortexCommandResult& OutError)
+{
+	OutValue.Reset();
+	bOutPresent = false;
+	if (!Params->HasField(Field))
+	{
+		return true;
+	}
+	if (!Params->TryGetStringField(Field, OutValue))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s must be a string"), Field));
+		return false;
+	}
+	bOutPresent = !OutValue.IsEmpty();
+	return true;
+}
+
+bool RepNodeReadBoolParam(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, const bool bDefault, bool& bOutValue, FCortexCommandResult& OutError)
+{
+	bOutValue = bDefault;
+	if (!Params->HasField(Field))
+	{
+		return true;
+	}
+	if (!Params->TryGetBoolField(Field, bOutValue))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s must be a boolean"), Field));
+		return false;
+	}
+	return true;
+}
+
+UScriptStruct* RepNodeFindStruct(const FString& Path)
+{
+	if (UScriptStruct* Struct = LoadObject<UScriptStruct>(nullptr, *Path))
+	{
+		return Struct;
+	}
+	return FindFirstObject<UScriptStruct>(*Path, EFindFirstObjectOptions::NativeFirst);
+}
+
+UClass* RepNodeFindClass(const FString& Path)
+{
+	if (UClass* Class = LoadClass<UObject>(nullptr, *Path))
+	{
+		return Class;
+	}
+	return FindFirstObject<UClass>(*Path, EFindFirstObjectOptions::NativeFirst);
+}
+}
+
+bool FCortexSTReplacePlan::HasMismatches() const
+{
+	for (const FCortexSTNodeReplacePlan& Node : Nodes)
+	{
+		if (!Node.Mismatches.IsEmpty())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FCortexSTReplacePlan::HasUnresolved() const
+{
+	for (const FCortexSTNodeReplacePlan& Node : Nodes)
+	{
+		if (!Node.Unresolved.IsEmpty())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FCortexSTReplacePlan::NeedsAcknowledgment() const
+{
+	for (const FCortexSTNodeReplacePlan& Node : Nodes)
+	{
+		if (!Node.RequiredAcknowledgment.IsEmpty())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FCortexSTReplacePlan::WouldChange() const
+{
+	for (const FCortexSTNodeReplacePlan& Node : Nodes)
+	{
+		if (Node.bWouldChange)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FCortexSTReplaceNodeOps::BuildPlan(
+	const FCortexSTAssetContext& Context,
+	const TArray<FCortexSTNodeLocation>& Locations,
+	const FCortexSTReplaceRequest& Request,
+	FCortexSTReplacePlan& OutPlan,
+	FCortexCommandResult& OutError)
+{
+	OutPlan = FCortexSTReplacePlan();
+	OutPlan.BindingsBefore = FCortexSTBindingOps::CountTreeBindings(Context);
+
+	TArray<CortexSTCompat::FBindingInfo> Bindings;
+	Bindings.Reserve(OutPlan.BindingsBefore);
+	for (int32 Index = 0; Index < OutPlan.BindingsBefore; ++Index)
+	{
+		CortexSTCompat::ReadEditorBinding(*Context.EditorData, Index, Bindings.AddDefaulted_GetRef());
+	}
+
+	const FRepNodeTargetTypes Target = RepNodeResolveTargetTypes(Request.Target);
+	for (const FCortexSTNodeLocation& Location : Locations)
+	{
+		FCortexSTNodeReplacePlan& NodePlan = OutPlan.Nodes.AddDefaulted_GetRef();
+		if (!RepNodeBuildNodePlan(Context, Location, Request, Target, Bindings, NodePlan, OutError))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!CortexSTCompat::bNodeBindingsAvailable)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::NotAvailable,
+			TEXT("Replacing StateTree nodes with binding remap needs Unreal Engine 5.7 or newer"));
+	}
+
+	FString AssetPath;
+	FCortexCommandResult Error;
+	if (!CortexST::GetRequiredString(Params, TEXT("asset_path"), AssetPath, Error))
+	{
+		return Error;
+	}
+
+	// Mutation guard first: a blocked asset is refused before anything is read, planned or mutated.
+	FString BlockedReason;
+	if (FCortexAssetMutationGuard::IsPathBlocked(AssetPath, BlockedReason))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Asset path is blocked by a previous failed operation: %s (%s)"), *AssetPath, *BlockedReason),
+			RepNodeDetails(TEXT("asset_path"), AssetPath));
+	}
+
+	FString NodeIdText;
+	FString BlueprintClassText;
+	FString NewStructText;
+	FString NewClassText;
+	bool bHasNodeId = false;
+	bool bHasBlueprintClass = false;
+	bool bHasNewStruct = false;
+	bool bHasNewClass = false;
+	if (!RepNodeReadStringParam(Params, TEXT("node_id"), NodeIdText, bHasNodeId, Error)
+		|| !RepNodeReadStringParam(Params, TEXT("blueprint_class"), BlueprintClassText, bHasBlueprintClass, Error)
+		|| !RepNodeReadStringParam(Params, TEXT("new_node_struct"), NewStructText, bHasNewStruct, Error)
+		|| !RepNodeReadStringParam(Params, TEXT("new_node_class"), NewClassText, bHasNewClass, Error))
+	{
+		return Error;
+	}
+	if (bHasNodeId == bHasBlueprintClass)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Specify exactly one of node_id or blueprint_class"));
+	}
+	if (bHasNewStruct == bHasNewClass)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Specify exactly one of new_node_struct or new_node_class"));
+	}
+
+	bool bDryRun = false;
+	bool bCompile = true;
+	bool bSave = false;
+	if (!RepNodeReadBoolParam(Params, TEXT("dry_run"), false, bDryRun, Error)
+		|| !RepNodeReadBoolParam(Params, TEXT("compile"), true, bCompile, Error)
+		|| !RepNodeReadBoolParam(Params, TEXT("save"), false, bSave, Error))
+	{
+		return Error;
+	}
+
+	FCortexSTReplaceRequest Request;
+	if (Params->HasField(TEXT("property_map")))
+	{
+		const TSharedPtr<FJsonObject>* MapObject = nullptr;
+		if (!Params->TryGetObjectField(TEXT("property_map"), MapObject) || MapObject == nullptr)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("property_map must be an object of \"OldProperty\": \"NewProperty\""));
+		}
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : (*MapObject)->Values)
+		{
+			FString NewName;
+			if (!Entry.Value.IsValid() || !Entry.Value->TryGetString(NewName) || NewName.IsEmpty() || Entry.Key.IsEmpty())
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("property_map value for '%s' must be a non-empty string"), *Entry.Key));
+			}
+			Request.PropertyMap.Add(FName(*Entry.Key), FName(*NewName));
+		}
+	}
+	if (Params->HasField(TEXT("acknowledged_losses")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Acknowledged = nullptr;
+		if (!Params->TryGetArrayField(TEXT("acknowledged_losses"), Acknowledged) || Acknowledged == nullptr)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("acknowledged_losses must be an array of property names"));
+		}
+		for (const TSharedPtr<FJsonValue>& Value : *Acknowledged)
+		{
+			FString Name;
+			if (!Value.IsValid() || !Value->TryGetString(Name))
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("acknowledged_losses must be an array of property names"));
+			}
+			Request.AcknowledgedLosses.Add(Name);
+		}
+	}
+
+	FGuid NodeId;
+	if (bHasNodeId && !FGuid::Parse(NodeIdText, NodeId))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("node_id is not a GUID: %s"), *NodeIdText));
+	}
+
+	// ── The new type: native only ──
+	if (bHasNewStruct)
+	{
+		const UScriptStruct* Struct = RepNodeFindStruct(NewStructText);
+		if (Struct == nullptr || !Struct->IsChildOf(FStateTreeNodeBase::StaticStruct()))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("new_node_struct '%s' is not a StateTree node struct"), *NewStructText),
+				RepNodeDetails(TEXT("new_node_struct"), NewStructText));
+		}
+		if (Struct->IsChildOf(FStateTreeBlueprintTaskWrapper::StaticStruct())
+			|| Struct->IsChildOf(FStateTreeBlueprintEvaluatorWrapper::StaticStruct())
+			|| Struct->IsChildOf(FStateTreeBlueprintConditionWrapper::StaticStruct())
+			|| Struct->IsChildOf(FStateTreeBlueprintConsiderationWrapper::StaticStruct()))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("new_node_struct must be a native node struct; use new_node_class for a native Blueprint-base class"),
+				RepNodeDetails(TEXT("new_node_struct"), NewStructText));
+		}
+		Request.Target.NodeStruct = Struct;
+	}
+	else
+	{
+		const UClass* Class = RepNodeFindClass(NewClassText);
+		if (Class == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("new_node_class '%s' does not resolve to a class"), *NewClassText),
+				RepNodeDetails(TEXT("new_node_class"), NewClassText));
+		}
+		if (Class->HasAnyClassFlags(CLASS_CompiledFromBlueprint))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("new_node_class must be a native class (native only); a Blueprint class is what replace_node moves away from"),
+				RepNodeDetails(TEXT("new_node_class"), NewClassText));
+		}
+		if (Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("new_node_class must be a concrete, current native class"),
+				RepNodeDetails(TEXT("new_node_class"), NewClassText));
+		}
+		const bool bBlueprintBase = Class->IsChildOf(UStateTreeTaskBlueprintBase::StaticClass())
+			|| Class->IsChildOf(UStateTreeEvaluatorBlueprintBase::StaticClass())
+			|| Class->IsChildOf(UStateTreeConditionBlueprintBase::StaticClass())
+			|| Class->IsChildOf(UStateTreeConsiderationBlueprintBase::StaticClass());
+		if (!bBlueprintBase)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				TEXT("new_node_class must derive a StateTree Blueprint base (task, condition, evaluator or consideration)"),
+				RepNodeDetails(TEXT("new_node_class"), NewClassText));
+		}
+		Request.Target.NodeClass = Class;
+	}
+
+	FCortexSTAssetContext Context;
+	if (!CortexST::LoadAssetContext(AssetPath, Context, Error))
+	{
+		return Error;
+	}
+	if (!CortexST::CheckExpectedFingerprint(Context.StateTree, Params, Error))
+	{
+		return Error;
+	}
+
+	// ── Locate ──
+	TArray<FCortexSTNodeLocation> Locations;
+	if (bHasNodeId)
+	{
+		FCortexSTNodeLocation Location;
+		if (!CortexST::FindEditorNode(Context, NodeId, Location))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::NodeNotFound,
+				FString::Printf(TEXT("No StateTree node has the editor ID %s"), *NodeIdText),
+				RepNodeDetails(TEXT("node_id"), NodeIdText));
+		}
+		Locations.Add(Location);
+	}
+	else
+	{
+		const UClass* BlueprintClass = RepNodeFindClass(BlueprintClassText);
+		CortexST::FindEditorNodesByBlueprintClass(Context, BlueprintClass, BlueprintClassText, Locations);
+		if (Locations.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::NodeNotFound,
+				FString::Printf(TEXT("No StateTree node uses the Blueprint class %s"), *BlueprintClassText),
+				RepNodeDetails(TEXT("blueprint_class"), BlueprintClassText));
+		}
+	}
+
+	// ── Plan ──
+	FCortexSTReplacePlan Plan;
+	if (!BuildPlan(Context, Locations, Request, Plan, Error))
+	{
+		return Error;
+	}
+	TSharedPtr<FJsonObject> PlanJson = RepNodePlanJson(Plan);
+	PlanJson->SetStringField(TEXT("asset_path"), Context.AssetPath);
+	PlanJson->SetObjectField(TEXT("fingerprint"), CortexST::MakeFingerprint(Context.StateTree));
+
+	if (Plan.HasMismatches())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::TypeMismatch,
+			TEXT("A mapped property pair is not type- or usage-compatible; nothing was changed"),
+			PlanJson);
+	}
+	if (Plan.NeedsAcknowledgment())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::PotentialDataLoss,
+			TEXT("The replacement drops non-default values; list the keys of required_acknowledgment in acknowledged_losses to proceed"),
+			PlanJson);
+	}
+	if (Plan.HasUnresolved())
+	{
+		PlanJson->SetArrayField(TEXT("unresolved_bindings"), PlanJson->GetObjectField(TEXT("bindings"))->GetArrayField(TEXT("unresolved")));
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::VerificationFailed,
+			TEXT("A binding would not resolve on the new type; replace_node never drops a binding, nothing was changed"),
+			PlanJson);
+	}
+
+	PlanJson->SetBoolField(TEXT("dry_run"), bDryRun);
+	if (bDryRun || !Plan.WouldChange())
+	{
+		return FCortexCommandRouter::Success(PlanJson);
+	}
+
+	return FCortexCommandRouter::Error(
+		CortexErrorCodes::UnsupportedOperation,
+		TEXT("replace_node apply is not available in this build"),
+		PlanJson);
+}

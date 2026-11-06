@@ -5,6 +5,7 @@
 #include "Operations/CortexSTAssetOps.h"
 #include "Operations/CortexSTBindingOps.h"
 #include "Operations/CortexSTInspectOps.h"
+#include "Operations/CortexSTReplaceNodeOps.h"
 #include "Operations/CortexSTStateOps.h"
 #include "Operations/CortexSTTransitionOps.h"
 #include "Operations/CortexSTValidationOps.h"
@@ -87,6 +88,10 @@ FCortexCommandResult FCortexStateTreeCommandHandler::Execute(
 	if (Command == TEXT("get_node_bindings"))
 	{
 		return FCortexSTBindingOps::GetNodeBindings(Params);
+	}
+	if (Command == TEXT("replace_node"))
+	{
+		return FCortexSTReplaceNodeOps::ReplaceNode(Params);
 	}
 
 	return FCortexCommandRouter::Error(
@@ -220,5 +225,17 @@ TArray<FCortexCommandInfo> FCortexStateTreeCommandHandler::GetSupportedCommands(
 			.Optional(TEXT("direction"), TEXT("string"), TEXT("target, source or both (default both)"))
 			.Optional(TEXT("limit"), TEXT("number"), TEXT("Nodes per page, default 50, maximum 200"))
 			.Optional(TEXT("offset"), TEXT("number"), TEXT("Nodes to skip, default 0")),
+		FCortexCommandInfo{ TEXT("replace_node"), TEXT("Replace Blueprint StateTree nodes by native ones in place, keeping the editor node ID and every binding keyed by it") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Asset path"))
+			.Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Required stale-write guard"))
+			.Optional(TEXT("node_id"), TEXT("string"), TEXT("Editor node ID of the node to replace; mutually exclusive with blueprint_class"))
+			.Optional(TEXT("blueprint_class"), TEXT("string"), TEXT("Replace every node of this Blueprint class in one transaction"))
+			.Optional(TEXT("new_node_struct"), TEXT("string"), TEXT("Path of a native node struct deriving the slot's base; mutually exclusive with new_node_class"))
+			.Optional(TEXT("new_node_class"), TEXT("string"), TEXT("Path of a native (non-Blueprint, concrete) Blueprint-base class; the wrapper is kept"))
+			.Optional(TEXT("property_map"), TEXT("object"), TEXT("\"OldProperty\": \"NewProperty\" renames applied to the values and to the binding paths"))
+			.Optional(TEXT("acknowledged_losses"), TEXT("array"), TEXT("Keys of the dry run's required_acknowledgment to drop on purpose"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Plan only (default false)"))
+			.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after the replacement (default true)"))
+			.Optional(TEXT("save"), TEXT("boolean"), TEXT("Persist the package only on full success (default false)")),
 	};
 }
