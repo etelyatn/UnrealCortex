@@ -44,11 +44,14 @@ _CACHED_READ_TTL = 300
 # find_interface_implementers and find_type_usages load every Blueprint that implements or references the type;
 # data.plan_type_replacement classifies the referencers of a user type and exports a baseline of every affected
 # DataTable/DataAsset, and data.verify_type_replacement loads, compiles, diffs and optionally resaves all of them.
+# statetree.replace_node and anim.rebind_function compile (and on failure recompile) the tree or AnimBP they migrate,
+# which scales with the asset; statetree.get_runtime_state reads the running PIE world, so it gets the same window.
 _WAIT_READY_DEFAULT_SECONDS = 120.0
 _DEFERRED_TIMEOUT_MARGIN = 30.0
 _LIVE_CODING_COMPILE_WINDOW = 1830.0
 _LONG_SYNCHRONOUS_WINDOW = 1800.0
 _LONG_SYNCHRONOUS_COMMANDS = frozenset({
+    "anim.rebind_function",
     "data.plan_type_replacement",
     "data.verify_type_replacement",
     "blueprint.compile_all",
@@ -59,6 +62,8 @@ _LONG_SYNCHRONOUS_COMMANDS = frozenset({
     "reflect.find_interface_implementers",
     "reflect.find_name_lookups",
     "reflect.find_type_usages",
+    "statetree.get_runtime_state",
+    "statetree.replace_node",
 })
 
 

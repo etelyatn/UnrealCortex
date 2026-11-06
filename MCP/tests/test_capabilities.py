@@ -549,6 +549,32 @@ def test_anim_docstrings_do_not_promote_incomplete_family():
         assert command_name not in docstring
 
 
+def test_anim_docstrings_advertise_the_function_rebind_family():
+    capabilities = {
+        "domains": {
+            "anim": {
+                "commands": [
+                    {
+                        "name": "rebind_function",
+                        "params": [
+                            {"name": "asset_path", "type": "string", "required": True},
+                            {"name": "from", "type": "string", "required": True},
+                            {"name": "to", "type": "string", "required": True},
+                            {"name": "expected_fingerprint", "type": "object", "required": True},
+                            {"name": "dry_run", "type": "boolean", "required": False},
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+    docstring = build_router_docstrings(capabilities)["anim"]
+    assert "rebind_function" in docstring
+    assert "function rebind" in docstring
+    assert "dry_run defaults to true" in docstring
+    assert "add_notify" not in docstring
+
+
 class TestFallbackDrift:
     """Detect drift between generated fallback and capabilities cache fixture.
 

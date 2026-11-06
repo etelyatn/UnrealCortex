@@ -114,6 +114,7 @@ _ANIM_AUTHORING_FAMILIES = {
     "skeleton socket": {"add_socket", "set_socket_transform", "remove_socket"},
     "object notify": {"add_notify", "update_notify", "remove_notify"},
     "notify state": {"add_notify_state", "update_notify_state", "remove_notify_state"},
+    "function rebind": {"rebind_function"},
 }
 
 
@@ -129,6 +130,12 @@ def _build_animation_hint(command_names: set[str]) -> str:
         lines.append("Available guarded authoring families: " + ", ".join(complete_families) + ".")
         if "named notify" in complete_families:
             lines.append("Phase B sequence named-notify authoring is available.")
+        if "function rebind" in complete_families:
+            lines.append(
+                "rebind_function retargets AnimBP function bindings and slots (dry_run defaults to true; pass the "
+                "fingerprint from get_animbp_info; rebind while the old member still exists, then remove it with "
+                "blueprint remove_variable)."
+            )
     lines.append(
         "Use precise canonical selectors for updates/removes, including montage selector { index, name, start_time } "
         "and socket selector { index, socket_name, bone_name }, pass expected_fingerprint for mutations, use "
