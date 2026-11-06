@@ -20,12 +20,6 @@ struct CORTEXGRAPH_API FCortexMemberReference
 	FString Slot;
 	/** True for variable nodes whose reference is a self context. */
 	bool bSelfContext = false;
-	/**
-	 * True when the node names this Blueprint's own member chain (self context, a class this Blueprint generates,
-	 * or a member parent that cannot be resolved). A node that names a member of another class is not a reference
-	 * and is never returned: the engine's own RemoveMemberVariable/rename skip it.
-	 */
-	bool bResolvesToOwner = true;
 };
 
 /**

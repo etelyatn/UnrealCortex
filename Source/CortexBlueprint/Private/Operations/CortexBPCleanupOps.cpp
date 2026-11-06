@@ -699,12 +699,15 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 		}
 		const FProperty* OldProperty = Blueprint->GeneratedClass != nullptr
 			? Blueprint->GeneratedClass->FindPropertyByName(FName(*Name)) : nullptr;
-		// A numeric pair (Blueprint double -> native float) is checked too: the compile converts the value and
-		// CleanupValuesMatch compares the two export texts numerically.
-		const bool bNumericPair = OldProperty != nullptr && Item.Native != nullptr
-			&& OldProperty->IsA<FNumericProperty>() && Item.Native->IsA<FNumericProperty>();
+		// An adopted numeric pair (Blueprint double -> native float) keeps its value through the compile's conversion, so
+		// it is checked too (CleanupValuesMatch compares the export texts numerically). An explicit removal of a
+		// same-named incompatible variable (engine_renames: double 2.5 against a native int32) does NOT preserve the
+		// value and is never checked.
+		const bool bConvertiblePair = Item.bAdoptedByEngine && OldProperty != nullptr && Item.Native != nullptr
+			&& ((OldProperty->IsA<FDoubleProperty>() && Item.Native->IsA<FFloatProperty>())
+				|| (OldProperty->IsA<FFloatProperty>() && Item.Native->IsA<FDoubleProperty>()));
 		Item.bCdoChecked = Item.Native != nullptr && OldProperty != nullptr
-			&& (OldProperty->GetClass() == Item.Native->GetClass() || bNumericPair);
+			&& (OldProperty->GetClass() == Item.Native->GetClass() || bConvertiblePair);
 		if (!Item.bExists)
 		{
 			Outcome.Warnings.Add(MakeShared<FJsonValueString>(
@@ -737,10 +740,11 @@ FCortexCommandResult FCortexBPCleanupOps::CleanupMigration(const TSharedPtr<FJso
 		}
 		const FProperty* OldProperty = Blueprint->GeneratedClass != nullptr
 			? Blueprint->GeneratedClass->FindPropertyByName(FName(*Name)) : nullptr;
-		const bool bNumericPair = OldProperty != nullptr && Item.Native != nullptr
-			&& OldProperty->IsA<FNumericProperty>() && Item.Native->IsA<FNumericProperty>();
+		const bool bConvertiblePair = OldProperty != nullptr && Item.Native != nullptr
+			&& ((OldProperty->IsA<FDoubleProperty>() && Item.Native->IsA<FFloatProperty>())
+				|| (OldProperty->IsA<FFloatProperty>() && Item.Native->IsA<FDoubleProperty>()));
 		Item.bCdoChecked = Item.Native != nullptr && OldProperty != nullptr
-			&& (OldProperty->GetClass() == Item.Native->GetClass() || bNumericPair);
+			&& (OldProperty->GetClass() == Item.Native->GetClass() || bConvertiblePair);
 		Work.Add(MoveTemp(Item));
 	}
 

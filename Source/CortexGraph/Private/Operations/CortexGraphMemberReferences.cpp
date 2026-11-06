@@ -198,7 +198,6 @@ namespace CortexGraphMemberReferencesPrivate
 					Reference.Kind = TEXT("other_k2_node");
 				}
 
-				Reference.bResolvesToOwner = true;
 				Reference.GraphName = Graph->GetName();
 				Reference.GraphGuid = Graph->GraphGuid;
 				Reference.NodeName = Node->GetName();
@@ -235,7 +234,6 @@ TSharedRef<FJsonObject> FCortexGraphMemberReferences::ReferenceToJson(const FCor
 	Json->SetStringField(TEXT("kind"), Reference.Kind);
 	Json->SetStringField(TEXT("slot"), Reference.Slot);
 	Json->SetBoolField(TEXT("self_context"), Reference.bSelfContext);
-	Json->SetBoolField(TEXT("resolves_to_owner"), Reference.bResolvesToOwner);
 	return Json;
 }
 

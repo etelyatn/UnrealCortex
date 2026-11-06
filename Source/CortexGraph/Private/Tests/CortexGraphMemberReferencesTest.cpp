@@ -161,7 +161,6 @@ bool FCortexGraphMemberReferencesVariablesTest::RunTest(const FString& Parameter
 		for (const FCortexMemberReference& Reference : OtherReferences)
 		{
 			TestFalse(TEXT("Same-named member of another class is not a hit"), Reference.NodeGuid == ForeignNode->NodeGuid);
-			TestTrue(TEXT("Hit resolves to the owner"), Reference.bResolvesToOwner);
 		}
 	}
 	if (Foreign != nullptr)

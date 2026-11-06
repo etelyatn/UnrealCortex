@@ -283,6 +283,48 @@ bool FCortexBPCleanupGuardedCdoOrderTest::RunTest(const FString& Parameters)
 		RetireBlueprint(Blueprint);
 	}
 
+	// --- N1: an explicit removal of a numerically incompatible variable is not a value-preserving move ---
+	{
+		UBlueprint* Blueprint = MakeBlueprint(TEXT("CleanupGuardExplicitNumeric"), AActor::StaticClass());
+		if (!TestNotNull(TEXT("Explicit-numeric Blueprint"), Blueprint))
+		{
+			return false;
+		}
+		// The native TypeMismatch is an int32; the Blueprint declares a double, so the engine renames it and the value is
+		// NOT preserved. The readback must not check it (a numeric check here used to roll a correct removal back).
+		AddVariable(Blueprint, TEXT("TypeMismatch"), DoublePin(), TEXT("2.5"));
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+		TSharedPtr<FJsonObject> Params = CleanupParams(Blueprint);
+		Params->SetStringField(TEXT("new_parent_class"), Target);
+		SetStrings(Params, TEXT("remove_variables"), {TEXT("TypeMismatch")});
+		Params->SetBoolField(TEXT("compile"), true);
+		Params->SetBoolField(TEXT("save"), false);
+		AddExpectedMessagePlain(TEXT("ValidateVariableNames name TypeMismatch"), EAutomationExpectedMessageFlags::Contains, 1);
+		AddExpectedMessagePlain(TEXT("Found a member variable with a conflicting name (TypeMismatch)"), EAutomationExpectedMessageFlags::Contains, 1);
+		AddExpectedMessagePlain(TEXT("Potential data loss during conversion of integer property TypeMismatch"), EAutomationExpectedMessageFlags::Contains, 1);
+		const FCortexCommandResult Result = FCortexBPCleanupOps::CleanupMigration(Params);
+		TestTrue(TEXT("Explicit numeric removal succeeds"), Result.bSuccess);
+		if (Result.bSuccess && Result.Data.IsValid())
+		{
+			TestEqual(TEXT("Readback matched"), Result.Data->GetStringField(TEXT("readback_status")), FString(TEXT("matched")));
+			const TSharedPtr<FJsonObject> Readback = ReadNamedEntry(Result.Data, TEXT("cdo_readback"), TEXT("TypeMismatch"));
+			if (TestTrue(TEXT("Explicit numeric removal is read back"), Readback.IsValid()))
+			{
+				TestFalse(TEXT("Its value is not checked"), Readback->GetBoolField(TEXT("checked")));
+			}
+			const TArray<TSharedPtr<FJsonValue>>* Renamed = nullptr;
+			if (TestTrue(TEXT("Engine rename reported"),
+				Result.Data->TryGetArrayField(TEXT("engine_renamed"), Renamed) && Renamed != nullptr && Renamed->Num() == 1))
+			{
+				TestEqual(TEXT("Renamed to the uniquified name"), (*Renamed)[0]->AsObject()->GetStringField(TEXT("to")), FString(TEXT("TypeMismatch_0")));
+			}
+		}
+		TestFalse(TEXT("The variable is gone"), HasVariable(Blueprint, TEXT("TypeMismatch")));
+		TestTrue(TEXT("The parent changed"), Blueprint->ParentClass == ACortexBPAdoptParent::StaticClass());
+		RetireBlueprint(Blueprint);
+	}
+
 	// --- BuildPlan runs: an unlisted incompatible variable blocks, acknowledged collisions are accepted ---
 	{
 		UBlueprint* Unlisted = MakeBlueprint(TEXT("CleanupGuardUnlisted"), AActor::StaticClass());
