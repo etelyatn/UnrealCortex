@@ -87,12 +87,41 @@ struct FCortexIssue122HiddenRow : public FTableRowBase
 	int32 Count = 0;
 };
 
+/** A native-row table that references a struct asset from its row data without using it as the row struct. */
+USTRUCT(BlueprintType)
+struct FCortexIssue122StructRefRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	TObjectPtr<UScriptStruct> Struct;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	FString Note;
+};
+
 UENUM(BlueprintType)
 enum class ECortexIssue122Mode : uint8
 {
 	A = 0,
 	B = 1,
 	C = 2,
+};
+
+/** A native-row table that references an enum asset (so the table hard-references the user enum), with an enum-typed field and an unrelated string. */
+USTRUCT(BlueprintType)
+struct FCortexIssue122EnumRefRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	TObjectPtr<UEnum> EnumRef;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	ECortexIssue122Mode Mode = ECortexIssue122Mode::A;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	FString Note;
 };
 
 /** The names of ECortexIssue122Mode with different numeric values (a value_mismatch refusal). */

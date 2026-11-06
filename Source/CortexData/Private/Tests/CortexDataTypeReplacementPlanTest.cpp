@@ -520,13 +520,69 @@ bool FCortexIssue122PlanStructTest::RunTest(const FString& Parameters)
 		TArray<FString> Subjects;
 		TestFalse(TEXT("A nested user-defined struct is refused"), Nested.bSuccess);
 		TestTrue(TEXT("... as nested_user_type on Inner"), ProblemCodes(Nested, Codes, Subjects) && HasProblem(Codes, Subjects, TEXT("nested_user_type"), TEXT("Inner")));
+		// Only a COMPLETE inner contract (Object+class override, Struct, one Property per GUID member) is accepted; a name-only redirect would drop the nested value.
+		const FString InnerPath = InnerUds->GetPathName();
+		const FString InnerNative = FCortexIssue122Inner::StaticStruct()->GetPathName();
+		const TArray<TPair<FString, FString>> InnerMembers = { { UserName(InnerUds, TEXT("Value")), TEXT("Value") } };
+		const auto PlanOuter = [&]() -> FCortexCommandResult
 		{
-			FRedirectScope InnerRedirect({ MakeRedirect(ECoreRedirectFlags::Type_Object, InnerUds->GetPathName(), FCortexIssue122Inner::StaticStruct()->GetPathName(), TEXT("/Script/CoreUObject.ScriptStruct")) });
 			TSharedPtr<FJsonObject> OuterParams = PlanParams(Outer->GetPathName(), WrapperPath);
 			OuterParams->SetStringField(TEXT("out_path"), Fixture.ScratchPath(TEXT("outer.plan.json")));
-			const FCortexCommandResult Native = Run(TEXT("plan_type_replacement"), OuterParams);
-			TestTrue(TEXT("The same plan succeeds once the inner struct is already redirected to the native one"), Native.bSuccess);
-			if (!Native.bSuccess)
+			return Run(TEXT("plan_type_replacement"), OuterParams);
+		};
+		const auto ExpectNestedRefusal = [&](const TCHAR* Label, const FCortexCommandResult& Result)
+		{
+			TArray<FString> NestedCodes;
+			TArray<FString> NestedSubjects;
+			TestFalse(*FString::Printf(TEXT("%s: refused"), Label), Result.bSuccess);
+			TestTrue(*FString::Printf(TEXT("%s: as nested_user_type on Inner"), Label), ProblemCodes(Result, NestedCodes, NestedSubjects) && HasProblem(NestedCodes, NestedSubjects, TEXT("nested_user_type"), TEXT("Inner")));
+		};
+		{
+			FRedirectScope ObjectOnly({ MakeRedirect(ECoreRedirectFlags::Type_Object, InnerPath, InnerNative, TEXT("/Script/CoreUObject.ScriptStruct")) });
+			ExpectNestedRefusal(TEXT("Object redirect only"), PlanOuter());
+		}
+		{
+			FRedirectScope NameOnly({ MakeRedirect(ECoreRedirectFlags::Type_Object, InnerPath, InnerNative) });
+			ExpectNestedRefusal(TEXT("Object redirect without the class override"), PlanOuter());
+		}
+		{
+			TArray<FCoreRedirect> NoStruct;
+			for (const FCoreRedirect& Redirect : MakeStructRedirects(InnerPath, InnerNative, InnerMembers))
+			{
+				if (Redirect.RedirectFlags != ECoreRedirectFlags::Type_Struct)
+				{
+					NoStruct.Add(Redirect);
+				}
+			}
+			FRedirectScope Scope(NoStruct);
+			ExpectNestedRefusal(TEXT("Missing StructRedirects of the inner type"), PlanOuter());
+		}
+		{
+			TArray<FCoreRedirect> NoMembers;
+			for (const FCoreRedirect& Redirect : MakeStructRedirects(InnerPath, InnerNative, InnerMembers))
+			{
+				if (Redirect.RedirectFlags != ECoreRedirectFlags::Type_Property)
+				{
+					NoMembers.Add(Redirect);
+				}
+			}
+			FRedirectScope Scope(NoMembers);
+			ExpectNestedRefusal(TEXT("Missing GUID-member PropertyRedirects of the inner type"), PlanOuter());
+		}
+		{
+			FRedirectScope Full(MakeStructRedirects(InnerPath, InnerNative, InnerMembers));
+			const FCortexCommandResult Native = PlanOuter();
+			if (TestTrue(TEXT("The plan succeeds with the complete inner contract active"), Native.bSuccess))
+			{
+				const TArray<TSharedPtr<FJsonObject>> Prerequisites = Objects(Native.Data, TEXT("prerequisites"));
+				if (TestEqual(TEXT("... and records it as a prerequisite"), Prerequisites.Num(), 1))
+				{
+					TestEqual(TEXT("prerequisite user type"), Prerequisites[0]->GetStringField(TEXT("user_type")), InnerPath);
+					TestEqual(TEXT("prerequisite native type"), Prerequisites[0]->GetStringField(TEXT("native_type")), InnerNative);
+					TestEqual(TEXT("prerequisite GUID member"), Objects(Prerequisites[0], TEXT("members"))[0]->GetStringField(TEXT("user_name")), InnerMembers[0].Key);
+				}
+			}
+			else
 			{
 				AddError(Native.ErrorMessage);
 			}

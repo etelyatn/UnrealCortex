@@ -96,12 +96,94 @@ namespace
 			&& SameObject(A.PinValueType.TerminalSubCategoryObject, B.PinValueType.TerminalSubCategoryObject);
 	}
 
+	int32 EnumValueCount(const UEnum* Enum)
+	{
+		int32 Count = Enum->NumEnums();
+		if (Count > 0 && Enum->GetNameStringByIndex(Count - 1).EndsWith(TEXT("_MAX")))
+		{
+			--Count;
+		}
+		return Count;
+	}
+
 	/**
-	 * A member (or a container's element) typed with another user-defined struct or enum is only convertible when that type is already
-	 * redirected to the native type the native property uses; otherwise the inner type has to be replaced first (leaf types first).
-	 * The slot is replaced by the native object either way so the remaining comparison sees only genuine type differences.
+	 * Collects the complete replacement contract of an inner user-defined type from what is active in this editor: Object (class override) +
+	 * Struct + a property redirect per GUID member for a UDS, Enum (class override) + every value change for a UDE. A name-only redirect
+	 * does not preserve nested tagged values, so anything less is reported as missing.
 	 */
-	void ReconcileUserTypeSlot(TWeakObjectPtr<UObject>& UserSlot, const TWeakObjectPtr<UObject>& NativeSlot, TArray<FString>& OutNested)
+	bool CollectPrerequisite(const UObject* UserObject, const UObject* NativeObject, FCortexDataTypeReplacementPrerequisite& Out, FString& OutWhy)
+	{
+		TArray<FCortexDataRedirectProbeFailure> Failures;
+		TArray<FString> Missing;
+		Out.UserType = UserObject->GetPathName();
+		Out.NativeType = NativeObject->GetPathName();
+		if (const UUserDefinedStruct* UserStruct = Cast<UUserDefinedStruct>(UserObject))
+		{
+			Out.Kind = TEXT("struct");
+			const UScriptStruct* NativeStruct = Cast<UScriptStruct>(NativeObject);
+			if (NativeStruct == nullptr || NativeStruct->IsA<UUserDefinedStruct>())
+			{
+				OutWhy = TEXT("the native property is not typed with a native struct");
+				return false;
+			}
+			for (const FStructVariableDescription& Variable : FStructureEditorUtils::GetVarDesc(UserStruct))
+			{
+				const FName Redirected = FProperty::FindRedirectedPropertyName(NativeStruct, Variable.VarName);
+				if (Redirected.IsNone() || NativeStruct->FindPropertyByName(Redirected) == nullptr)
+				{
+					Missing.Add(FString::Printf(TEXT("property redirect for member %s"), *Variable.VarName.ToString()));
+					continue;
+				}
+				Out.Members.Add({ Variable.VarName.ToString(), Variable.FriendlyName, Redirected.ToString() });
+			}
+			FCortexDataTypeReplacementOps::ProbeStructContract(Out.UserType, Out.NativeType, NativeStruct, Out.Members, Failures);
+		}
+		else
+		{
+			const UUserDefinedEnum* UserEnum = CastChecked<UUserDefinedEnum>(UserObject);
+			Out.Kind = TEXT("enum");
+			const UEnum* NativeEnum = Cast<UEnum>(NativeObject);
+			if (NativeEnum == nullptr || NativeEnum->IsA<UUserDefinedEnum>())
+			{
+				OutWhy = TEXT("the native property is not typed with a native enum");
+				return false;
+			}
+			const TMap<FString, FString>* ValueRedirects = FCoreRedirects::GetValueRedirects(ECoreRedirectFlags::Type_Enum, FCoreRedirectObjectName(NativeEnum));
+			for (int32 Index = 0; Index < EnumValueCount(UserEnum); ++Index)
+			{
+				const FString Token = UserEnum->GetNameStringByIndex(Index);
+				const FString* Mapped = ValueRedirects != nullptr ? ValueRedirects->Find(Token) : nullptr;
+				if (Mapped == nullptr)
+				{
+					Missing.Add(FString::Printf(TEXT("value redirect for %s"), *Token));
+					continue;
+				}
+				Out.Values.Emplace(Token, *Mapped);
+			}
+			FCortexDataTypeReplacementOps::ProbeEnumContract(Out.UserType, Out.NativeType, NativeEnum, Out.Values, Failures);
+		}
+		for (const FCortexDataRedirectProbeFailure& Failure : Failures)
+		{
+			Missing.Add(Failure.Reason);
+		}
+		if (Missing.Num() > 0)
+		{
+			OutWhy = FString::Join(Missing, TEXT("; "));
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * A member (or a container's element) typed with another user-defined struct or enum is only convertible when that type's complete
+	 * replacement is already active (leaf types first); the active contract is recorded as a prerequisite of the plan. The slot is replaced
+	 * by the native object either way so the remaining comparison sees only genuine type differences.
+	 */
+	void ReconcileUserTypeSlot(
+		TWeakObjectPtr<UObject>& UserSlot,
+		const TWeakObjectPtr<UObject>& NativeSlot,
+		TArray<FString>& OutNested,
+		TArray<FCortexDataTypeReplacementPrerequisite>& OutPrerequisites)
 	{
 		UObject* UserObject = UserSlot.Get();
 		UObject* NativeObject = NativeSlot.Get();
@@ -110,12 +192,15 @@ namespace
 		{
 			return;
 		}
-		const ECoreRedirectFlags Flags = UserObject->IsA<UUserDefinedEnum>() ? ECoreRedirectFlags::Type_Enum : ECoreRedirectFlags::Type_Object;
-		const FCoreRedirectObjectName Old(UserObject);
-		const FCoreRedirectObjectName New = FCoreRedirects::GetRedirectedName(Flags, Old);
-		if (New == Old || New.ToString() != NativeObject->GetPathName())
+		FCortexDataTypeReplacementPrerequisite Prerequisite;
+		FString Why;
+		if (!CollectPrerequisite(UserObject, NativeObject, Prerequisite, Why))
 		{
-			OutNested.Add(UserObject->GetPathName());
+			OutNested.Add(FString::Printf(TEXT("%s (%s)"), *UserObject->GetPathName(), *Why));
+		}
+		else if (!OutPrerequisites.ContainsByPredicate([&Prerequisite](const FCortexDataTypeReplacementPrerequisite& Known) { return Known.UserType == Prerequisite.UserType; }))
+		{
+			OutPrerequisites.Add(Prerequisite);
 		}
 		UserSlot = NativeObject;
 	}
@@ -188,12 +273,12 @@ namespace
 				continue;
 			}
 			TArray<FString> Nested;
-			ReconcileUserTypeSlot(UserType.PinSubCategoryObject, NativeType.PinSubCategoryObject, Nested);
-			ReconcileUserTypeSlot(UserType.PinValueType.TerminalSubCategoryObject, NativeType.PinValueType.TerminalSubCategoryObject, Nested);
+			ReconcileUserTypeSlot(UserType.PinSubCategoryObject, NativeType.PinSubCategoryObject, Nested, Plan.Prerequisites);
+			ReconcileUserTypeSlot(UserType.PinValueType.TerminalSubCategoryObject, NativeType.PinValueType.TerminalSubCategoryObject, Nested, Plan.Prerequisites);
 			if (Nested.Num() > 0)
 			{
 				Problems.Add({ TEXT("nested_user_type"), Variable.FriendlyName,
-					FString::Printf(TEXT("Member '%s' is typed with the user-defined type %s, which is not redirected to the native type of '%s' yet; replace that type first (leaf types first)"),
+					FString::Printf(TEXT("Member '%s' is typed with the user-defined type %s, whose complete replacement is not active for the native type of '%s' yet; replace that type first (leaf types first)"),
 						*Variable.FriendlyName, *FString::Join(Nested, TEXT(", ")), *NativeName) });
 				continue;
 			}
@@ -235,16 +320,6 @@ namespace
 				Plan.NativeOnly.Add(It->GetName());
 			}
 		}
-	}
-
-	int32 EnumValueCount(const UEnum* Enum)
-	{
-		int32 Count = Enum->NumEnums();
-		if (Count > 0 && Enum->GetNameStringByIndex(Count - 1).EndsWith(TEXT("_MAX")))
-		{
-			--Count;
-		}
-		return Count;
 	}
 
 	void MatchEnumValues(
@@ -395,6 +470,76 @@ namespace
 	}
 
 	constexpr int32 MaxResponseAssets = 50;
+}
+
+void FCortexDataTypeReplacementOps::ProbeStructContract(
+	const FString& UserType,
+	const FString& NativeType,
+	const UScriptStruct* NativeStruct,
+	const TArray<FCortexDataTypeReplacementMember>& Members,
+	TArray<FCortexDataRedirectProbeFailure>& OutFailures)
+{
+	const FCoreRedirectObjectName Old(UserType);
+
+	// Line 0: a UDS import is a Type_Object import; OverrideClassName swaps its class.
+	FCoreRedirectObjectName Redirected;
+	const FCoreRedirect* ValueRedirect = nullptr;
+	FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags::Type_Object, Old, Redirected, &ValueRedirect);
+	if (Redirected.ToString() != NativeType)
+	{
+		OutFailures.Add({ 0, FString::Printf(TEXT("Type_Object redirect of %s to %s is not registered"), *UserType, *NativeType) });
+	}
+	else if (ValueRedirect == nullptr || ValueRedirect->OverrideClassName.ToString() != ScriptStructClass)
+	{
+		OutFailures.Add({ 0, FString::Printf(TEXT("the object redirect of %s has no OverrideClassName=/Script/CoreUObject.ScriptStruct, so the UDS import keeps its class"), *UserType) });
+	}
+
+	// Line 1: struct-typed tagged values (a Blueprint's CDO defaults) are looked up as Type_Struct.
+	if (FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Struct, Old).ToString() != NativeType)
+	{
+		OutFailures.Add({ 1, FString::Printf(TEXT("Type_Struct redirect of %s to %s is not registered"), *UserType, *NativeType) });
+	}
+
+	// Lines 2..: one property redirect per member, keyed on the native struct.
+	for (int32 Index = 0; Index < Members.Num(); ++Index)
+	{
+		const FCortexDataTypeReplacementMember& Member = Members[Index];
+		if (FProperty::FindRedirectedPropertyName(NativeStruct, FName(*Member.UserName)) != FName(*Member.NativeName))
+		{
+			OutFailures.Add({ 2 + Index, FString::Printf(TEXT("Property redirect %s -> %s is not registered"), *Member.UserName, *Member.NativeName) });
+		}
+	}
+}
+
+void FCortexDataTypeReplacementOps::ProbeEnumContract(
+	const FString& UserType,
+	const FString& NativeType,
+	const UEnum* NativeEnum,
+	const TArray<TPair<FString, FString>>& Values,
+	TArray<FCortexDataRedirectProbeFailure>& OutFailures)
+{
+	const FCoreRedirectObjectName Old(UserType);
+	FCoreRedirectObjectName Redirected;
+	const FCoreRedirect* ValueRedirect = nullptr;
+	FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags::Type_Enum, Old, Redirected, &ValueRedirect);
+	if (Redirected.ToString() != NativeType)
+	{
+		OutFailures.Add({ 0, FString::Printf(TEXT("Type_Enum redirect of %s to %s is not registered"), *UserType, *NativeType) });
+		return;
+	}
+	if (ValueRedirect == nullptr || ValueRedirect->OverrideClassName.ToString() != EnumClass)
+	{
+		OutFailures.Add({ 0, FString::Printf(TEXT("the enum redirect of %s has no OverrideClassName=/Script/CoreUObject.Enum"), *UserType) });
+	}
+	const TMap<FString, FString>* Registered = FCoreRedirects::GetValueRedirects(ECoreRedirectFlags::Type_Enum, FCoreRedirectObjectName(NativeEnum));
+	for (const TPair<FString, FString>& Value : Values)
+	{
+		const FString* Mapped = Registered != nullptr ? Registered->Find(Value.Key) : nullptr;
+		if (Mapped == nullptr || *Mapped != Value.Value)
+		{
+			OutFailures.Add({ 0, FString::Printf(TEXT("ValueChanges %s -> %s of %s is not registered"), *Value.Key, *Value.Value, *UserType) });
+		}
+	}
 }
 
 FString FCortexDataTypeReplacementOps::DefaultPlanPath(const FString& UserType)

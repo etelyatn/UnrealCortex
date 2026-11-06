@@ -34,6 +34,22 @@ struct FCortexDataTypeReplacementBaseline
 };
 
 /**
+ * An inner user-defined type of a replaced struct whose own replacement must be active (leaf types first): the plan records the
+ * contract it found active so verify_type_replacement can refuse when it is missing in the editor that verifies.
+ */
+struct FCortexDataTypeReplacementPrerequisite
+{
+	/** "struct" or "enum". */
+	FString Kind;
+	FString UserType;
+	FString NativeType;
+	/** struct: the GUID-suffixed member -> native property redirects found active. */
+	TArray<FCortexDataTypeReplacementMember> Members;
+	/** enum: the value redirects found active. */
+	TArray<TPair<FString, FString>> Values;
+};
+
+/**
  * The reviewed plan for replacing a user-defined struct or enum with a native type. The plan never edits an ini: it carries the
  * exact [CoreRedirects] lines the operator places in Config/DefaultEngine.ini and the data verify_type_replacement checks against.
  */
@@ -51,6 +67,7 @@ struct FCortexDataTypeReplacementPlan
 	TArray<FString> RedirectLines;
 	TArray<FCortexDataTypeReplacementAsset> AffectedAssets;
 	TArray<FCortexDataTypeReplacementBaseline> Baseline;
+	TArray<FCortexDataTypeReplacementPrerequisite> Prerequisites;
 	FString PlanHash;
 
 	TMap<FString, FString> MemberMap() const;

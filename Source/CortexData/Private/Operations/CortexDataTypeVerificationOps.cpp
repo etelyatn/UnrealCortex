@@ -45,84 +45,42 @@ namespace
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, Message);
 	}
 
-	/** Why a redirect line of the plan is not active in this editor; empty when it is. */
-	struct FProbeFailure
+	/** The enum behind a property when it is a (container-free) enum or byte-with-enum property. */
+	const UEnum* PropertyEnum(const FProperty* Property)
 	{
-		int32 LineIndex = INDEX_NONE;
-		FString Reason;
-	};
-
-	void ProbeStructRedirects(const FCortexDataTypeReplacementPlan& Plan, const UScriptStruct* NativeStruct, TArray<FProbeFailure>& Failures)
-	{
-		const FCoreRedirectObjectName Old(Plan.UserType);
-
-		// Line 0: a UDS import is a Type_Object import; OverrideClassName swaps its class.
-		FCoreRedirectObjectName Redirected;
-		const FCoreRedirect* ValueRedirect = nullptr;
-		FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags::Type_Object, Old, Redirected, &ValueRedirect);
-		if (Redirected.ToString() != Plan.NativeType)
+		if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
 		{
-			Failures.Add({ 0, FString::Printf(TEXT("Type_Object redirect of %s to %s is not registered"), *Plan.UserType, *Plan.NativeType) });
+			return EnumProperty->GetEnum();
 		}
-		else if (ValueRedirect == nullptr || ValueRedirect->OverrideClassName.ToString() != VerifyScriptStructClass)
+		if (const FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
 		{
-			Failures.Add({ 0, TEXT("the object redirect has no OverrideClassName=/Script/CoreUObject.ScriptStruct, so the UDS import keeps its class") });
+			return ByteProperty->GetIntPropertyEnum();
 		}
-
-		// Line 1: struct-typed tagged values (a Blueprint's CDO defaults) are looked up as Type_Struct.
-		if (FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Struct, Old).ToString() != Plan.NativeType)
-		{
-			Failures.Add({ 1, FString::Printf(TEXT("Type_Struct redirect of %s to %s is not registered"), *Plan.UserType, *Plan.NativeType) });
-		}
-
-		// Lines 2..: one property redirect per member, keyed on the native struct.
-		for (int32 Index = 0; Index < Plan.Members.Num(); ++Index)
-		{
-			const FCortexDataTypeReplacementMember& Member = Plan.Members[Index];
-			if (FProperty::FindRedirectedPropertyName(NativeStruct, FName(*Member.UserName)) != FName(*Member.NativeName))
-			{
-				Failures.Add({ 2 + Index, FString::Printf(TEXT("Property redirect %s -> %s is not registered"), *Member.UserName, *Member.NativeName) });
-			}
-		}
+		return nullptr;
 	}
 
-	void ProbeEnumRedirects(const FCortexDataTypeReplacementPlan& Plan, const UEnum* NativeEnum, TArray<FProbeFailure>& Failures)
+	/** "ECortexIssue122Mode::A" -> "A": the exporter writes map keys as exported property text, which may carry the enum namespace. */
+	FString StripEnumNamespace(const FString& Text)
 	{
-		const FCoreRedirectObjectName Old(Plan.UserType);
-		FCoreRedirectObjectName Redirected;
-		const FCoreRedirect* ValueRedirect = nullptr;
-		FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags::Type_Enum, Old, Redirected, &ValueRedirect);
-		if (Redirected.ToString() != Plan.NativeType)
-		{
-			Failures.Add({ 0, FString::Printf(TEXT("Type_Enum redirect of %s to %s is not registered"), *Plan.UserType, *Plan.NativeType) });
-			return;
-		}
-		if (ValueRedirect == nullptr || ValueRedirect->OverrideClassName.ToString() != VerifyEnumClass)
-		{
-			Failures.Add({ 0, TEXT("the enum redirect has no OverrideClassName=/Script/CoreUObject.Enum") });
-		}
-		const TMap<FString, FString>* Values = FCoreRedirects::GetValueRedirects(ECoreRedirectFlags::Type_Enum, FCoreRedirectObjectName(NativeEnum));
-		for (const TPair<FString, FString>& Value : Plan.Values)
-		{
-			const FString* Mapped = Values != nullptr ? Values->Find(Value.Key) : nullptr;
-			if (Mapped == nullptr || *Mapped != Value.Value)
-			{
-				Failures.Add({ 0, FString::Printf(TEXT("ValueChanges %s -> %s is not registered"), *Value.Key, *Value.Value) });
-			}
-		}
+		int32 Index = INDEX_NONE;
+		return Text.FindLastChar(TEXT(':'), Index) ? Text.RightChop(Index + 1) : Text;
 	}
 
 	/**
 	 * Renames the baseline into the vocabulary of a fresh export. The exporter writes raw property names, so a raw diff would flag every
-	 * key of a user-defined struct: the GUID-suffixed names go through the plan's member map, enum tokens through its value map, and the
-	 * struct name in _struct_type / row_struct becomes the native one. Nothing else is touched, so a real difference stays one.
+	 * key of a user-defined struct: the GUID-suffixed names (of the replaced struct and of its recorded inner prerequisites) go through the
+	 * plan's member map and the struct name in _struct_type / row_struct becomes the native one. Enum values are normalized by TYPE, never
+	 * by string value: only a value whose reflected property is the replaced enum (also as array/set element, map key or map value, at any
+	 * struct depth) goes through the value map; record identities and unrelated strings are left alone, so a real difference stays one.
 	 */
 	struct FNormalizer
 	{
 		TMap<FString, FString> MemberMap;
 		TMap<FString, FString> ValueMap;
-		FString UserName;
-		FString NativeName;
+		TMap<FString, FString> StructNames;
+		const UEnum* NativeEnum = nullptr;
+		FString UserPath;
+		FString NativePath;
 		bool bStruct = true;
 
 		TSharedPtr<FJsonValue> Normalize(const TSharedPtr<FJsonValue>& Value) const
@@ -139,12 +97,13 @@ namespace
 				for (const auto& Pair : Value->AsObject()->Values)
 				{
 					const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
-					const FString* Renamed = bStruct ? MemberMap.Find(Key) : nullptr;
-					const bool bStructName = bStruct && (Key == TEXT("_struct_type") || Key == TEXT("row_struct"));
+					const FString* Renamed = MemberMap.Find(Key);
+					const bool bStructName = Key == TEXT("_struct_type") || Key == TEXT("row_struct");
 					FString Text;
-					if (bStructName && Pair.Value.IsValid() && Pair.Value->TryGetString(Text) && Text == UserName)
+					const FString* NativeName = bStructName && Pair.Value.IsValid() && Pair.Value->TryGetString(Text) ? StructNames.Find(Text) : nullptr;
+					if (NativeName != nullptr)
 					{
-						Out->SetStringField(Key, NativeName);
+						Out->SetStringField(Key, *NativeName);
 					}
 					else
 					{
@@ -162,20 +121,160 @@ namespace
 				}
 				return MakeShared<FJsonValueArray>(Out);
 			}
-			case EJson::String:
+			default:
+				return Value;
+			}
+		}
+
+		TSharedPtr<FJsonValue> NormalizeTyped(const TSharedPtr<FJsonValue>& Value, const FProperty* Property, const bool bFresh) const
+		{
+			if (!Value.IsValid() || Property == nullptr)
 			{
-				if (!bStruct)
+				return Value;
+			}
+			if (PropertyEnum(Property) == NativeEnum && NativeEnum != nullptr)
+			{
+				FString Text;
+				if (!bFresh && Value->TryGetString(Text))
 				{
-					if (const FString* Mapped = ValueMap.Find(Value->AsString()))
+					if (const FString* Mapped = ValueMap.Find(StripEnumNamespace(Text)))
 					{
 						return MakeShared<FJsonValueString>(*Mapped);
 					}
 				}
 				return Value;
 			}
-			default:
+			// A reference to the replaced type itself (a UScriptStruct*/UEnum* field) is exported as its path: the same object, renamed.
+			if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
+			{
+				FString Text;
+				if (!ObjectProperty->HasAllPropertyFlags(CPF_InstancedReference) && Value->TryGetString(Text) && Text == UserPath)
+				{
+					return MakeShared<FJsonValueString>(NativePath);
+				}
 				return Value;
 			}
+			if (CastField<FSoftObjectProperty>(Property) != nullptr)
+			{
+				FString Text;
+				if (Value->TryGetString(Text) && Text == UserPath)
+				{
+					return MakeShared<FJsonValueString>(NativePath);
+				}
+				return Value;
+			}
+			if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+			{
+				if (Value->Type == EJson::Object && StructProperty->Struct != nullptr)
+				{
+					return MakeShared<FJsonValueObject>(NormalizeStruct(Value->AsObject(), StructProperty->Struct, bFresh));
+				}
+				return Value;
+			}
+			const FProperty* Element = nullptr;
+			if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+			{
+				Element = ArrayProperty->Inner;
+			}
+			else if (const FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+			{
+				Element = SetProperty->ElementProp;
+			}
+			if (Element != nullptr)
+			{
+				if (Value->Type != EJson::Array)
+				{
+					return Value;
+				}
+				TArray<TSharedPtr<FJsonValue>> Out;
+				for (const TSharedPtr<FJsonValue>& Item : Value->AsArray())
+				{
+					Out.Add(NormalizeTyped(Item, Element, bFresh));
+				}
+				return MakeShared<FJsonValueArray>(Out);
+			}
+			if (const FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+			{
+				if (Value->Type != EJson::Object)
+				{
+					return Value;
+				}
+				const bool bEnumKey = PropertyEnum(MapProperty->KeyProp) == NativeEnum && NativeEnum != nullptr;
+				TSharedRef<FJsonObject> Out = MakeShared<FJsonObject>();
+				for (const auto& Pair : Value->AsObject()->Values)
+				{
+					FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
+					if (bEnumKey)
+					{
+						Key = StripEnumNamespace(Key);
+						if (!bFresh)
+						{
+							if (const FString* Mapped = ValueMap.Find(Key))
+							{
+								Key = *Mapped;
+							}
+						}
+					}
+					Out->SetField(Key, NormalizeTyped(Pair.Value, MapProperty->ValueProp, bFresh));
+				}
+				return MakeShared<FJsonValueObject>(Out);
+			}
+			return Value;
+		}
+
+		TSharedRef<FJsonObject> NormalizeStruct(const TSharedPtr<FJsonObject>& Object, const UStruct* Struct, const bool bFresh) const
+		{
+			TSharedRef<FJsonObject> Out = MakeShared<FJsonObject>();
+			for (const auto& Pair : Object->Values)
+			{
+				const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
+				Out->SetField(Key, NormalizeTyped(Pair.Value, Struct->FindPropertyByName(FName(*Key)), bFresh));
+			}
+			return Out;
+		}
+
+		/** An exported DataTable ({rows:[{row_name,row_data}]}) or DataAssets ({data_assets:[{path,properties}]}) file; the type context is the row struct / asset class. */
+		TSharedRef<FJsonObject> NormalizeExport(const TSharedPtr<FJsonObject>& Root, const FString& Kind, const UStruct* TypeContext, const bool bFresh) const
+		{
+			const bool bTable = Kind == TEXT("datatable");
+			const TCHAR* const ListField = bTable ? TEXT("rows") : TEXT("data_assets");
+			const TCHAR* const BodyField = bTable ? TEXT("row_data") : TEXT("properties");
+			TSharedRef<FJsonObject> Out = MakeShared<FJsonObject>();
+			for (const auto& Pair : Root->Values)
+			{
+				const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
+				if (Key != ListField || !Pair.Value.IsValid() || Pair.Value->Type != EJson::Array)
+				{
+					Out->SetField(Key, Pair.Value);
+					continue;
+				}
+				TArray<TSharedPtr<FJsonValue>> Records;
+				for (const TSharedPtr<FJsonValue>& Record : Pair.Value->AsArray())
+				{
+					const TSharedPtr<FJsonObject> RecordObject = Record.IsValid() ? Record->AsObject() : nullptr;
+					if (!RecordObject.IsValid() || !RecordObject->HasTypedField<EJson::Object>(BodyField) || TypeContext == nullptr)
+					{
+						Records.Add(Record);
+						continue;
+					}
+					TSharedRef<FJsonObject> Copy = MakeShared<FJsonObject>();
+					for (const auto& Field : RecordObject->Values)
+					{
+						const FString FieldName = CortexEngineCompat::JsonKeyToString(Field.Key);
+						if (FieldName == BodyField)
+						{
+							Copy->SetObjectField(FieldName, NormalizeStruct(Field.Value->AsObject(), TypeContext, bFresh));
+						}
+						else
+						{
+							Copy->SetField(FieldName, Field.Value);
+						}
+					}
+					Records.Add(MakeShared<FJsonValueObject>(Copy));
+				}
+				Out->SetArrayField(Key, Records);
+			}
+			return Out;
 		}
 	};
 
@@ -250,6 +349,7 @@ namespace
 	void DiffBaseline(
 		const FCortexDataTypeReplacementBaseline& Baseline,
 		const FNormalizer& Normalizer,
+		UObject* Loaded,
 		const FString& WorkDir,
 		TSharedRef<FJsonObject> Entry,
 		bool& bOutEqual)
@@ -267,7 +367,12 @@ namespace
 			Entry->SetStringField(TEXT("error"), FString::Printf(TEXT("baseline file unreadable: %s"), *ReadError.ErrorMessage));
 			return;
 		}
-		const TSharedPtr<FJsonValue> Normalized = Normalizer.Normalize(MakeShared<FJsonValueObject>(BaselineJson));
+		const UStruct* TypeContext = Baseline.Kind == TEXT("datatable")
+			? static_cast<const UStruct*>(Cast<UDataTable>(Loaded) != nullptr ? Cast<UDataTable>(Loaded)->GetRowStruct() : nullptr)
+			: static_cast<const UStruct*>(Loaded->GetClass());
+		// Struct plans rename the GUID vocabulary first; both kinds then normalize typed values against the reloaded type context.
+		const TSharedPtr<FJsonObject> Renamed = Normalizer.bStruct ? Normalizer.Normalize(MakeShared<FJsonValueObject>(BaselineJson))->AsObject() : BaselineJson;
+		const TSharedRef<FJsonObject> Normalized = Normalizer.NormalizeExport(Renamed, Baseline.Kind, TypeContext, /*bFresh=*/false);
 
 		FCortexResolvedFilePath ResolvedNormalized;
 		FString ErrorCode;
@@ -277,7 +382,7 @@ namespace
 			Entry->SetStringField(TEXT("error"), ErrorMessage);
 			return;
 		}
-		const FCortexJsonFileWriteResult Written = FCortexSafeFileContract::WriteJsonReportAtomic(ResolvedNormalized, Normalized->AsObject().ToSharedRef());
+		const FCortexJsonFileWriteResult Written = FCortexSafeFileContract::WriteJsonReportAtomic(ResolvedNormalized, Normalized);
 		if (!Written.bWritten)
 		{
 			Entry->SetStringField(TEXT("error"), Written.ErrorMessage);
@@ -289,6 +394,18 @@ namespace
 		{
 			Entry->SetStringField(TEXT("error"), FString::Printf(TEXT("fresh export failed: %s"), *Fresh.ErrorMessage));
 			return;
+		}
+		if (!Normalizer.bStruct)
+		{
+			// Enum-keyed map keys are exported as property text that may carry the enum namespace; the fresh side is brought to the same form.
+			TSharedPtr<FJsonObject> FreshJson;
+			FCortexResolvedFilePath ResolvedFresh;
+			if (!ReadJsonFile(FreshPath, FreshJson, ReadError) || !FCortexSafeFileContract::ResolveWritePath(FreshPath, ResolvedFresh, ErrorCode, ErrorMessage)
+				|| !FCortexSafeFileContract::WriteJsonReportAtomic(ResolvedFresh, Normalizer.NormalizeExport(FreshJson, Baseline.Kind, TypeContext, /*bFresh=*/true)).bWritten)
+			{
+				Entry->SetStringField(TEXT("error"), TEXT("the fresh export could not be normalized"));
+				return;
+			}
 		}
 
 		TSharedPtr<FJsonObject> CompareParams = MakeShared<FJsonObject>();
@@ -381,6 +498,34 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition, FString::Printf(TEXT("%s was edited after it was generated (plan_hash mismatch); plan again"), *PlanPath));
 	}
+
+	// The report must never overwrite an input: the plan or a recorded baseline (checked before anything is loaded, compiled or saved).
+	if (!OutPath.IsEmpty())
+	{
+		FCortexResolvedFilePath ResolvedOut;
+		FString ErrorCode;
+		FString ErrorMessage;
+		if (!FCortexSafeFileContract::ResolveWritePath(OutPath, ResolvedOut, ErrorCode, ErrorMessage))
+		{
+			return FCortexCommandRouter::Error(ErrorCode, ErrorMessage);
+		}
+		TArray<FString> Inputs;
+		Inputs.Add(PlanPath);
+		for (const FCortexDataTypeReplacementBaseline& Baseline : Plan.Baseline)
+		{
+			Inputs.Add(Baseline.File);
+		}
+		for (const FString& Input : Inputs)
+		{
+			FCortexResolvedFilePath ResolvedInput;
+			if (FCortexSafeFileContract::ResolveReadPath(Input, ResolvedInput, ErrorCode, ErrorMessage)
+				&& FCortexSafeFileContract::AreSameCanonicalFile(ResolvedInput.AbsolutePath, ResolvedOut.AbsolutePath))
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidFilePath, FString::Printf(TEXT("out_path must not be the plan or a baseline file it would overwrite: %s"), *Input));
+			}
+		}
+	}
+
 	const bool bStruct = Plan.Kind == TEXT("struct");
 	UScriptStruct* NativeStruct = bStruct ? FCortexDataTypeReplacementOps::FindNativeStruct(Plan.NativeType) : nullptr;
 	UEnum* NativeEnum = bStruct ? nullptr : FCortexDataTypeReplacementOps::FindNativeEnum(Plan.NativeType);
@@ -390,20 +535,50 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 	}
 
 	// 2. The redirects must be active in this editor; they are never added here.
-	TArray<FProbeFailure> Failures;
+	TArray<FCortexDataRedirectProbeFailure> Failures;
 	if (bStruct)
 	{
-		ProbeStructRedirects(Plan, NativeStruct, Failures);
+		FCortexDataTypeReplacementOps::ProbeStructContract(Plan.UserType, Plan.NativeType, NativeStruct, Plan.Members, Failures);
 	}
 	else
 	{
-		ProbeEnumRedirects(Plan, NativeEnum, Failures);
+		FCortexDataTypeReplacementOps::ProbeEnumContract(Plan.UserType, Plan.NativeType, NativeEnum, Plan.Values, Failures);
 	}
-	if (Failures.Num() > 0)
+	// The inner user-defined types the plan was accepted under: their complete replacement has to be active here too.
+	TArray<FString> MissingPrerequisites;
+	for (const FCortexDataTypeReplacementPrerequisite& Prerequisite : Plan.Prerequisites)
+	{
+		TArray<FCortexDataRedirectProbeFailure> Inner;
+		if (Prerequisite.Kind == TEXT("struct"))
+		{
+			const UScriptStruct* InnerStruct = FCortexDataTypeReplacementOps::FindNativeStruct(Prerequisite.NativeType);
+			if (InnerStruct == nullptr)
+			{
+				MissingPrerequisites.Add(FString::Printf(TEXT("%s: the native struct %s does not exist in this editor"), *Prerequisite.UserType, *Prerequisite.NativeType));
+				continue;
+			}
+			FCortexDataTypeReplacementOps::ProbeStructContract(Prerequisite.UserType, Prerequisite.NativeType, InnerStruct, Prerequisite.Members, Inner);
+		}
+		else
+		{
+			const UEnum* InnerEnum = FCortexDataTypeReplacementOps::FindNativeEnum(Prerequisite.NativeType);
+			if (InnerEnum == nullptr)
+			{
+				MissingPrerequisites.Add(FString::Printf(TEXT("%s: the native enum %s does not exist in this editor"), *Prerequisite.UserType, *Prerequisite.NativeType));
+				continue;
+			}
+			FCortexDataTypeReplacementOps::ProbeEnumContract(Prerequisite.UserType, Prerequisite.NativeType, InnerEnum, Prerequisite.Values, Inner);
+		}
+		for (const FCortexDataRedirectProbeFailure& Failure : Inner)
+		{
+			MissingPrerequisites.Add(Failure.Reason);
+		}
+	}
+	if (Failures.Num() > 0 || MissingPrerequisites.Num() > 0)
 	{
 		TArray<FString> Missing;
 		TArray<TSharedPtr<FJsonValue>> Reasons;
-		for (const FProbeFailure& Failure : Failures)
+		for (const FCortexDataRedirectProbeFailure& Failure : Failures)
 		{
 			if (Plan.RedirectLines.IsValidIndex(Failure.LineIndex))
 			{
@@ -413,11 +588,16 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 		}
 		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
 		Details->SetArrayField(TEXT("missing_redirects"), VerifyStringValues(Missing));
+		for (const FString& Reason : MissingPrerequisites)
+		{
+			Reasons.Add(MakeShared<FJsonValueString>(Reason));
+		}
 		Details->SetArrayField(TEXT("reasons"), Reasons);
+		Details->SetArrayField(TEXT("missing_prerequisites"), VerifyStringValues(MissingPrerequisites));
 		Details->SetStringField(TEXT("instruction"), TEXT("Add the missing lines to the [CoreRedirects] section of Config/DefaultEngine.ini and restart the editor (editor_restart): redirects are read once at start and apply while a package loads, so nothing already loaded converts. Cortex never adds redirects at runtime."));
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::RedirectsNotActive,
-			FString::Printf(TEXT("%d redirect line(s) of the plan are not active in this editor; nothing was loaded or saved"), Missing.Num()),
+			FString::Printf(TEXT("%d redirect line(s) and %d inner-type prerequisite redirect(s) of the plan are not active in this editor; nothing was loaded or saved"), Missing.Num(), MissingPrerequisites.Num()),
 			Details);
 	}
 
@@ -437,21 +617,37 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 		Entry->SetStringField(TEXT("reason"), TEXT("not loaded by verify_type_replacement (a nested user type, a world or another asset class); its references show in still_referenced"));
 		Skipped.Add(MakeShared<FJsonValueObject>(Entry));
 	}
+	// The mutation guard applies to every mode: an in-memory verification still recompiles Blueprints, which regenerates a quarantined
+	// asset's class and defaults.
+	{
+		TArray<FString> Blocked;
+		for (const FCortexDataTypeReplacementAsset& Asset : Verifiable)
+		{
+			FString Reason;
+			if (FCortexAssetMutationGuard::IsPathBlocked(Asset.Path, Reason))
+			{
+				Blocked.Add(FString::Printf(TEXT("%s: %s"), *Asset.Path, *Reason));
+			}
+		}
+		if (Blocked.Num() > 0)
+		{
+			TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+			Details->SetArrayField(TEXT("blocked_assets"), VerifyStringValues(Blocked));
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidOperation,
+				TEXT("These assets are blocked after an unverified recovery: verification would recompile or save them, so nothing was loaded or touched"),
+				Details);
+		}
+	}
 	if (bSave)
 	{
 		TArray<FString> Dirty;
-		TArray<FString> Blocked;
 		for (const FCortexDataTypeReplacementAsset& Asset : Verifiable)
 		{
 			const UPackage* Loaded = FindPackage(nullptr, *FPackageName::ObjectPathToPackageName(Asset.Path));
 			if (Loaded != nullptr && Loaded->IsDirty())
 			{
 				Dirty.Add(Asset.Path);
-			}
-			FString Reason;
-			if (FCortexAssetMutationGuard::IsPathBlocked(Asset.Path, Reason))
-			{
-				Blocked.Add(FString::Printf(TEXT("%s: %s"), *Asset.Path, *Reason));
 			}
 		}
 		if (Dirty.Num() > 0)
@@ -463,12 +659,6 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 				TEXT("save:true resaves every affected asset, but these have unsaved editor changes that a resave would write too; save or discard them first (or verify with save:false)"),
 				Details);
 		}
-		if (Blocked.Num() > 0)
-		{
-			TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
-			Details->SetArrayField(TEXT("blocked_assets"), VerifyStringValues(Blocked));
-			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("These assets are blocked after an unverified recovery and cannot be saved"), Details);
-		}
 	}
 
 	// 4. Load, compile, diff, resave.
@@ -476,8 +666,19 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 	Normalizer.MemberMap = Plan.MemberMap();
 	Normalizer.ValueMap = Plan.ValueMap();
 	Normalizer.bStruct = bStruct;
-	Normalizer.UserName = FPackageName::ObjectPathToObjectName(Plan.UserType);
-	Normalizer.NativeName = bStruct ? NativeStruct->GetName() : NativeEnum->GetName();
+	Normalizer.NativeEnum = NativeEnum;
+	Normalizer.UserPath = Plan.UserType;
+	Normalizer.NativePath = Plan.NativeType;
+	Normalizer.StructNames.Add(FPackageName::ObjectPathToObjectName(Plan.UserType), bStruct ? NativeStruct->GetName() : NativeEnum->GetName());
+	for (const FCortexDataTypeReplacementPrerequisite& Prerequisite : Plan.Prerequisites)
+	{
+		// The inner types' GUID member names and struct names are baseline vocabulary too.
+		for (const FCortexDataTypeReplacementMember& Member : Prerequisite.Members)
+		{
+			Normalizer.MemberMap.Add(Member.UserName, Member.NativeName);
+		}
+		Normalizer.StructNames.Add(FPackageName::ObjectPathToObjectName(Prerequisite.UserType), FPackageName::ObjectPathToObjectName(Prerequisite.NativeType));
+	}
 	const FString WorkDir = FPaths::Combine(FPaths::GetPath(PlanPath), TEXT("verify"));
 	const UObject* UserTypeObject = FindObject<UObject>(nullptr, *Plan.UserType);
 
@@ -545,7 +746,7 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 			}
 			else if (const UDataTable* Table = Cast<UDataTable>(Loaded))
 			{
-				if (bStruct && Table->GetRowStruct() != NativeStruct)
+				if (bStruct && Asset.bRowStruct && Table->GetRowStruct() != NativeStruct)
 				{
 					Entry->SetBoolField(TEXT("converted"), false);
 					Entry->SetStringField(TEXT("error"), FString::Printf(TEXT("the DataTable's row struct is %s, not the native struct: it was loaded before the redirects were active; restart the editor"),
@@ -561,7 +762,7 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 			if (Baseline != nullptr && bOk)
 			{
 				bool bEqual = false;
-				DiffBaseline(*Baseline, Normalizer, WorkDir, Entry, bEqual);
+				DiffBaseline(*Baseline, Normalizer, Loaded, WorkDir, Entry, bEqual);
 				bAllEqual &= bEqual;
 				if (Entry->HasField(TEXT("error")))
 				{

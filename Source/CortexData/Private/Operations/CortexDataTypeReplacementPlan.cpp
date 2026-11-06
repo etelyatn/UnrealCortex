@@ -135,6 +135,36 @@ TSharedRef<FJsonObject> FCortexDataTypeReplacementPlan::ToJson(const bool bInclu
 	}
 	Json->SetArrayField(TEXT("baseline"), BaselineValues);
 
+	TArray<TSharedPtr<FJsonValue>> PrerequisiteValues;
+	for (const FCortexDataTypeReplacementPrerequisite& Prerequisite : Prerequisites)
+	{
+		TSharedRef<FJsonObject> PrerequisiteJson = MakeShared<FJsonObject>();
+		PrerequisiteJson->SetStringField(TEXT("kind"), Prerequisite.Kind);
+		PrerequisiteJson->SetStringField(TEXT("user_type"), Prerequisite.UserType);
+		PrerequisiteJson->SetStringField(TEXT("native_type"), Prerequisite.NativeType);
+		TArray<TSharedPtr<FJsonValue>> InnerMembers;
+		for (const FCortexDataTypeReplacementMember& Member : Prerequisite.Members)
+		{
+			TSharedRef<FJsonObject> MemberJson = MakeShared<FJsonObject>();
+			MemberJson->SetStringField(TEXT("user_name"), Member.UserName);
+			MemberJson->SetStringField(TEXT("friendly_name"), Member.FriendlyName);
+			MemberJson->SetStringField(TEXT("native_name"), Member.NativeName);
+			InnerMembers.Add(MakeShared<FJsonValueObject>(MemberJson));
+		}
+		PrerequisiteJson->SetArrayField(TEXT("members"), InnerMembers);
+		TArray<TSharedPtr<FJsonValue>> InnerValues;
+		for (const TPair<FString, FString>& Value : Prerequisite.Values)
+		{
+			TSharedRef<FJsonObject> ValueJson = MakeShared<FJsonObject>();
+			ValueJson->SetStringField(TEXT("from"), Value.Key);
+			ValueJson->SetStringField(TEXT("to"), Value.Value);
+			InnerValues.Add(MakeShared<FJsonValueObject>(ValueJson));
+		}
+		PrerequisiteJson->SetArrayField(TEXT("values"), InnerValues);
+		PrerequisiteValues.Add(MakeShared<FJsonValueObject>(PrerequisiteJson));
+	}
+	Json->SetArrayField(TEXT("prerequisites"), PrerequisiteValues);
+
 	if (bIncludeHash)
 	{
 		Json->SetStringField(TEXT("plan_hash"), PlanHash);
@@ -237,6 +267,58 @@ bool FCortexDataTypeReplacementPlan::FromJson(const TSharedPtr<FJsonObject>& Jso
 			return false;
 		}
 		OutPlan.Baseline.Add(Entry);
+	}
+
+	Objects.Reset();
+	if (!ReadObjects(Json, TEXT("prerequisites"), Objects))
+	{
+		OutError = TEXT("the plan has no prerequisites array");
+		return false;
+	}
+	for (const TSharedPtr<FJsonObject>& Object : Objects)
+	{
+		FCortexDataTypeReplacementPrerequisite Prerequisite;
+		if (!Object->TryGetStringField(TEXT("kind"), Prerequisite.Kind) || !Object->TryGetStringField(TEXT("user_type"), Prerequisite.UserType)
+			|| !Object->TryGetStringField(TEXT("native_type"), Prerequisite.NativeType))
+		{
+			OutError = TEXT("a prerequisite lacks kind, user_type or native_type");
+			return false;
+		}
+		TArray<TSharedPtr<FJsonObject>> Inner;
+		if (!ReadObjects(Object, TEXT("members"), Inner))
+		{
+			OutError = TEXT("a prerequisite has no members array");
+			return false;
+		}
+		for (const TSharedPtr<FJsonObject>& MemberJson : Inner)
+		{
+			FCortexDataTypeReplacementMember Member;
+			if (!MemberJson->TryGetStringField(TEXT("user_name"), Member.UserName) || !MemberJson->TryGetStringField(TEXT("friendly_name"), Member.FriendlyName)
+				|| !MemberJson->TryGetStringField(TEXT("native_name"), Member.NativeName))
+			{
+				OutError = TEXT("a prerequisite member lacks user_name, friendly_name or native_name");
+				return false;
+			}
+			Prerequisite.Members.Add(Member);
+		}
+		Inner.Reset();
+		if (!ReadObjects(Object, TEXT("values"), Inner))
+		{
+			OutError = TEXT("a prerequisite has no values array");
+			return false;
+		}
+		for (const TSharedPtr<FJsonObject>& ValueJson : Inner)
+		{
+			FString From;
+			FString To;
+			if (!ValueJson->TryGetStringField(TEXT("from"), From) || !ValueJson->TryGetStringField(TEXT("to"), To))
+			{
+				OutError = TEXT("a prerequisite value lacks from or to");
+				return false;
+			}
+			Prerequisite.Values.Emplace(From, To);
+		}
+		OutPlan.Prerequisites.Add(Prerequisite);
 	}
 	return true;
 }

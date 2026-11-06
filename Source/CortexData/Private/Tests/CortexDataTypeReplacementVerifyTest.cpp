@@ -5,6 +5,7 @@
 
 #include "CortexDataTypeReplacementTestSupport.h"
 #include "CortexDataTypeReplacementTestTypes.h"
+#include "CortexAssetMutationGuard.h"
 #include "CortexTypes.h"
 
 namespace CortexIssue122DataTest
@@ -22,6 +23,7 @@ namespace CortexIssue122DataTest
 			FString BlueprintPath;
 			FString PlanPath;
 			FString TableFile;
+			TArray<FString> BaselineFiles;
 			TArray<TPair<FString, FString>> Members;
 			TArray<FString> Lines;
 			TMap<FName, FRowValues> Baseline;
@@ -84,6 +86,10 @@ namespace CortexIssue122DataTest
 				return false;
 			}
 			Setup.Lines = Strings(Plan.Data, TEXT("redirects"));
+			for (const TSharedPtr<FJsonObject>& Entry : Objects(Plan.Data, TEXT("baseline")))
+			{
+				Setup.BaselineFiles.Add(Entry->GetStringField(TEXT("file")));
+			}
 			return Test.TestEqual(TEXT("Five redirect lines"), Setup.Lines.Num(), 5)
 				&& Test.TestTrue(TEXT("Unloaded"), FFixture::Unload({ Table, Blueprint }));
 		}
@@ -228,6 +234,105 @@ bool FCortexIssue122VerifyRedirectsNotActiveTest::RunTest(const FString& Paramet
 		FString PlanText = ReadFile(Setup.PlanPath);
 		FFileHelper::SaveStringToFile(PlanText.Replace(TEXT("\"bFlag\""), TEXT("\"Flag\"")), *FFixture::Absolute(Setup.PlanPath), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 		TestEqual(TEXT("A plan edited after it was generated is stale"), Run(TEXT("verify_type_replacement"), VerifyParams(Setup.PlanPath, false)).ErrorCode, CortexErrorCodes::StalePrecondition);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexIssue122VerifyReportAliasTest,
+	"Cortex.Data.TypeReplacement.VerifyReportAlias",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexIssue122VerifyReportAliasTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexIssue122DataTest;
+	using namespace CortexIssue122DataTest::Verify;
+
+	FStructSetup Setup;
+	if (!PrepareStruct(*this, Setup) || !TestEqual(TEXT("One baseline file"), Setup.BaselineFiles.Num(), 1))
+	{
+		return false;
+	}
+	const FString PlanHash = FileBytesHash(FFixture::Absolute(Setup.PlanPath));
+	const FString BaselineHash = FileBytesHash(FFixture::Absolute(Setup.BaselineFiles[0]));
+	const TArray<FString> Aliases = {
+		Setup.PlanPath,
+		FFixture::Absolute(Setup.PlanPath),
+		FPaths::Combine(FPaths::GetPath(Setup.PlanPath), TEXT("."), FPaths::GetCleanFilename(Setup.PlanPath)),
+		Setup.BaselineFiles[0],
+		FFixture::Absolute(Setup.BaselineFiles[0]),
+	};
+	for (const FString& Alias : Aliases)
+	{
+		TSharedPtr<FJsonObject> Params2 = VerifyParams(Setup.PlanPath, true);
+		Params2->SetStringField(TEXT("out_path"), Alias);
+		const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), Params2);
+		TestFalse(*FString::Printf(TEXT("out_path %s aliasing an input is refused"), *Alias), Result.bSuccess);
+		TestEqual(*FString::Printf(TEXT("... as INVALID_FILE_PATH (%s)"), *Alias), Result.ErrorCode, CortexErrorCodes::InvalidFilePath);
+		TestTrue(TEXT("... the plan bytes are unchanged"), FileBytesHash(FFixture::Absolute(Setup.PlanPath)) == PlanHash);
+		TestTrue(TEXT("... the baseline bytes are unchanged"), FileBytesHash(FFixture::Absolute(Setup.BaselineFiles[0])) == BaselineHash);
+	}
+	TestTrue(TEXT("Nothing was loaded"), FindPackage(nullptr, *FPackageName::ObjectPathToPackageName(Setup.TablePath)) == nullptr && FindPackage(nullptr, *FPackageName::ObjectPathToPackageName(Setup.BlueprintPath)) == nullptr);
+
+	// A distinct report path is fine and receives the full per-asset result.
+	{
+		FRedirectScope Scope(MakeStructRedirects(Setup.UserPath, Setup.NativePath, Setup.Members), /*bAlreadyRegistered=*/true);
+		if (!TestTrue(TEXT("The plan's lines are registered through the ini reader"), RegisterLinesThroughIni(Setup.Lines)))
+		{
+			return false;
+		}
+		TSharedPtr<FJsonObject> Params2 = VerifyParams(Setup.PlanPath, false);
+		const FString ReportPath = Setup.Fixture.ScratchPath(TEXT("verify.report.json"));
+		Params2->SetStringField(TEXT("out_path"), ReportPath);
+		const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), Params2);
+		TestTrue(TEXT("A distinct out_path succeeds"), Result.bSuccess);
+		TestTrue(TEXT("... and the report exists"), IFileManager::Get().FileExists(*FFixture::Absolute(ReportPath)));
+		TestTrue(TEXT("... the plan is untouched"), FileBytesHash(FFixture::Absolute(Setup.PlanPath)) == PlanHash);
+		TestTrue(TEXT("Unloaded again"), FFixture::Unload({ FFixture::Reload<UDataTable>(Setup.TablePath), FFixture::Reload<UBlueprint>(Setup.BlueprintPath) }));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexIssue122VerifyBlockedTest,
+	"Cortex.Data.TypeReplacement.VerifyBlocked",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexIssue122VerifyBlockedTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexIssue122DataTest;
+	using namespace CortexIssue122DataTest::Verify;
+
+	FStructSetup Setup;
+	if (!PrepareStruct(*this, Setup))
+	{
+		return false;
+	}
+	// The Blueprint is quarantined after an unverified recovery (a process-lifetime block on this unique fixture path).
+	UBlueprint* Blueprint = FFixture::Reload<UBlueprint>(Setup.BlueprintPath);
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint))
+	{
+		return false;
+	}
+	FCortexAssetMutationGuard::Block(Blueprint, TEXT("issue 122 test quarantine"));
+	if (!TestTrue(TEXT("Unloaded"), FFixture::Unload({ Blueprint })))
+	{
+		return false;
+	}
+
+	FRedirectScope Scope(MakeStructRedirects(Setup.UserPath, Setup.NativePath, Setup.Members), /*bAlreadyRegistered=*/true);
+	if (!TestTrue(TEXT("The plan's lines are registered through the ini reader"), RegisterLinesThroughIni(Setup.Lines)))
+	{
+		return false;
+	}
+	for (const bool bSave : { false, true })
+	{
+		const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), VerifyParams(Setup.PlanPath, bSave));
+		TestFalse(*FString::Printf(TEXT("A blocked Blueprint is refused (save:%s)"), bSave ? TEXT("true") : TEXT("false")), Result.bSuccess);
+		TestEqual(TEXT("... as INVALID_OPERATION"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+		TestTrue(TEXT("... naming the Blueprint"), Result.ErrorDetails.IsValid() && Strings(Result.ErrorDetails, TEXT("blocked_assets")).Num() == 1);
+		TestTrue(TEXT("The Blueprint was neither loaded nor compiled"), FindPackage(nullptr, *FPackageName::ObjectPathToPackageName(Setup.BlueprintPath)) == nullptr);
+		TestTrue(TEXT("The DataTable was not loaded either"), FindPackage(nullptr, *FPackageName::ObjectPathToPackageName(Setup.TablePath)) == nullptr);
 	}
 	return true;
 }
@@ -437,6 +542,392 @@ bool FCortexIssue122VerifyEnumTest::RunTest(const FString& Parameters)
 		if (UBlueprint* Loaded = FFixture::Reload<UBlueprint>(BlueprintPath))
 		{
 			TestTrue(TEXT("Unloaded again"), FFixture::Unload({ Loaded }));
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexIssue122VerifyNestedTest,
+	"Cortex.Data.TypeReplacement.VerifyNested",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexIssue122VerifyNestedTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexIssue122DataTest;
+	using namespace CortexIssue122DataTest::Verify;
+
+	FFixture Fixture;
+	UUserDefinedStruct* Inner = Fixture.MakeStruct(TEXT("UDS_InnerValue"), { { TEXT("Value"), IntPin() } });
+	UUserDefinedStruct* Outer = Fixture.MakeStruct(TEXT("UDS_Outer"), { { TEXT("Count"), IntPin() }, { TEXT("Inner"), StructPin(Inner) } });
+	if (!TestNotNull(TEXT("Inner"), Inner) || !TestNotNull(TEXT("Outer"), Outer))
+	{
+		return false;
+	}
+	const FString InnerGuid = UserName(Inner, TEXT("Value"));
+	const FString NestedText = FString::Printf(TEXT("(%s=7)"), *InnerGuid);
+
+	UDataTable* Table = Fixture.MakeTable(TEXT("DT_Outer"), Outer);
+	if (!TestNotNull(TEXT("Table"), Table))
+	{
+		return false;
+	}
+	{
+		FStructOnScope Row(Outer);
+		if (!TestTrue(TEXT("Row values"), SetMember(Outer, Row.GetStructMemory(), TEXT("Count"), TEXT("4")) && SetMember(Outer, Row.GetStructMemory(), TEXT("Inner"), NestedText)))
+		{
+			return false;
+		}
+		Table->AddRow(TEXT("R1"), Row.GetStructMemory(), Outer);
+	}
+	FStructOnScope Payload(Outer);
+	SetMember(Outer, Payload.GetStructMemory(), TEXT("Count"), TEXT("9"));
+	SetMember(Outer, Payload.GetStructMemory(), TEXT("Inner"), NestedText);
+	FString PayloadText;
+	Outer->ExportText(PayloadText, Payload.GetStructMemory(), nullptr, nullptr, PPF_None, nullptr);
+	UBlueprint* Blueprint = Fixture.MakeBlueprintWithVariable(TEXT("BP_Outer"), TEXT("Payload"), StructPin(Outer), PayloadText);
+	if (!TestNotNull(TEXT("Blueprint"), Blueprint) || !TestTrue(TEXT("Saved"), Fixture.SaveAsset(Inner) && Fixture.SaveAsset(Outer) && Fixture.SaveAsset(Table) && Fixture.SaveAsset(Blueprint)))
+	{
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FString OuterPath = Outer->GetPathName();
+	const FString WrapperPath = FCortexIssue122WrapperRow::StaticStruct()->GetPathName();
+	const FString InnerPath = Inner->GetPathName();
+	const FString InnerNative = FCortexIssue122Inner::StaticStruct()->GetPathName();
+	const TArray<TPair<FString, FString>> InnerMembers = { { InnerGuid, TEXT("Value") } };
+	const TArray<TPair<FString, FString>> OuterMembers = { { UserName(Outer, TEXT("Count")), TEXT("Count") }, { UserName(Outer, TEXT("Inner")), TEXT("Inner") } };
+	const FString TablePath = Table->GetPathName();
+	const FString BlueprintPath = Blueprint->GetPathName();
+	const FString PlanPath = Fixture.ScratchPath(TEXT("outer.plan.json"));
+
+	// Plan the outer struct while the inner struct's complete replacement is active.
+	TArray<FString> Lines;
+	{
+		FRedirectScope InnerFull(MakeStructRedirects(InnerPath, InnerNative, InnerMembers));
+		TSharedPtr<FJsonObject> Params = PlanParams(OuterPath, WrapperPath);
+		Params->SetStringField(TEXT("baseline_dir"), Fixture.ScratchPath(TEXT("baseline")));
+		Params->SetStringField(TEXT("out_path"), PlanPath);
+		const FCortexCommandResult Plan = Run(TEXT("plan_type_replacement"), Params);
+		if (!TestTrue(TEXT("The outer plan succeeds"), Plan.bSuccess))
+		{
+			AddError(Plan.ErrorMessage);
+			return false;
+		}
+		TestEqual(TEXT("One prerequisite"), Objects(Plan.Data, TEXT("prerequisites")).Num(), 1);
+		Lines = Strings(Plan.Data, TEXT("redirects"));
+	}
+	if (!TestTrue(TEXT("Unloaded"), FFixture::Unload({ Table, Blueprint })))
+	{
+		return false;
+	}
+
+	// The outer redirects are active (the operator's path); the inner ones come and go.
+	FRedirectScope OuterScope(MakeStructRedirects(OuterPath, WrapperPath, OuterMembers), /*bAlreadyRegistered=*/true);
+	if (!TestTrue(TEXT("The outer lines are registered through the ini reader"), RegisterLinesThroughIni(Lines)))
+	{
+		return false;
+	}
+	const FString TablePackage = FPackageName::ObjectPathToPackageName(TablePath);
+	const auto ExpectRefused = [&](const TCHAR* Label)
+	{
+		const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), VerifyParams(PlanPath, false));
+		TestFalse(*FString::Printf(TEXT("%s: refused"), Label), Result.bSuccess);
+		TestEqual(*FString::Printf(TEXT("%s: REDIRECTS_NOT_ACTIVE"), Label), Result.ErrorCode, CortexErrorCodes::RedirectsNotActive);
+		TestTrue(*FString::Printf(TEXT("%s: the inner prerequisite is named"), Label), Result.ErrorDetails.IsValid() && Strings(Result.ErrorDetails, TEXT("missing_prerequisites")).Num() > 0);
+		TestTrue(*FString::Printf(TEXT("%s: nothing was loaded"), Label), FindPackage(nullptr, *TablePackage) == nullptr);
+	};
+	const auto WithoutFlag = [&](const ECoreRedirectFlags Flag)
+	{
+		TArray<FCoreRedirect> Kept;
+		for (const FCoreRedirect& Redirect : MakeStructRedirects(InnerPath, InnerNative, InnerMembers))
+		{
+			if (Redirect.RedirectFlags != Flag)
+			{
+				Kept.Add(Redirect);
+			}
+		}
+		return Kept;
+	};
+	ExpectRefused(TEXT("No inner redirects"));
+	{
+		FRedirectScope ObjectOnly({ MakeRedirect(ECoreRedirectFlags::Type_Object, InnerPath, InnerNative, TEXT("/Script/CoreUObject.ScriptStruct")) });
+		ExpectRefused(TEXT("Object-only inner redirect"));
+	}
+	{
+		FRedirectScope Scope(WithoutFlag(ECoreRedirectFlags::Type_Struct));
+		ExpectRefused(TEXT("Missing inner StructRedirects"));
+	}
+	{
+		FRedirectScope Scope(WithoutFlag(ECoreRedirectFlags::Type_Property));
+		ExpectRefused(TEXT("Missing inner GUID-member PropertyRedirects"));
+	}
+
+	// The full inner contract: the non-default nested payload is preserved through verify and a reload.
+	{
+		FRedirectScope InnerFull(MakeStructRedirects(InnerPath, InnerNative, InnerMembers));
+		const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), VerifyParams(PlanPath, false));
+		if (TestTrue(TEXT("verify succeeds with the complete inner contract"), Result.bSuccess))
+		{
+			TestTrue(TEXT("The normalized baseline (outer and inner GUID names) equals the fresh export"), Result.Data->GetBoolField(TEXT("equal")));
+			TestEqual(TEXT("No problems"), static_cast<int32>(Result.Data->GetNumberField(TEXT("problem_count"))), 0);
+		}
+		else
+		{
+			AddError(Result.ErrorMessage);
+		}
+		UDataTable* Reloaded = FFixture::Reload<UDataTable>(TablePath);
+		UBlueprint* ReloadedBlueprint = FFixture::Reload<UBlueprint>(BlueprintPath);
+		if (TestNotNull(TEXT("Reloaded table"), Reloaded) && TestNotNull(TEXT("Reloaded blueprint"), ReloadedBlueprint))
+		{
+			TestTrue(TEXT("The table uses the native wrapper row"), Reloaded->GetRowStruct() == FCortexIssue122WrapperRow::StaticStruct());
+			const FCortexIssue122WrapperRow* Row = Reloaded->FindRow<FCortexIssue122WrapperRow>(TEXT("R1"), TEXT("Issue122"));
+			if (TestNotNull(TEXT("Row R1"), Row))
+			{
+				TestEqual(TEXT("Count"), Row->Count, 4);
+				TestEqual(TEXT("The nested payload survived"), Row->Inner.Value, 7);
+			}
+			const FStructProperty* Property = ReloadedBlueprint->GeneratedClass ? FindFProperty<FStructProperty>(ReloadedBlueprint->GeneratedClass, TEXT("Payload")) : nullptr;
+			if (TestNotNull(TEXT("Payload property"), Property) && TestTrue(TEXT("native wrapper"), Property->Struct == FCortexIssue122WrapperRow::StaticStruct()))
+			{
+				const FCortexIssue122WrapperRow* Cdo = Property->ContainerPtrToValuePtr<FCortexIssue122WrapperRow>(ReloadedBlueprint->GeneratedClass->GetDefaultObject());
+				TestEqual(TEXT("The Blueprint's nested default survived"), Cdo->Inner.Value, 7);
+				TestEqual(TEXT("... and the outer one"), Cdo->Count, 9);
+			}
+			TestTrue(TEXT("Unloaded again"), FFixture::Unload({ Reloaded, ReloadedBlueprint }));
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexIssue122VerifyTypedEnumTest,
+	"Cortex.Data.TypeReplacement.VerifyTypedEnum",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexIssue122VerifyTypedEnumTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexIssue122DataTest;
+	using namespace CortexIssue122DataTest::Verify;
+
+	FFixture Fixture;
+	UUserDefinedEnum* Ude = Fixture.MakeEnum(TEXT("UDE_Mode"), { TEXT("A"), TEXT("B"), TEXT("C") });
+	UEnum* Native = StaticEnum<ECortexIssue122Mode>();
+	UDataTable* Table = Fixture.MakeTable(TEXT("DT_EnumRef"), FCortexIssue122EnumRefRow::StaticStruct());
+	if (!TestNotNull(TEXT("UDE"), Ude) || !TestNotNull(TEXT("Table"), Table))
+	{
+		return false;
+	}
+	// A row named like an enumerator, an unrelated string equal to a token, and an enum-typed field. The table hard-references the UDE.
+	const auto AddEnumRow = [&](const TCHAR* Name, const ECortexIssue122Mode Mode, const TCHAR* Note)
+	{
+		FCortexIssue122EnumRefRow Row;
+		Row.EnumRef = Ude;
+		Row.Mode = Mode;
+		Row.Note = Note;
+		Table->AddRow(Name, Row);
+	};
+	AddEnumRow(*Ude->GetNameStringByIndex(0), ECortexIssue122Mode::A, *Ude->GetNameStringByIndex(0));
+	AddEnumRow(TEXT("R2"), ECortexIssue122Mode::B, TEXT("plain"));
+	if (!TestTrue(TEXT("Saved"), Fixture.SaveAsset(Ude) && Fixture.SaveAsset(Table)))
+	{
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FString UserPath = Ude->GetPathName();
+	const FString TablePath = Table->GetPathName();
+	TSharedPtr<FJsonObject> Params = PlanParams(UserPath, Native->GetPathName());
+	Params->SetStringField(TEXT("baseline_dir"), Fixture.ScratchPath(TEXT("baseline")));
+	const FString PlanPath = Fixture.ScratchPath(TEXT("enum.plan.json"));
+	Params->SetStringField(TEXT("out_path"), PlanPath);
+	const FCortexCommandResult Plan = Run(TEXT("plan_type_replacement"), Params);
+	if (!TestTrue(TEXT("plan succeeds"), Plan.bSuccess))
+	{
+		AddError(Plan.ErrorMessage);
+		return false;
+	}
+	const TArray<TSharedPtr<FJsonObject>> BaselineEntries = Objects(Plan.Data, TEXT("baseline"));
+	if (!TestEqual(TEXT("A baseline for the table"), BaselineEntries.Num(), 1))
+	{
+		return false;
+	}
+
+	// The baseline of a real UDE-typed field holds tokens: simulate it by rewriting the exported Mode values to the old tokens.
+	{
+		const FString BaselineFile = BaselineEntries[0]->GetStringField(TEXT("file"));
+		TSharedPtr<FJsonObject> Baseline;
+		if (!TestTrue(TEXT("The baseline parses"), FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(ReadFile(BaselineFile)), Baseline) && Baseline.IsValid()))
+		{
+			return false;
+		}
+		int32 Rewritten = 0;
+		for (const TSharedPtr<FJsonValue>& RowValue : Baseline->GetArrayField(TEXT("rows")))
+		{
+			const TSharedPtr<FJsonObject> Data = RowValue->AsObject()->GetObjectField(TEXT("row_data"));
+			const FString Name = Data->GetStringField(TEXT("Mode")) == TEXT("A") ? Ude->GetNameStringByIndex(0) : Ude->GetNameStringByIndex(1);
+			Data->SetStringField(TEXT("Mode"), Name);
+			++Rewritten;
+		}
+		FString Text;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Text);
+		FJsonSerializer::Serialize(Baseline.ToSharedRef(), Writer);
+		TestTrue(TEXT("The baseline is rewritten"), Rewritten == 2 && FFileHelper::SaveStringToFile(Text, *FFixture::Absolute(BaselineFile), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+	}
+	if (!TestTrue(TEXT("Unloaded"), FFixture::Unload({ Table })))
+	{
+		return false;
+	}
+
+	TMap<FString, FString> Changes;
+	for (int32 Index = 0; Index < 3; ++Index)
+	{
+		Changes.Add(Ude->GetNameStringByIndex(Index), Native->GetNameStringByIndex(Index));
+	}
+	FRedirectScope Scope({ MakeEnumRedirect(UserPath, Native->GetPathName(), Changes) }, /*bAlreadyRegistered=*/true);
+	if (!TestTrue(TEXT("The plan's line is registered through the ini reader"), RegisterLinesThroughIni(Strings(Plan.Data, TEXT("redirects")))))
+	{
+		return false;
+	}
+
+	// Untouched data: the enum field is mapped by its TYPE, the string equal to a token and the row named like a token are left alone.
+	const FCortexCommandResult Equal = Run(TEXT("verify_type_replacement"), VerifyParams(PlanPath, false));
+	if (!TestTrue(TEXT("verify succeeds"), Equal.bSuccess))
+	{
+		AddError(Equal.ErrorMessage);
+		return false;
+	}
+	const TSharedPtr<FJsonObject> EqualEntry = AssetEntry(Equal, TablePath);
+	if (TestTrue(TEXT("The table is reported"), EqualEntry.IsValid()))
+	{
+		TestEqual(TEXT("No false difference (rows_changed)"), static_cast<int32>(EqualEntry->GetNumberField(TEXT("rows_changed"))), 0);
+		TestEqual(TEXT("The row named like a token keeps its identity (rows_added)"), static_cast<int32>(EqualEntry->GetNumberField(TEXT("rows_added"))), 0);
+		TestEqual(TEXT("... (rows_removed)"), static_cast<int32>(EqualEntry->GetNumberField(TEXT("rows_removed"))), 0);
+		TestTrue(TEXT("equal"), EqualEntry->GetBoolField(TEXT("equal")));
+	}
+
+	// A real edit of the unrelated string (to the very name the token maps to) is reported, not masked.
+	UDataTable* Loaded = FFixture::Reload<UDataTable>(TablePath);
+	FCortexIssue122EnumRefRow* Row = Loaded != nullptr ? Loaded->FindRow<FCortexIssue122EnumRefRow>(*Ude->GetNameStringByIndex(0), TEXT("Issue122")) : nullptr;
+	if (!TestNotNull(TEXT("The row named like the token"), Row))
+	{
+		return false;
+	}
+	Row->Note = TEXT("A");
+	Loaded->GetOutermost()->MarkPackageDirty();
+	const FCortexCommandResult Edited = Run(TEXT("verify_type_replacement"), VerifyParams(PlanPath, false));
+	if (TestTrue(TEXT("verify after the edit succeeds"), Edited.bSuccess))
+	{
+		const TSharedPtr<FJsonObject> EditedEntry = AssetEntry(Edited, TablePath);
+		if (TestTrue(TEXT("The table is reported"), EditedEntry.IsValid()))
+		{
+			TestEqual(TEXT("The edit is reported"), static_cast<int32>(EditedEntry->GetNumberField(TEXT("rows_changed"))), 1);
+			const TArray<TSharedPtr<FJsonObject>> Changed = Objects(EditedEntry, TEXT("changed"));
+			if (TestEqual(TEXT("One changed sample"), Changed.Num(), 1))
+			{
+				TestEqual(TEXT("... on the row named like the token"), Changed[0]->GetStringField(TEXT("key")), Ude->GetNameStringByIndex(0));
+				const TArray<FString> Fields = Strings(Changed[0], TEXT("fields"));
+				TestTrue(TEXT("... in the Note field only"), Fields.Num() == 1 && Fields[0] == TEXT("Note"));
+			}
+		}
+	}
+	Row->Note = *Ude->GetNameStringByIndex(0);
+	Loaded->GetOutermost()->ClearDirtyFlag();
+	TestTrue(TEXT("Unloaded again"), FFixture::Unload({ Loaded }));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexIssue122VerifyReferenceTableTest,
+	"Cortex.Data.TypeReplacement.VerifyReferenceTable",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexIssue122VerifyReferenceTableTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexIssue122DataTest;
+	using namespace CortexIssue122DataTest::Verify;
+
+	FFixture Fixture;
+	UUserDefinedStruct* Uds = Fixture.MakeRowStruct(TEXT("UDS_Row"));
+	UDataTable* Table = Fixture.MakeTable(TEXT("DT_Refs"), FCortexIssue122StructRefRow::StaticStruct());
+	if (!TestNotNull(TEXT("UDS"), Uds) || !TestNotNull(TEXT("Table"), Table))
+	{
+		return false;
+	}
+	FCortexIssue122StructRefRow Row;
+	Row.Struct = Uds;
+	Row.Note = TEXT("ref");
+	Table->AddRow(TEXT("R1"), Row);
+	if (!TestTrue(TEXT("Saved"), Fixture.SaveAsset(Uds) && Fixture.SaveAsset(Table)))
+	{
+		return false;
+	}
+	Fixture.RegisterSavedFiles();
+
+	const FString UserPath = Uds->GetPathName();
+	const FString NativePath = FCortexIssue122Row::StaticStruct()->GetPathName();
+	const FString TablePath = Table->GetPathName();
+	TSharedPtr<FJsonObject> Params = PlanParams(UserPath, NativePath);
+	SetStringMap(Params, TEXT("member_map"), { { TEXT("Flag"), TEXT("bFlag") } });
+	Params->SetStringField(TEXT("baseline_dir"), Fixture.ScratchPath(TEXT("baseline")));
+	const FString PlanPath = Fixture.ScratchPath(TEXT("plan.json"));
+	Params->SetStringField(TEXT("out_path"), PlanPath);
+	const FCortexCommandResult Plan = Run(TEXT("plan_type_replacement"), Params);
+	if (!TestTrue(TEXT("plan succeeds"), Plan.bSuccess))
+	{
+		AddError(Plan.ErrorMessage);
+		return false;
+	}
+	bool bFound = false;
+	for (const TSharedPtr<FJsonObject>& Asset : Objects(Plan.Data, TEXT("affected_assets")))
+	{
+		if (Asset->GetStringField(TEXT("path")) == TablePath)
+		{
+			bFound = true;
+			TestEqual(TEXT("The table is a datatable"), Asset->GetStringField(TEXT("kind")), FString(TEXT("datatable")));
+			TestFalse(TEXT("row_struct is false: the user struct is only referenced from row data"), Asset->GetBoolField(TEXT("row_struct")));
+		}
+	}
+	if (!TestTrue(TEXT("The table is an affected asset"), bFound) || !TestTrue(TEXT("Unloaded"), FFixture::Unload({ Table })))
+	{
+		return false;
+	}
+
+	const TArray<TPair<FString, FString>> Members = { { UserName(Uds, TEXT("Count")), TEXT("Count") }, { UserName(Uds, TEXT("Label")), TEXT("Label") }, { UserName(Uds, TEXT("Flag")), TEXT("bFlag") } };
+	{
+		FRedirectScope Scope(MakeStructRedirects(UserPath, NativePath, Members), /*bAlreadyRegistered=*/true);
+		if (!TestTrue(TEXT("The plan's lines are registered through the ini reader"), RegisterLinesThroughIni(Strings(Plan.Data, TEXT("redirects")))))
+		{
+			return false;
+		}
+		const FCortexCommandResult Result = Run(TEXT("verify_type_replacement"), VerifyParams(PlanPath, true));
+		if (TestTrue(TEXT("verify (save:true) succeeds although the row struct is not the replaced struct"), Result.bSuccess))
+		{
+			TestEqual(TEXT("No problems"), static_cast<int32>(Result.Data->GetNumberField(TEXT("problem_count"))), 0);
+			TestEqual(TEXT("The table was resaved"), static_cast<int32>(Result.Data->GetNumberField(TEXT("saved_count"))), 1);
+			TestTrue(TEXT("The reference moved to the native struct: equal"), Result.Data->GetBoolField(TEXT("equal")));
+			TestEqual(TEXT("Nothing references the user struct any more"), static_cast<int32>(Result.Data->GetNumberField(TEXT("still_referenced_count"))), 0);
+		}
+		else
+		{
+			AddError(Result.ErrorMessage);
+		}
+		UDataTable* Loaded = FFixture::Reload<UDataTable>(TablePath);
+		if (TestNotNull(TEXT("Reloaded"), Loaded))
+		{
+			TestTrue(TEXT("The row struct is unchanged"), Loaded->GetRowStruct() == FCortexIssue122StructRefRow::StaticStruct());
+			TestTrue(TEXT("Unloaded again"), FFixture::Unload({ Loaded }));
+		}
+	}
+	// A reload without redirects reads the native reference the resave wrote.
+	UDataTable* Reloaded = FFixture::Reload<UDataTable>(TablePath);
+	if (TestNotNull(TEXT("Reloaded without redirects"), Reloaded))
+	{
+		const FCortexIssue122StructRefRow* Saved = Reloaded->FindRow<FCortexIssue122StructRefRow>(TEXT("R1"), TEXT("Issue122"));
+		if (TestNotNull(TEXT("Row"), Saved))
+		{
+			TestTrue(TEXT("The saved reference is the native struct"), Saved->Struct == FCortexIssue122Row::StaticStruct());
 		}
 	}
 	return true;
