@@ -12,6 +12,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "CortexCommandRouter.h"
+#include "CortexSafeFileContract.h"
 #include "CortexDataCommandHandler.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -31,12 +32,17 @@
 #include "Kismet2/EnumEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/StructureEditorUtils.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/FileHelper.h"
+#include "Misc/SecureHash.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "PackageTools.h"
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
 #include "StructUtils/UserDefinedStruct.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "UObject/CoreRedirects.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
@@ -520,4 +526,130 @@ namespace CortexIssue122DataTest
 			IAssetRegistry::GetChecked().ScanModifiedAssetFiles(SavedFiles);
 		}
 	};
+
+	// --- plan/verify request helpers -------------------------------------------------------------------------------------------
+	inline TSharedPtr<FJsonObject> PlanParams(const FString& UserType, const FString& NativeType)
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("user_type"), UserType);
+		Params->SetStringField(TEXT("native_type"), NativeType);
+		return Params;
+	}
+
+	inline void SetStringMap(const TSharedPtr<FJsonObject>& Params, const TCHAR* Field, const TMap<FString, FString>& Map)
+	{
+		TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+		for (const TPair<FString, FString>& Pair : Map)
+		{
+			Object->SetStringField(Pair.Key, Pair.Value);
+		}
+		Params->SetObjectField(Field, Object);
+	}
+
+	/** The GUID-suffixed property name of the member with this friendly name. */
+	inline FString UserName(const UUserDefinedStruct* Struct, const FString& Friendly)
+	{
+		for (const FStructVariableDescription& Member : FStructureEditorUtils::GetVarDesc(Struct))
+		{
+			if (Member.FriendlyName == Friendly)
+			{
+				return Member.VarName.ToString();
+			}
+		}
+		return FString();
+	}
+
+	inline bool ProblemCodes(const FCortexCommandResult& Result, TArray<FString>& OutCodes, TArray<FString>& OutSubjects)
+	{
+		if (!Result.ErrorDetails.IsValid())
+		{
+			return false;
+		}
+		for (const TSharedPtr<FJsonObject>& Problem : Objects(Result.ErrorDetails, TEXT("problems")))
+		{
+			OutCodes.Add(Problem->GetStringField(TEXT("code")));
+			OutSubjects.Add(Problem->GetStringField(TEXT("subject")));
+		}
+		return true;
+	}
+
+	inline bool HasProblem(const TArray<FString>& Codes, const TArray<FString>& Subjects, const FString& Code, const FString& Subject)
+	{
+		for (int32 Index = 0; Index < Codes.Num(); ++Index)
+		{
+			if (Codes[Index] == Code && Subjects[Index] == Subject)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Registers the lines through the engine's own ini machinery: a config file parser turns them into a [CoreRedirects] section,
+	 * which goes into the engine ini branch in memory (never written to disk) and is consumed by FCoreRedirects::ReadRedirectsFromIni,
+	 * exactly as at editor start. Returns whether the reader added any redirect.
+	 */
+	inline bool RegisterLinesThroughIni(const TArray<FString>& Lines)
+	{
+		FString Text = TEXT("[CoreRedirects]\n");
+		for (const FString& Line : Lines)
+		{
+			Text += Line + TEXT("\n");
+		}
+		FConfigFile File;
+		File.CombineFromBuffer(Text, TEXT("Issue122PlanIni"));
+		const FConfigSection* Parsed = File.FindSection(TEXT("CoreRedirects"));
+		if (Parsed == nullptr)
+		{
+			return false;
+		}
+		for (FConfigSection::TConstIterator It(*Parsed); It; ++It)
+		{
+			GConfig->AddToSection(TEXT("CoreRedirects"), It.Key(), It.Value().GetValue(), GEngineIni);
+		}
+		const bool bAdded = FCoreRedirects::ReadRedirectsFromIni(GEngineIni);
+		GConfig->RemoveSectionFromBranch(TEXT("CoreRedirects"), *GEngineIni);
+		return bAdded;
+	}
+
+	inline FString ConfigFileHash(const FString& Relative)
+	{
+		FCortexResolvedFilePath Path;
+		FString Code;
+		FString Message;
+		FString Hash;
+		if (FCortexSafeFileContract::ResolveReadPath(Relative, Path, Code, Message))
+		{
+			FCortexSafeFileContract::HashFileBytesSha256(Path, Hash, Code, Message);
+		}
+		return Hash;
+	}
+
+	/** MD5 of a file's bytes (an absolute path): the proof that a file was or was not rewritten. */
+	inline FString FileBytesHash(const FString& AbsolutePath)
+	{
+		TArray<uint8> Bytes;
+		return FFileHelper::LoadFileToArray(Bytes, *AbsolutePath) ? FMD5::HashBytes(Bytes.GetData(), Bytes.Num()) : FString();
+	}
+
+	inline FString ReadFile(const FString& ProjectRelative)
+	{
+		FString Text;
+		FFileHelper::LoadFileToString(Text, *FFixture::Absolute(ProjectRelative));
+		return Text;
+	}
+
+	/** The five redirects a plan for a UDS (Object with OverrideClassName, Struct, one Property per member) registers. */
+	inline TArray<FCoreRedirect> MakeStructRedirects(const FString& UserPath, const FString& NativePath, const TArray<TPair<FString, FString>>& GuidToNativeMember)
+	{
+		TArray<FCoreRedirect> Redirects;
+		Redirects.Add(MakeRedirect(ECoreRedirectFlags::Type_Object, UserPath, NativePath, TEXT("/Script/CoreUObject.ScriptStruct")));
+		Redirects.Add(MakeRedirect(ECoreRedirectFlags::Type_Struct, UserPath, NativePath));
+		for (const TPair<FString, FString>& Member : GuidToNativeMember)
+		{
+			Redirects.Add(MakeRedirect(ECoreRedirectFlags::Type_Property, NativePath + TEXT(".") + Member.Key, Member.Value));
+		}
+		return Redirects;
+	}
 }

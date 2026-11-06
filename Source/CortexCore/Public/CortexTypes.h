@@ -95,6 +95,8 @@ namespace CortexErrorCodes
 	static const FString MemberReferenced = TEXT("MEMBER_REFERENCED");
 	static const FString MissingPropertyRedirect = TEXT("MISSING_PROPERTY_REDIRECT");
 	static const FString ReadbackMismatch = TEXT("READBACK_MISMATCH");
+	// Native type replacement
+	static const FString RedirectsNotActive = TEXT("REDIRECTS_NOT_ACTIVE");
 	// Level errors
 	static const FString ActorNotFound = TEXT("ACTOR_NOT_FOUND");
 	static const FString AmbiguousActor = TEXT("AMBIGUOUS_ACTOR");

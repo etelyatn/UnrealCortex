@@ -12,6 +12,7 @@
 #include "Operations/CortexDataImportQueueOps.h"
 #include "Operations/CortexDataJsonDiffOps.h"
 #include "Operations/CortexDataTypeReplacementOps.h"
+#include "Operations/CortexDataTypeVerificationOps.h"
 
 namespace
 {
@@ -196,6 +197,10 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     if (Command == TEXT("plan_type_replacement"))
     {
         return FCortexDataTypeReplacementOps::PlanTypeReplacement(Params);
+    }
+    if (Command == TEXT("verify_type_replacement"))
+    {
+        return FCortexDataTypeVerificationOps::VerifyTypeReplacement(Params);
     }
 
     // Import queue operations
@@ -392,6 +397,11 @@ const TArray<FCortexCommandInfo>& DataCommandInfos()
             .Optional(TEXT("value_map"), TEXT("object"), TEXT("Enum only: {\"<user value token or display name>\":\"<native enumerator>\"} (default: the user display name matches the native enumerator name)"))
             .Optional(TEXT("baseline_dir"), TEXT("string"), TEXT("Directory under Saved, Content or Config: each affected DataTable and DataAsset is exported there with the existing exporters before any redirect exists; verify_type_replacement diffs against these files"))
             .Optional(TEXT("out_path"), TEXT("string"), TEXT("Plan file path (default Saved/CortexTypeReplacement/<name>.plan.json)"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("verify_type_replacement"), TEXT("Verify a user-defined struct/enum -> native replacement against the plan written by plan_type_replacement: probes that the plan's redirects are active in this editor (REDIRECTS_NOT_ACTIVE with the missing lines and the restart instruction when not; nothing is loaded or saved then; Cortex never adds redirects at runtime), loads every affected Blueprint, DataTable and DataAsset, compiles Blueprints, diffs each baseline export (normalized through the plan's member and value maps so a real difference is never masked) against a fresh export with compare_data_json, optionally resaves (explicit save: DIRTY_EDITOR_STATE when an affected package has unsaved changes), and reports what still references the user type in still_referenced. Never deletes the user-defined type: when still_referenced is empty use core.delete_asset, then remove the redirects.") }
+            .Required(TEXT("plan_path"), TEXT("string"), TEXT("Plan file written by plan_type_replacement"))
+            .Required(TEXT("save"), TEXT("boolean"), TEXT("true resaves the affected assets after verifying them (explicit; requires clean packages); false verifies in memory only"))
+            .Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full per-asset result to this file and keep the response bounded"))
             .StrictParams(),
     };
     return Infos;
