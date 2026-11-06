@@ -11,6 +11,7 @@
 #include "Operations/CortexDataSchemaExportOps.h"
 #include "Operations/CortexDataImportQueueOps.h"
 #include "Operations/CortexDataJsonDiffOps.h"
+#include "Operations/CortexDataTypeReplacementOps.h"
 
 namespace
 {
@@ -189,6 +190,12 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     if (Command == TEXT("compare_data_json"))
     {
         return FCortexDataJsonDiffOps::CompareDataJson(Params);
+    }
+
+    // Native type replacement
+    if (Command == TEXT("plan_type_replacement"))
+    {
+        return FCortexDataTypeReplacementOps::PlanTypeReplacement(Params);
     }
 
     // Import queue operations
@@ -378,6 +385,14 @@ const TArray<FCortexCommandInfo>& DataCommandInfos()
             .Optional(TEXT("stop_on_error"), TEXT("boolean"), TEXT("Stop after first failed operation; defaults to true"))
             .Optional(TEXT("query_back"), TEXT("boolean"), TEXT("Verify affected targets after real apply; defaults to true"))
             .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit partial execution summary; defaults to false")),
+        FCortexCommandInfo{ TEXT("plan_type_replacement"), TEXT("Plan replacing a user-defined struct (UDS) or enum (UDE) with a native type: returns the exact [CoreRedirects] lines (ObjectRedirects with OverrideClassName, StructRedirects and PropertyRedirects for a struct; EnumRedirects with ValueChanges for an enum), the member/value mapping, the classified hard referencers and an optional pre-redirect baseline export, and writes a plan file (default Saved/CortexTypeReplacement/<name>.plan.json). Never edits an ini: add the lines to Config/DefaultEngine.ini [CoreRedirects], restart the editor, then run verify_type_replacement. Refuses (INVALID_OPERATION, details.problems) an unmatched or type-incompatible member, a nested user-defined type, a native struct that is not an FTableRowBase while a DataTable uses the user struct, a value whose number differs, and an existing redirect for the user type.") }
+            .Required(TEXT("user_type"), TEXT("string"), TEXT("User-defined struct or enum asset path (/Game/Folder/UDS_Name)"))
+            .Required(TEXT("native_type"), TEXT("string"), TEXT("Native BlueprintType struct or enum: /Script/Module.Name or the type name"))
+            .Optional(TEXT("member_map"), TEXT("object"), TEXT("Struct only: {\"<user member friendly name>\":\"<native property>\"} for members whose names differ (default: same name)"))
+            .Optional(TEXT("value_map"), TEXT("object"), TEXT("Enum only: {\"<user value token or display name>\":\"<native enumerator>\"} (default: the user display name matches the native enumerator name)"))
+            .Optional(TEXT("baseline_dir"), TEXT("string"), TEXT("Directory under Saved, Content or Config: each affected DataTable and DataAsset is exported there with the existing exporters before any redirect exists; verify_type_replacement diffs against these files"))
+            .Optional(TEXT("out_path"), TEXT("string"), TEXT("Plan file path (default Saved/CortexTypeReplacement/<name>.plan.json)"))
+            .StrictParams(),
     };
     return Infos;
 }
