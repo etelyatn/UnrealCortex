@@ -1,3 +1,4 @@
+#include "Operations/CortexGraphMigrationOps.h"
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphMigrationOps.h"
 #include "Operations/CortexGraphPatchState.h"
