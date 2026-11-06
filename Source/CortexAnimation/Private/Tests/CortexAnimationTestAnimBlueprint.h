@@ -161,15 +161,15 @@ namespace CortexAnimTest
 		return Conduit;
 	}
 
-	/** A sequence player in the root AnimGraph with its float `PlayRate` pin exposed (so the property is bindable). */
-	inline UAnimGraphNode_SequencePlayer* AddSequencePlayerNode(UAnimBlueprint* AnimBlueprint)
+	/** A sequence player (in the root AnimGraph unless a graph is given) with its float `PlayRate` pin exposed (so the property is bindable). */
+	inline UAnimGraphNode_SequencePlayer* AddSequencePlayerNode(UAnimBlueprint* AnimBlueprint, UEdGraph* Graph = nullptr)
 	{
-		UAnimationGraph* AnimGraph = FindRootAnimGraph(AnimBlueprint);
-		if (AnimGraph == nullptr)
+		UEdGraph* TargetGraph = Graph != nullptr ? Graph : static_cast<UEdGraph*>(FindRootAnimGraph(AnimBlueprint));
+		if (TargetGraph == nullptr)
 		{
 			return nullptr;
 		}
-		FGraphNodeCreator<UAnimGraphNode_SequencePlayer> Creator(*AnimGraph);
+		FGraphNodeCreator<UAnimGraphNode_SequencePlayer> Creator(*TargetGraph);
 		UAnimGraphNode_SequencePlayer* Node = Creator.CreateNode();
 		Creator.Finalize();
 		if (Node == nullptr)
@@ -187,6 +187,52 @@ namespace CortexAnimTest
 		return Node;
 	}
 
+	/** A Blueprint function graph with no signature (the skeleton class is regenerated, so the function resolves afterwards). */
+	inline UEdGraph* AddBlueprintFunction(UAnimBlueprint* AnimBlueprint, const FName Name)
+	{
+		UEdGraph* Graph = FBlueprintEditorUtils::CreateNewGraph(AnimBlueprint, Name, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+		if (Graph != nullptr)
+		{
+			FBlueprintEditorUtils::AddFunctionGraph<UClass>(AnimBlueprint, Graph, /*bIsUserCreated=*/true, nullptr);
+		}
+		return Graph;
+	}
+
+	/**
+	 * A UK2Node_PropertyAccess for Path. The node class lives in the PropertyAccessNode plugin (private header), so it is created
+	 * by class and its private Path/TextPath are written by reflection before the pins are allocated, the way the engine's
+	 * property-binding menu fills them.
+	 */
+	inline UEdGraphNode* AddPropertyAccessNode(UEdGraph* Graph, const TArray<FString>& Path)
+	{
+		UClass* NodeClass = FindObject<UClass>(nullptr, TEXT("/Script/PropertyAccessNode.K2Node_PropertyAccess"));
+		if (Graph == nullptr || NodeClass == nullptr)
+		{
+			return nullptr;
+		}
+		UEdGraphNode* Node = NewObject<UEdGraphNode>(Graph, NodeClass, NAME_None, RF_Transactional);
+		Graph->AddNode(Node, /*bFromUI=*/false, /*bSelectNewNode=*/false);
+		Node->CreateNewGuid();
+		Node->PostPlacedNewNode();
+
+		const FArrayProperty* PathProperty = FindFProperty<FArrayProperty>(NodeClass, TEXT("Path"));
+		const FStrProperty* PathElement = PathProperty != nullptr ? CastField<FStrProperty>(PathProperty->Inner) : nullptr;
+		const FTextProperty* TextProperty = FindFProperty<FTextProperty>(NodeClass, TEXT("TextPath"));
+		if (PathElement == nullptr || TextProperty == nullptr)
+		{
+			return nullptr;
+		}
+		FScriptArrayHelper Array(PathProperty, PathProperty->ContainerPtrToValuePtr<void>(Node));
+		Array.EmptyValues();
+		for (const FString& Segment : Path)
+		{
+			PathElement->SetPropertyValue(Array.GetRawPtr(Array.AddValue()), Segment);
+		}
+		TextProperty->SetPropertyValue_InContainer(Node, FText::FromString(FString::Join(Path, TEXT("."))));
+		Node->AllocateDefaultPins();
+		return Node;
+	}
+
 	inline bool AddVariable(UAnimBlueprint* AnimBlueprint, const FName Name, const FEdGraphPinType& PinType, const FString& Default)
 	{
 		return FBlueprintEditorUtils::AddMemberVariable(AnimBlueprint, Name, PinType, Default);
@@ -196,7 +242,7 @@ namespace CortexAnimTest
 	{
 		FEdGraphPinType PinType;
 		PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-		PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+		PinType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
 		return PinType;
 	}
 

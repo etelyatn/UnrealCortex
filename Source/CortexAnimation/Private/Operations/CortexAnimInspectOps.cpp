@@ -18,6 +18,7 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Engine/SkeletalMeshSocket.h"
+#include "Operations/CortexAnimBindingReport.h"
 #include "Operations/CortexAnimAssetUtils.h"
 
 namespace
@@ -76,6 +77,68 @@ bool TryReadStrictOptionalBool(
 	}
 
 	Params->TryGetBoolField(FieldName, bOutValue);
+	return true;
+}
+
+/** The opt-in sections of get_animbp_info (`include`). Absent or empty selects none, so the payload stays what it was. */
+struct FAnimBlueprintInfoIncludes
+{
+	bool bBindings = false;
+	bool bNodeFunctions = false;
+	bool bPropertyAccess = false;
+};
+
+bool TryReadAnimBlueprintInfoIncludes(const TSharedPtr<FJsonObject>& Params, FAnimBlueprintInfoIncludes& OutIncludes, FCortexCommandResult& OutError)
+{
+	static const TCHAR* Allowed = TEXT("bindings, node_functions, property_access");
+	if (!Params.IsValid() || !Params->HasField(TEXT("include")))
+	{
+		return true;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+	if (!Params->TryGetArrayField(TEXT("include"), Values) || Values == nullptr)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("include must be an array of strings; allowed entries: %s"), Allowed),
+			MakeInspectFieldDetails(TEXT("include")));
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *Values)
+	{
+		FString Entry;
+		if (!Value.IsValid() || !Value->TryGetString(Entry))
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("include must be an array of strings; allowed entries: %s"), Allowed),
+				MakeInspectFieldDetails(TEXT("include")));
+			return false;
+		}
+
+		if (Entry == TEXT("bindings"))
+		{
+			OutIncludes.bBindings = true;
+		}
+		else if (Entry == TEXT("node_functions"))
+		{
+			OutIncludes.bNodeFunctions = true;
+		}
+		else if (Entry == TEXT("property_access"))
+		{
+			OutIncludes.bPropertyAccess = true;
+		}
+		else
+		{
+			OutError = FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("Unknown include entry '%s'; allowed entries: %s"), *Entry, Allowed),
+				MakeInspectFieldDetails(TEXT("include")));
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -470,6 +533,11 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 {
 	FCortexAnimResolvedAsset Resolved;
 	FCortexCommandResult Error;
+	FAnimBlueprintInfoIncludes Includes;
+	if (!TryReadAnimBlueprintInfoIncludes(Params, Includes, Error))
+	{
+		return Error;
+	}
 	if (!FCortexAnimAssetUtils::ResolveRequiredAsset<UAnimBlueprint>(Params, TEXT("AnimBlueprint"), Resolved, Error))
 	{
 		return Error;
@@ -548,6 +616,20 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 	}
 
 	Data->SetObjectField(TEXT("state_machines"), FCortexAnimAssetUtils::MakeLimitedArray(StateMachines, StateMachineLimit));
+
+	const int32 BindingLimit = FCortexAnimAssetUtils::ReadLimit(Params, TEXT("binding_limit"), 200, 1000);
+	if (Includes.bBindings && !FCortexAnimBindingReport::AppendBindings(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
+	if (Includes.bNodeFunctions && !FCortexAnimBindingReport::AppendNodeFunctions(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
+	if (Includes.bPropertyAccess && !FCortexAnimBindingReport::AppendPropertyAccess(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
 	SetUnavailableFields(Data, {});
 	return FCortexCommandRouter::Success(Data);
 }
