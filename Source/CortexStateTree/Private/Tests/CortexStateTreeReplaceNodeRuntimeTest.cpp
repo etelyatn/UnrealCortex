@@ -47,10 +47,11 @@ bool FCortexStateTreeReplaceNodeRuntimeTest::RunTest(const FString& Parameters)
 
 	TSharedPtr<FJsonObject> Params = Fixture.MutationParams();
 	Params->SetStringField(TEXT("node_id"), Fixture.BpTaskId.ToString(EGuidFormats::DigitsWithHyphens));
-	Params->SetStringField(TEXT("new_node_struct"), FCortexSTTestNativeTask::StaticStruct()->GetPathName());
+	// The renamed destination: the bindings keep their far ends and are rewritten to Amount/Produced.
+	Params->SetStringField(TEXT("new_node_struct"), FCortexSTTestRenamedTask::StaticStruct()->GetPathName());
 	TSharedPtr<FJsonObject> Map = MakeShared<FJsonObject>();
-	Map->SetStringField(TEXT("Count"), TEXT("Count"));
-	Map->SetStringField(TEXT("ResultOut"), TEXT("ResultOut"));
+	Map->SetStringField(TEXT("Count"), TEXT("Amount"));
+	Map->SetStringField(TEXT("ResultOut"), TEXT("Produced"));
 	Params->SetObjectField(TEXT("property_map"), Map);
 	const FCortexCommandResult Replaced = Fixture.Run(TEXT("replace_node"), Params);
 	if (!TestTrue(TEXT("the replacement succeeds"), Replaced.bSuccess))
@@ -63,8 +64,8 @@ bool FCortexStateTreeReplaceNodeRuntimeTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	// ── Run the tree with no world: NativeA writes ResultOut = 21 * 2 through the binding into the replacement's Count,
-	//    whose EnterState writes ResultOut = 42 * 2 through the second binding into NativeB.Count. ──
+	// ── Run the tree with no world: NativeA writes ResultOut = 21 * 2 through the renamed binding into the replacement's Amount,
+	//    whose EnterState writes Produced = 42 + 1 through the second binding into NativeB.Count. ──
 	CortexSTTest::GetEnterSink().Reset();
 	UObject* Owner = GetTransientPackage();
 	FStateTreeInstanceData InstanceData;
@@ -87,13 +88,13 @@ bool FCortexStateTreeReplaceNodeRuntimeTest::RunTest(const FString& Parameters)
 	const FCortexSTTestEnterRecord* Replacement = MigRuntimeFind(TEXT("BP_T"));
 	if (TestNotNull(TEXT("the replacement entered under the node's name"), Replacement))
 	{
-		TestEqual(TEXT("the replacement receives A.ResultOut through the remapped binding"), Replacement->Value, 42);
+		TestEqual(TEXT("the replacement receives A.ResultOut through the renamed Amount binding"), Replacement->Value, 42);
 	}
-	// The source side of the remap: the replacement's ResultOut reaches B.Count.
+	// The source side of the renamed binding: the replacement's Produced (Amount + 1) reaches B.Count.
 	const FCortexSTTestEnterRecord* NativeB = MigRuntimeFind(TEXT("NativeB"));
 	if (TestNotNull(TEXT("NativeB entered"), NativeB))
 	{
-		TestEqual(TEXT("B.Count receives the replacement's Produced value"), NativeB->Value, 84);
+		TestEqual(TEXT("B.Count receives the replacement's Produced value"), NativeB->Value, 43);
 	}
 	return true;
 #endif

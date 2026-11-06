@@ -4,6 +4,7 @@
 #include "Dom/JsonValue.h"
 #include "Editor.h"
 #include "Editor/Transactor.h"
+#include "Operations/CortexSTReplaceNodeOps.h"
 #include "StateTreeTypes.h"
 
 #if !UE_VERSION_OLDER_THAN(5, 7, 0)
@@ -79,9 +80,19 @@ bool FCortexStateTreeReplaceNodeClassTest::RunTest(const FString& Parameters)
 	FStateTreeEditorNode* BpNode = Fixture.NodePtr(Fixture.BpTaskId);
 	if (!TestNotNull(TEXT("the Blueprint node exists"), BpNode)
 		|| !TestTrue(TEXT("Label is set to a non-default value"), CortexSTTest::SetInstanceValueText(*BpNode, TEXT("Label"), TEXT("x")))
-		|| !TestTrue(TEXT("Count is set to a non-default value"), CortexSTTest::SetInstanceValueText(*BpNode, TEXT("Count"), TEXT("7"))))
+		|| !TestTrue(TEXT("Count is set to a non-default value"), CortexSTTest::SetInstanceValueText(*BpNode, TEXT("Count"), TEXT("7")))
+		|| !TestTrue(TEXT("the packed bool is set"), CortexSTTest::SetInstanceValueText(*BpNode, TEXT("bFlag"), TEXT("true"))))
 	{
 		return false;
+	}
+	// F2 for the class destination: the old value equals its own CDO but not the native class default.
+	UStateTreeTaskBlueprintBase* BpInstance = Cast<UStateTreeTaskBlueprintBase>(BpNode->InstanceObject.Get());
+	UStateTreeTaskBlueprintBase* BpDefaults = Cast<UStateTreeTaskBlueprintBase>(BpNode->InstanceObject != nullptr
+		? BpNode->InstanceObject->GetClass()->GetDefaultObject() : nullptr);
+	if (TestNotNull(TEXT("the Blueprint instance exists"), BpInstance) && TestNotNull(TEXT("the Blueprint defaults exist"), BpDefaults))
+	{
+		BpInstance->bConsideredForCompletion = false;
+		BpDefaults->bConsideredForCompletion = false;
 	}
 
 	TSharedPtr<FJsonObject> Params = Fixture.MutationParams();
@@ -120,6 +131,9 @@ bool FCortexStateTreeReplaceNodeClassTest::RunTest(const FString& Parameters)
 		{
 			TestEqual(TEXT("Count is copied by name"), NativeInstance->Count, 7);
 			TestEqual(TEXT("Label is copied by name"), NativeInstance->Label, FString(TEXT("x")));
+			TestTrue(TEXT("F8: the packed bool arrives set on the class instance"), NativeInstance->bFlag);
+			TestFalse(TEXT("F2: the class destination keeps the old completion flag, not its own default"),
+				NativeInstance->bConsideredForCompletion);
 		}
 	}
 	TestEqual(TEXT("the node keeps its name"), Replaced->GetName().ToString(), FString(TEXT("BP_T")));
@@ -294,6 +308,7 @@ bool FCortexStateTreeReplaceNodeBulkTest::RunTest(const FString& Parameters)
 	}
 
 	const int32 UndoBefore = GEditor != nullptr && GEditor->Trans != nullptr ? GEditor->Trans->GetQueueLength() : 0;
+	FCortexSTReplaceNodeOps::ResetCompileCountForTesting();
 	TSharedPtr<FJsonObject> Params = Fixture.MutationParams();
 	Params->SetStringField(TEXT("blueprint_class"), Fixture.TaskBlueprint->GeneratedClass->GetPathName());
 	Params->SetStringField(TEXT("new_node_struct"), FCortexSTTestNativeTask::StaticStruct()->GetPathName());
@@ -312,6 +327,7 @@ bool FCortexStateTreeReplaceNodeBulkTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the bulk replacement compiles once with no error"), static_cast<int32>(Result.Data->GetNumberField(TEXT("error_count"))), 0);
 	TestEqual(TEXT("the bulk replacement keeps both bindings"), static_cast<int32>(MigClassObject(Result.Data, TEXT("bindings"))->GetNumberField(TEXT("after_count"))), 2);
 	TestEqual(TEXT("the bulk replacement opens exactly one transaction"), GEditor->Trans->GetQueueLength(), UndoBefore + 1);
+	TestEqual(TEXT("the bulk replacement compiles exactly once"), FCortexSTReplaceNodeOps::GetCompileCountForTesting(), 1);
 	TestTrue(TEXT("the bulk replacement is ready to run"), Fixture.Context.StateTree->IsReadyToRun());
 	for (const FGuid& NodeId : { Fixture.BpTaskId, SecondInA, OnlyInB })
 	{

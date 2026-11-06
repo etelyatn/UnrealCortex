@@ -38,6 +38,8 @@ struct FBlueprintVariable
 	bool bInstanceEditable = true;
 	/** Set with PC_Struct to declare a struct-typed variable. */
 	const UStruct* StructType = nullptr;
+	/** Array/Set/Map value for the variable (default: a single value). */
+	EPinContainerType ContainerType = EPinContainerType::None;
 };
 
 inline FString MakeFolder(const FString& Suffix)
@@ -77,6 +79,7 @@ inline UBlueprint* MakeTaskBlueprint(
 		FEdGraphPinType PinType;
 		PinType.PinCategory = Variable.PinCategory;
 		PinType.PinSubCategoryObject = const_cast<UStruct*>(Variable.StructType);
+		PinType.ContainerType = Variable.ContainerType;
 		if (!FBlueprintEditorUtils::AddMemberVariable(Blueprint, Variable.Name, PinType, Variable.DefaultValue))
 		{
 			return nullptr;
@@ -243,6 +246,7 @@ struct FMigrationFixture
 		Variables.Add({ FName(TEXT("Label")), UEdGraphSchema_K2::PC_String, FString(), FString(), true });
 		Variables.Add({ FName(TEXT("ResultOut")), UEdGraphSchema_K2::PC_Int, TEXT("Output"), FString(), true });
 		Variables.Add({ FName(TEXT("Internal")), UEdGraphSchema_K2::PC_String, FString(), FString(), false });
+		Variables.Add({ FName(TEXT("bFlag")), UEdGraphSchema_K2::PC_Boolean, FString(), FString(), true });
 		Variables.Append(ExtraVariables);
 		TaskBlueprint = MakeTaskBlueprint(Folder, TEXT("BP_T"), UStateTreeTaskBlueprintBase::StaticClass(), Variables);
 		if (!Test.TestNotNull(TEXT("Blueprint task class is created"), TaskBlueprint)

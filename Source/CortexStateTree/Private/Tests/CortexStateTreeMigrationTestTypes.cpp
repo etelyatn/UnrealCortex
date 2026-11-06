@@ -40,3 +40,16 @@ UCortexSTTestContextSchema::UCortexSTTestContextSchema()
 		FCortexSTTestContextData::StaticStruct(),
 		FGuid::NewDeterministicGuid(TEXT("CortexStateTreeTestContext")));
 }
+
+UCortexSTTestTwoContextSchema::UCortexSTTestTwoContextSchema()
+{
+	const UScriptStruct* ContextStruct = FCortexSTTestContextData::StaticStruct();
+	ContextDataDescs.Emplace(
+		FName(TEXT("Actor")),
+		ContextStruct,
+		FGuid::NewDeterministicGuid(TEXT("CortexStateTreeTestContextActor")));
+	ContextDataDescs.Emplace(
+		FName(TEXT("AIController")),
+		ContextStruct,
+		FGuid::NewDeterministicGuid(TEXT("CortexStateTreeTestContextController")));
+}

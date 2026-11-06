@@ -46,6 +46,10 @@ struct FCortexSTTestNativeTaskInstanceData
 
 	UPROPERTY(EditAnywhere, Category = "Output")
 	int32 ResultOut = 0;
+
+	/** Indexed binding target: a root array whose element a binding names. */
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	TArray<int32> Values;
 };
 
 /** EnterState writes ResultOut = Count * 2 and records Count. */
@@ -177,6 +181,9 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Output")
 	int32 ResultOut = 0;
+
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	bool bFlag = false;
 };
 
 /** Abstract native Blueprint base: `new_node_class` must refuse it. */
@@ -285,4 +292,112 @@ struct FCortexSTTestNativeEvaluator : public FStateTreeEvaluatorBase
 	using FInstanceDataType = FCortexSTTestEvaluatorInstanceData;
 
 	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+};
+
+USTRUCT()
+struct FCortexSTTestNested
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	int32 Leaf = 0;
+};
+
+USTRUCT()
+struct FCortexSTTestNestedTaskInstanceData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	FCortexSTTestNested Nested;
+
+	UPROPERTY(EditAnywhere, Category = "Output")
+	int32 ResultOut = 0;
+};
+
+/** Accepts Nested.Leaf: the nested segment of a binding still resolves after the swap. */
+USTRUCT(meta = (Hidden))
+struct FCortexSTTestNestedTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FCortexSTTestNestedTaskInstanceData;
+
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+};
+
+USTRUCT()
+struct FCortexSTTestNoLeafNested
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	int32 Other = 0;
+};
+
+USTRUCT()
+struct FCortexSTTestNestedSinkTaskInstanceData
+{
+	GENERATED_BODY()
+
+	/** Same first segment name as the source after the rename, but without Leaf: the nested segment cannot resolve. */
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	FCortexSTTestNoLeafNested RenamedNested;
+
+	UPROPERTY(EditAnywhere, Category = "Output")
+	int32 ResultOut = 0;
+};
+
+USTRUCT(meta = (Hidden))
+struct FCortexSTTestNestedSinkTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FCortexSTTestNestedSinkTaskInstanceData;
+
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+};
+
+USTRUCT()
+struct FCortexSTTestTwoContextTaskInstanceData
+{
+	GENERATED_BODY()
+
+	/** Resolves to the schema context named AIController, not the one named Actor. */
+	UPROPERTY(EditAnywhere, Category = "Context")
+	FCortexSTTestContextData AIController;
+
+	UPROPERTY(EditAnywhere, Category = "Context")
+	FCortexSTTestContextData Actor;
+
+	UPROPERTY(EditAnywhere, Category = "Output")
+	int32 ResultOut = 0;
+};
+
+USTRUCT(meta = (Hidden))
+struct FCortexSTTestTwoContextTask : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FCortexSTTestTwoContextTaskInstanceData;
+
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+};
+
+/** Two same-type context candidates, the shape that makes an implicit Context binding depend on the property name. */
+UCLASS()
+class UCortexSTTestTwoContextSchema : public UCortexStateTreeTestSchema
+{
+	GENERATED_BODY()
+
+public:
+	UCortexSTTestTwoContextSchema();
+
+	virtual TConstArrayView<FStateTreeExternalDataDesc> GetContextDataDescs() const override
+	{
+		return ContextDataDescs;
+	}
+
+private:
+	TArray<FStateTreeExternalDataDesc> ContextDataDescs;
 };

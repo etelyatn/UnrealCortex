@@ -312,6 +312,20 @@ bool FCortexStateTreeReplaceNodeApplyTest::RunTest(const FString& Parameters)
 
 		const TArray<FString> BeforePaths = ImplicitContextPaths(MigApplyReadNode(ContextFixture));
 		TestTrue(TEXT("the implicit Context binding exists before the swap"), BeforePaths.Contains(TEXT("ContextData")));
+		{
+			// The default all-nodes page must include a node whose only binding is the compiler's implicit context entry.
+			const FCortexCommandResult AllNodes = ContextFixture.Run(TEXT("get_node_bindings"), ContextFixture.BaseParams());
+			bool bListed = false;
+			if (TestTrue(TEXT("the context fixture all-nodes page succeeds"), AllNodes.bSuccess))
+			{
+				for (const TSharedPtr<FJsonValue>& Value : MigApplyArray(AllNodes.Data, TEXT("nodes")))
+				{
+					bListed = bListed || MigApplyString(Value->AsObject(), TEXT("node_id")) == ContextFixture.BpTaskId.ToString(EGuidFormats::DigitsWithHyphens);
+				}
+				TestEqual(TEXT("the all-nodes page has no stored binding"), static_cast<int32>(AllNodes.Data->GetNumberField(TEXT("whole_tree_binding_count"))), 0);
+			}
+			TestTrue(TEXT("a node with only an implicit context entry appears in the all-nodes page"), bListed);
+		}
 
 		TSharedPtr<FJsonObject> Params = ContextFixture.MutationParams();
 		Params->SetStringField(TEXT("node_id"), ContextFixture.BpTaskId.ToString(EGuidFormats::DigitsWithHyphens));
@@ -332,6 +346,183 @@ bool FCortexStateTreeReplaceNodeApplyTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("the implicit Context binding exists after the swap"), AfterPaths.Contains(TEXT("RenamedContext")));
 		TestFalse(TEXT("the old Context property name is gone"), AfterPaths.Contains(TEXT("ContextData")));
 	}
+
+	// ── F1/F2/F3/F8: values and flags are carried by content, not only by type ──
+	{
+		CortexSTTest::FMigrationFixture Fixture;
+		if (!Fixture.Build(*this, /*bCompile=*/true))
+		{
+			return false;
+		}
+		FStateTreeEditorNode* Node = Fixture.NodePtr(Fixture.BpTaskId);
+		UStateTreeTaskBlueprintBase* Instance = Node != nullptr ? Cast<UStateTreeTaskBlueprintBase>(Node->InstanceObject.Get()) : nullptr;
+		if (!TestNotNull(TEXT("the Blueprint instance object exists"), Instance))
+		{
+			return false;
+		}
+		UClass* BlueprintClass = Instance->GetClass();
+		UStateTreeTaskBlueprintBase* ClassDefaults = Cast<UStateTreeTaskBlueprintBase>(BlueprintClass->GetDefaultObject());
+		if (!TestNotNull(TEXT("the Blueprint class defaults exist"), ClassDefaults))
+		{
+			return false;
+		}
+		// F2: the whole class runs as a background task (value == its own CDO) while the native destination defaults to true.
+		Instance->bConsideredForCompletion = false;
+		ClassDefaults->bConsideredForCompletion = false;
+		TestTrue(TEXT("the Blueprint class disables completion"), ClassDefaults->bConsideredForCompletion == false);
+		// F8: a packed UObject bool whose native counterpart sits at a different bit offset.
+		TestTrue(TEXT("the packed bool is set"), CortexSTTest::SetInstanceValueText(*Node, TEXT("bFlag"), TEXT("true")));
+		// F3: the author disabled the task on the wrapper node struct.
+		Node->Node.GetMutable<FStateTreeBlueprintTaskWrapper>().bTaskEnabled = false;
+
+		TMap<FString, FString> Map;
+		for (const TCHAR* Name : { TEXT("Count"), TEXT("Label"), TEXT("ResultOut"), TEXT("bFlag") })
+		{
+			Map.Add(Name, Name);
+		}
+		TSharedPtr<FJsonObject> DryRun = MigApplyParams(Fixture, FCortexSTTestNativeTask::StaticStruct(), Map);
+		DryRun->SetBoolField(TEXT("dry_run"), true);
+		const FCortexCommandResult Planned = Fixture.Run(TEXT("replace_node"), DryRun);
+		if (TestTrue(TEXT("the fidelity dry run succeeds"), Planned.bSuccess))
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Plan = nullptr;
+			Planned.Data->TryGetArrayField(TEXT("property_plan"), Plan);
+			bool bCompletionCopied = false;
+			bool bFlagCopied = false;
+			for (const TSharedPtr<FJsonValue>& Value : Plan != nullptr ? *Plan : TArray<TSharedPtr<FJsonValue>>())
+			{
+				const TSharedPtr<FJsonObject> Entry = Value->AsObject();
+				const FString Property = MigApplyString(Entry, TEXT("old_property"));
+				if (Property == TEXT("bConsideredForCompletion"))
+				{
+					bCompletionCopied = MigApplyString(Entry, TEXT("status")) == TEXT("copied");
+				}
+				if (Property == TEXT("bFlag"))
+				{
+					bFlagCopied = MigApplyString(Entry, TEXT("status")) == TEXT("copied");
+				}
+			}
+			TestTrue(TEXT("F2: a flag equal to its own class default but not the destination default is copied"), bCompletionCopied);
+			TestTrue(TEXT("the packed bool is planned as copied"), bFlagCopied);
+		}
+
+		const FCortexCommandResult Result = Fixture.Run(TEXT("replace_node"), MigApplyParams(Fixture, FCortexSTTestNativeTask::StaticStruct(), Map));
+		if (!TestTrue(TEXT("the fidelity replacement succeeds"), Result.bSuccess))
+		{
+			AddError(Result.ErrorMessage);
+			return false;
+		}
+		FStateTreeEditorNode* Replaced = Fixture.NodePtr(Fixture.BpTaskId);
+		if (!TestNotNull(TEXT("the fidelity node keeps its ID"), Replaced))
+		{
+			return false;
+		}
+		const FStateTreeTaskBase& NativeBase = Replaced->Node.Get<FStateTreeTaskBase>();
+		TestFalse(TEXT("F3: the author-disabled flag is carried to the native node"), NativeBase.bTaskEnabled);
+		TestFalse(TEXT("F2: the native completion flag is the old value, not the native default"), NativeBase.bConsideredForCompletion);
+		const FCortexSTTestNativeTaskInstanceData& Values = Replaced->Instance.Get<FCortexSTTestNativeTaskInstanceData>();
+		TestTrue(TEXT("F8: the packed bool arrives set"), Values.bFlag);
+		TestEqual(TEXT("F8: the neighbouring bool is untouched by the packed copy"), static_cast<int32>(Values.ResultOut), 0);
+	}
+
+	// ── F9: two same-type context candidates: the name decides the source, so a same-usage rename must refuse ──
+	{
+		CortexSTTest::FMigrationFixture Fixture;
+		Fixture.SchemaPath = TEXT("/Script/CortexStateTree.CortexSTTestTwoContextSchema");
+		TArray<CortexSTTest::FBlueprintVariable> Variables;
+		Variables.Add({ FName(TEXT("Actor")), UEdGraphSchema_K2::PC_Struct, TEXT("Context"), FString(), true, FCortexSTTestContextData::StaticStruct() });
+		if (!Fixture.Build(*this, /*bCompile=*/true, Variables, /*bCreateBindings=*/false))
+		{
+			return false;
+		}
+
+		TSharedPtr<FJsonObject> Identity = Fixture.MutationParams();
+		Identity->SetStringField(TEXT("node_id"), Fixture.BpTaskId.ToString(EGuidFormats::DigitsWithHyphens));
+		Identity->SetStringField(TEXT("new_node_struct"), FCortexSTTestTwoContextTask::StaticStruct()->GetPathName());
+		Identity->SetBoolField(TEXT("dry_run"), true);
+		TSharedPtr<FJsonObject> IdentityMap = MakeShared<FJsonObject>();
+		IdentityMap->SetStringField(TEXT("Actor"), TEXT("Actor"));
+		Identity->SetObjectField(TEXT("property_map"), IdentityMap);
+		TestTrue(TEXT("an identity Context rename keeps the resolved source and is accepted"), Fixture.Run(TEXT("replace_node"), Identity).bSuccess);
+
+		TSharedPtr<FJsonObject> Renamed = Fixture.MutationParams();
+		Renamed->SetStringField(TEXT("node_id"), Fixture.BpTaskId.ToString(EGuidFormats::DigitsWithHyphens));
+		Renamed->SetStringField(TEXT("new_node_struct"), FCortexSTTestTwoContextTask::StaticStruct()->GetPathName());
+		Renamed->SetBoolField(TEXT("dry_run"), true);
+		TSharedPtr<FJsonObject> RenamedMap = MakeShared<FJsonObject>();
+		RenamedMap->SetStringField(TEXT("Actor"), TEXT("AIController"));
+		Renamed->SetObjectField(TEXT("property_map"), RenamedMap);
+		const FCortexCommandResult Refused = Fixture.Run(TEXT("replace_node"), Renamed);
+		TestFalse(TEXT("F9: a Context rename that changes the resolved source refuses"), Refused.bSuccess);
+		TestEqual(TEXT("F9: a Context source change is a type mismatch"), Refused.ErrorCode, CortexErrorCodes::TypeMismatch);
+		bool bNamesSources = false;
+		const TArray<TSharedPtr<FJsonValue>>* Mismatches = nullptr;
+		if (Refused.ErrorDetails.IsValid() && Refused.ErrorDetails->TryGetArrayField(TEXT("type_mismatches"), Mismatches) && Mismatches != nullptr)
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *Mismatches)
+			{
+				const FString Reason = MigApplyString(Value->AsObject(), TEXT("reason"));
+				bNamesSources = bNamesSources || (Reason.Contains(TEXT("implicit Context source")));
+			}
+		}
+		TestTrue(TEXT("F9: the refusal names the context source change"), bNamesSources);
+	}
+
+	// ── F10: an indexed root segment is a valid binding target ──
+	{
+		CortexSTTest::FMigrationFixture Fixture;
+		TArray<CortexSTTest::FBlueprintVariable> Variables;
+		Variables.Add({ FName(TEXT("Values")), UEdGraphSchema_K2::PC_Int, FString(), FString(), true, nullptr, EPinContainerType::Array });
+		if (!Fixture.Build(*this, /*bCompile=*/false, Variables, /*bCreateBindings=*/false))
+		{
+			return false;
+		}
+		FStateTreeEditorNode* Node = Fixture.NodePtr(Fixture.BpTaskId);
+		if (!TestNotNull(TEXT("the indexed fixture node exists"), Node)
+			|| !TestTrue(TEXT("the array value is stored"), CortexSTTest::SetInstanceValueText(*Node, TEXT("Values"), TEXT("(7,8)"))))
+		{
+			return false;
+		}
+		FPropertyBindingPath IndexedTarget(Fixture.BpTaskId, FName(TEXT("Values")));
+		IndexedTarget.GetMutableSegments()[0].SetArrayIndex(0);
+		Fixture.Context.EditorData->AddPropertyBinding(
+			FPropertyBindingPath(Fixture.NativeAId, FName(TEXT("ResultOut"))), IndexedTarget);
+		Fixture.Context.StateTree->MarkPackageDirty();
+		const FCortexCommandResult Compiled = Fixture.Compile();
+		if (!TestTrue(TEXT("the indexed-root fixture compiles"), Compiled.bSuccess))
+		{
+			AddError(Compiled.ErrorMessage);
+			return false;
+		}
+
+		TMap<FString, FString> Map;
+		Map.Add(TEXT("Values"), TEXT("Values"));
+		Map.Add(TEXT("Count"), TEXT("Count"));
+		Map.Add(TEXT("ResultOut"), TEXT("ResultOut"));
+		const FCortexCommandResult Result = Fixture.Run(TEXT("replace_node"), MigApplyParams(Fixture, FCortexSTTestNativeTask::StaticStruct(), Map));
+		if (!TestTrue(TEXT("F10: a replacement with an indexed root binding succeeds"), Result.bSuccess))
+		{
+			AddError(FString::Printf(TEXT("%s %s"), *Result.ErrorCode, *Result.ErrorMessage));
+			return false;
+		}
+		const TSharedPtr<FJsonObject> NodeReport = MigApplyReadNode(Fixture);
+		if (TestNotNull(TEXT("the indexed node reads back"), NodeReport.Get()))
+		{
+			bool bIndexed = false;
+			for (const TSharedPtr<FJsonValue>& Value : MigApplyArray(NodeReport, TEXT("as_target")))
+			{
+				const TSharedPtr<FJsonObject> Entry = Value->AsObject();
+				const TSharedPtr<FJsonObject> Target = MigApplyObject(Entry, TEXT("target"));
+				const TArray<TSharedPtr<FJsonValue>>& Segments = MigApplyArray(Target, TEXT("segments"));
+				bIndexed = bIndexed || (!Segments.IsEmpty()
+					&& MigApplyString(Segments[0]->AsObject(), TEXT("name")) == TEXT("Values")
+					&& static_cast<int32>(Segments[0]->AsObject()->GetNumberField(TEXT("array_index"))) == 0
+					&& Target->GetBoolField(TEXT("resolved")));
+			}
+			TestTrue(TEXT("the indexed target still resolves at index 0"), bIndexed);
+		}
+	}
+
 	return true;
 #endif
 }
