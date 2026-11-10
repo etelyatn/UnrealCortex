@@ -600,17 +600,17 @@ bool FCortexReplayLibraryStrictIntegerTest::RunTest(const FString& Parameters)
 	});
 	ExpectFormatError(TEXT("Fractional coverage count is rejected"));
 
-	// Sequence lives in inputs.jsonl; strict validation must reject it before any hash comparison.
+	// A row field is rejected by strict row parsing before any hash comparison.
 	TestTrue(TEXT("Restore metadata"), FFileHelper::SaveStringToFile(OriginalMetadata, *MetadataPath));
 	const FString InputsPath = Fixture.GetInputsPath(Id);
 	TSharedPtr<FJsonObject> Row = LoadJsonObject(InputsPath);
 	TestTrue(TEXT("Read input row"), Row.IsValid());
 	if (Row.IsValid())
 	{
-		Row->SetNumberField(TEXT("sequence"), 0.5);
-		TestTrue(TEXT("Write fractional sequence"), SaveJsonLine(InputsPath, Row));
+		Row->SetStringField(TEXT("wheel_delta"), TEXT("x"));
+		TestTrue(TEXT("Write non-numeric wheel_delta"), SaveJsonLine(InputsPath, Row));
 	}
-	ExpectFormatError(TEXT("Fractional sequence is rejected"));
+	ExpectFormatError(TEXT("Non-numeric wheel_delta is rejected"));
 
 	return true;
 }
@@ -1657,18 +1657,19 @@ bool FCortexReplayLibraryFramesStreamValidationTest::RunTest(const FString& Para
 }
 
 // ---------------------------------------------------------------------------
-// Format 3: frames are the engine frames that consumed input after the epoch. world_tick is an
-// object or an explicit null, the viewport state and input-config prerequisites round-trip, and
-// duration_seconds is the sum of the frame deltas. Catches any serializer/parser regression of the
-// frame row, initial_state.viewport or the new prerequisites.
+// Format 4: frames are the engine frames that consumed input after the epoch, written as compact
+// rows. world_tick is omitted when derivable, an object, or an explicit null; the viewport state and
+// input-config prerequisites round-trip, and duration_seconds is the sum of the frame deltas.
+// Catches any serializer/parser regression of the frame row, initial_state.viewport or the
+// prerequisites.
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexReplayLibraryFormatThreeRoundTripTest,
-	"Cortex.Replay.Library.FormatThreeRoundTrip",
+	FCortexReplayLibraryFormatFourRoundTripTest,
+	"Cortex.Replay.Library.FormatFourRoundTrip",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FCortexReplayLibraryFormatThreeRoundTripTest::RunTest(const FString& Parameters)
+bool FCortexReplayLibraryFormatFourRoundTripTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
@@ -1698,8 +1699,8 @@ bool FCortexReplayLibraryFormatThreeRoundTripTest::RunTest(const FString& Parame
 		return false;
 	}
 
-	TestEqual(TEXT("Metadata schema is 3"), Loaded->Metadata.SchemaVersion, 3);
-	TestEqual(TEXT("Initial-state schema is 3"), Loaded->InitialState.SchemaVersion, 3);
+	TestEqual(TEXT("Metadata schema is 4"), Loaded->Metadata.SchemaVersion, 4);
+	TestEqual(TEXT("Initial-state schema is 4"), Loaded->InitialState.SchemaVersion, 4);
 	TestFalse(TEXT("A frame without a world tick stays without one"), Loaded->Frames[0].WorldTick.IsSet());
 	if (TestTrue(TEXT("A ticked frame keeps its world tick"), Loaded->Frames[1].WorldTick.IsSet()))
 	{
@@ -1721,6 +1722,14 @@ bool FCortexReplayLibraryFormatThreeRoundTripTest::RunTest(const FString& Parame
 		*FPaths::Combine(FPaths::GetPath(Fixture.GetInputsPath(Id)), TEXT("frames.jsonl")));
 	TestTrue(TEXT("An unticked frame is written as an explicit null"), FramesText.Contains(TEXT("\"world_tick\":null")));
 	TestFalse(TEXT("Retired frame fields are not written"), FramesText.Contains(TEXT("capture_frame")));
+
+	TArray<FString> FrameRows;
+	FramesText.ParseIntoArrayLines(FrameRows);
+	if (TestTrue(TEXT("The stream has an idle frame row"), FrameRows.Num() > 2))
+	{
+		TestFalse(TEXT("An idle ticked frame row has no world_tick key"), FrameRows[2].Contains(TEXT("world_tick")));
+		TestFalse(TEXT("An idle frame row has no event_count key"), FrameRows[2].Contains(TEXT("event_count")));
+	}
 	return true;
 }
 
