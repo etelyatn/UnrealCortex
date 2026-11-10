@@ -3,7 +3,21 @@
 #include "ICortexCommandRegistry.h"
 #include "CortexReflectCommandHandler.h"
 #include "Engine/Engine.h"
+#include "Misc/CoreDelegates.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Operations/CortexReflectOps.h"
+
+namespace
+{
+	FSimpleMulticastDelegate& PostEngineInitDelegate()
+	{
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+		return FCoreDelegates::OnPostEngineInit;
+#else
+		return FCoreDelegates::GetOnPostEngineInit();
+#endif
+	}
+}
 
 DEFINE_LOG_CATEGORY(LogCortexReflect);
 
@@ -28,7 +42,7 @@ void FCortexReflectModule::StartupModule()
 	}
 	else
 	{
-		PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddRaw(
+		PostEngineInitHandle = PostEngineInitDelegate().AddRaw(
 			this,
 			&FCortexReflectModule::OnPostEngineInit
 		);
@@ -41,7 +55,7 @@ void FCortexReflectModule::ShutdownModule()
 {
 	if (PostEngineInitHandle.IsValid())
 	{
-		FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
+		PostEngineInitDelegate().Remove(PostEngineInitHandle);
 		PostEngineInitHandle.Reset();
 	}
 

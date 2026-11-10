@@ -74,7 +74,7 @@ TArray<FString> FCortexMutationDiff::CollectSubObjectNames(const UObject* Outer)
 
 	TArray<UObject*> SubObjects;
 	// GetObjectsWithOuter requires non-const but only reads
-	GetObjectsWithOuter(const_cast<UObject*>(Outer), SubObjects, true);
+	GetObjectsWithOuter(const_cast<UObject*>(Outer), SubObjects);
 
 	for (const UObject* SubObject : SubObjects)
 	{

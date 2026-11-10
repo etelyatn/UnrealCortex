@@ -151,7 +151,11 @@ namespace
 		if (UPackage* Package = FindPackage(nullptr, *PackageName))
 		{
 			TArray<UObject*> PackageObjects;
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
 			GetObjectsWithPackage(Package, PackageObjects, false);
+#else
+			GetObjectsWithPackage(Package, PackageObjects, EGetObjectsFlags::None);
+#endif
 			for (UObject* Object : PackageObjects)
 			{
 				if (Object == nullptr)
