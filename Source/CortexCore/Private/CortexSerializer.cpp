@@ -1763,7 +1763,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		if (!ObjectPath.IsEmpty())
 		{
 			// Fast path: object already loaded (engine CDOs, /Script/ objects).
-			UObject* FoundObject = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath, false);
+			UObject* FoundObject = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath);
 			if (FoundObject == nullptr)
 			{
 				// Guard against SkipPackage warnings for non-existent or invalid packages.
@@ -1799,7 +1799,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		}
 
 		// Fast path: object already loaded (engine CDOs, /Script/ objects)
-		UObject* ExistingObject = StaticFindObject(ObjProp->PropertyClass, nullptr, *ObjectPath, false);
+		UObject* ExistingObject = StaticFindObject(ObjProp->PropertyClass, nullptr, *ObjectPath);
 		if (ExistingObject)
 		{
 			ObjProp->SetObjectPropertyValue(ValuePtr, ExistingObject);
@@ -1853,7 +1853,7 @@ bool FCortexSerializer::JsonToInstancedSubObject(const TSharedPtr<FJsonValue>& J
 	UClass* ResolvedClass = nullptr;
 	if (ClassName.Contains(TEXT(".")) || ClassName.Contains(TEXT("/")))
 	{
-		ResolvedClass = Cast<UClass>(StaticFindObject(UClass::StaticClass(), nullptr, *ClassName, false));
+		ResolvedClass = Cast<UClass>(StaticFindObject(UClass::StaticClass(), nullptr, *ClassName));
 	}
 
 	if (ResolvedClass == nullptr)

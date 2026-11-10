@@ -374,7 +374,11 @@ namespace CortexSerializerTagGateTest
 {
 	FStructProperty* MakeTagStructProperty(UScriptStruct* StructType)
 	{
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
 		FStructProperty* Prop = new FStructProperty(FFieldVariant(nullptr), FName(TEXT("TestTag")), RF_NoFlags);
+#else
+		FStructProperty* Prop = new FStructProperty(FFieldVariant(nullptr), FName(TEXT("TestTag")));
+#endif
 		if (Prop == nullptr)
 		{
 			return nullptr;

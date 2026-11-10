@@ -12,7 +12,7 @@
 
 Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, analyzing Blueprints for bugs and performance issues, generating 3D assets, playing and testing your game autonomously, and replaying gameplay you recorded by hand, frame for frame. No copy-pasting, no file exports. Changes appear live with full undo support.
 
-> **Status:** v0.4.1 Beta — All 15 modules shipped and tested.
+> **Status:** v0.4.2 Beta — All 15 modules shipped and tested.
 
 ---
 
