@@ -26,14 +26,14 @@
 
 namespace
 {
-FCortexReplayEvent MakeKeyDownEvent(int32 Sequence, double TimeSeconds, const FKey& Key = EKeys::SpaceBar)
+FCortexReplayTimedEvent MakeKeyDownEvent(int32 Sequence, double TimeSeconds, const FKey& Key = EKeys::SpaceBar)
 {
-	FCortexReplayEvent Event;
-	Event.Sequence = Sequence;
-	Event.TimeSeconds = TimeSeconds;
-	Event.Input.Kind = ECortexEditorPhysicalInputKind::KeyDown;
-	Event.Input.Key = Key;
-	return Event;
+	FCortexReplayTimedEvent Timed;
+	Timed.TimeSeconds = TimeSeconds;
+	Timed.Event.Sequence = Sequence;
+	Timed.Event.Input.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+	Timed.Event.Input.Key = Key;
+	return Timed;
 }
 
 TSharedPtr<const FCortexEditorPhysicalInputWidgetIdentity> MakeWidgetIdentity()
@@ -677,18 +677,18 @@ bool FCortexReplayLibraryKeyEligibilityTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
 
 	{
-		FCortexReplayEvent Event = MakeKeyDownEvent(0, 0.0, FKey(FName(TEXT("CortexReplayNotAKey"))));
+		FCortexReplayTimedEvent Event = MakeKeyDownEvent(0, 0.0, FKey(FName(TEXT("CortexReplayNotAKey"))));
 		TestFalse(TEXT("Unregistered key rejected"), Library.Publish(Fixture.MakeRecording(Id, false, { Event })).bSuccess);
 	}
 
 	{
-		FCortexReplayEvent Event = MakeKeyDownEvent(0, 0.0, EKeys::Gamepad_FaceButton_Bottom);
+		FCortexReplayTimedEvent Event = MakeKeyDownEvent(0, 0.0, EKeys::Gamepad_FaceButton_Bottom);
 		TestFalse(TEXT("Gamepad key rejected"), Library.Publish(Fixture.MakeRecording(Id, false, { Event })).bSuccess);
 	}
 
 	{
-		FCortexReplayEvent Event = MakeKeyDownEvent(0, 0.0, EKeys::LeftMouseButton);
-		Event.Input.Kind = ECortexEditorPhysicalInputKind::PointerDown;
+		FCortexReplayTimedEvent Event = MakeKeyDownEvent(0, 0.0, EKeys::LeftMouseButton);
+		Event.Event.Input.Kind = ECortexEditorPhysicalInputKind::PointerDown;
 		TestTrue(TEXT("Mouse pointer press accepted"), Library.Publish(Fixture.MakeRecording(Id, false, { Event })).bSuccess);
 	}
 
@@ -730,11 +730,10 @@ bool FCortexReplayLibraryPortableMotionWheelKeysTest::RunTest(const FString& Par
 	int32 Id = 0;
 	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
 
-	FCortexReplayEvent Key = MakeKeyDownEvent(0, 0.0, EKeys::W);
+	FCortexReplayTimedEvent Key = MakeKeyDownEvent(0, 0.0, EKeys::W);
 
 	FCortexReplayEvent Move;
 	Move.Sequence = 1;
-	Move.TimeSeconds = 0.01;
 	Move.Input.Kind = ECortexEditorPhysicalInputKind::PointerMove;
 	Move.Input.Key = EKeys::Mouse2D;
 	Move.Input.ViewportPosition = FVector2D(0.25, 0.5);
@@ -742,20 +741,19 @@ bool FCortexReplayLibraryPortableMotionWheelKeysTest::RunTest(const FString& Par
 
 	FCortexReplayEvent Relative;
 	Relative.Sequence = 2;
-	Relative.TimeSeconds = 0.02;
 	Relative.Input.Kind = ECortexEditorPhysicalInputKind::RelativeMove;
 	Relative.Input.Key = EKeys::Mouse2D;
 	Relative.Input.Delta = FVector2D(12.0, 0.0);
 
 	FCortexReplayEvent Wheel;
 	Wheel.Sequence = 3;
-	Wheel.TimeSeconds = 0.03;
 	Wheel.Input.Kind = ECortexEditorPhysicalInputKind::Wheel;
 	Wheel.Input.Key = EKeys::MouseWheelAxis;
 	Wheel.Input.WheelDelta = 1.0f;
 
 	TestTrue(TEXT("Recording with captured motion and wheel publishes"),
-		Library.Publish(Fixture.MakeRecording(Id, false, { Key, Move, Relative, Wheel })).bSuccess);
+		Library.Publish(Fixture.MakeRecording(Id, false, { Key, FCortexReplayTimedEvent{Move, 0.01},
+			FCortexReplayTimedEvent{Relative, 0.02}, FCortexReplayTimedEvent{Wheel, 0.03} })).bSuccess);
 
 	TSharedPtr<const FCortexReplaySnapshot> Loaded;
 	TestTrue(TEXT("Recording with captured motion and wheel loads"),
@@ -776,22 +774,20 @@ bool FCortexReplayLibraryPortableMotionWheelKeysTest::RunTest(const FString& Par
 		TestTrue(TEXT("Reserve non-canonical motion"), Library.ReserveId(MoveId).bSuccess);
 		FCortexReplayEvent NonCanonicalMove;
 		NonCanonicalMove.Sequence = 0;
-		NonCanonicalMove.TimeSeconds = 0.0;
 		NonCanonicalMove.Input.Kind = ECortexEditorPhysicalInputKind::PointerMove;
 		NonCanonicalMove.Input.Key = EKeys::MouseX;
 		TestFalse(TEXT("Non-canonical motion key is rejected"),
-			Library.Publish(Fixture.MakeRecording(MoveId, false, { NonCanonicalMove })).bSuccess);
+			Library.Publish(Fixture.MakeRecording(MoveId, false, { FCortexReplayTimedEvent{NonCanonicalMove, 0.0} })).bSuccess);
 	}
 	{
 		int32 WheelId = 0;
 		TestTrue(TEXT("Reserve keyless wheel"), Library.ReserveId(WheelId).bSuccess);
 		FCortexReplayEvent KeylessWheel;
 		KeylessWheel.Sequence = 0;
-		KeylessWheel.TimeSeconds = 0.0;
 		KeylessWheel.Input.Kind = ECortexEditorPhysicalInputKind::Wheel;
 		KeylessWheel.Input.Key = EKeys::Invalid;
 		TestFalse(TEXT("Keyless wheel is rejected"),
-			Library.Publish(Fixture.MakeRecording(WheelId, false, { KeylessWheel })).bSuccess);
+			Library.Publish(Fixture.MakeRecording(WheelId, false, { FCortexReplayTimedEvent{KeylessWheel, 0.0} })).bSuccess);
 	}
 
 	return true;
@@ -844,7 +840,6 @@ bool FCortexReplayLibrarySlateIdentityDigestRoundTripTest::RunTest(const FString
 
 	FCortexReplayEvent Press;
 	Press.Sequence = 0;
-	Press.TimeSeconds = 0.0;
 	Press.Input.Kind = ECortexEditorPhysicalInputKind::PointerDown;
 	Press.Input.Key = EKeys::LeftMouseButton;
 	Press.Input.ViewportPosition = FVector2D(0.5, 0.5);
@@ -856,7 +851,7 @@ bool FCortexReplayLibrarySlateIdentityDigestRoundTripTest::RunTest(const FString
 	Press.Guard = Guard;
 
 	TestTrue(TEXT("Captured selector publishes"),
-		Library.Publish(Fixture.MakeRecording(Id, false, { Press })).bSuccess);
+		Library.Publish(Fixture.MakeRecording(Id, false, { FCortexReplayTimedEvent{Press, 0.0} })).bSuccess);
 
 	TSharedPtr<const FCortexReplaySnapshot> Loaded;
 	TestTrue(TEXT("Captured selector loads"), Library.Load(Id, false, Loaded).bSuccess);
@@ -970,8 +965,8 @@ bool FCortexReplayLibrarySelectorStrictnessTest::RunTest(const FString& Paramete
 	}
 
 	{
-		FCortexReplayEvent Event = MakeKeyDownEvent(0, 0.0);
-		Event.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_ReplayTest.WBP_ReplayTest_C"));
+		FCortexReplayTimedEvent Event = MakeKeyDownEvent(0, 0.0);
+		Event.Event.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_ReplayTest.WBP_ReplayTest_C"));
 		TestTrue(TEXT("Publish supported guard"), Library.Publish(Fixture.MakeRecording(Id, false, { Event })).bSuccess);
 	}
 
@@ -1047,10 +1042,10 @@ bool FCortexReplayLibraryIdentityInterningTest::RunTest(const FString& Parameter
 	int32 Id = 0;
 	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
 
-	FCortexReplayEvent First = MakeKeyDownEvent(0, 0.0);
-	FCortexReplayEvent Second = MakeKeyDownEvent(1, 0.1);
-	First.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_Interning.WBP_Interning_C"));
-	Second.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_Interning.WBP_Interning_C"));
+	FCortexReplayTimedEvent First = MakeKeyDownEvent(0, 0.0);
+	FCortexReplayTimedEvent Second = MakeKeyDownEvent(1, 0.1);
+	First.Event.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_Interning.WBP_Interning_C"));
+	Second.Event.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_Interning.WBP_Interning_C"));
 	TestTrue(TEXT("Publish repeated selectors"), Library.Publish(Fixture.MakeRecording(Id, false, { First, Second })).bSuccess);
 
 	TSharedPtr<const FCortexReplaySnapshot> Snapshot;
@@ -1065,10 +1060,10 @@ bool FCortexReplayLibraryIdentityInterningTest::RunTest(const FString& Parameter
 
 	int32 OtherId = 0;
 	TestTrue(TEXT("Reserve other"), Library.ReserveId(OtherId).bSuccess);
-	FCortexReplayEvent Third = MakeKeyDownEvent(0, 0.0);
-	FCortexReplayEvent Fourth = MakeKeyDownEvent(1, 0.1);
-	Third.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_Other.WBP_Other_C"));
-	Fourth.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_Third.WBP_Third_C"));
+	FCortexReplayTimedEvent Third = MakeKeyDownEvent(0, 0.0);
+	FCortexReplayTimedEvent Fourth = MakeKeyDownEvent(1, 0.1);
+	Third.Event.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_Other.WBP_Other_C"));
+	Fourth.Event.Guard = MakeSupportedGuard(TEXT("/Game/UI/WBP_Third.WBP_Third_C"));
 	TestTrue(TEXT("Publish distinct selectors"), Library.Publish(Fixture.MakeRecording(OtherId, false, { Third, Fourth })).bSuccess);
 
 	TSharedPtr<const FCortexReplaySnapshot> OtherSnapshot;
@@ -1397,7 +1392,6 @@ bool FCortexReplayLibrarySelectorDigestStageConsistencyTest::RunTest(const FStri
 
 	FCortexReplayEvent Press;
 	Press.Sequence = 0;
-	Press.TimeSeconds = 0.0;
 	Press.Input.Kind = ECortexEditorPhysicalInputKind::PointerDown;
 	Press.Input.Key = EKeys::LeftMouseButton;
 	Press.Input.ViewportPosition = FVector2D(0.5, 0.5);
@@ -1408,7 +1402,7 @@ bool FCortexReplayLibrarySelectorDigestStageConsistencyTest::RunTest(const FStri
 	Guard.ExpectedLocalPosition = FVector2D(0.5, 0.5);
 	Press.Guard = Guard;
 	TestTrue(TEXT("Captured selector publishes"),
-		Library.Publish(Fixture.MakeRecording(Id, false, { Press })).bSuccess);
+		Library.Publish(Fixture.MakeRecording(Id, false, { FCortexReplayTimedEvent{Press, 0.0} })).bSuccess);
 
 	// Load stage: the loader rebuilds the identical digest from the selector alone.
 	TSharedPtr<const FCortexReplaySnapshot> Loaded;

@@ -4,6 +4,13 @@
 #include "CortexReplayScheduler.h"
 #include "CortexReplayTypes.h"
 
+/** Test-only: an event plus the capture time the fixture uses to place it on the 60 Hz cadence. */
+struct FCortexReplayTimedEvent
+{
+	FCortexReplayEvent Event;
+	double TimeSeconds = 0.0;
+};
+
 /**
  * Test-only fixture for CortexReplay library automation tests.
  *
@@ -20,7 +27,8 @@ public:
 	~FCortexReplayTestFixture();
 
 	const FString& GetProjectRoot() const;
-	FCortexReplaySnapshot MakeRecording(int32 Id, bool bAIEnabled, const TArray<FCortexReplayEvent>& Events);
+	FCortexReplaySnapshot MakeRecording(int32 Id, bool bAIEnabled,
+		TConstArrayView<FCortexReplayTimedEvent> Events);
 	FString GetInputsPath(int32 Id) const;
 	FString GetInitialStatePath(int32 Id) const;
 
@@ -31,7 +39,7 @@ public:
 	 * sum of the frame deltas. Call after every metadata/event mutation and before constructing the
 	 * snapshot.
 	 */
-	static void ApplyCadenceFrames(FCortexReplaySnapshot& Recording);
+	static void ApplyCadenceFrames(FCortexReplaySnapshot& Recording, TConstArrayView<double> EventTimes);
 
 	/**
 	 * Rebuilds a recording's frames as a capture lays them out: frame i has application delta

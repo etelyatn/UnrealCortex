@@ -91,32 +91,32 @@ bool RecordingExists(FCortexReplayTestFixture& Fixture, int32 Id)
 	return Library.Load(Id, false, Snapshot).bSuccess;
 }
 
-FCortexReplayEvent WindowMakeKeyEvent(int32 Sequence, double TimeSeconds,
+FCortexReplayTimedEvent WindowMakeKeyEvent(int32 Sequence, double TimeSeconds,
 	ECortexEditorPhysicalInputKind Kind, const FKey& Key)
 {
-	FCortexReplayEvent Event;
-	Event.Sequence = Sequence;
-	Event.TimeSeconds = TimeSeconds;
-	Event.Input.Kind = Kind;
-	Event.Input.Key = Key;
-	return Event;
+	FCortexReplayTimedEvent Timed;
+	Timed.TimeSeconds = TimeSeconds;
+	Timed.Event.Sequence = Sequence;
+	Timed.Event.Input.Kind = Kind;
+	Timed.Event.Input.Key = Key;
+	return Timed;
 }
 
 /** A press captured without an identifiable UI target guard: partial press-only coverage. */
-FCortexReplayEvent MakeUnavailablePress(int32 Sequence, double TimeSeconds, const FKey& Key)
+FCortexReplayTimedEvent MakeUnavailablePress(int32 Sequence, double TimeSeconds, const FKey& Key)
 {
-	FCortexReplayEvent Event = WindowMakeKeyEvent(Sequence, TimeSeconds,
+	FCortexReplayTimedEvent Timed = WindowMakeKeyEvent(Sequence, TimeSeconds,
 		ECortexEditorPhysicalInputKind::KeyDown, Key);
 	FCortexReplayInteractionGuard Guard;
 	Guard.ExpectedPose = FCortexEditorPhysicalInputPlayerPose();
 	Guard.UICoverage = ECortexEditorUICoverage::Unavailable;
 	Guard.UIUnavailableReason = ECortexEditorUIUnavailableReason::AnonymousSlate;
-	Event.Guard = Guard;
-	return Event;
+	Timed.Event.Guard = Guard;
+	return Timed;
 }
 
 bool PublishRecording(FAutomationTestBase& Test, FCortexReplayTestFixture& Fixture, int32 Id,
-	bool bAIEnabled, const FString& MapAssetPath, const TArray<FCortexReplayEvent>& Events)
+	bool bAIEnabled, const FString& MapAssetPath, const TArray<FCortexReplayTimedEvent>& Events)
 {
 	FCortexReplaySnapshot Snapshot = Fixture.MakeRecording(Id, bAIEnabled, Events);
 	if (!MapAssetPath.IsEmpty())
@@ -326,7 +326,7 @@ FString WindowMapAssetPath()
 constexpr TCHAR WindowPawnClassPath[] = TEXT("/Script/Engine.DefaultPawn");
 
 bool WindowPublishPlaybackRecording(FAutomationTestBase& Test, FCortexReplayTestFixture& Fixture,
-	int32 Id, const FString& MapPath, const TArray<FCortexReplayEvent>& Events, bool bAIEnabled)
+	int32 Id, const FString& MapPath, const TArray<FCortexReplayTimedEvent>& Events, bool bAIEnabled)
 {
 	FCortexReplaySnapshot Snapshot = Fixture.MakeRecording(Id, bAIEnabled, Events);
 	Snapshot.Metadata.MapAssetPath = MapPath;
@@ -1853,7 +1853,7 @@ bool FCortexReplayWindowRowActionsDisabledDuringOperationTest::RunTest(const FSt
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
 	const FString MapPath = WindowMapAssetPath();
-	const TArray<FCortexReplayEvent> Events = {
+	const TArray<FCortexReplayTimedEvent> Events = {
 		WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
 		WindowMakeKeyEvent(1, 6.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)};
 	if (!WindowPublishPlaybackRecording(*this, *Fixture, 1, MapPath, Events, false)
@@ -2144,7 +2144,7 @@ bool FCortexReplayWindowPlaySelectsPlayedRowTest::RunTest(const FString& Paramet
 
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
-	const TArray<FCortexReplayEvent> Events = {
+	const TArray<FCortexReplayTimedEvent> Events = {
 		WindowMakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
 		WindowMakeKeyEvent(1, 6.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W)};
 	if (!WindowPublishPlaybackRecording(*this, *Fixture, 1, WindowMapAssetPath(), Events, false)

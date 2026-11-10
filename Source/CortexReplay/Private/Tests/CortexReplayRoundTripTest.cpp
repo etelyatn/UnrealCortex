@@ -645,8 +645,8 @@ void LogRecording(FAutomationTestBase& Test, const FCortexReplaySnapshot& Snapsh
 			}
 		}
 		Test.AddInfo(FString::Printf(
-			TEXT("event[%d] seq=%d t=%.4f kind=%d key=%s delta=(%.2f,%.2f) frame=%d"),
-			Index, Event.Sequence, Event.TimeSeconds, static_cast<int32>(Event.Input.Kind),
+			TEXT("event[%d] seq=%d kind=%d key=%s delta=(%.2f,%.2f) frame=%d"),
+			Index, Event.Sequence, static_cast<int32>(Event.Input.Kind),
 			*Event.Input.Key.ToString(), Event.Input.Delta.X, Event.Input.Delta.Y, Frame));
 	}
 	for (const FCortexReplayFrame& Frame : Snapshot.Frames)

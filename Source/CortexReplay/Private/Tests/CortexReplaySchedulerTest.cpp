@@ -9,15 +9,15 @@
 
 namespace
 {
-FCortexReplayEvent MakeKeyEvent(int32 Sequence, double TimeSeconds,
+FCortexReplayTimedEvent MakeKeyEvent(int32 Sequence, double TimeSeconds,
 	ECortexEditorPhysicalInputKind Kind, const FKey& Key)
 {
-	FCortexReplayEvent Event;
-	Event.Sequence = Sequence;
-	Event.TimeSeconds = TimeSeconds;
-	Event.Input.Kind = Kind;
-	Event.Input.Key = Key;
-	return Event;
+	FCortexReplayTimedEvent Timed;
+	Timed.TimeSeconds = TimeSeconds;
+	Timed.Event.Sequence = Sequence;
+	Timed.Event.Input.Kind = Kind;
+	Timed.Event.Input.Key = Key;
+	return Timed;
 }
 
 /** A supported tagged-Slate guard whose observation the caller can flip between disabled/ready. */
@@ -33,7 +33,7 @@ struct FSchedulerGuardProbe
 		UI.State = ECortexEditorUIObservationState::Ready;
 	}
 
-	void Setup(FCortexReplayEvent& Event)
+	void Setup(FCortexReplayTimedEvent& Timed)
 	{
 		if (!Target.IsValid())
 		{
@@ -52,7 +52,7 @@ struct FSchedulerGuardProbe
 		Guard.UICoverage = ECortexEditorUICoverage::Supported;
 		Guard.UITarget = Target;
 		Guard.ExpectedLocalPosition = FVector2D(ExpectedLocalX, ExpectedLocalY);
-		Event.Guard = Guard;
+		Timed.Event.Guard = Guard;
 
 		UI.State = ECortexEditorUIObservationState::TargetDisabled;
 		UI.ActualTarget = Target;
@@ -114,11 +114,11 @@ bool FCortexReplaySchedulerSameTimeSequenceOrderingTest::RunTest(const FString& 
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
-	TArray<FCortexReplayEvent> Events;
+	TArray<FCortexReplayTimedEvent> Events;
 	Events.Add(MakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W));
 	Events.Add(MakeKeyEvent(1, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::E));
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, Events);
-	FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
+	FCortexReplayTestFixture::ApplyCadenceFrames(Recording, {0.0, 0.0});
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	FSchedulerDispatchLog Log;
@@ -150,14 +150,14 @@ bool FCortexReplaySchedulerWaitExcludesEvaluationTest::RunTest(const FString& Pa
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
-	FCortexReplayEvent Press = MakeKeyEvent(0, 0.0,
+	FCortexReplayTimedEvent Press = MakeKeyEvent(0, 0.0,
 		ECortexEditorPhysicalInputKind::PointerDown, EKeys::LeftMouseButton);
 	FSchedulerGuardProbe Probe;
 	Probe.Setup(Press);
 
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
 	Recording.Metadata.DurationSeconds = 0.3;
-	FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
+	FCortexReplayTestFixture::ApplyCadenceFrames(Recording, {0.0});
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 
@@ -224,13 +224,13 @@ bool FCortexReplaySchedulerClassifiedDoubleClickOnceTest::RunTest(const FString&
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
-	FCortexReplayEvent Down = MakeKeyEvent(0, 0.0,
+	FCortexReplayTimedEvent Down = MakeKeyEvent(0, 0.0,
 		ECortexEditorPhysicalInputKind::PointerDown, EKeys::LeftMouseButton);
-	FCortexReplayEvent Up = MakeKeyEvent(1, 0.05,
+	FCortexReplayTimedEvent Up = MakeKeyEvent(1, 0.05,
 		ECortexEditorPhysicalInputKind::PointerUp, EKeys::LeftMouseButton);
-	FCortexReplayEvent DoubleClick = MakeKeyEvent(2, 0.10,
+	FCortexReplayTimedEvent DoubleClick = MakeKeyEvent(2, 0.10,
 		ECortexEditorPhysicalInputKind::DoubleClick, EKeys::LeftMouseButton);
-	FCortexReplayEvent FinalUp = MakeKeyEvent(3, 0.15,
+	FCortexReplayTimedEvent FinalUp = MakeKeyEvent(3, 0.15,
 		ECortexEditorPhysicalInputKind::PointerUp, EKeys::LeftMouseButton);
 
 	FSchedulerGuardProbe Probe;
@@ -243,7 +243,7 @@ bool FCortexReplaySchedulerClassifiedDoubleClickOnceTest::RunTest(const FString&
 
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Down, Up, DoubleClick, FinalUp});
 	Recording.Metadata.DurationSeconds = 0.2;
-	FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
+	FCortexReplayTestFixture::ApplyCadenceFrames(Recording, {0.0, 0.05, 0.10, 0.15});
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	FSchedulerDispatchLog Log;
@@ -293,7 +293,7 @@ bool FCortexReplaySchedulerFrameTailCommitTest::RunTest(const FString& Parameter
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
-	const FCortexReplayEvent Press = MakeKeyEvent(0, 0.0,
+	const FCortexReplayTimedEvent Press = MakeKeyEvent(0, 0.0,
 		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
 	const double Deltas[] = { 0.1, 0.1, 0.1 };
@@ -357,14 +357,13 @@ bool FCortexReplaySchedulerFrameReentrantCancelTest::RunTest(const FString& Para
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
-	const FCortexReplayEvent First = MakeKeyEvent(0, 0.0,
+	const FCortexReplayTimedEvent First = MakeKeyEvent(0, 0.0,
 		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
-	FCortexReplayEvent Second = MakeKeyEvent(1, 0.0,
+	const FCortexReplayTimedEvent Second = MakeKeyEvent(1, 0.05,
 		ECortexEditorPhysicalInputKind::KeyUp, EKeys::W);
-	Second.TimeSeconds = 0.05;
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {First, Second});
 	Recording.Metadata.DurationSeconds = 0.3;
-	FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
+	FCortexReplayTestFixture::ApplyCadenceFrames(Recording, {0.0, 0.05});
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	FSchedulerDispatchLog Log;
@@ -412,13 +411,13 @@ bool FCortexReplaySchedulerFrameWaitBudgetTest::RunTest(const FString& Parameter
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
-	FCortexReplayEvent Press = MakeKeyEvent(0, 0.0,
+	FCortexReplayTimedEvent Press = MakeKeyEvent(0, 0.0,
 		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
 	FSchedulerGuardProbe Probe;
 	Probe.Setup(Press);
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
 	Recording.Metadata.DurationSeconds = 0.4;
-	FCortexReplayTestFixture::ApplyCadenceFrames(Recording);
+	FCortexReplayTestFixture::ApplyCadenceFrames(Recording, {0.0});
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexReplayScheduler Scheduler(Snapshot);
 	FSchedulerDispatchLog Log;
@@ -476,9 +475,9 @@ bool FCortexReplaySchedulerFrameLockedPreparationTest::RunTest(const FString& Pa
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
-	const FCortexReplayEvent Down = MakeKeyEvent(0, 10.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
-	const FCortexReplayEvent Look = MakeKeyEvent(1, 10.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::E);
-	const FCortexReplayEvent Up = MakeKeyEvent(2, 10.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W);
+	const FCortexReplayTimedEvent Down = MakeKeyEvent(0, 10.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
+	const FCortexReplayTimedEvent Look = MakeKeyEvent(1, 10.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::E);
+	const FCortexReplayTimedEvent Up = MakeKeyEvent(2, 10.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W);
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Down, Look, Up});
 	const double Deltas[] = { 0.1, 0.1 };
 	const int32 EventFrames[] = { 0, 0, 1 };
@@ -522,10 +521,10 @@ bool FCortexReplaySchedulerClockReadOnlyForWaitsTest::RunTest(const FString& Par
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
-	FCortexReplayEvent Press = MakeKeyEvent(2, 0.0,
+	FCortexReplayTimedEvent Press = MakeKeyEvent(2, 0.0,
 		ECortexEditorPhysicalInputKind::KeyDown, EKeys::W);
-	const FCortexReplayEvent Plain = MakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::E);
-	const FCortexReplayEvent Release = MakeKeyEvent(1, 0.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::E);
+	const FCortexReplayTimedEvent Plain = MakeKeyEvent(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::E);
+	const FCortexReplayTimedEvent Release = MakeKeyEvent(1, 0.0, ECortexEditorPhysicalInputKind::KeyUp, EKeys::E);
 	FSchedulerGuardProbe Probe;
 	Probe.Setup(Press);
 

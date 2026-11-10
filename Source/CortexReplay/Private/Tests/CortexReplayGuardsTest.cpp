@@ -458,11 +458,11 @@ bool FCortexReplayGuardsSchedulerSuppressionTest::RunTest(const FString& Paramet
 {
 	(void)Parameters;
 	FCortexReplayTestFixture Fixture;
-	FCortexReplayEvent Press;
-	Press.Input.Kind = ECortexEditorPhysicalInputKind::KeyDown;
-	Press.Input.Key = EKeys::E;
+	FCortexReplayTimedEvent Press;
+	Press.Event.Input.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+	Press.Event.Input.Key = EKeys::E;
 	FCortexReplaySnapshot Recording = Fixture.MakeRecording(1, false, {Press});
-	Fixture.ApplyCadenceFrames(Recording);
+	Fixture.ApplyCadenceFrames(Recording, {0.0});
 	const auto Snapshot = MakeShared<FCortexReplaySnapshot>(MoveTemp(Recording));
 	FCortexEditorPhysicalInputPlayerPose Actual = Snapshot->InitialState.Pose;
 	Actual.PawnTransform.AddToTranslation(FVector(1.0, 0.0, 0.0));
