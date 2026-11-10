@@ -29,5 +29,7 @@ public class CortexReplay : ModuleRules
 			"UnrealEd",
 			"CortexEditor",
 		});
+
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "zlib");
 	}
 }
