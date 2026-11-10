@@ -2,11 +2,16 @@
 
 #include "CortexCommandRouter.h"
 #include "CortexReplayFormat.h"
+#include "CortexReplayGzip.h"
+#include "CortexReplayPayload.h"
+#include "CortexReplayStorage.h"
 #include "CortexReplayLivePrerequisites.h"
 #include "CortexEditorPhysicalInputSession.h"
 
+#include "Dom/JsonObject.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 #include "IAssetViewport.h"
 #include "LevelEditor.h"
 #include "Misc/Guid.h"
@@ -98,12 +103,83 @@ const FString& FCortexReplayTestFixture::GetProjectRoot() const
 
 FString FCortexReplayTestFixture::GetInputsPath(int32 Id) const
 {
-	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("inputs.jsonl"));
+	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("inputs.jsonl.gz"));
+}
+
+FString FCortexReplayTestFixture::GetFramesPath(int32 Id) const
+{
+	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("frames.jsonl.gz"));
 }
 
 FString FCortexReplayTestFixture::GetInitialStatePath(int32 Id) const
 {
 	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("initial_state.json"));
+}
+
+FString FCortexReplayTestFixture::GetMetadataPath(int32 Id) const
+{
+	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("metadata.json"));
+}
+
+bool FCortexReplayTestFixture::ReadPayloadRows(const FString& GzPath, TArray<FString>& OutRows)
+{
+	OutRows.Reset();
+
+	TArray<uint8> Gz;
+	TArray<uint8> Raw;
+	FString Error;
+	if (!FFileHelper::LoadFileToArray(Gz, *GzPath)
+		|| !CortexReplayGzip::Decompress(Gz, CortexReplayPayload::MaxStreamBytes, Raw, Error))
+	{
+		return false;
+	}
+
+	FString Text;
+	FFileHelper::BufferToString(Text, Raw.GetData(), Raw.Num());
+	Text.ParseIntoArray(OutRows, TEXT("\n"), false);
+	if (OutRows.Num() > 0 && OutRows.Last().IsEmpty())
+	{
+		OutRows.Pop();
+	}
+	return true;
+}
+
+bool FCortexReplayTestFixture::WritePayloadRows(const FString& GzPath, TConstArrayView<FString> Rows)
+{
+	FString Text;
+	for (const FString& Row : Rows)
+	{
+		Text += Row;
+		Text += TEXT("\n");
+	}
+
+	const FTCHARToUTF8 Utf8(*Text);
+	TArray<uint8> Gz;
+	FString Error;
+	return CortexReplayGzip::Compress(
+			TConstArrayView<uint8>(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length()), Gz, Error)
+		&& FFileHelper::SaveArrayToFile(Gz, *GzPath);
+}
+
+bool FCortexReplayTestFixture::RewriteMetadataStreamHash(int32 Id, const TCHAR* Field, const FString& GzPath) const
+{
+	TArray<uint8> Gz;
+	FString MetadataText;
+	FString Sha256;
+	FString Error;
+	TSharedPtr<FJsonObject> Metadata;
+	if (!FFileHelper::LoadFileToArray(Gz, *GzPath)
+		|| !CortexReplayStorage::ComputeSha256Hex(Gz, Sha256, Error)
+		|| !FFileHelper::LoadFileToString(MetadataText, *GetMetadataPath(Id))
+		|| !CortexReplayFormat::DeserializeJsonObject(MetadataText, Metadata)
+		|| !Metadata.IsValid())
+	{
+		return false;
+	}
+
+	Metadata->SetStringField(Field, Sha256);
+	return FFileHelper::SaveStringToFile(CortexReplayFormat::SerializeCanonicalJson(Metadata.ToSharedRef()),
+		*GetMetadataPath(Id), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 }
 
 FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(

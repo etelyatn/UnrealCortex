@@ -1595,18 +1595,17 @@ bool FCortexReplayLifecycleImmutabilityTest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
 		[Fixture](FAutomationTestBase& T)
 		{
-			const FString RecordDirectory = FPaths::Combine(
-				FPaths::Combine(Fixture->GetProjectRoot(), TEXT(".cortex/replay/recordings")),
-				FString::FromInt(1));
-			const FString InputsPath = FPaths::Combine(RecordDirectory, TEXT("inputs.jsonl"));
-			FString Original;
+			const FString InputsPath = Fixture->GetInputsPath(1);
+			TArray<FString> Rows;
 			T.TestTrue(TEXT("Admitted inputs payload is readable"),
-				FFileHelper::LoadFileToString(Original, *InputsPath));
-			FString FirstLine;
-			T.TestTrue(TEXT("Admitted payload has a first event line"),
-				Original.Split(TEXT("\n"), &FirstLine, nullptr) && !FirstLine.IsEmpty());
-			T.TestTrue(TEXT("Active-run payload replaced with a different valid payload"),
-				FFileHelper::SaveStringToFile(FirstLine + TEXT("\n"), *InputsPath));
+				FCortexReplayTestFixture::ReadPayloadRows(InputsPath, Rows));
+			T.TestTrue(TEXT("Admitted payload has a first event row"), Rows.Num() > 1);
+			if (Rows.Num() > 1)
+			{
+				Rows.SetNum(1);
+				T.TestTrue(TEXT("Active-run payload replaced with a different valid payload"),
+					FCortexReplayTestFixture::WritePayloadRows(InputsPath, Rows));
+			}
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,

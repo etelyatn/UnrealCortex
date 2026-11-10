@@ -6,8 +6,8 @@
 class FJsonObject;
 
 /**
- * The CortexReplay recording format (metadata.json / initial_state.json / inputs.jsonl /
- * frames.jsonl): serialization, strict parsing and validation. It owns every invariant a recording
+ * The CortexReplay recording format (metadata.json / initial_state.json / inputs.jsonl.gz /
+ * frames.jsonl.gz rows): serialization, strict parsing and validation. It owns every invariant a recording
  * must satisfy and knows nothing about where recordings are stored.
  */
 namespace CortexReplayFormat
@@ -54,12 +54,6 @@ FString SerializeImmutableMetadata(const FCortexReplayMetadata& Metadata, const 
 bool ParseMetadata(const FString& Text, int32 ExpectedId, FCortexReplayMetadata& OutMetadata, FString& OutError);
 bool ParseInitialState(const FString& Text, int32 ExpectedId, FCortexReplayInitialState& OutInitialState,
 	FString& OutError);
-/** Streams, hashes, parses and validates inputs.jsonl. Coverage is computed from the parsed guards. */
-bool ParseInputsStream(const FString& Path, TArray<FCortexReplayEvent>& OutEvents,
-	FCortexReplayGuardCoverage& OutCoverage, FString& OutSha256, FString& OutError);
-/** Streams, hashes, parses and validates frames.jsonl against the event count and timing block. */
-bool ParseFramesStream(const FString& Path, int32 EventCount, const FCortexReplayTiming& Timing,
-	TArray<FCortexReplayFrame>& OutFrames, FString& OutSha256, FString& OutError);
 /** Parses rows in order (Sequence = row index) then runs ValidateEvents. */
 bool ParseEventRows(TConstArrayView<FString> Rows, TArray<FCortexReplayEvent>& OutEvents,
 	FCortexReplayGuardCoverage& OutCoverage, FString& OutError);

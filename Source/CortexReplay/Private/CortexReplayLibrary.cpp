@@ -3,6 +3,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexReplayErrorCodes.h"
 #include "CortexReplayFormat.h"
+#include "CortexReplayPayload.h"
 #include "CortexReplayStorage.h"
 
 #include "Dom/JsonObject.h"
@@ -191,7 +192,7 @@ FCortexCommandResult FCortexReplayLibrary::ListEntries(TArray<FCortexReplayLibra
 
 		// A recording whose payload files are gone cannot be played, so it is reported as unloadable
 		// without hashing them: the human library must still show it and let the human delete it.
-		for (const TCHAR* PayloadName : { TEXT("initial_state.json"), TEXT("inputs.jsonl"), TEXT("frames.jsonl") })
+		for (const TCHAR* PayloadName : { TEXT("initial_state.json"), TEXT("inputs.jsonl.gz"), TEXT("frames.jsonl.gz") })
 		{
 			if (!FPaths::FileExists(FPaths::Combine(RecordingDirectory, PayloadName)))
 			{
@@ -308,16 +309,6 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing initial_state.json"));
 	}
 
-	if (!IFileManager::Get().FileExists(*InputsPath))
-	{
-		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing inputs.jsonl"));
-	}
-
-	if (!IFileManager::Get().FileExists(*FramesPath))
-	{
-		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing frames.jsonl"));
-	}
-
 	FCortexReplayMetadata Metadata;
 	FString ValidationError;
 	if (!ParseMetadata(Utf8BytesToFString(MetadataBytes), Id, Metadata, ValidationError))
@@ -331,25 +322,14 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, ValidationError);
 	}
 
-	TArray<FCortexReplayEvent> Events;
-	FCortexReplayGuardCoverage Coverage;
-	FString InputsSha256;
-	if (!ParseInputsStream(InputsPath, Events, Coverage, InputsSha256, ValidationError))
+	if (!IFileManager::Get().FileExists(*InputsPath))
 	{
-		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, ValidationError);
+		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing inputs.jsonl.gz"));
 	}
 
-	TArray<FCortexReplayFrame> Frames;
-	FString FramesSha256;
-	if (!ParseFramesStream(FramesPath, Events.Num(), Metadata.Timing, Frames, FramesSha256, ValidationError))
+	if (!IFileManager::Get().FileExists(*FramesPath))
 	{
-		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, ValidationError);
-	}
-
-	FString InitialStateSha256;
-	if (!ComputeSha256Hex(InitialStateBytes, InitialStateSha256, ValidationError))
-	{
-		return ReplayError(CortexReplayErrorCodes::StorageFailure, ValidationError);
+		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing frames.jsonl.gz"));
 	}
 
 	if (!IsLowerHexSha256(Metadata.InitialStateSha256) || !IsLowerHexSha256(Metadata.InputsSha256)
@@ -358,19 +338,76 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 		return ReplayError(CortexReplayErrorCodes::InvalidRecording, TEXT("metadata.json payload hashes are malformed"));
 	}
 
+	// Each stream is size-checked, read once, hashed against the metadata and only then decoded.
+	const auto ReadVerifiedStream = [](const FString& Path, const TCHAR* Name, const FString& ExpectedSha256,
+		TArray<uint8>& OutGz) -> FCortexCommandResult
+	{
+		if (IFileManager::Get().FileSize(*Path) > CortexReplayPayload::MaxStreamBytes)
+		{
+			return ReplayError(CortexReplayErrorCodes::InvalidRecording,
+				FString::Printf(TEXT("%s exceeds the stream size limit"), Name));
+		}
+
+		if (!ReadFileBytes(Path, OutGz))
+		{
+			return ReplayError(CortexReplayErrorCodes::InvalidRecording,
+				FString::Printf(TEXT("%s could not be read"), Name));
+		}
+
+		FString Sha256;
+		FString HashError;
+		if (!ComputeSha256Hex(OutGz, Sha256, HashError))
+		{
+			return ReplayError(CortexReplayErrorCodes::StorageFailure, HashError);
+		}
+
+		if (Sha256 != ExpectedSha256)
+		{
+			return ReplayError(CortexReplayErrorCodes::InvalidRecording,
+				FString::Printf(TEXT("%s does not match its recorded hash"), Name));
+		}
+
+		return ReplaySuccess();
+	};
+
+	TArray<uint8> InputsGz;
+	FCortexCommandResult StreamResult = ReadVerifiedStream(InputsPath, TEXT("inputs.jsonl.gz"), Metadata.InputsSha256, InputsGz);
+	if (!StreamResult.bSuccess)
+	{
+		return StreamResult;
+	}
+
+	TArray<uint8> FramesGz;
+	StreamResult = ReadVerifiedStream(FramesPath, TEXT("frames.jsonl.gz"), Metadata.FramesSha256, FramesGz);
+	if (!StreamResult.bSuccess)
+	{
+		return StreamResult;
+	}
+
+	TArray<FCortexReplayEvent> Events;
+	FCortexReplayGuardCoverage Coverage;
+	StreamResult = CortexReplayPayload::DecodeEvents(InputsGz, Events, Coverage);
+	if (!StreamResult.bSuccess)
+	{
+		return StreamResult;
+	}
+
+	TArray<FCortexReplayFrame> Frames;
+	StreamResult = CortexReplayPayload::DecodeFrames(FramesGz, Events.Num(), Metadata.Timing, Frames);
+	if (!StreamResult.bSuccess)
+	{
+		return StreamResult;
+	}
+
+	FString InitialStateSha256;
+	if (!ComputeSha256Hex(InitialStateBytes, InitialStateSha256, ValidationError))
+	{
+		return ReplayError(CortexReplayErrorCodes::StorageFailure, ValidationError);
+	}
+
 	if (InitialStateSha256 != Metadata.InitialStateSha256)
 	{
 		return ReplayError(CortexReplayErrorCodes::InvalidRecording, TEXT("initial_state.json does not match its recorded hash"));
-	}
-
-	if (InputsSha256 != Metadata.InputsSha256)
-	{
-		return ReplayError(CortexReplayErrorCodes::InvalidRecording, TEXT("inputs.jsonl does not match its recorded hash"));
-	}
-
-	if (FramesSha256 != Metadata.FramesSha256)
-	{
-		return ReplayError(CortexReplayErrorCodes::InvalidRecording, TEXT("frames.jsonl does not match its recorded hash"));
 	}
 
 	if (!CoverageEquals(Coverage, Metadata.GuardCoverage))
@@ -405,18 +442,6 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 		|| !ReadFileBytes(InitialStatePath, InitialStateRecheckBytes)
 		|| MetadataRecheckBytes != MetadataBytes
 		|| InitialStateRecheckBytes != InitialStateBytes)
-	{
-		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Recording changed while it was being loaded"));
-	}
-
-	FString InputsRecheckSha256;
-	if (!ComputeFileSha256Hex(InputsPath, InputsRecheckSha256, ValidationError) || InputsRecheckSha256 != InputsSha256)
-	{
-		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Recording changed while it was being loaded"));
-	}
-
-	FString FramesRecheckSha256;
-	if (!ComputeFileSha256Hex(FramesPath, FramesRecheckSha256, ValidationError) || FramesRecheckSha256 != FramesSha256)
 	{
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Recording changed while it was being loaded"));
 	}
@@ -492,6 +517,26 @@ FCortexCommandResult FCortexReplayLibrary::Publish(const FCortexReplaySnapshot& 
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, HashError);
 	}
 
+	TArray<uint8> InputsGz;
+	FCortexCommandResult EncodeResult = CortexReplayPayload::EncodeEvents(Recording.Events, InputsGz);
+	if (!EncodeResult.bSuccess)
+	{
+		return EncodeResult;
+	}
+
+	TArray<uint8> FramesGz;
+	EncodeResult = CortexReplayPayload::EncodeFrames(Recording.Frames, FramesGz);
+	if (!EncodeResult.bSuccess)
+	{
+		return EncodeResult;
+	}
+
+	FString FramesSha256;
+	if (!ComputeSha256Hex(InputsGz, InputsSha256, HashError) || !ComputeSha256Hex(FramesGz, FramesSha256, HashError))
+	{
+		return ReplayError(CortexReplayErrorCodes::StorageFailure, HashError);
+	}
+
 	if (!EnsureDirectory(GetReplayRoot(ProjectRoot)) || !EnsureDirectory(GetRecordingsRoot(ProjectRoot)) || !EnsureDirectory(GetPendingRoot(ProjectRoot)))
 	{
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Failed to create the CortexReplay library directories"));
@@ -517,56 +562,11 @@ FCortexCommandResult FCortexReplayLibrary::Publish(const FCortexReplaySnapshot& 
 		return ReplayError(CortexReplayErrorCodes::StorageFailure, TEXT("Failed to create the CortexReplay pending directory"));
 	}
 
-	// Stage the initial state and stream every input row to the staging file while hashing it.
+	// Stage the initial state and both compressed streams.
 	FString StageError;
-	bool bStaged = WriteFileBytesDurably(GetInitialStatePath(PendingDirectory), InitialStateBytes, StageError);
-
-	if (bStaged)
-	{
-		FCortexReplayDurableWriter Writer;
-		bStaged = Writer.Open(GetInputsPath(PendingDirectory), StageError);
-		if (bStaged)
-		{
-			FCortexReplaySha256State Hash;
-			bStaged = Hash.Begin(StageError);
-			for (int32 EventIndex = 0; EventIndex < Recording.Events.Num() && bStaged; ++EventIndex)
-			{
-				const TArray<uint8> RowBytes = ToUtf8Bytes(SerializeEventRow(Recording.Events[EventIndex]) + TEXT("\n"));
-				bStaged = Writer.WriteBytes(RowBytes.GetData(), RowBytes.Num(), StageError)
-					&& Hash.Update(RowBytes.GetData(), RowBytes.Num());
-			}
-
-			if (bStaged)
-			{
-				bStaged = Writer.Commit(StageError) && Hash.Finish(InputsSha256, StageError);
-			}
-		}
-	}
-
-	// Stream every recorded frame to its own staged file while hashing it, exactly like inputs.
-	FString FramesSha256;
-	if (bStaged)
-	{
-		const int32 ExpectedFrames = Recording.Frames.Num();
-		FCortexReplayDurableWriter Writer;
-		bStaged = Writer.Open(GetFramesPath(PendingDirectory), StageError);
-		if (bStaged)
-		{
-			FCortexReplaySha256State Hash;
-			bStaged = Hash.Begin(StageError);
-			for (int32 FrameIndex = 0; FrameIndex < ExpectedFrames && bStaged; ++FrameIndex)
-			{
-				const TArray<uint8> RowBytes = ToUtf8Bytes(SerializeFrameRow(Recording.Frames[FrameIndex]) + TEXT("\n"));
-				bStaged = Writer.WriteBytes(RowBytes.GetData(), RowBytes.Num(), StageError)
-					&& Hash.Update(RowBytes.GetData(), RowBytes.Num());
-			}
-
-			if (bStaged)
-			{
-				bStaged = Writer.Commit(StageError) && Hash.Finish(FramesSha256, StageError);
-			}
-		}
-	}
+	bool bStaged = WriteFileBytesDurably(GetInitialStatePath(PendingDirectory), InitialStateBytes, StageError)
+		&& WriteFileBytesDurably(GetInputsPath(PendingDirectory), InputsGz, StageError)
+		&& WriteFileBytesDurably(GetFramesPath(PendingDirectory), FramesGz, StageError);
 
 	if (bStaged)
 	{
@@ -577,23 +577,63 @@ FCortexCommandResult FCortexReplayLibrary::Publish(const FCortexReplaySnapshot& 
 
 		if (bStaged)
 		{
+			// Staged verification: re-read every staged file and run the streams through the load decoders.
 			TArray<uint8> StagedMetadata;
 			TArray<uint8> StagedInitialState;
+			TArray<uint8> StagedInputsGz;
+			TArray<uint8> StagedFramesGz;
 			FString StagedInitialStateSha256;
 			FString StagedInputsSha256;
 			FString StagedFramesSha256;
-			TArray<FCortexReplayFrame> StagedFrames;
-			FCortexReplayTiming StagedTiming = Recording.Metadata.Timing;
 			bStaged = ReadFileBytes(GetMetadataPath(PendingDirectory), StagedMetadata)
 				&& ReadFileBytes(GetInitialStatePath(PendingDirectory), StagedInitialState)
-				&& ComputeFileSha256Hex(GetInputsPath(PendingDirectory), StagedInputsSha256, StageError)
+				&& ReadFileBytes(GetInputsPath(PendingDirectory), StagedInputsGz)
+				&& ReadFileBytes(GetFramesPath(PendingDirectory), StagedFramesGz)
 				&& ComputeSha256Hex(StagedInitialState, StagedInitialStateSha256, StageError)
-				&& ParseFramesStream(GetFramesPath(PendingDirectory), Recording.Events.Num(), StagedTiming, StagedFrames, StagedFramesSha256, StageError)
-				&& StagedMetadata == MetadataBytes
-				&& StagedInitialStateSha256 == InitialStateSha256
-				&& StagedInputsSha256 == InputsSha256
-				&& StagedFramesSha256 == FramesSha256;
+				&& ComputeSha256Hex(StagedInputsGz, StagedInputsSha256, StageError)
+				&& ComputeSha256Hex(StagedFramesGz, StagedFramesSha256, StageError);
+			if (!bStaged && StageError.IsEmpty())
+			{
+				StageError = TEXT("Staged recording files could not be read back");
+			}
+
+			if (bStaged)
+			{
+				bStaged = StagedMetadata == MetadataBytes
+					&& StagedInitialStateSha256 == InitialStateSha256
+					&& StagedInputsSha256 == InputsSha256
+					&& StagedFramesSha256 == FramesSha256
+					&& StagedInputsGz == InputsGz
+					&& StagedFramesGz == FramesGz;
+				if (!bStaged)
+				{
+					StageError = TEXT("Staged recording files do not match what was written");
+				}
+			}
+
+			if (bStaged)
+			{
+				TArray<FCortexReplayEvent> StagedEvents;
+				FCortexReplayGuardCoverage StagedCoverage;
+				TArray<FCortexReplayFrame> StagedFrames;
+				FCortexCommandResult Decoded = CortexReplayPayload::DecodeEvents(StagedInputsGz, StagedEvents, StagedCoverage);
+				if (Decoded.bSuccess)
+				{
+					Decoded = CortexReplayPayload::DecodeFrames(StagedFramesGz, StagedEvents.Num(), Recording.Metadata.Timing, StagedFrames);
+				}
+
+				if (!Decoded.bSuccess)
+				{
+					bStaged = false;
+					StageError = FString::Printf(TEXT("Staged streams failed verification: %s"), *Decoded.ErrorMessage);
+				}
+			}
 		}
+	}
+
+	if (!bStaged && StageError.IsEmpty())
+	{
+		StageError = TEXT("Failed to stage the recording");
 	}
 
 	if (!bStaged)

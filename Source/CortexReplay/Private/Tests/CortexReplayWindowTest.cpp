@@ -2015,8 +2015,8 @@ bool FCortexReplayWindowUnloadableRecordingShownWithReasonTest::RunTest(const FS
 	}
 
 	const FString RecordingDirectory = FPaths::GetPath(Fixture.GetInputsPath(1));
-	const FString FramesPath = FPaths::Combine(RecordingDirectory, TEXT("frames.jsonl"));
-	if (!TestTrue(TEXT("Fixture removed frames.jsonl"), IFileManager::Get().Delete(*FramesPath)))
+	const FString FramesPath = Fixture.GetFramesPath(1);
+	if (!TestTrue(TEXT("Fixture removed frames.jsonl.gz"), IFileManager::Get().Delete(*FramesPath)))
 	{
 		return false;
 	}
@@ -2033,7 +2033,7 @@ bool FCortexReplayWindowUnloadableRecordingShownWithReasonTest::RunTest(const FS
 	TestTrue(TEXT("Play is disabled for an unloadable recording"),
 		Row->PlayButton.IsValid() && !Row->PlayButton->IsEnabled());
 	TestTrue(TEXT("The row shows the load error reason"),
-		WindowAnyVisibleTextContains(Row.ToSharedRef(), TEXT("frames.jsonl")));
+		WindowAnyVisibleTextContains(Row.ToSharedRef(), TEXT("frames.jsonl.gz")));
 
 	const TSharedPtr<SCortexReplayDeleteDialog> Dialog = Window->OpenDeleteConfirmation(1);
 	if (TestTrue(TEXT("Delete confirmation opens for the unloadable recording"), Dialog.IsValid()))

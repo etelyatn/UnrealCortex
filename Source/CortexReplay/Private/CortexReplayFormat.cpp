@@ -2319,27 +2319,6 @@ bool ParseFrameRows(
 	return ValidateFrameSet(OutFrames, EventCount, Timing, OutError);
 }
 
-bool ParseFramesStream(
-	const FString& Path,
-	int32 EventCount,
-	const FCortexReplayTiming& Timing,
-	TArray<FCortexReplayFrame>& OutFrames,
-	FString& OutSha256,
-	FString& OutError)
-{
-	OutFrames.Reset();
-
-	TArray<FString> Rows;
-	const bool bRead = ReadJsonlRows(Path,
-		[&Rows](const FString& Row, int32, FString&)
-		{
-			Rows.Add(Row);
-			return true;
-		},
-		OutSha256, OutError);
-	return bRead && ParseFrameRows(Rows, EventCount, Timing, OutFrames, OutError);
-}
-
 bool ParseEventRows(
 	TConstArrayView<FString> Rows,
 	TArray<FCortexReplayEvent>& OutEvents,
@@ -2359,27 +2338,6 @@ bool ParseEventRows(
 	}
 
 	return ValidateEvents(OutEvents, OutCoverage, OutError);
-}
-
-bool ParseInputsStream(
-	const FString& Path,
-	TArray<FCortexReplayEvent>& OutEvents,
-	FCortexReplayGuardCoverage& OutCoverage,
-	FString& OutSha256,
-	FString& OutError)
-{
-	OutEvents.Reset();
-	OutCoverage = FCortexReplayGuardCoverage();
-
-	TArray<FString> Rows;
-	const bool bRead = ReadJsonlRows(Path,
-		[&Rows](const FString& Row, int32, FString&)
-		{
-			Rows.Add(Row);
-			return true;
-		},
-		OutSha256, OutError);
-	return bRead && ParseEventRows(Rows, OutEvents, OutCoverage, OutError);
 }
 
 bool IsValidRecordingName(const FString& Name)

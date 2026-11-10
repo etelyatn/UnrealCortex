@@ -29,8 +29,19 @@ public:
 	const FString& GetProjectRoot() const;
 	FCortexReplaySnapshot MakeRecording(int32 Id, bool bAIEnabled,
 		TConstArrayView<FCortexReplayTimedEvent> Events);
+	/** inputs.jsonl.gz of recording Id. */
 	FString GetInputsPath(int32 Id) const;
+	/** frames.jsonl.gz of recording Id. */
+	FString GetFramesPath(int32 Id) const;
 	FString GetInitialStatePath(int32 Id) const;
+	FString GetMetadataPath(int32 Id) const;
+
+	/** Decompresses and splits a stream into rows (no validation). */
+	static bool ReadPayloadRows(const FString& GzPath, TArray<FString>& OutRows);
+	/** Writes rows + LF as one gzip member. */
+	static bool WritePayloadRows(const FString& GzPath, TConstArrayView<FString> Rows);
+	/** Recomputes metadata.json `inputs_sha256` or `frames_sha256` (Field) from the file at GzPath. */
+	bool RewriteMetadataStreamHash(int32 Id, const TCHAR* Field, const FString& GzPath) const;
 
 	/**
 	 * Rebuilds a recording's frames as a realistic 60 Hz format-3 stream: frames 0..N-1, each with a
