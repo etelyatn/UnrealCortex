@@ -48,6 +48,45 @@ FCortexCommandResult DecodeEventsFromRaw(const char* Text, TArray<FCortexReplayE
 	FCortexReplayGuardCoverage Coverage;
 	return CortexReplayPayload::DecodeEvents(MakeGz(MakePayloadBytes(Text)), OutEvents, Coverage);
 }
+bool PayloadModifiersEqual(const FModifierKeysState& A, const FModifierKeysState& B)
+{
+	return A.IsLeftShiftDown() == B.IsLeftShiftDown() && A.IsRightShiftDown() == B.IsRightShiftDown()
+		&& A.IsLeftControlDown() == B.IsLeftControlDown() && A.IsRightControlDown() == B.IsRightControlDown()
+		&& A.IsLeftAltDown() == B.IsLeftAltDown() && A.IsRightAltDown() == B.IsRightAltDown()
+		&& A.IsLeftCommandDown() == B.IsLeftCommandDown() && A.IsRightCommandDown() == B.IsRightCommandDown()
+		&& A.AreCapsLocked() == B.AreCapsLocked();
+}
+
+void ExpectPayloadEventEqual(FAutomationTestBase& Test, int32 Index, const FCortexReplayEvent& Actual, const FCortexReplayEvent& Expected)
+{
+	const FString Label = FString::Printf(TEXT("Event %d"), Index);
+	Test.TestEqual(*(Label + TEXT(" sequence")), Actual.Sequence, Index);
+	Test.TestTrue(*(Label + TEXT(" kind")), Actual.Input.Kind == Expected.Input.Kind);
+	Test.TestEqual(*(Label + TEXT(" key")), Actual.Input.Key.ToString(), Expected.Input.Key.ToString());
+	Test.TestTrue(*(Label + TEXT(" modifiers")), PayloadModifiersEqual(Actual.Input.Modifiers, Expected.Input.Modifiers));
+	Test.TestEqual(*(Label + TEXT(" repeat")), Actual.Input.bRepeat, Expected.Input.bRepeat);
+	Test.TestTrue(*(Label + TEXT(" viewport position")), Actual.Input.ViewportPosition == Expected.Input.ViewportPosition);
+	Test.TestTrue(*(Label + TEXT(" delta")), Actual.Input.Delta == Expected.Input.Delta);
+	Test.TestTrue(*(Label + TEXT(" wheel delta")), Actual.Input.WheelDelta == Expected.Input.WheelDelta);
+	Test.TestEqual(*(Label + TEXT(" guard presence")), Actual.Guard.IsSet(), Expected.Guard.IsSet());
+	if (!Actual.Guard.IsSet() || !Expected.Guard.IsSet())
+	{
+		return;
+	}
+	const FCortexReplayInteractionGuard& A = *Actual.Guard;
+	const FCortexReplayInteractionGuard& E = *Expected.Guard;
+	Test.TestTrue(*(Label + TEXT(" guard pawn transform")), A.ExpectedPose.PawnTransform.Equals(E.ExpectedPose.PawnTransform, 0.0));
+	Test.TestTrue(*(Label + TEXT(" guard control rotation")), A.ExpectedPose.ControlRotation == E.ExpectedPose.ControlRotation);
+	Test.TestTrue(*(Label + TEXT(" guard coverage")), A.UICoverage == E.UICoverage);
+	Test.TestTrue(*(Label + TEXT(" guard reason")), A.UIUnavailableReason == E.UIUnavailableReason);
+	Test.TestEqual(*(Label + TEXT(" guard target presence")), A.UITarget.IsValid(), E.UITarget.IsValid());
+	if (A.UITarget.IsValid() && E.UITarget.IsValid())
+	{
+		Test.TestEqual(*(Label + TEXT(" guard identity digest")), A.UITarget->IdentitySha256, E.UITarget->IdentitySha256);
+		Test.TestEqual(*(Label + TEXT(" guard identity root")), A.UITarget->RootClassPath, E.UITarget->RootClassPath);
+	}
+	Test.TestTrue(*(Label + TEXT(" guard local position")), A.ExpectedLocalPosition == E.ExpectedLocalPosition);
+}
 } // namespace
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayPayloadRoundTripTest, "Cortex.Replay.Payload.RoundTrip", PayloadTestFlags)
@@ -76,12 +115,12 @@ bool FCortexReplayPayloadRoundTripTest::RunTest(const FString& Parameters)
 	}
 	for (int32 Index = 0; Index < Events.Num(); ++Index)
 	{
-		TestEqual(TEXT("Event sequence"), Events[Index].Sequence, Index);
-		TestTrue(TEXT("Event kind"), Events[Index].Input.Kind == Source.Events[Index].Input.Kind);
-		TestEqual(TEXT("Event key"), Events[Index].Input.Key.ToString(), Source.Events[Index].Input.Key.ToString());
-		TestEqual(TEXT("Event guard presence"), Events[Index].Guard.IsSet(), Source.Events[Index].Guard.IsSet());
+		ExpectPayloadEventEqual(*this, Index, Events[Index], Source.Events[Index]);
 	}
 	TestEqual(TEXT("Pose presses"), Coverage.PosePresses, Source.Metadata.GuardCoverage.PosePresses);
+	TestEqual(TEXT("UI supported presses"), Coverage.UISupportedPresses, Source.Metadata.GuardCoverage.UISupportedPresses);
+	TestEqual(TEXT("UI unavailable presses"), Coverage.UIUnavailablePresses, Source.Metadata.GuardCoverage.UIUnavailablePresses);
+	TestEqual(TEXT("UI not applicable presses"), Coverage.UINotApplicablePresses, Source.Metadata.GuardCoverage.UINotApplicablePresses);
 
 	if (!TestEqual(TEXT("Frame count"), Frames.Num(), Source.Frames.Num()))
 	{
