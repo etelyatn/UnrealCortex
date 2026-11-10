@@ -37,7 +37,7 @@ namespace CortexReflectConfigScan
 	};
 
 	/**
-	 * Scans Config/*.ini of the project and of every enabled plugin located under the project directory.
+	 * Scans the Config/<name>.ini files of the project and of every enabled plugin located under the project directory.
 	 * Wildcard patterns and CoreRedirects "Old*" attributes are not references and are skipped.
 	 * @param OutSummary Optional; receives the files read and the files that could not be read.
 	 */
