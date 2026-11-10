@@ -303,17 +303,17 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing metadata.json"));
 	}
 
-	TArray<uint8> InitialStateBytes;
-	if (!ReadFileBytes(InitialStatePath, InitialStateBytes))
-	{
-		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing initial_state.json"));
-	}
-
 	FCortexReplayMetadata Metadata;
 	FString ValidationError;
 	if (!ParseMetadata(Utf8BytesToFString(MetadataBytes), Id, Metadata, ValidationError))
 	{
 		return ReplayError(CortexReplayErrorCodes::UnsupportedRecordingFormat, ValidationError);
+	}
+
+	TArray<uint8> InitialStateBytes;
+	if (!ReadFileBytes(InitialStatePath, InitialStateBytes))
+	{
+		return ReplayError(CortexReplayErrorCodes::IncompleteRecording, TEXT("Recording is missing initial_state.json"));
 	}
 
 	FCortexReplayInitialState InitialState;
@@ -350,7 +350,7 @@ FCortexCommandResult FCortexReplayLibrary::Load(
 
 		if (!ReadFileBytes(Path, OutGz))
 		{
-			return ReplayError(CortexReplayErrorCodes::InvalidRecording,
+			return ReplayError(CortexReplayErrorCodes::StorageFailure,
 				FString::Printf(TEXT("%s could not be read"), Name));
 		}
 

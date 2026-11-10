@@ -2206,3 +2206,52 @@ bool FCortexReplayLibraryMatchingHashMalformedRowUnsupportedTest::RunTest(const 
 		FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// The metadata version gate precedes the initial-state read: a legacy metadata.json whose
+// initial_state.json is gone is an unsupported format, not an incomplete recording.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryMetadataGatePrecedesInitialStateTest,
+	"Cortex.Replay.Library.MetadataGatePrecedesInitialState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryMetadataGatePrecedesInitialStateTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	Library.ReserveId(Id);
+	if (!TestTrue(TEXT("Publish"), Library.Publish(Fixture.MakeRecording(Id, false, {})).bSuccess))
+	{
+		return false;
+	}
+
+	const FString MetadataPath = Fixture.GetMetadataPath(Id);
+	TSharedPtr<FJsonObject> Metadata = LoadJsonObject(MetadataPath);
+	if (!TestTrue(TEXT("Metadata is readable"), Metadata.IsValid()))
+	{
+		return false;
+	}
+	Metadata->SetNumberField(TEXT("schema_version"), 3);
+	TestTrue(TEXT("Relabel metadata to format 3"), SaveJsonObject(MetadataPath, Metadata));
+	TestTrue(TEXT("Delete initial_state.json"), IFileManager::Get().Delete(*Fixture.GetInitialStatePath(Id)));
+
+	TSharedPtr<const FCortexReplaySnapshot> Loaded;
+	const FCortexCommandResult Result = Library.Load(Id, false, Loaded);
+	TestFalse(TEXT("The recording does not load"), Result.bSuccess);
+	TestEqual(TEXT("The metadata version gate wins over the missing initial state"), Result.ErrorCode,
+		FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
+
+	TArray<FCortexReplayLibraryEntry> Entries;
+	TestTrue(TEXT("Listing succeeds"), Library.ListEntries(Entries).bSuccess);
+	if (TestEqual(TEXT("The recording is listed"), Entries.Num(), 1))
+	{
+		TestEqual(TEXT("The listing reports the unsupported format"), Entries[0].LoadError.ErrorCode,
+			FString(CortexReplayErrorCodes::UnsupportedRecordingFormat));
+	}
+	return true;
+}
