@@ -41,10 +41,10 @@ bool CortexReplayGzip::Compress(TConstArrayView<uint8> Raw, TArray<uint8>& OutGz
 	const uLong Bound = deflateBound(&Stream, static_cast<uLong>(Raw.Num()));
 	// deflateBound does not cover the gzip wrapper with default settings on every zlib; add headroom.
 	const int64 Capacity = static_cast<int64>(Bound) + 64;
-	if (Capacity > MaxZlibSpan)
+	if (Capacity > static_cast<int64>(MAX_int32))
 	{
 		deflateEnd(&Stream);
-		OutError = TEXT("gzip compress output exceeds the 4 GiB zlib span");
+		OutError = TEXT("gzip compress output cannot fit in a byte array");
 		return false;
 	}
 	OutGz.SetNumUninitialized(static_cast<int32>(Capacity));
@@ -101,22 +101,35 @@ bool CortexReplayGzip::Decompress(TConstArrayView<uint8> Gz, int64 MaxOutputByte
 	while (InflateResult != Z_STREAM_END)
 	{
 		const int64 Used = OutRaw.Num();
-		// Grow only by what the limit still permits, plus one probe byte so overflow is detected not truncated.
-		const int64 Headroom = FMath::Min(InflateChunkBytes, MaxOutputBytes - Used + 1);
+		const int64 Remaining = MaxOutputBytes - Used;
+		// The array only ever grows within the remaining allowance. At the limit, one more output byte is
+		// detected in stack scratch so the bounded array is never extended past MaxOutputBytes.
+		const int64 Headroom = FMath::Min(InflateChunkBytes, Remaining);
 		if (Used + Headroom > static_cast<int64>(MAX_int32))
 		{
 			OutError = TEXT("gzip output exceeds the addressable buffer size");
 			break;
 		}
-		OutRaw.SetNumUninitialized(static_cast<int32>(Used + Headroom), EAllowShrinking::No);
-		Stream.next_out = OutRaw.GetData() + Used;
-		Stream.avail_out = static_cast<uInt>(Headroom);
+		uint8 OverflowProbe = 0;
+		if (Headroom > 0)
+		{
+			OutRaw.SetNumUninitialized(static_cast<int32>(Used + Headroom), EAllowShrinking::No);
+			Stream.next_out = OutRaw.GetData() + Used;
+			Stream.avail_out = static_cast<uInt>(Headroom);
+		}
+		else
+		{
+			Stream.next_out = &OverflowProbe;
+			Stream.avail_out = 1;
+		}
 
 		InflateResult = inflate(&Stream, Z_NO_FLUSH);
-		const int64 Produced = Headroom - static_cast<int64>(Stream.avail_out);
-		OutRaw.SetNum(static_cast<int32>(Used + Produced), EAllowShrinking::No);
-
-		if (OutRaw.Num() > MaxOutputBytes)
+		if (Headroom > 0)
+		{
+			const int64 Produced = Headroom - static_cast<int64>(Stream.avail_out);
+			OutRaw.SetNum(static_cast<int32>(Used + Produced), EAllowShrinking::No);
+		}
+		else if (Stream.avail_out == 0)
 		{
 			OutError = FString::Printf(TEXT("gzip output exceeds the %lld byte limit"), MaxOutputBytes);
 			break;

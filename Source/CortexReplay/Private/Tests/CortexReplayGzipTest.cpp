@@ -122,7 +122,10 @@ bool FCortexReplayGzipRespectsOutputLimitTest::RunTest(const FString& Parameters
 	FString Error;
 	TestFalse(TEXT("Limit below payload size rejects"), CortexReplayGzip::Decompress(MakeHelloVector(), 5, Raw, Error));
 	TestFalse(TEXT("Rejection carries an error"), Error.IsEmpty());
-	Raw.Reset();
+	TestEqual(TEXT("Rejected output is left empty"), Raw.Num(), 0);
+	TestFalse(TEXT("Limit zero rejects a non-empty payload"), CortexReplayGzip::Decompress(MakeHelloVector(), 0, Raw, Error));
+	TestEqual(TEXT("Zero-limit output is left empty"), Raw.Num(), 0);
 	TestTrue(TEXT("Limit equal to payload size accepts"), CortexReplayGzip::Decompress(MakeHelloVector(), 6, Raw, Error));
+	TestEqual(TEXT("Accepted output holds exactly the payload"), Raw.Num(), 6);
 	return true;
 }
