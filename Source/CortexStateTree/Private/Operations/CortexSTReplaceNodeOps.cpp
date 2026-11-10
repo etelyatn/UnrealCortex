@@ -1,4 +1,5 @@
 #include "Operations/CortexSTReplaceNodeOps.h"
+#include "CortexEngineCompat.h"
 
 #include "Blueprint/StateTreeConditionBlueprintBase.h"
 #include "Blueprint/StateTreeConsiderationBlueprintBase.h"
@@ -1110,16 +1111,16 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 		{
 			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("property_map must be an object of \"OldProperty\": \"NewProperty\""));
 		}
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Entry : (*MapObject)->Values)
+		for (const auto& Entry : (*MapObject)->Values)
 		{
 			FString NewName;
-			if (!Entry.Value.IsValid() || !Entry.Value->TryGetString(NewName) || NewName.IsEmpty() || Entry.Key.IsEmpty())
+			if (!Entry.Value.IsValid() || !Entry.Value->TryGetString(NewName) || NewName.IsEmpty() || CortexEngineCompat::JsonKeyToString(Entry.Key).IsEmpty())
 			{
 				return FCortexCommandRouter::Error(
 					CortexErrorCodes::InvalidField,
-					FString::Printf(TEXT("property_map value for '%s' must be a non-empty string"), *Entry.Key));
+					FString::Printf(TEXT("property_map value for '%s' must be a non-empty string"), *CortexEngineCompat::JsonKeyToString(Entry.Key)));
 			}
-			Request.PropertyMap.Add(FName(*Entry.Key), FName(*NewName));
+			Request.PropertyMap.Add(FName(*CortexEngineCompat::JsonKeyToString(Entry.Key)), FName(*NewName));
 		}
 	}
 	if (Params->HasField(TEXT("acknowledged_losses")))

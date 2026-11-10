@@ -1,4 +1,5 @@
 #include "Operations/CortexBPSwapSCSClassOps.h"
+#include "CortexEngineCompat.h"
 
 #include "Components/ActorComponent.h"
 #include "CortexBlueprintModule.h"
@@ -196,9 +197,9 @@ namespace CortexSwapSCSPrivate
 		Details->SetBoolField(TEXT("can_apply"), false);
 		if (First.Details.IsValid())
 		{
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : First.Details->Values)
+			for (const auto& Field : First.Details->Values)
 			{
-				Details->SetField(Field.Key, Field.Value);
+				Details->SetField(CortexEngineCompat::JsonKeyToString(Field.Key), Field.Value);
 			}
 		}
 		return FCortexCommandRouter::Error(First.Code, First.Message, Details);

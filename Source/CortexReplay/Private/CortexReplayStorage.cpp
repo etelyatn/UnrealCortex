@@ -13,6 +13,10 @@
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <bcrypt.h>
 #include "Windows/HideWindowsPlatformTypes.h"
+#elif CORTEX_SHA256_OPENSSL
+THIRD_PARTY_INCLUDES_START
+#include <openssl/sha.h>
+THIRD_PARTY_INCLUDES_END
 #endif
 
 namespace CortexReplayStorage
@@ -155,6 +159,19 @@ bool FCortexReplaySha256State::Begin(FString& OutError)
 
 	bActive = true;
 	return true;
+#elif CORTEX_SHA256_OPENSSL
+	SHA256_CTX* NewContext = new SHA256_CTX();
+	HashHandle = NewContext;
+
+	if (SHA256_Init(NewContext) != 1)
+	{
+		Close();
+		OutError = TEXT("Failed to initialize the SHA-256 provider");
+		return false;
+	}
+
+	bActive = true;
+	return true;
 #else
 	OutError = TEXT("SHA-256 hashing is not implemented on this platform");
 	return false;
@@ -176,6 +193,18 @@ bool FCortexReplaySha256State::Update(const uint8* Data, int64 Size)
 
 	return BCryptHashData(static_cast<BCRYPT_HASH_HANDLE>(HashHandle), const_cast<PUCHAR>(Data),
 		static_cast<ULONG>(Size), 0) >= 0;
+#elif CORTEX_SHA256_OPENSSL
+	if (!bActive || Size < 0)
+	{
+		return false;
+	}
+
+	if (Size == 0)
+	{
+		return true;
+	}
+
+	return SHA256_Update(static_cast<SHA256_CTX*>(HashHandle), Data, static_cast<size_t>(Size)) == 1;
 #else
 	(void)Data;
 	(void)Size;
@@ -212,6 +241,30 @@ bool FCortexReplaySha256State::Finish(FString& OutHex, FString& OutError)
 	}
 
 	return true;
+#elif CORTEX_SHA256_OPENSSL
+	if (!bActive)
+	{
+		OutError = TEXT("SHA-256 hash state was not initialized");
+		return false;
+	}
+
+	uint8 Digest[SHA256_DIGEST_LENGTH];
+	const bool bFinished = SHA256_Final(Digest, static_cast<SHA256_CTX*>(HashHandle)) == 1;
+	Close();
+
+	if (!bFinished)
+	{
+		OutError = TEXT("Failed to compute the SHA-256 digest");
+		return false;
+	}
+
+	OutHex.Reserve(static_cast<int32>(sizeof(Digest)) * 2);
+	for (const uint8 Byte : Digest)
+	{
+		OutHex += FString::Printf(TEXT("%02x"), static_cast<int32>(Byte));
+	}
+
+	return true;
 #else
 	OutError = TEXT("SHA-256 hashing is not implemented on this platform");
 	return false;
@@ -231,6 +284,14 @@ void FCortexReplaySha256State::Close()
 	{
 		BCryptCloseAlgorithmProvider(static_cast<BCRYPT_ALG_HANDLE>(AlgorithmHandle), 0);
 		AlgorithmHandle = nullptr;
+	}
+
+	bActive = false;
+#elif CORTEX_SHA256_OPENSSL
+	if (HashHandle != nullptr)
+	{
+		delete static_cast<SHA256_CTX*>(HashHandle);
+		HashHandle = nullptr;
 	}
 
 	bActive = false;

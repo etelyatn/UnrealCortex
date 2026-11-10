@@ -652,7 +652,7 @@ bool FCortexReflectDependencyGraphEdgesTest::RunTest(const FString& Parameters)
 	const TSharedPtr<FJsonObject>* ByKind = nullptr;
 	if (Result.Data->TryGetObjectField(TEXT("edges_by_kind"), ByKind))
 	{
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*ByKind)->Values)
+		for (const auto& Pair : (*ByKind)->Values)
 		{
 			CountedEdges += static_cast<int32>(Pair.Value->AsNumber());
 		}

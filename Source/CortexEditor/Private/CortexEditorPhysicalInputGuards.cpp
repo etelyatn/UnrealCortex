@@ -19,6 +19,10 @@
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include <bcrypt.h>
 #include "Windows/HideWindowsPlatformTypes.h"
+#elif CORTEX_SHA256_OPENSSL
+THIRD_PARTY_INCLUDES_START
+#include <openssl/sha.h>
+THIRD_PARTY_INCLUDES_END
 #endif
 
 namespace
@@ -233,6 +237,25 @@ FString CortexEditorPhysicalInputSha256(const uint8* Data, int64 Size)
 	BCryptCloseAlgorithmProvider(AlgorithmHandle, 0);
 
 	if (!bFinished)
+	{
+		return FString();
+	}
+
+	FString OutHex;
+	OutHex.Reserve(static_cast<int32>(sizeof(Digest)) * 2);
+	for (const uint8 Byte : Digest)
+	{
+		OutHex += FString::Printf(TEXT("%02x"), static_cast<int32>(Byte));
+	}
+	return OutHex;
+#elif CORTEX_SHA256_OPENSSL
+	if (Size < 0)
+	{
+		return FString();
+	}
+
+	uint8 Digest[SHA256_DIGEST_LENGTH];
+	if (SHA256(Data, static_cast<size_t>(Size), Digest) == nullptr)
 	{
 		return FString();
 	}

@@ -1,4 +1,5 @@
 #include "Operations/CortexUMGWidgetTreeOps.h"
+#include "CortexEngineCompat.h"
 #include "Operations/CortexUMGAnimationTrackUtils.h"
 #include "Operations/CortexUMGPropertyBindingOps.h"
 #include "Operations/CortexUMGRenameDependents.h"
@@ -1201,11 +1202,11 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
                         Stale.Add(MakeShared<FJsonValueString>(Asset->AssetPath));
                     }
                 }
-                for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Supplied->Values)
+                for (const auto& Pair : Supplied->Values)
                 {
-                    if (!Modified.ContainsByPredicate([&Pair](const FAssetPlan* Asset) { return Asset->AssetPath == Pair.Key; }))
+                    if (!Modified.ContainsByPredicate([&Pair](const FAssetPlan* Asset) { return Asset->AssetPath == CortexEngineCompat::JsonKeyToString(Pair.Key); }))
                     {
-                        Extra.Add(MakeShared<FJsonValueString>(Pair.Key));
+                        Extra.Add(MakeShared<FJsonValueString>(CortexEngineCompat::JsonKeyToString(Pair.Key)));
                     }
                 }
                 if (!Missing.IsEmpty() || !Extra.IsEmpty() || !Stale.IsEmpty())

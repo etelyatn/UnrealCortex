@@ -1,4 +1,5 @@
 #include "Operations/CortexBPAdoptSCSOps.h"
+#include "CortexEngineCompat.h"
 
 #include "Algo/AnyOf.h"
 #include "Components/ActorComponent.h"
@@ -252,9 +253,9 @@ namespace CortexAdoptSCSPrivate
 		Details->SetBoolField(TEXT("can_apply"), false);
 		if (First.Details.IsValid())
 		{
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : First.Details->Values)
+			for (const auto& Field : First.Details->Values)
 			{
-				Details->SetField(Field.Key, Field.Value);
+				Details->SetField(CortexEngineCompat::JsonKeyToString(Field.Key), Field.Value);
 			}
 		}
 		return FCortexCommandRouter::Error(First.Code, First.Message, Details);
@@ -580,12 +581,12 @@ namespace CortexAdoptSCSPrivate
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Each mapping must be an object {scs_node, native_component}"));
 				return false;
 			}
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : (*Item)->Values)
+			for (const auto& Field : (*Item)->Values)
 			{
-				if (Field.Key != TEXT("scs_node") && Field.Key != TEXT("native_component"))
+				if (CortexEngineCompat::JsonKeyToString(Field.Key) != TEXT("scs_node") && CortexEngineCompat::JsonKeyToString(Field.Key) != TEXT("native_component"))
 				{
 					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-						FString::Printf(TEXT("Unknown mapping field '%s' (allowed: scs_node, native_component)"), *Field.Key));
+						FString::Printf(TEXT("Unknown mapping field '%s' (allowed: scs_node, native_component)"), *CortexEngineCompat::JsonKeyToString(Field.Key)));
 					return false;
 				}
 			}

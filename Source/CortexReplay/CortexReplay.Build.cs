@@ -29,5 +29,14 @@ public class CortexReplay : ModuleRules
 			"UnrealEd",
 			"CortexEditor",
 		});
+
+		// SHA-256 for recording snapshots: Windows uses BCrypt (bcrypt.lib comes with CortexCore); Unix uses the
+		// engine's OpenSSL module, as CortexCore does for FCortexSafeFileContract::HashFileBytesSha256.
+		bool bUseOpenSslSha256 = Target.IsInPlatformGroup(UnrealPlatformGroup.Unix);
+		if (bUseOpenSslSha256)
+		{
+		    AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
+		}
+		PrivateDefinitions.Add("CORTEX_SHA256_OPENSSL=" + (bUseOpenSslSha256 ? "1" : "0"));
 	}
 }

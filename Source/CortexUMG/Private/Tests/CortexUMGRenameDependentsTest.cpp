@@ -3,6 +3,7 @@
 // fingerprints, undone by one transaction, and honours inherited BindWidget names.
 
 #include "Curves/CurveFloat.h"
+#include "CortexEngineCompat.h"
 #include "Engine/TimelineTemplate.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexAssetMutationGuard.h"
@@ -262,9 +263,9 @@ namespace
 	TSharedPtr<FJsonObject> CopyWithField(const TSharedPtr<FJsonObject>& Source, const TCHAR* Field, const FString& Value)
 	{
 		TSharedPtr<FJsonObject> Copy = MakeShared<FJsonObject>();
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Source->Values)
+		for (const auto& Pair : Source->Values)
 		{
-			Copy->SetField(Pair.Key, Pair.Value);
+			Copy->SetField(CortexEngineCompat::JsonKeyToString(Pair.Key), Pair.Value);
 		}
 		Copy->SetStringField(Field, Value);
 		return Copy;

@@ -52,7 +52,7 @@ public:
 private:
 	void Close();
 
-	/** BCRYPT_ALG_HANDLE / BCRYPT_HASH_HANDLE on Windows. */
+	/** BCRYPT_ALG_HANDLE / BCRYPT_HASH_HANDLE on Windows; HashHandle is a SHA256_CTX* on Unix. */
 	void* AlgorithmHandle = nullptr;
 	void* HashHandle = nullptr;
 	bool bActive = false;
