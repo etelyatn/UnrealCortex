@@ -7229,7 +7229,8 @@ void AssertForeignInterruption(FAutomationTestBase& Test,
  */
 bool RunForeignInterruptionCase(FAutomationTestBase& Test, const TCHAR* Label,
 	FCortexForeignInjection PreEpoch, FCortexForeignInjection Inject,
-	const FCortexForeignInterruptionExpectation& Expected, const bool bRecentInput)
+	const FCortexForeignInterruptionExpectation& Expected, const bool bRecentInput,
+	FCortexForeignInjection PostAssert = nullptr)
 {
 	if (!GEditor) { Test.AddError(TEXT("GEditor missing")); return false; }
 	if (!FSlateApplication::IsInitialized())
@@ -7248,7 +7249,7 @@ bool RunForeignInterruptionCase(FAutomationTestBase& Test, const TCHAR* Label,
 		/*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(&Test, 2,
-		[Fixture, PreEpoch, Inject, Expected, bRecentInput](FAutomationTestBase& InTest)
+		[Fixture, PreEpoch, Inject, Expected, bRecentInput, PostAssert](FAutomationTestBase& InTest)
 		{
 			using namespace CortexEditorUserInputActivity;
 			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
@@ -7285,6 +7286,14 @@ bool RunForeignInterruptionCase(FAutomationTestBase& Test, const TCHAR* Label,
 
 			Inject(F, Geometry, Clock);
 			AssertForeignInterruption(InTest, F, Expected);
+			if (PostAssert)
+			{
+				// Balance the real edge so Slate's process-global state does not outlive the fixture.
+				PostAssert(F, Geometry, Clock);
+				InTest.TestEqual(TEXT("Slate pressed buttons balanced after the real Up"),
+					FSlateApplication::Get().GetPressedMouseButtons().Num(), 0);
+				InTest.TestEqual(TEXT("Still exactly one interruption"), F.InterruptionCount, 1);
+			}
 			F.Session->ReleaseHeldInputs();
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(&Test, Fixture));
@@ -7338,7 +7347,9 @@ bool FCortexForeignInterruptionKeyPressTest::RunTest(const FString& Parameters)
 	return RunForeignInterruptionCase(*this, TEXT("ForeignKeyPress"), nullptr,
 		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry&,
 			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectKey(F, true); },
-		{ TEXT("key"), TEXT("Q"), TEXT("press") }, false);
+		{ TEXT("key"), TEXT("Q"), TEXT("press") }, false,
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry&,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectKey(F, false); });
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexForeignInterruptionKeyReleaseTest,
@@ -7364,7 +7375,9 @@ bool FCortexForeignInterruptionButtonPressTest::RunTest(const FString& Parameter
 	return RunForeignInterruptionCase(*this, TEXT("ForeignButtonPress"), nullptr,
 		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry& Geometry,
 			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectLeftButton(F, Geometry, true); },
-		{ TEXT("mouse_button"), TEXT("LeftMouseButton"), TEXT("press") }, false);
+		{ TEXT("mouse_button"), TEXT("LeftMouseButton"), TEXT("press") }, false,
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry& Geometry,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectLeftButton(F, Geometry, false); });
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexForeignInterruptionButtonReleaseTest,
@@ -7412,6 +7425,7 @@ bool FCortexForeignInterruptionPointerMoveTest::RunTest(const FString& Parameter
 			CortexEditorUserInputActivity::FCortexUserInputActivitySample& Clock)
 		{
 			auto& Slate = FSlateApplication::Get();
+			FCortexCursorPositionRestore Restore;
 			const TSharedRef<FSlateUser> CursorUser = Slate.GetCursorUser().ToSharedRef();
 			Slate.SetCursorPos(Geometry.LocalToAbsolute(FVector2D(40.0, 40.0)));
 			CursorUser->SetCursorPosition(Geometry.LocalToAbsolute(Geometry.GetLocalSize() * 0.5));
