@@ -21,6 +21,9 @@
 
 class UWorld;
 
+/** The hands-off interval between a replay run's readiness and its first replayed frame. */
+inline constexpr double ReplayCountdownSeconds = 3.0;
+
 /**
  * Helpers shared by the service translation units (facade, capture, run, JSON). Helpers used by a
  * single translation unit stay in that file's anonymous namespace.
@@ -249,6 +252,15 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	/** Stable short name used by capture lifecycle logging and the discard outcome message. */
 	static const TCHAR* CapturePhaseToString(ECapturePhase Phase);
 
+	// ---- countdown ----
+	/** Service configuration (survives ResetRun): the hands-off interval between readiness and playback. */
+	double CountdownSeconds = ReplayCountdownSeconds;
+
+	/** True while the run is Preparing and its hands-off countdown is running. */
+	bool IsInCountdown() const;
+	/** Seconds of the countdown left, clamped to zero; zero when no countdown is running. */
+	double GetCountdownRemainingSeconds() const;
+
 	// ---- run ----
 	bool bRunActive = false;
 	bool bFinalizing = false;
@@ -261,6 +273,8 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	TSharedPtr<FCortexReplayScheduler> Scheduler;
 	double PrepareDeadline = 0.0;
 	double ReplayEpoch = 0.0;
+	/** Monotonic start of the hands-off countdown; 0 until the run's checks pass and it begins. */
+	double CountdownStartedSeconds = 0.0;
 	bool bReadySeen = false;
 	FCortexCommandResult PreparationResult;
 	bool bCancellationRequested = false;
@@ -287,6 +301,8 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	bool IsLiveReplaying() const;
 	/** The active run's wire object, built with the live predicate. */
 	TSharedRef<FJsonObject> BuildActiveRunData() const;
+	/** Adds `phase` (countdown while counting, playback while replaying) and the countdown time left. */
+	void AddPhaseFields(FJsonObject& Data) const;
 	/**
 	 * After readiness and before the epoch: compares the recording's viewport size, DPI, player-input
 	 * class, input-config identity and viewport capture/high-precision state with the live owned target.

@@ -218,6 +218,21 @@ bool FCortexReplayService::FImpl::IsLiveReplaying() const
 	return bRunActive && !bFinalizing && RunState == ECortexReplayState::Replaying;
 }
 
+bool FCortexReplayService::FImpl::IsInCountdown() const
+{
+	return bRunActive && !bFinalizing && RunState == ECortexReplayState::Preparing
+		&& CountdownSeconds > 0.0 && CountdownStartedSeconds > 0.0;
+}
+
+double FCortexReplayService::FImpl::GetCountdownRemainingSeconds() const
+{
+	if (!IsInCountdown())
+	{
+		return 0.0;
+	}
+	return FMath::Max(0.0, CountdownSeconds - (FPlatformTime::Seconds() - CountdownStartedSeconds));
+}
+
 FCortexCommandResult FCortexReplayService::FImpl::PrepareRecordedFrame(int32 FrameIndex,
 	ECortexReplayFramePreparation& OutPreparation)
 {
@@ -329,6 +344,7 @@ void FCortexReplayService::FImpl::ResetRun()
 	Scheduler.Reset();
 	PrepareDeadline = 0.0;
 	ReplayEpoch = 0.0;
+	CountdownStartedSeconds = 0.0;
 	ArmedFrame = INDEX_NONE;
 	ArmedFrameCounter = 0;
 	bArmedFramePrepared = false;
@@ -381,24 +397,52 @@ void FCortexReplayService::FImpl::TickRun()
 			return;
 		}
 
-		// Recheck the live grant after readiness and before the epoch starts; only the permission bit
-		// is read, never the admitted payload.
-		if (!CheckLivePermission())
+		// The live grant and the target's compatibility are checked once, when readiness arrives; the
+		// countdown that follows only watches that the target survives.
+		if (CountdownStartedSeconds == 0.0)
 		{
-			UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s lost eligibility after readiness: %s"),
-				*ServiceGuidToString(ActiveRun.Id), *PermissionRevocationResult.ErrorMessage);
-			Owner->Finalize(ECortexReplayState::Error, PermissionRevocationResult);
-			return;
+			// Recheck the live grant after readiness and before the epoch starts; only the permission
+			// bit is read, never the admitted payload.
+			if (!CheckLivePermission())
+			{
+				UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s lost eligibility after readiness: %s"),
+					*ServiceGuidToString(ActiveRun.Id), *PermissionRevocationResult.ErrorMessage);
+				Owner->Finalize(ECortexReplayState::Error, PermissionRevocationResult);
+				return;
+			}
+
+			// The live target must match what the recording was captured on, before anything is replayed.
+			const FCortexCommandResult Compatible = CheckLivePrerequisites();
+			if (!Compatible.bSuccess)
+			{
+				UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s prerequisites mismatch: %s"),
+					*ServiceGuidToString(ActiveRun.Id), *Compatible.ErrorMessage);
+				Owner->Finalize(ECortexReplayState::Error, Compatible);
+				return;
+			}
+			CountdownStartedSeconds = FPlatformTime::Seconds();
 		}
 
-		// The live target must match what the recording was captured on, before anything is replayed.
-		const FCortexCommandResult Compatible = CheckLivePrerequisites();
-		if (!Compatible.bSuccess)
+		if (CountdownSeconds > 0.0)
 		{
-			UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s prerequisites mismatch: %s"),
-				*ServiceGuidToString(ActiveRun.Id), *Compatible.ErrorMessage);
-			Owner->Finalize(ECortexReplayState::Error, Compatible);
-			return;
+			FCortexCommandResult CountdownTargetError;
+			if (!Session->ValidateTarget(CountdownTargetError))
+			{
+				Owner->Finalize(ECortexReplayState::Interrupted, CountdownTargetError);
+				return;
+			}
+			if (IsInCountdown() && GetCountdownRemainingSeconds() > 0.0)
+			{
+				return;
+			}
+			// The grant may have been revoked while the user was being warned.
+			if (!CheckLivePermission())
+			{
+				UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s lost eligibility during the countdown: %s"),
+					*ServiceGuidToString(ActiveRun.Id), *PermissionRevocationResult.ErrorMessage);
+				Owner->Finalize(ECortexReplayState::Error, PermissionRevocationResult);
+				return;
+			}
 		}
 
 		// One-time pose restoration and immediate readback.
@@ -864,6 +908,7 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	Data->SetNumberField(TEXT("recording_id"), Id);
 	Data->SetStringField(TEXT("editor_instance_id"), State.EditorInstanceId);
 	Data->SetStringField(TEXT("state"), ServiceStateToString(State.RunState));
+	Data->SetNumberField(TEXT("countdown_seconds"), State.CountdownSeconds);
 	return FCortexCommandRouter::Success(Data);
 }
 

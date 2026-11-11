@@ -167,7 +167,22 @@ TSharedRef<FJsonObject> FCortexReplayService::BuildRunData(const FCortexReplayRu
 	return Data;
 }
 
+void FCortexReplayService::FImpl::AddPhaseFields(FJsonObject& Data) const
+{
+	if (IsInCountdown())
+	{
+		Data.SetStringField(TEXT("phase"), TEXT("countdown"));
+		Data.SetNumberField(TEXT("countdown_remaining_seconds"), GetCountdownRemainingSeconds());
+	}
+	else if (IsLiveReplaying())
+	{
+		Data.SetStringField(TEXT("phase"), TEXT("playback"));
+	}
+}
+
 TSharedRef<FJsonObject> FCortexReplayService::FImpl::BuildActiveRunData() const
 {
-	return BuildRunData(ActiveRun, IsLiveReplaying(), Scheduler.Get());
+	const TSharedRef<FJsonObject> Data = BuildRunData(ActiveRun, IsLiveReplaying(), Scheduler.Get());
+	AddPhaseFields(*Data);
+	return Data;
 }

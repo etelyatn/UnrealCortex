@@ -183,6 +183,24 @@ public:
 		FSlateApplication::Get().ProcessKeyDownEvent(FKeyEvent(Key, Modifiers, UserIndex, false, 0, 0));
 	}
 
+	/** Releases a physical key on the route's user. */
+	void ReleaseKey(const FKey& Key)
+	{
+		const FModifierKeysState Modifiers;
+		FSlateApplication::Get().ProcessKeyUpEvent(FKeyEvent(Key, Modifiers, UserIndex, false, 0, 0));
+	}
+
+	/** Moves the pointer through Slate by a fixed offset from the route's center. */
+	void MoveMouse()
+	{
+		const FModifierKeysState Modifiers;
+		const TSet<FKey> Pressed;
+		const FVector2D Moved = Center + FVector2D(12.0, 0.0);
+		FSlateApplication::Get().ProcessMouseMoveEvent(
+			FPointerEvent(Device, FSlateApplicationBase::CursorPointerIndex, Moved, Center,
+				Pressed, EKeys::Invalid, 0.0f, Modifiers, UserIndex));
+	}
+
 	void PressDown()
 	{
 		const FModifierKeysState Modifiers;
@@ -461,7 +479,10 @@ public:
 
 TSharedRef<FCortexReplayService> MakeService(const FCortexReplayTestFixture& Fixture)
 {
-	return MakeShared<FCortexReplayService>(Fixture.GetProjectRoot());
+	TSharedRef<FCortexReplayService> Service = MakeShared<FCortexReplayService>(Fixture.GetProjectRoot());
+	// Test runs measure replay behavior, not the human-facing countdown; the countdown tests opt in.
+	Service->SetCountdownSecondsForTesting(0.0);
+	return Service;
 }
 
 // ---------------------------------------------------------------------------
@@ -2202,6 +2223,7 @@ bool FCortexReplayLifecycleDestructionTest::RunTest(const FString& Parameters)
 	const TSharedRef<TSharedPtr<FCortexReplayService>> Holder =
 		MakeShared<TSharedPtr<FCortexReplayService>>();
 	*Holder = MakeShared<FCortexReplayService>(Fixture->GetProjectRoot());
+	(*Holder)->SetCountdownSecondsForTesting(0.0);
 	const FString MapPath = MakeReplayMapAssetPath();
 
 	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
@@ -5115,4 +5137,339 @@ bool FCortexReplayLifecycleViewportCaptureMismatchTest::RunTest(const FString& P
 	{
 		Snapshot.InitialState.Viewport.bMouseCapture = !Snapshot.InitialState.Viewport.bMouseCapture;
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Countdown: a hands-off interval between readiness and the first replayed frame.
+// ---------------------------------------------------------------------------
+namespace
+{
+/** Reads get_run's optional phase string; empty when the field is absent. */
+FString RunPhase(const FCortexCommandResult& Result)
+{
+	FString Phase;
+	if (Result.Data.IsValid())
+	{
+		Result.Data->TryGetStringField(TEXT("phase"), Phase);
+	}
+	return Phase;
+}
+
+/** Samples one run's phase and countdown every engine frame until it is terminal. */
+struct FCortexReplayCountdownSamples
+{
+	double FirstCountdownSeconds = 0.0;
+	double FirstPlaybackSeconds = 0.0;
+	double FirstRemaining = -1.0;
+	double LastRemaining = -1.0;
+	int32 CountdownSamples = 0;
+	bool bRemainingNonIncreasing = true;
+	bool bRemainingWithinBound = true;
+	bool bPreparingWhileCounting = true;
+	bool bRemainingOnlyWhileCounting = true;
+};
+
+class FCortexReplaySampleCountdown : public IAutomationLatentCommand
+{
+public:
+	FCortexReplaySampleCountdown(FAutomationTestBase* InTest, TSharedRef<FCortexReplayService> InService,
+		FGuid InRunId, TSharedRef<FCortexReplayCountdownSamples> InSamples, double InBound,
+		TSharedPtr<FCortexReplayTestFixture> InKeepAlive)
+		: Test(InTest), Service(MoveTemp(InService)), RunId(InRunId), Samples(MoveTemp(InSamples))
+		, Bound(InBound), KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const double Now = FPlatformTime::Seconds();
+		const FCortexCommandResult Run = Service->GetRun(RunId, true);
+		if (!Run.bSuccess)
+		{
+			Test->AddError(TEXT("get_run failed while sampling the countdown"));
+			return true;
+		}
+		const FString State = RunState(Run);
+		const FString Phase = RunPhase(Run);
+		const bool bHasRemaining = Run.Data->HasField(TEXT("countdown_remaining_seconds"));
+		if (Phase == TEXT("countdown"))
+		{
+			const double Remaining = bHasRemaining
+				? Run.Data->GetNumberField(TEXT("countdown_remaining_seconds")) : -1.0;
+			if (Samples->CountdownSamples == 0)
+			{
+				Samples->FirstCountdownSeconds = Now;
+				Samples->FirstRemaining = Remaining;
+			}
+			else if (Remaining > Samples->LastRemaining)
+			{
+				Samples->bRemainingNonIncreasing = false;
+			}
+			if (Remaining < 0.0 || Remaining > Bound)
+			{
+				Samples->bRemainingWithinBound = false;
+			}
+			if (State != TEXT("Preparing"))
+			{
+				Samples->bPreparingWhileCounting = false;
+			}
+			Samples->LastRemaining = Remaining;
+			++Samples->CountdownSamples;
+		}
+		else if (bHasRemaining)
+		{
+			Samples->bRemainingOnlyWhileCounting = false;
+		}
+		if (Phase == TEXT("playback") && Samples->FirstPlaybackSeconds == 0.0)
+		{
+			Samples->FirstPlaybackSeconds = Now;
+		}
+		if (IsTerminalRunState(State)) { return true; }
+		if (Now - StartTime > ReplayReadyWatchdogSeconds * 2)
+		{
+			Test->AddError(TEXT("Run never finalized while sampling the countdown"));
+			return true;
+		}
+		return false;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	FGuid RunId;
+	TSharedRef<FCortexReplayCountdownSamples> Samples;
+	double Bound;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+
+/** Polls get_run until the run reports one exact phase. */
+class FCortexReplayAwaitPhase : public IAutomationLatentCommand
+{
+public:
+	FCortexReplayAwaitPhase(FAutomationTestBase* InTest, TSharedRef<FCortexReplayService> InService,
+		FGuid InRunId, FString InExpected, TSharedPtr<FCortexReplayTestFixture> InKeepAlive)
+		: Test(InTest), Service(MoveTemp(InService)), RunId(InRunId), Expected(MoveTemp(InExpected))
+		, KeepAlive(MoveTemp(InKeepAlive)) {}
+
+	bool Update() override
+	{
+		if (StartTime == 0.0) { StartTime = FPlatformTime::Seconds(); }
+		const FCortexCommandResult Run = Service->GetRun(RunId, true);
+		if (!Run.bSuccess)
+		{
+			Test->AddError(TEXT("get_run failed while awaiting a phase"));
+			return true;
+		}
+		if (RunPhase(Run) == Expected) { return true; }
+		if (IsTerminalRunState(RunState(Run)))
+		{
+			Test->AddError(FString::Printf(TEXT("Run ended before phase %s"), *Expected));
+			return true;
+		}
+		if (FPlatformTime::Seconds() - StartTime > ReplayReadyWatchdogSeconds * 2)
+		{
+			Test->AddError(FString::Printf(TEXT("Run never reached phase %s"), *Expected));
+			return true;
+		}
+		return false;
+	}
+
+private:
+	FAutomationTestBase* Test;
+	TSharedRef<FCortexReplayService> Service;
+	FGuid RunId;
+	FString Expected;
+	double StartTime = 0.0;
+	TSharedPtr<FCortexReplayTestFixture> KeepAlive;
+};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCountdownPrecedesPlaybackTest,
+	"Cortex.Replay.Lifecycle.CountdownPrecedesPlayback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleCountdownPrecedesPlaybackTest::RunTest(const FString& Parameters)
+{
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	constexpr double CountdownSeconds = 0.5;
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	Service->SetCountdownSecondsForTesting(CountdownSeconds);
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MakeReplayMapAssetPath(),
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("AI replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	TestTrue(TEXT("start_replay reports the countdown length"),
+		Started.Data.IsValid() && FMath::IsNearlyEqual(Started.Data->GetNumberField(TEXT("countdown_seconds")),
+			CountdownSeconds));
+	const FGuid RunId = ParseRunId(Started);
+	const TSharedRef<FCortexReplayCountdownSamples> Samples = MakeShared<FCortexReplayCountdownSamples>();
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplaySampleCountdown(this, Service, RunId, Samples,
+		CountdownSeconds, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId, Samples, Fixture, Clock](FAutomationTestBase& T)
+		{
+			T.TestTrue(TEXT("The countdown phase was observed"), Samples->CountdownSamples > 0);
+			T.TestTrue(TEXT("The countdown reports a remaining time within its length"),
+				Samples->bRemainingWithinBound);
+			T.TestTrue(TEXT("The remaining time never increases"), Samples->bRemainingNonIncreasing);
+			T.TestTrue(TEXT("The run is Preparing while counting down"), Samples->bPreparingWhileCounting);
+			T.TestTrue(TEXT("The remaining time is reported only while counting down"),
+				Samples->bRemainingOnlyWhileCounting);
+			T.TestTrue(TEXT("The playback phase was observed"), Samples->FirstPlaybackSeconds > 0.0);
+			// The first sample sees R seconds left, so playback cannot start sooner than R later.
+			T.TestTrue(TEXT("Playback starts only after the countdown elapsed"),
+				Samples->FirstPlaybackSeconds - Samples->FirstCountdownSeconds
+					>= FMath::Max(0.0, Samples->FirstRemaining) - 0.02);
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("The run completes"), RunState(Run), FString(TEXT("Completed")));
+			T.TestEqual(TEXT("A terminal run reports no phase"), RunPhase(Run), FString());
+		}, Fixture));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCountdownIgnoresInputTest,
+	"Cortex.Replay.Lifecycle.CountdownIgnoresInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleCountdownIgnoresInputTest::RunTest(const FString& Parameters)
+{
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	Service->SetCountdownSecondsForTesting(0.5);
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MakeReplayMapAssetPath(),
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("AI replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitPhase(this, Service, RunId, TEXT("countdown"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned replay PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			const FVector2D SavedCursor = FSlateApplication::Get().GetCursorPos();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			Route.PressKey(EKeys::Q);
+			Route.ReleaseKey(EKeys::Q);
+			Route.MoveMouse();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+			FSlateApplication::Get().SetCursorPos(SavedCursor);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId, Fixture, Clock](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("Input during the countdown does not interrupt the run"),
+				RunState(Run), FString(TEXT("Completed")));
+		}, Fixture));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCountdownPieEndInterruptsTest,
+	"Cortex.Replay.Lifecycle.CountdownPieEndInterrupts",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleCountdownPieEndInterruptsTest::RunTest(const FString& Parameters)
+{
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	Service->SetCountdownSecondsForTesting(2.0);
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MakeReplayMapAssetPath(),
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("AI replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitPhase(this, Service, RunId, TEXT("countdown"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned replay PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			Route.PressStopKey();
+			Route.ReleaseKey(EKeys::Escape);
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+			GEditor->RequestEndPlayMap();
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId, Fixture, Clock](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("Ending the session during the countdown interrupts the run"),
+				RunState(Run), FString(TEXT("Interrupted")));
+			const TSharedPtr<FJsonObject>* Error = nullptr;
+			if (!Run.Data.IsValid() || !Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
+				|| Error == nullptr || !Error->IsValid())
+			{
+				T.AddError(TEXT("The interrupted run carries no execution_error"));
+				return;
+			}
+			T.TestEqual(TEXT("The message names the ended session"),
+				(*Error)->GetStringField(TEXT("message")),
+				FString(TEXT("Replay stopped: the game session ended")));
+		}, Fixture));
+
+	return true;
 }

@@ -101,6 +101,12 @@ public:
 	/** True when no ticker, frame delegate, session or capture observer of this service is installed. */
 	bool IsQuiescent() const;
 
+	/**
+	 * Test hook: sets the hands-off countdown length for this service's later runs. Tests that
+	 * measure replay behavior pass zero; production keeps the default.
+	 */
+	void SetCountdownSecondsForTesting(double Seconds);
+
 private:
 	/**
 	 * Enters Finalizing exactly once, rejects new admission, freezes dispatch and detaches capture,

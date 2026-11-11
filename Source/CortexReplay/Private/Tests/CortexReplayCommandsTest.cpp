@@ -83,6 +83,7 @@ struct FCortexReplayCommandsHarness
 	void StartDomain()
 	{
 		Service = MakeShared<FCortexReplayService>(Fixture->GetProjectRoot());
+		Service->SetCountdownSecondsForTesting(0.0);
 		Handler = MakeShared<FCortexReplayCommandHandler>(Service);
 		Router = MakeUnique<FCortexCommandRouter>();
 		Router->RegisterDomain(TEXT("replay"), TEXT("Cortex Replay"), TEXT("1.0.0"), Handler);

@@ -358,7 +358,9 @@ bool WindowIsTerminalState(const FString& State)
 
 TSharedRef<FCortexReplayService> MakeWindowService(const FCortexReplayTestFixture& Fixture)
 {
-	return MakeShared<FCortexReplayService>(Fixture.GetProjectRoot());
+	TSharedRef<FCortexReplayService> Service = MakeShared<FCortexReplayService>(Fixture.GetProjectRoot());
+	Service->SetCountdownSecondsForTesting(0.0);
+	return Service;
 }
 
 // --- Latent helpers (active-run window lifecycle) ---------------------------------------------

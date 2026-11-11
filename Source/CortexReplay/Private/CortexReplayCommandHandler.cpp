@@ -427,7 +427,7 @@ TArray<FCortexCommandInfo> FCortexReplayCommandHandler::GetSupportedCommands() c
 			TEXT("Read one eligible recording's metadata and recorded start pose") }
 			.Required(TEXT("recording_id"), TEXT("integer"), TEXT("Positive recording id")),
 		FCortexCommandInfo{ TEXT("start_replay"),
-			TEXT("Accept one AI replay run and return its Preparing identity") }
+			TEXT("Accept one AI replay run and return its Preparing identity; playback starts after a 3-second hands-off countdown") }
 			.Required(TEXT("recording_id"), TEXT("integer"), TEXT("Positive recording id")),
 		FCortexCommandInfo{ TEXT("get_run"),
 			TEXT("Query an AI replay run's live or retained terminal status") }

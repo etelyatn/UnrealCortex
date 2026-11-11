@@ -154,6 +154,7 @@ FCortexCommandResult FCortexReplayService::GetCurrentOperation() const
 		Data->SetNumberField(TEXT("total_events"), State.ActiveRun.TotalEvents);
 		Data->SetNumberField(TEXT("authorized_wait_seconds"), State.ActiveRun.AuthorizedWaitSeconds);
 		Data->SetNumberField(TEXT("behind_seconds"), State.ActiveRun.BehindSeconds);
+		State.AddPhaseFields(*Data);
 		if (State.IsLiveReplaying() && State.Scheduler.IsValid()
 			&& State.Scheduler->GetWaitingSequence() != INDEX_NONE)
 		{
@@ -390,6 +391,14 @@ FCortexCommandResult FCortexReplayService::DeleteRecording(int32 Id)
 		return ServiceError(CortexErrorCodes::EditorBusy, TEXT("Recording is in use"));
 	}
 	return Impl->Library.Delete(Id);
+}
+
+void FCortexReplayService::SetCountdownSecondsForTesting(double Seconds)
+{
+	if (Impl.IsValid())
+	{
+		Impl->CountdownSeconds = FMath::Max(0.0, Seconds);
+	}
 }
 
 void FCortexReplayService::Shutdown()
