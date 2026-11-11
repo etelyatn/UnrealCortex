@@ -2,11 +2,16 @@
 
 #include "CortexCommandRouter.h"
 #include "CortexReplayFormat.h"
+#include "CortexReplayGzip.h"
+#include "CortexReplayPayload.h"
+#include "CortexReplayStorage.h"
 #include "CortexReplayLivePrerequisites.h"
 #include "CortexEditorPhysicalInputSession.h"
 
+#include "Dom/JsonObject.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 #include "IAssetViewport.h"
 #include "LevelEditor.h"
 #include "Misc/Guid.h"
@@ -98,7 +103,12 @@ const FString& FCortexReplayTestFixture::GetProjectRoot() const
 
 FString FCortexReplayTestFixture::GetInputsPath(int32 Id) const
 {
-	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("inputs.jsonl"));
+	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("inputs.jsonl.gz"));
+}
+
+FString FCortexReplayTestFixture::GetFramesPath(int32 Id) const
+{
+	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("frames.jsonl.gz"));
 }
 
 FString FCortexReplayTestFixture::GetInitialStatePath(int32 Id) const
@@ -106,10 +116,76 @@ FString FCortexReplayTestFixture::GetInitialStatePath(int32 Id) const
 	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("initial_state.json"));
 }
 
+FString FCortexReplayTestFixture::GetMetadataPath(int32 Id) const
+{
+	return FPaths::Combine(MakeRecordingDirectory(ProjectRoot, Id), TEXT("metadata.json"));
+}
+
+bool FCortexReplayTestFixture::ReadPayloadRows(const FString& GzPath, TArray<FString>& OutRows)
+{
+	OutRows.Reset();
+
+	TArray<uint8> Gz;
+	TArray<uint8> Raw;
+	FString Error;
+	if (!FFileHelper::LoadFileToArray(Gz, *GzPath)
+		|| !CortexReplayGzip::Decompress(Gz, CortexReplayPayload::MaxStreamBytes, Raw, Error))
+	{
+		return false;
+	}
+
+	FString Text;
+	FFileHelper::BufferToString(Text, Raw.GetData(), Raw.Num());
+	Text.ParseIntoArray(OutRows, TEXT("\n"), false);
+	if (OutRows.Num() > 0 && OutRows.Last().IsEmpty())
+	{
+		OutRows.Pop();
+	}
+	return true;
+}
+
+bool FCortexReplayTestFixture::WritePayloadRows(const FString& GzPath, TConstArrayView<FString> Rows)
+{
+	FString Text;
+	for (const FString& Row : Rows)
+	{
+		Text += Row;
+		Text += TEXT("\n");
+	}
+
+	const FTCHARToUTF8 Utf8(*Text);
+	TArray<uint8> Gz;
+	FString Error;
+	return CortexReplayGzip::Compress(
+			TConstArrayView<uint8>(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length()), Gz, Error)
+		&& FFileHelper::SaveArrayToFile(Gz, *GzPath);
+}
+
+bool FCortexReplayTestFixture::RewriteMetadataStreamHash(int32 Id, const TCHAR* Field, const FString& GzPath) const
+{
+	TArray<uint8> Gz;
+	FString MetadataText;
+	FString Sha256;
+	FString Error;
+	TSharedPtr<FJsonObject> Metadata;
+	if (!FFileHelper::LoadFileToArray(Gz, *GzPath)
+		|| !CortexReplayStorage::ComputeSha256Hex(Gz, Sha256, Error)
+		|| !FFileHelper::LoadFileToString(MetadataText, *GetMetadataPath(Id))
+		|| !CortexReplayFormat::DeserializeJsonObject(MetadataText, Metadata)
+		|| !Metadata.IsValid())
+	{
+		return false;
+	}
+
+	Metadata->SetStringField(Field, Sha256);
+	return FFileHelper::SaveStringToFile(CortexReplayFormat::SerializeCanonicalJson(Metadata.ToSharedRef()),
+		*GetMetadataPath(Id), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+}
+
 FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(
 	int32 Id,
 	bool bAIEnabled,
-	const TArray<FCortexReplayEvent>& Events)
+	TConstArrayView<FCortexReplayTimedEvent> Events)
 {
 	FCortexReplaySnapshot Snapshot;
 
@@ -120,12 +196,15 @@ FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(
 	InitialState.Pose.PawnTransform = FTransform::Identity;
 	InitialState.Pose.ControlRotation = FRotator::ZeroRotator;
 
-	Snapshot.Events = Events;
-
+	TArray<double> EventTimes;
+	EventTimes.Reserve(Events.Num());
+	Snapshot.Events.Reserve(Events.Num());
 	double FinalTime = 0.0;
-	for (FCortexReplayEvent& Event : Snapshot.Events)
+	for (const FCortexReplayTimedEvent& Timed : Events)
 	{
-		FinalTime = FMath::Max(FinalTime, Event.TimeSeconds);
+		FinalTime = FMath::Max(FinalTime, Timed.TimeSeconds);
+		EventTimes.Add(Timed.TimeSeconds);
+		FCortexReplayEvent& Event = Snapshot.Events.Add_GetRef(Timed.Event);
 
 		if (IsPressEvent(Event) && !Event.Guard.IsSet())
 		{
@@ -190,18 +269,20 @@ FCortexReplaySnapshot FCortexReplayTestFixture::MakeRecording(
 
 	// Fixture frames are laid out exactly as a capture lays them out, at 60 Hz, so a frame-locked
 	// replay of a fixture spends the recorded duration on real engine frames.
-	ApplyCadenceFrames(Snapshot);
+	ApplyCadenceFrames(Snapshot, EventTimes);
 
 	return Snapshot;
 }
 
-void FCortexReplayTestFixture::ApplyCadenceFrames(FCortexReplaySnapshot& Recording)
+void FCortexReplayTestFixture::ApplyCadenceFrames(FCortexReplaySnapshot& Recording,
+	TConstArrayView<double> EventTimes)
 {
+	checkf(EventTimes.Num() == Recording.Events.Num(), TEXT("Every event needs a time"));
 	constexpr double FixtureFrameDeltaSeconds = 1.0 / 60.0;
 	double Span = FMath::Max(0.0, Recording.Metadata.DurationSeconds);
-	for (const FCortexReplayEvent& Event : Recording.Events)
+	for (const double EventTime : EventTimes)
 	{
-		Span = FMath::Max(Span, Event.TimeSeconds);
+		Span = FMath::Max(Span, EventTime);
 	}
 
 	// Frame k consumes the input recorded up to its boundary at k * delta; the stream covers the span
@@ -211,9 +292,9 @@ void FCortexReplayTestFixture::ApplyCadenceFrames(FCortexReplaySnapshot& Recordi
 	Deltas.Init(FixtureFrameDeltaSeconds, Frames);
 	TArray<int32> EventFrames;
 	EventFrames.Reserve(Recording.Events.Num());
-	for (const FCortexReplayEvent& Event : Recording.Events)
+	for (const double EventTime : EventTimes)
 	{
-		EventFrames.Add(FMath::Clamp(FMath::CeilToInt32(Event.TimeSeconds / FixtureFrameDeltaSeconds - 1e-9),
+		EventFrames.Add(FMath::Clamp(FMath::CeilToInt32(EventTime / FixtureFrameDeltaSeconds - 1e-9),
 			0, Frames - 1));
 	}
 	ApplyFrameStream(Recording, Deltas, EventFrames);

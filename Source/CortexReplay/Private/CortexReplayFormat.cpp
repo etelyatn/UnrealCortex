@@ -462,22 +462,6 @@ bool KindFromString(const FString& Value, ECortexEditorPhysicalInputKind& OutKin
 	return false;
 }
 
-const TCHAR* CoordinateSpaceToString(const ECortexEditorPhysicalInputKind Kind)
-{
-	switch (Kind)
-	{
-	case ECortexEditorPhysicalInputKind::PointerMove:
-	case ECortexEditorPhysicalInputKind::PointerDown:
-	case ECortexEditorPhysicalInputKind::PointerUp:
-	case ECortexEditorPhysicalInputKind::DoubleClick:
-		return TEXT("viewport_logical");
-	case ECortexEditorPhysicalInputKind::RelativeMove:
-		return TEXT("relative_raw");
-	default:
-		return TEXT("none");
-	}
-}
-
 bool IsPressKind(const ECortexEditorPhysicalInputKind Kind)
 {
 	return Kind == ECortexEditorPhysicalInputKind::KeyDown
@@ -725,21 +709,6 @@ TSharedPtr<FJsonObject> SerializePose(const FCortexEditorPhysicalInputPlayerPose
 	return Object;
 }
 
-TSharedPtr<FJsonObject> SerializeModifiers(const FModifierKeysState& Modifiers)
-{
-	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
-	Object->SetBoolField(TEXT("left_shift"), Modifiers.IsLeftShiftDown());
-	Object->SetBoolField(TEXT("right_shift"), Modifiers.IsRightShiftDown());
-	Object->SetBoolField(TEXT("left_control"), Modifiers.IsLeftControlDown());
-	Object->SetBoolField(TEXT("right_control"), Modifiers.IsRightControlDown());
-	Object->SetBoolField(TEXT("left_alt"), Modifiers.IsLeftAltDown());
-	Object->SetBoolField(TEXT("right_alt"), Modifiers.IsRightAltDown());
-	Object->SetBoolField(TEXT("left_command"), Modifiers.IsLeftCommandDown());
-	Object->SetBoolField(TEXT("right_command"), Modifiers.IsRightCommandDown());
-	Object->SetBoolField(TEXT("caps_lock"), Modifiers.AreCapsLocked());
-	return Object;
-}
-
 TSharedPtr<FJsonObject> SerializeIdentity(const FCortexEditorPhysicalInputWidgetIdentity& Identity)
 {
 	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
@@ -804,17 +773,48 @@ TSharedPtr<FJsonObject> SerializeGuard(const FCortexReplayInteractionGuard& Guar
 FString SerializeEventRow(const FCortexReplayEvent& Event)
 {
 	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
-	Object->SetNumberField(TEXT("schema_version"), RecordingFormatVersion);
-	Object->SetNumberField(TEXT("sequence"), Event.Sequence);
-	Object->SetNumberField(TEXT("time_seconds"), Event.TimeSeconds);
 	Object->SetStringField(TEXT("kind"), KindToString(Event.Input.Kind));
 	Object->SetStringField(TEXT("key"), Event.Input.Key.ToString());
-	Object->SetObjectField(TEXT("modifiers"), SerializeModifiers(Event.Input.Modifiers));
-	Object->SetBoolField(TEXT("repeat"), Event.Input.bRepeat);
-	Object->SetObjectField(TEXT("viewport_position"), SerializeVector2D(Event.Input.ViewportPosition));
-	Object->SetObjectField(TEXT("delta"), SerializeVector2D(Event.Input.Delta));
-	Object->SetNumberField(TEXT("wheel_delta"), Event.Input.WheelDelta);
-	Object->SetStringField(TEXT("coordinate_space"), CoordinateSpaceToString(Event.Input.Kind));
+
+	const FModifierKeysState& Modifiers = Event.Input.Modifiers;
+	TSharedPtr<FJsonObject> ModifiersObject = MakeShared<FJsonObject>();
+	const auto AddModifier = [&ModifiersObject](const TCHAR* Name, bool bDown)
+	{
+		if (bDown)
+		{
+			ModifiersObject->SetBoolField(Name, true);
+		}
+	};
+	AddModifier(TEXT("left_shift"), Modifiers.IsLeftShiftDown());
+	AddModifier(TEXT("right_shift"), Modifiers.IsRightShiftDown());
+	AddModifier(TEXT("left_control"), Modifiers.IsLeftControlDown());
+	AddModifier(TEXT("right_control"), Modifiers.IsRightControlDown());
+	AddModifier(TEXT("left_alt"), Modifiers.IsLeftAltDown());
+	AddModifier(TEXT("right_alt"), Modifiers.IsRightAltDown());
+	AddModifier(TEXT("left_command"), Modifiers.IsLeftCommandDown());
+	AddModifier(TEXT("right_command"), Modifiers.IsRightCommandDown());
+	AddModifier(TEXT("caps_lock"), Modifiers.AreCapsLocked());
+	if (ModifiersObject->Values.Num() > 0)
+	{
+		Object->SetObjectField(TEXT("modifiers"), ModifiersObject);
+	}
+
+	if (Event.Input.bRepeat)
+	{
+		Object->SetBoolField(TEXT("repeat"), true);
+	}
+	if (Event.Input.ViewportPosition.X != 0.0 || Event.Input.ViewportPosition.Y != 0.0)
+	{
+		Object->SetObjectField(TEXT("viewport_position"), SerializeVector2D(Event.Input.ViewportPosition));
+	}
+	if (Event.Input.Delta.X != 0.0 || Event.Input.Delta.Y != 0.0)
+	{
+		Object->SetObjectField(TEXT("delta"), SerializeVector2D(Event.Input.Delta));
+	}
+	if (Event.Input.WheelDelta != 0.0f)
+	{
+		Object->SetNumberField(TEXT("wheel_delta"), Event.Input.WheelDelta);
+	}
 
 	if (Event.Guard.IsSet())
 	{
@@ -824,22 +824,30 @@ FString SerializeEventRow(const FCortexReplayEvent& Event)
 	return SerializeCanonicalJson(Object.ToSharedRef());
 }
 
-/** A frame whose engine frame observed no world tick writes `world_tick: null`, distinct from a zero delta. */
+/**
+ * A frame that ticked unpaused with real_delta == (float)app_delta omits `world_tick`; a frame whose
+ * engine frame observed no world tick writes `world_tick: null`, distinct from a zero delta.
+ */
 FString SerializeFrameRow(const FCortexReplayFrame& Frame)
 {
 	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
-	Object->SetNumberField(TEXT("schema_version"), RecordingFormatVersion);
-	Object->SetNumberField(TEXT("frame_index"), Frame.FrameIndex);
 	Object->SetNumberField(TEXT("app_delta_seconds"), Frame.AppDeltaSeconds);
-	Object->SetNumberField(TEXT("first_sequence"), Frame.FirstSequence);
-	Object->SetNumberField(TEXT("event_count"), Frame.EventCount);
+	if (Frame.EventCount > 0)
+	{
+		Object->SetNumberField(TEXT("event_count"), Frame.EventCount);
+	}
 
 	if (Frame.WorldTick.IsSet())
 	{
-		TSharedPtr<FJsonObject> TickObject = MakeShared<FJsonObject>();
-		TickObject->SetNumberField(TEXT("real_delta_seconds"), Frame.WorldTick->RealDeltaSeconds);
-		TickObject->SetBoolField(TEXT("paused"), Frame.WorldTick->bPaused);
-		Object->SetObjectField(TEXT("world_tick"), TickObject);
+		const bool bDerivable = !Frame.WorldTick->bPaused
+			&& Frame.WorldTick->RealDeltaSeconds == static_cast<float>(Frame.AppDeltaSeconds);
+		if (!bDerivable)
+		{
+			TSharedPtr<FJsonObject> TickObject = MakeShared<FJsonObject>();
+			TickObject->SetNumberField(TEXT("real_delta_seconds"), Frame.WorldTick->RealDeltaSeconds);
+			TickObject->SetBoolField(TEXT("paused"), Frame.WorldTick->bPaused);
+			Object->SetObjectField(TEXT("world_tick"), TickObject);
+		}
 	}
 	else
 	{
@@ -1315,7 +1323,6 @@ bool ValidateEvents(
 {
 	OutCoverage = FCortexReplayGuardCoverage();
 
-	double LastTime = 0.0;
 	for (int32 Index = 0; Index < Events.Num(); ++Index)
 	{
 		const FCortexReplayEvent& Event = Events[Index];
@@ -1325,19 +1332,6 @@ bool ValidateEvents(
 			OutError = FString::Printf(TEXT("Event sequence %d is not contiguous from zero"), Event.Sequence);
 			return false;
 		}
-
-		if (!FMath::IsFinite(Event.TimeSeconds) || Event.TimeSeconds < 0.0)
-		{
-			OutError = FString::Printf(TEXT("Event %d has an invalid time_seconds"), Event.Sequence);
-			return false;
-		}
-
-		if (Event.TimeSeconds < LastTime)
-		{
-			OutError = FString::Printf(TEXT("Event %d time_seconds is not nondecreasing"), Event.Sequence);
-			return false;
-		}
-		LastTime = Event.TimeSeconds;
 
 		if (KindToString(Event.Input.Kind)[0] == TEXT('\0'))
 		{
@@ -1982,6 +1976,31 @@ bool ParseGuard(
 	return false;
 }
 
+/** Rejects any member of Object that is not in Allowed; Context names the object in the error. */
+bool HasOnlyKeys(const FJsonObject& Object, TArrayView<const TCHAR* const> Allowed, const TCHAR* Context,
+	FString& OutError)
+{
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Member : Object.Values)
+	{
+		bool bKnown = false;
+		for (const TCHAR* Key : Allowed)
+		{
+			if (Member.Key == Key)
+			{
+				bKnown = true;
+				break;
+			}
+		}
+
+		if (!bKnown)
+		{
+			OutError = FString::Printf(TEXT("%s has an unknown key '%s'"), Context, *Member.Key);
+			return false;
+		}
+	}
+	return true;
+}
+
 bool ParseInputRow(
 	const FString& Line,
 	int32 RowOrdinal,
@@ -1996,29 +2015,26 @@ bool ParseInputRow(
 		return false;
 	}
 
-	FCortexReplayEvent Event;
-
-	int32 SchemaVersion = 0;
-	int32 Sequence = 0;
-	double TimeSeconds = 0.0;
-	FString KindString;
-	FString KeyString;
-	FString CoordinateSpace;
-
-	if (!TryReadJsonInt32(Object, TEXT("schema_version"), 0, MAX_int32, SchemaVersion, OutError)
-		|| !TryReadJsonInt32(Object, TEXT("sequence"), 0, MAX_int32, Sequence, OutError)
-		|| !TryReadJsonNumber(Object, TEXT("time_seconds"), TimeSeconds, OutError)
-		|| !TryReadJsonString(Object, TEXT("kind"), true, KindString, OutError)
-		|| !TryReadJsonString(Object, TEXT("key"), true, KeyString, OutError)
-		|| !TryReadJsonString(Object, TEXT("coordinate_space"), true, CoordinateSpace, OutError))
+	static const TCHAR* const RowKeys[] =
+	{
+		TEXT("kind"), TEXT("key"), TEXT("modifiers"), TEXT("repeat"), TEXT("viewport_position"),
+		TEXT("delta"), TEXT("wheel_delta"), TEXT("guard")
+	};
+	if (!HasOnlyKeys(*Object, RowKeys, TEXT("Input row"), OutError))
 	{
 		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
 		return false;
 	}
 
-	if (SchemaVersion != RecordingFormatVersion)
+	FCortexReplayEvent Event;
+
+	FString KindString;
+	FString KeyString;
+
+	if (!TryReadJsonString(Object, TEXT("kind"), true, KindString, OutError)
+		|| !TryReadJsonString(Object, TEXT("key"), true, KeyString, OutError))
 	{
-		OutError = FString::Printf(TEXT("Input row %d uses an unsupported schema version"), RowOrdinal);
+		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
 		return false;
 	}
 
@@ -2029,76 +2045,76 @@ bool ParseInputRow(
 		return false;
 	}
 
-	if (CoordinateSpace != CoordinateSpaceToString(Kind))
-	{
-		OutError = FString::Printf(TEXT("Input row %d has a coordinate_space that does not match its kind"), RowOrdinal);
-		return false;
-	}
-
 	if (!IsValidBoundedTextUnits(KeyString, MaxTagUnits, true))
 	{
 		OutError = FString::Printf(TEXT("Input row %d has an invalid key identity"), RowOrdinal);
 		return false;
 	}
 
-	Event.Sequence = Sequence;
-	Event.TimeSeconds = TimeSeconds;
+	Event.Sequence = RowOrdinal;
 	Event.Input.Kind = Kind;
 	Event.Input.Key = FKey(FName(*KeyString));
 
-	bool bRepeat = false;
-	if (!TryReadJsonBool(Object, TEXT("repeat"), bRepeat, OutError))
-	{
-		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
-		return false;
-	}
-	Event.Input.bRepeat = bRepeat;
-
-	if (!TryReadVector2DField(Object, TEXT("viewport_position"), Event.Input.ViewportPosition, OutError)
-		|| !TryReadVector2DField(Object, TEXT("delta"), Event.Input.Delta, OutError))
+	if ((Object->HasField(TEXT("repeat")) && !TryReadJsonBool(Object, TEXT("repeat"), Event.Input.bRepeat, OutError))
+		|| (Object->HasField(TEXT("viewport_position"))
+			&& !TryReadVector2DField(Object, TEXT("viewport_position"), Event.Input.ViewportPosition, OutError))
+		|| (Object->HasField(TEXT("delta"))
+			&& !TryReadVector2DField(Object, TEXT("delta"), Event.Input.Delta, OutError)))
 	{
 		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
 		return false;
 	}
 
-	double WheelDelta = 0.0;
-	if (!TryReadJsonNumber(Object, TEXT("wheel_delta"), WheelDelta, OutError))
+	if (Object->HasField(TEXT("wheel_delta")))
 	{
-		OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
-		return false;
-	}
-	Event.Input.WheelDelta = static_cast<float>(WheelDelta);
-
-	const TSharedPtr<FJsonObject>* ModifiersObject = nullptr;
-	if (!Object->TryGetObjectField(TEXT("modifiers"), ModifiersObject) || ModifiersObject == nullptr)
-	{
-		OutError = FString::Printf(TEXT("Input row %d is missing 'modifiers'"), RowOrdinal);
-		return false;
-	}
-
-	bool ModifierValues[9] = { false, false, false, false, false, false, false, false, false };
-	static const TCHAR* const ModifierFields[9] =
-	{
-		TEXT("left_shift"), TEXT("right_shift"),
-		TEXT("left_control"), TEXT("right_control"),
-		TEXT("left_alt"), TEXT("right_alt"),
-		TEXT("left_command"), TEXT("right_command"),
-		TEXT("caps_lock")
-	};
-	for (int32 ModifierIndex = 0; ModifierIndex < 9; ++ModifierIndex)
-	{
-		if (!TryReadJsonBool(*ModifiersObject, ModifierFields[ModifierIndex], ModifierValues[ModifierIndex], OutError))
+		double WheelDelta = 0.0;
+		if (!TryReadJsonNumber(Object, TEXT("wheel_delta"), WheelDelta, OutError))
 		{
-			OutError = FString::Printf(TEXT("Input row %d has an incomplete modifiers object: %s"), RowOrdinal, *OutError);
+			OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
 			return false;
 		}
+		Event.Input.WheelDelta = static_cast<float>(WheelDelta);
 	}
-	Event.Input.Modifiers = FModifierKeysState(
-		ModifierValues[0], ModifierValues[1],
-		ModifierValues[2], ModifierValues[3],
-		ModifierValues[4], ModifierValues[5],
-		ModifierValues[6], ModifierValues[7],
-		ModifierValues[8]);
+
+	if (Object->HasField(TEXT("modifiers")))
+	{
+		const TSharedPtr<FJsonObject>* ModifiersObject = nullptr;
+		if (!Object->TryGetObjectField(TEXT("modifiers"), ModifiersObject) || ModifiersObject == nullptr)
+		{
+			OutError = FString::Printf(TEXT("Input row %d 'modifiers' must be an object"), RowOrdinal);
+			return false;
+		}
+
+		bool ModifierValues[9] = { false, false, false, false, false, false, false, false, false };
+		static const TCHAR* const ModifierFields[9] =
+		{
+			TEXT("left_shift"), TEXT("right_shift"),
+			TEXT("left_control"), TEXT("right_control"),
+			TEXT("left_alt"), TEXT("right_alt"),
+			TEXT("left_command"), TEXT("right_command"),
+			TEXT("caps_lock")
+		};
+		if (!HasOnlyKeys(**ModifiersObject, ModifierFields, TEXT("modifiers"), OutError))
+		{
+			OutError = FString::Printf(TEXT("Input row %d: %s"), RowOrdinal, *OutError);
+			return false;
+		}
+		for (int32 ModifierIndex = 0; ModifierIndex < 9; ++ModifierIndex)
+		{
+			if ((*ModifiersObject)->HasField(ModifierFields[ModifierIndex])
+				&& !TryReadJsonBool(*ModifiersObject, ModifierFields[ModifierIndex], ModifierValues[ModifierIndex], OutError))
+			{
+				OutError = FString::Printf(TEXT("Input row %d has an invalid modifiers object: %s"), RowOrdinal, *OutError);
+				return false;
+			}
+		}
+		Event.Input.Modifiers = FModifierKeysState(
+			ModifierValues[0], ModifierValues[1],
+			ModifierValues[2], ModifierValues[3],
+			ModifierValues[4], ModifierValues[5],
+			ModifierValues[6], ModifierValues[7],
+			ModifierValues[8]);
+	}
 
 	const TSharedPtr<FJsonObject>* GuardObject = nullptr;
 	if (Object->TryGetObjectField(TEXT("guard"), GuardObject) && GuardObject != nullptr)
@@ -2203,9 +2219,14 @@ bool ValidateDuration(double DurationSeconds, const TArray<FCortexReplayFrame>& 
 	return true;
 }
 
+/**
+ * Parses one compact frame row. FrameIndex is the row ordinal and FirstSequence the running event
+ * count (widened; a value above MAX_int32 is rejected), so neither is stored in the row.
+ */
 bool ParseFrameRow(
 	const FString& Row,
 	int32 RowOrdinal,
+	int64& InOutNextSequence,
 	TArray<FCortexReplayFrame>& OutFrames,
 	FString& OutError)
 {
@@ -2216,37 +2237,48 @@ bool ParseFrameRow(
 		return false;
 	}
 
-	int32 SchemaVersion = 0;
-	FCortexReplayFrame Frame;
-	if (!TryReadJsonInt32(Object, TEXT("schema_version"), 0, MAX_int32, SchemaVersion, OutError)
-		|| !TryReadJsonInt32(Object, TEXT("frame_index"), 0, MAX_int32, Frame.FrameIndex, OutError)
-		|| !TryReadJsonInt32(Object, TEXT("first_sequence"), 0, MAX_int32, Frame.FirstSequence, OutError)
-		|| !TryReadJsonInt32(Object, TEXT("event_count"), 0, MAX_int32, Frame.EventCount, OutError)
-		|| !TryReadJsonNumber(Object, TEXT("app_delta_seconds"), Frame.AppDeltaSeconds, OutError))
+	static const TCHAR* const RowKeys[] = { TEXT("app_delta_seconds"), TEXT("event_count"), TEXT("world_tick") };
+	if (!HasOnlyKeys(*Object, RowKeys, TEXT("Frame row"), OutError))
 	{
 		OutError = FString::Printf(TEXT("Frame row %d: %s"), RowOrdinal, *OutError);
 		return false;
 	}
 
-	if (SchemaVersion != RecordingFormatVersion)
+	FCortexReplayFrame Frame;
+	Frame.FrameIndex = RowOrdinal;
+	if (!TryReadJsonNumber(Object, TEXT("app_delta_seconds"), Frame.AppDeltaSeconds, OutError)
+		|| (Object->HasField(TEXT("event_count"))
+			&& !TryReadJsonInt32(Object, TEXT("event_count"), 0, MAX_int32, Frame.EventCount, OutError)))
 	{
-		OutError = FString::Printf(TEXT("Frame row %d uses an unsupported schema version"), RowOrdinal);
+		OutError = FString::Printf(TEXT("Frame row %d: %s"), RowOrdinal, *OutError);
 		return false;
 	}
+
+	if (InOutNextSequence > static_cast<int64>(MAX_int32))
+	{
+		OutError = FString::Printf(TEXT("Frame row %d derives a first_sequence above the supported maximum"), RowOrdinal);
+		return false;
+	}
+	Frame.FirstSequence = static_cast<int32>(InOutNextSequence);
+	InOutNextSequence += static_cast<int64>(Frame.EventCount);
 
 	const TSharedPtr<FJsonValue> TickValue = Object->TryGetField(TEXT("world_tick"));
 	if (!TickValue.IsValid())
 	{
-		OutError = FString::Printf(TEXT("Frame row %d is missing 'world_tick'"), RowOrdinal);
-		return false;
+		// Absent: the frame ticked, was not paused, and ran the float of its application delta.
+		FCortexReplayFrameTick Tick;
+		Tick.RealDeltaSeconds = static_cast<float>(Frame.AppDeltaSeconds);
+		Tick.bPaused = false;
+		Frame.WorldTick = Tick;
 	}
-
-	if (TickValue->Type == EJson::Object)
+	else if (TickValue->Type == EJson::Object)
 	{
 		const TSharedPtr<FJsonObject>* TickObject = nullptr;
 		double RealDelta = 0.0;
 		FCortexReplayFrameTick Tick;
+		static const TCHAR* const TickKeys[] = { TEXT("real_delta_seconds"), TEXT("paused") };
 		if (!TickValue->TryGetObject(TickObject) || TickObject == nullptr
+			|| !HasOnlyKeys(**TickObject, TickKeys, TEXT("world_tick"), OutError)
 			|| !TryReadJsonNumber(*TickObject, TEXT("real_delta_seconds"), RealDelta, OutError)
 			|| !TryReadJsonBool(*TickObject, TEXT("paused"), Tick.bPaused, OutError))
 		{
@@ -2266,43 +2298,46 @@ bool ParseFrameRow(
 	return true;
 }
 
-bool ParseFramesStream(
-	const FString& Path,
+bool ParseFrameRows(
+	TConstArrayView<FString> Rows,
 	int32 EventCount,
 	const FCortexReplayTiming& Timing,
 	TArray<FCortexReplayFrame>& OutFrames,
-	FString& OutSha256,
 	FString& OutError)
 {
-	OutFrames.Reset();
+	OutFrames.Reset(Rows.Num());
 
-	const bool bRead = ReadJsonlRows(Path,
-		[&OutFrames](const FString& Row, int32 RowOrdinal, FString& RowError)
+	int64 NextSequence = 0;
+	for (int32 RowOrdinal = 0; RowOrdinal < Rows.Num(); ++RowOrdinal)
+	{
+		if (!ParseFrameRow(Rows[RowOrdinal], RowOrdinal, NextSequence, OutFrames, OutError))
 		{
-			return ParseFrameRow(Row, RowOrdinal, OutFrames, RowError);
-		},
-		OutSha256, OutError);
-	return bRead && ValidateFrameSet(OutFrames, EventCount, Timing, OutError);
+			return false;
+		}
+	}
+
+	return ValidateFrameSet(OutFrames, EventCount, Timing, OutError);
 }
 
-bool ParseInputsStream(
-	const FString& Path,
+bool ParseEventRows(
+	TConstArrayView<FString> Rows,
 	TArray<FCortexReplayEvent>& OutEvents,
 	FCortexReplayGuardCoverage& OutCoverage,
-	FString& OutSha256,
 	FString& OutError)
 {
-	OutEvents.Reset();
+	OutEvents.Reset(Rows.Num());
 	OutCoverage = FCortexReplayGuardCoverage();
 
 	FCortexReplayIdentityCatalog Catalog;
-	const bool bRead = ReadJsonlRows(Path,
-		[&Catalog, &OutEvents](const FString& Row, int32 RowOrdinal, FString& RowError)
+	for (int32 RowOrdinal = 0; RowOrdinal < Rows.Num(); ++RowOrdinal)
+	{
+		if (!ParseInputRow(Rows[RowOrdinal], RowOrdinal, Catalog, OutEvents, OutError))
 		{
-			return ParseInputRow(Row, RowOrdinal, Catalog, OutEvents, RowError);
-		},
-		OutSha256, OutError);
-	return bRead && ValidateEvents(OutEvents, OutCoverage, OutError);
+			return false;
+		}
+	}
+
+	return ValidateEvents(OutEvents, OutCoverage, OutError);
 }
 
 bool IsValidRecordingName(const FString& Name)

@@ -115,15 +115,15 @@ FString MakeReplayMapAssetPath()
 		: TEXT("/Game/Maps/TestMap");
 }
 
-FCortexReplayEvent MakeKeyPress(int32 Sequence, double TimeSeconds,
+FCortexReplayTimedEvent MakeKeyPress(int32 Sequence, double TimeSeconds,
 	ECortexEditorPhysicalInputKind Kind, const FKey& Key)
 {
-	FCortexReplayEvent Event;
-	Event.Sequence = Sequence;
-	Event.TimeSeconds = TimeSeconds;
-	Event.Input.Kind = Kind;
-	Event.Input.Key = Key;
-	return Event;
+	FCortexReplayTimedEvent Timed;
+	Timed.TimeSeconds = TimeSeconds;
+	Timed.Event.Sequence = Sequence;
+	Timed.Event.Input.Kind = Kind;
+	Timed.Event.Input.Key = Key;
+	return Timed;
 }
 
 /**
@@ -204,7 +204,7 @@ private:
 
 /** Publishes one valid AI-eligible recording whose map is a real loadable PIE map. */
 bool PublishReplayRecording(FAutomationTestBase& Test, FCortexReplayTestFixture& Fixture,
-	int32 Id, const FString& MapPath, const TArray<FCortexReplayEvent>& Events, bool bAIEnabled,
+	int32 Id, const FString& MapPath, const TArray<FCortexReplayTimedEvent>& Events, bool bAIEnabled,
 	double DurationOverrideSeconds = 0.0)
 {
 	FCortexReplaySnapshot Snapshot = Fixture.MakeRecording(Id, bAIEnabled, Events);
@@ -215,7 +215,13 @@ bool PublishReplayRecording(FAutomationTestBase& Test, FCortexReplayTestFixture&
 		Snapshot.Metadata.DurationSeconds = FMath::Max(Snapshot.Metadata.DurationSeconds,
 			DurationOverrideSeconds);
 		// The recorded frames must cover the overridden duration, so the idle tail is real frames.
-		FCortexReplayTestFixture::ApplyCadenceFrames(Snapshot);
+		TArray<double> EventTimes;
+		EventTimes.Reserve(Events.Num());
+		for (const FCortexReplayTimedEvent& Timed : Events)
+		{
+			EventTimes.Add(Timed.TimeSeconds);
+		}
+		FCortexReplayTestFixture::ApplyCadenceFrames(Snapshot, EventTimes);
 	}
 	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
 	return Test.TestTrue(TEXT("Recording published"), Library.Publish(Snapshot).bSuccess);
@@ -1589,18 +1595,17 @@ bool FCortexReplayLifecycleImmutabilityTest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
 		[Fixture](FAutomationTestBase& T)
 		{
-			const FString RecordDirectory = FPaths::Combine(
-				FPaths::Combine(Fixture->GetProjectRoot(), TEXT(".cortex/replay/recordings")),
-				FString::FromInt(1));
-			const FString InputsPath = FPaths::Combine(RecordDirectory, TEXT("inputs.jsonl"));
-			FString Original;
+			const FString InputsPath = Fixture->GetInputsPath(1);
+			TArray<FString> Rows;
 			T.TestTrue(TEXT("Admitted inputs payload is readable"),
-				FFileHelper::LoadFileToString(Original, *InputsPath));
-			FString FirstLine;
-			T.TestTrue(TEXT("Admitted payload has a first event line"),
-				Original.Split(TEXT("\n"), &FirstLine, nullptr) && !FirstLine.IsEmpty());
-			T.TestTrue(TEXT("Active-run payload replaced with a different valid payload"),
-				FFileHelper::SaveStringToFile(FirstLine + TEXT("\n"), *InputsPath));
+				FCortexReplayTestFixture::ReadPayloadRows(InputsPath, Rows));
+			T.TestTrue(TEXT("Admitted payload has a first event row"), Rows.Num() > 1);
+			if (Rows.Num() > 1)
+			{
+				Rows.SetNum(1);
+				T.TestTrue(TEXT("Active-run payload replaced with a different valid payload"),
+					FCortexReplayTestFixture::WritePayloadRows(InputsPath, Rows));
+			}
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
@@ -4275,18 +4280,18 @@ bool PublishUiWaitRecording(FAutomationTestBase& Test, FCortexReplayTestFixture&
 	Identity->TargetTag = UiWaitControlTag;
 	Identity->IdentitySha256 = FCortexEditorPhysicalInputSelectorBuilder::ComputeIdentitySha256(*Identity);
 
-	FCortexReplayEvent Down = MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::PointerDown,
+	FCortexReplayTimedEvent Down = MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::PointerDown,
 		EKeys::LeftMouseButton);
-	Down.Input.ViewportPosition = FVector2D(1.0, 1.0);
+	Down.Event.Input.ViewportPosition = FVector2D(1.0, 1.0);
 	FCortexReplayInteractionGuard Guard;
 	Guard.UICoverage = ECortexEditorUICoverage::Supported;
 	Guard.UITarget = Identity;
 	Guard.ExpectedLocalPosition = FVector2D::ZeroVector;
-	Down.Guard = Guard;
+	Down.Event.Guard = Guard;
 
-	FCortexReplayEvent Up = MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::PointerUp,
+	FCortexReplayTimedEvent Up = MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::PointerUp,
 		EKeys::LeftMouseButton);
-	Up.Input.ViewportPosition = FVector2D(1.0, 1.0);
+	Up.Event.Input.ViewportPosition = FVector2D(1.0, 1.0);
 	return PublishReplayRecording(Test, Fixture, 1, MapPath, {Down, Up}, true);
 }
 

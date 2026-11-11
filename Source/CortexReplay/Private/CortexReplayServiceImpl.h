@@ -156,7 +156,6 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	int32 CaptureNextFirstSequence = 0;
 	FCortexReplayViewportState CaptureViewport;
 	TUniquePtr<FCortexEditorEngineFrameObserver> CaptureFrameObserver;
-	double CaptureEpochSeconds = 0.0;
 	/** Holds the Slate throttle disabled for an owned capture; balanced on every release path. */
 	struct FThrottleHold
 	{

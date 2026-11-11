@@ -8,8 +8,8 @@
 
 /**
  * Durable storage primitives of the CortexReplay library: on-disk layout, SHA-256 hashing, durable
- * and atomic file writes, the cross-process authoring lock, the shared JSONL row reader and
- * recording-directory discovery. Nothing here knows the recording format.
+ * and atomic file writes, the cross-process authoring lock and recording-directory discovery.
+ * Nothing here knows the recording format.
  */
 namespace CortexReplayStorage
 {
@@ -59,7 +59,6 @@ private:
 };
 
 bool ComputeSha256Hex(const TArray<uint8>& Bytes, FString& OutHex, FString& OutError);
-bool ComputeFileSha256Hex(const FString& Path, FString& OutHex, FString& OutError);
 bool IsLowerHexSha256(const FString& Value);
 
 // ---------------------------------------------------------------------------
@@ -78,29 +77,6 @@ bool WriteFileAtomically(const FString& Destination, const TArray<uint8>& Bytes,
 
 /** Renames a staged directory into place, failing instead of overwriting an existing one. */
 bool RenameDirectoryNoOverwrite(const FString& Destination, const FString& Source, FString& OutError);
-
-class FCortexReplayDurableWriter
-{
-public:
-	~FCortexReplayDurableWriter();
-
-	bool Open(const FString& InPath, FString& OutError);
-	bool WriteBytes(const uint8* Data, int64 Size, FString& OutError);
-	bool Commit(FString& OutError);
-
-private:
-	TUniquePtr<IFileHandle> Handle;
-	FString Path;
-};
-
-/**
- * Streams the rows of a JSONL file to OnRow while hashing the raw bytes. A row ends at LF; only the
- * CR of a CRLF terminator is stripped, so an embedded CR reaches the row validator unrepaired.
- * Blank rows are skipped. RowOrdinal counts physical rows from zero.
- */
-bool ReadJsonlRows(const FString& Path,
-	TFunctionRef<bool(const FString& Row, int32 RowOrdinal, FString& OutError)> OnRow,
-	FString& OutSha256, FString& OutError);
 
 // ---------------------------------------------------------------------------
 // Cross-process authoring lock

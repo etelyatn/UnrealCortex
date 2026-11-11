@@ -127,14 +127,14 @@ TSharedPtr<FJsonObject> ReplayCommandsRunParams(const FString& RunId)
 	return Params;
 }
 
-FCortexReplayEvent ReplayCommandsKeyDown(int32 Sequence)
+FCortexReplayTimedEvent ReplayCommandsKeyDown(int32 Sequence)
 {
-	FCortexReplayEvent Event;
-	Event.Sequence = Sequence;
-	Event.TimeSeconds = static_cast<double>(Sequence);
-	Event.Input.Kind = ECortexEditorPhysicalInputKind::KeyDown;
-	Event.Input.Key = EKeys::E;
-	return Event;
+	FCortexReplayTimedEvent Timed;
+	Timed.TimeSeconds = static_cast<double>(Sequence);
+	Timed.Event.Sequence = Sequence;
+	Timed.Event.Input.Kind = ECortexEditorPhysicalInputKind::KeyDown;
+	Timed.Event.Input.Key = EKeys::E;
+	return Timed;
 }
 
 FString ReplayCommandsWorstCaseText(int32 Scalars)
@@ -172,7 +172,7 @@ bool ReplayCommandsPublish(
 	FCortexReplayLibrary& Library,
 	int32 Id,
 	bool bAIEnabled,
-	const TArray<FCortexReplayEvent>& Events,
+	const TArray<FCortexReplayTimedEvent>& Events,
 	const FString& Name,
 	const FString& Description,
 	const FString& MapPath,

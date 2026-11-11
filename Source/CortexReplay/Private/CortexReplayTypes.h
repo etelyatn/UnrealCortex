@@ -19,9 +19,12 @@ struct FCortexReplayViewportState
 	bool bHighPrecision = false;
 };
 
+/** Recording-side format version (format 4: compact rows, gzip streams). */
+constexpr int32 CortexReplayRecordingFormatVersion = 4;
+
 struct FCortexReplayInitialState
 {
-	int32 SchemaVersion = 3;
+	int32 SchemaVersion = CortexReplayRecordingFormatVersion;
 	int32 RecordingId = 0;
 	FString PawnClassPath;
 	FCortexEditorPhysicalInputPlayerPose Pose;
@@ -48,7 +51,6 @@ struct FCortexReplayInteractionGuard
 struct FCortexReplayEvent
 {
 	int32 Sequence = 0;
-	double TimeSeconds = 0.0;
 	FCortexEditorPhysicalInputEvent Input;
 	TOptional<FCortexReplayInteractionGuard> Guard;
 };
@@ -94,7 +96,7 @@ struct FCortexReplayFrame
 
 struct FCortexReplayMetadata
 {
-	int32 SchemaVersion = 3;
+	int32 SchemaVersion = CortexReplayRecordingFormatVersion;
 	int32 RecordingId = 0;
 	FString Name, Description, MapAssetPath, EngineVersion, PluginVersion;
 	FDateTime CreatedAtUtc;
