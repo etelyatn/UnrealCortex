@@ -28,6 +28,12 @@ struct FCortexEditorPhysicalInputDispatchContext
 	FVector2D HumanCursorPosition = FVector2D::ZeroVector;
 	/** True once replay moved the real OS cursor; cleanup then restores HumanCursorPosition. */
 	bool bRealCursorMoved = false;
+	/**
+	 * Platform last-input marker sampled when the replay epoch armed. A pointer move with no real
+	 * user input since then is the engine moving the cursor, not interference
+	 * (CortexEditorUserInputActivity).
+	 */
+	TOptional<uint32> ReplayEpochInputMarker;
 };
 
 /**

@@ -8,6 +8,7 @@
 #include "CortexEditorPhysicalInputGuards.h"
 #include "CortexEditorPhysicalInputResults.h"
 #include "CortexEditorPhysicalInputSelfCursorMove.h"
+#include "CortexEditorPhysicalInputUserActivity.h"
 #include "Containers/Ticker.h"
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
@@ -1899,8 +1900,12 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointer
 	SetReplayPointerPosition(ScreenSpacePosition, ViewportPosition);
 
 	// Any real packet from the selected user/device interrupts an armed replay epoch, whichever window
-	// it targets (device-wide, see BeginReplayEpoch); the recording's origin never suppresses it.
-	if (bReplayInProgress)
+	// it targets (device-wide, see BeginReplayEpoch); the recording's origin never suppresses it. A
+	// move with no real user input since the epoch armed is the engine relocating the cursor (a game
+	// showing its cursor replies SetMousePos), not a packet a human produced
+	// (CortexEditorUserInputActivity).
+	if (bReplayInProgress && (!DispatchContext.IsValid()
+		|| CortexEditorUserInputActivity::HasInputSince(DispatchContext->ReplayEpochInputMarker)))
 	{
 		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
 			TEXT("Foreign physical input interrupted replay playback")));
@@ -2498,6 +2503,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginReplayEpoch()
 	bReplayInProgress = true;
 	DispatchContext->HumanCursorPosition = FSlateApplication::Get().GetCursorPos();
 	DispatchContext->bRealCursorMoved = false;
+	DispatchContext->ReplayEpochInputMarker = CortexEditorUserInputActivity::SampleLastInputMarker();
 	UE_LOG(LogCortexEditor, Display, TEXT("Replay epoch armed"));
 	return MakeSuccessResult();
 }

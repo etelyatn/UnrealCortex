@@ -14,6 +14,7 @@
 #include "CortexEditorPhysicalInputGuards.h"
 #include "CortexEditorPhysicalInputSession.h"
 #include "CortexEditorPhysicalInputSelfCursorMove.h"
+#include "CortexEditorPhysicalInputUserActivity.h"
 #include "Misc/ScopeExit.h"
 #include "CortexEditorEngineFrameObserver.h"
 #include "HAL/PlatformProcess.h"
@@ -7005,6 +7006,89 @@ bool FCortexPhysicalInputReplayPointerMovesRealCursorTest::RunTest(const FString
 					TargetScreen.X, TargetScreen.Y, After.X, After.Y, Parked.X, Parked.Y),
 				FMath::Abs(After.X - TargetScreen.X) < 1.0 && FMath::Abs(After.Y - TargetScreen.Y) < 1.0);
 			Test.TestEqual(TEXT("Replay was not interrupted by its own cursor move"), F.InterruptionCount, 0);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A cursor move the engine makes itself during an armed replay is not human interference.
+// When a game shows its cursor, FSceneViewport::ShowCursor replies with SetMousePos, which Slate
+// applies through FSlateUser::SetCursorPosition without refreshing LastPlatformCursorPosition; the
+// platform move that follows arrives as a non-synthetic FSlateApplication::OnMouseMove event. Only
+// platform evidence of real user input (the last-input marker) may turn such a move into an
+// interruption.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayEngineCursorWarpTest,
+	"Cortex.Editor.PhysicalInput.ReplayEngineCursorWarpNotForeign",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayEngineCursorWarpTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping replay engine cursor warp test"));
+		return true;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ReplayEngineCursorWarp"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {},
+		/*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			using namespace CortexEditorUserInputActivity;
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const TSharedPtr<SWidget> Viewport = F.Session->GetTargetBinding().ViewportWidget.Pin();
+			if (!Test.TestTrue(TEXT("Replay viewport widget resolvable"), Viewport.IsValid())) { return; }
+			const FGeometry Geometry = Viewport->GetCachedGeometry();
+			if (Geometry.GetLocalSize().X <= 100.0 || Geometry.GetLocalSize().Y <= 100.0)
+			{
+				Test.AddError(TEXT("Replay viewport has no usable geometry"));
+				return;
+			}
+
+			// No user touches an input device until the marker advances below.
+			uint32 Marker = 1000;
+			SetMarkerOverrideForTests([&Marker]() { return TOptional<uint32>(Marker); });
+			ON_SCOPE_EXIT { ClearMarkerOverrideForTests(); };
+			FCortexCursorPositionRestore Restore;
+
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			EnsureSelectedRouteWindowActive(*F.Session);
+			const FCortexCommandResult Armed = F.Session->BeginReplayEpoch();
+			Test.TestTrue(TEXT("Replay epoch armed"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return; }
+
+			// Refresh Slate's platform bookkeeping at a known position, then move the real cursor the
+			// way a SetMousePos reply does and deliver the resulting platform move.
+			const TSharedRef<FSlateUser> CursorUser = Slate.GetCursorUser().ToSharedRef();
+			Slate.SetCursorPos(Geometry.LocalToAbsolute(FVector2D(40.0, 40.0)));
+			const FVector2D Warp = Geometry.LocalToAbsolute(Geometry.GetLocalSize() * 0.5);
+			CursorUser->SetCursorPosition(Warp);
+			Slate.OnMouseMove();
+			Test.TestEqual(TEXT("An engine cursor move without user input did not interrupt the replay"),
+				F.InterruptionCount, 0);
+
+			// The same platform move after real user input is interference.
+			Marker = 1001;
+			CursorUser->SetCursorPosition(Geometry.LocalToAbsolute(FVector2D(60.0, 60.0)));
+			Slate.OnMouseMove();
+			Test.TestEqual(TEXT("A cursor move after real user input interrupted the replay"),
+				F.InterruptionCount, 1);
+			Test.TestFalse(TEXT("Interruption reports a non-success result"), F.Interruption.bSuccess);
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
 	return true;
