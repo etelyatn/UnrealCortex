@@ -2255,3 +2255,36 @@ bool FCortexReplayLibraryMetadataGatePrecedesInitialStateTest::RunTest(const FSt
 	}
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibrarySha256KnownAnswersTest,
+	"Cortex.Replay.Library.Sha256KnownAnswers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibrarySha256KnownAnswersTest::RunTest(const FString& Parameters)
+{
+	// FIPS 180-2 vectors: every recording digest goes through this provider on each platform backend.
+	const auto ExpectDigest = [this](const TCHAR* Label, const TArray<uint8>& Bytes, const TCHAR* Expected)
+	{
+		FString Sha256;
+		FString Error;
+		const bool bHashed = CortexReplayStorage::ComputeSha256Hex(Bytes, Sha256, Error);
+		TestTrue(*FString::Printf(TEXT("%s hashes: %s"), Label, *Error), bHashed);
+		TestEqual(*FString::Printf(TEXT("%s digest"), Label), Sha256, FString(Expected));
+	};
+	const auto Ascii = [](const char* Text)
+	{
+		return TArray<uint8>(reinterpret_cast<const uint8*>(Text), FCStringAnsi::Strlen(Text));
+	};
+
+	ExpectDigest(TEXT("Empty input"), {}, TEXT("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+	ExpectDigest(TEXT("abc"), Ascii("abc"), TEXT("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+	ExpectDigest(TEXT("Two-block message"), Ascii("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+		TEXT("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"));
+
+	TArray<uint8> Million;
+	Million.Init('a', 1000000);
+	ExpectDigest(TEXT("One million 'a'"), Million, TEXT("cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"));
+	return true;
+}

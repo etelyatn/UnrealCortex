@@ -11,6 +11,7 @@
 #include "Misc/AutomationTest.h"
 
 #include "CortexEditorPhysicalInput.h"
+#include "CortexEditorPhysicalInputGuards.h"
 #include "CortexEditorPhysicalInputSession.h"
 #include "CortexEditorPhysicalInputSelfCursorMove.h"
 #include "Misc/ScopeExit.h"
@@ -2169,6 +2170,29 @@ bool FCortexPhysicalInputComparatorBoundariesTest::RunTest(const FString& Parame
 	TestFalse(TEXT("Degenerate quaternion rejected"),
 		FCortexEditorPhysicalInputSession::ComparePlayerPose(Expected, Degenerate).bSuccess);
 
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// SHA-256 provider behind selector and configuration digests (no PIE)
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputSha256KnownAnswersTest,
+	"Cortex.Editor.PhysicalInputSha256KnownAnswers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputSha256KnownAnswersTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// FIPS 180-2 vectors.
+	const char* Abc = "abc";
+	const char* TwoBlock = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+	TestEqual(TEXT("Empty input digest"), CortexEditorPhysicalInputSha256(nullptr, 0),
+		FString(TEXT("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")));
+	TestEqual(TEXT("abc digest"), CortexEditorPhysicalInputSha256(reinterpret_cast<const uint8*>(Abc), 3),
+		FString(TEXT("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")));
+	TestEqual(TEXT("Two-block message digest"),
+		CortexEditorPhysicalInputSha256(reinterpret_cast<const uint8*>(TwoBlock), FCStringAnsi::Strlen(TwoBlock)),
+		FString(TEXT("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")));
 	return true;
 }
 
