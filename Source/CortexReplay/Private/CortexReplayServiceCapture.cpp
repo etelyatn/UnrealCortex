@@ -396,7 +396,6 @@ void FCortexReplayService::FImpl::ResetCapture()
 	CaptureViewport = FCortexReplayViewportState();
 	ReleaseCaptureFrameObserver();
 	CaptureThrottle.Release();
-	CaptureEpochSeconds = 0.0;
 	LastCapturePublishAttemptSeconds = 0.0;
 	bFrozen = false;
 }
@@ -540,7 +539,6 @@ void FCortexReplayService::FImpl::OnOwnedCaptureReady(uint64 Generation,
 	CaptureInitialPose = Pose;
 	CaptureViewport.bMouseCapture = bViewportMouseCapture;
 	CaptureViewport.bHighPrecision = bViewportHighPrecision;
-	CaptureEpochSeconds = FPlatformTime::Seconds();
 	CapturePhase = ECapturePhase::Recording;
 	UE_LOG(LogCortexReplay, Display, TEXT("Capture %d entered Recording (epoch established)"),
 		CaptureRecordingId);
@@ -753,7 +751,7 @@ void FCortexReplayService::FImpl::DropTrailingStopChordPress()
 }
 
 void FCortexReplayService::FImpl::OnCaptureEvent(const FCortexEditorPhysicalInputEvent& Event,
-	double TimeSeconds, const FCortexEditorPhysicalInputCaptureContext& Context)
+	double /*TimeSeconds*/, const FCortexEditorPhysicalInputCaptureContext& Context)
 {
 	if (CapturePhase != ECapturePhase::Recording || bFrozen || bCaptureFaulted)
 	{
@@ -762,8 +760,6 @@ void FCortexReplayService::FImpl::OnCaptureEvent(const FCortexEditorPhysicalInpu
 
 	FCortexReplayEvent Recorded;
 	Recorded.Sequence = CaptureEvents.Num();
-	Recorded.TimeSeconds = CaptureEpochSeconds > 0.0
-		? FMath::Max(0.0, TimeSeconds - CaptureEpochSeconds) : 0.0;
 	Recorded.Input = Event;
 
 	const bool bPress = !Event.bRepeat

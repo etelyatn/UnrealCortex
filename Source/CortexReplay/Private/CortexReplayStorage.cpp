@@ -63,12 +63,12 @@ FString GetInitialStatePath(const FString& RecordingDirectory)
 
 FString GetInputsPath(const FString& RecordingDirectory)
 {
-	return FPaths::Combine(RecordingDirectory, TEXT("inputs.jsonl"));
+	return FPaths::Combine(RecordingDirectory, TEXT("inputs.jsonl.gz"));
 }
 
 FString GetFramesPath(const FString& RecordingDirectory)
 {
-	return FPaths::Combine(RecordingDirectory, TEXT("frames.jsonl"));
+	return FPaths::Combine(RecordingDirectory, TEXT("frames.jsonl.gz"));
 }
 
 bool EnsureDirectory(const FString& Directory)
@@ -254,49 +254,6 @@ bool ComputeSha256Hex(const TArray<uint8>& Bytes, FString& OutHex, FString& OutE
 	return State.Finish(OutHex, OutError);
 }
 
-bool ComputeFileSha256Hex(const FString& Path, FString& OutHex, FString& OutError)
-{
-	OutHex.Reset();
-
-	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-	TUniquePtr<IFileHandle> Handle(PlatformFile.OpenRead(*Path));
-	if (!Handle.IsValid())
-	{
-		OutError = FString::Printf(TEXT("Failed to open '%s' for hashing"), *Path);
-		return false;
-	}
-
-	FCortexReplaySha256State State;
-	if (!State.Begin(OutError))
-	{
-		return false;
-	}
-
-	const int64 Total = Handle->Size();
-	int64 Offset = 0;
-	uint8 Buffer[65536];
-	while (Offset < Total)
-	{
-		const int64 Chunk = FMath::Min<int64>(static_cast<int64>(sizeof(Buffer)), Total - Offset);
-		if (!Handle->Read(Buffer, Chunk))
-		{
-			OutError = FString::Printf(TEXT("Failed to read '%s' for hashing"), *Path);
-			return false;
-		}
-
-		if (!State.Update(Buffer, Chunk))
-		{
-			OutError = FString::Printf(TEXT("Failed to hash '%s'"), *Path);
-			return false;
-		}
-
-		Offset += Chunk;
-	}
-
-	Handle.Reset();
-	return State.Finish(OutHex, OutError);
-}
-
 bool IsLowerHexSha256(const FString& Value)
 {
 	if (Value.Len() != 64)
@@ -370,62 +327,6 @@ bool WriteFileBytesDurably(const FString& Path, const TArray<uint8>& Bytes, FStr
 	if (Bytes.Num() > 0 && !Handle->Write(Bytes.GetData(), Bytes.Num()))
 	{
 		OutError = FString::Printf(TEXT("Failed to write '%s'"), *Path);
-		return false;
-	}
-
-	if (!Handle->Flush(true))
-	{
-		OutError = FString::Printf(TEXT("Failed to flush '%s' to storage"), *Path);
-		return false;
-	}
-
-	Handle.Reset();
-	return true;
-}
-
-FCortexReplayDurableWriter::~FCortexReplayDurableWriter()
-{
-	Handle.Reset();
-}
-
-bool FCortexReplayDurableWriter::Open(const FString& InPath, FString& OutError)
-{
-	Handle.Reset();
-	Path = InPath;
-
-	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-	Handle.Reset(PlatformFile.OpenWrite(*Path, false, false));
-	if (!Handle.IsValid())
-	{
-		OutError = FString::Printf(TEXT("Failed to open '%s' for writing"), *Path);
-		return false;
-	}
-
-	return true;
-}
-
-bool FCortexReplayDurableWriter::WriteBytes(const uint8* Data, int64 Size, FString& OutError)
-{
-	if (!Handle.IsValid())
-	{
-		OutError = FString::Printf(TEXT("Writer for '%s' is not open"), *Path);
-		return false;
-	}
-
-	if (Size > 0 && !Handle->Write(Data, Size))
-	{
-		OutError = FString::Printf(TEXT("Failed to write '%s'"), *Path);
-		return false;
-	}
-
-	return true;
-}
-
-bool FCortexReplayDurableWriter::Commit(FString& OutError)
-{
-	if (!Handle.IsValid())
-	{
-		OutError = FString::Printf(TEXT("Writer for '%s' is not open"), *Path);
 		return false;
 	}
 
@@ -516,88 +417,6 @@ bool WriteFileAtomically(const FString& Destination, const TArray<uint8>& Bytes,
 	}
 
 	return true;
-}
-
-bool ReadJsonlRows(const FString& Path,
-	TFunctionRef<bool(const FString& Row, int32 RowOrdinal, FString& OutError)> OnRow,
-	FString& OutSha256, FString& OutError)
-{
-	OutSha256.Reset();
-
-	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-	TUniquePtr<IFileHandle> Handle(PlatformFile.OpenRead(*Path));
-	if (!Handle.IsValid())
-	{
-		OutError = FString::Printf(TEXT("Failed to open '%s' for reading"), *Path);
-		return false;
-	}
-
-	FCortexReplaySha256State State;
-	if (!State.Begin(OutError))
-	{
-		return false;
-	}
-
-	TArray<uint8> LineBytes;
-	int32 RowOrdinal = 0;
-	const auto FlushRow = [&]() -> bool
-	{
-		const FString Row = Utf8BytesToFString(LineBytes);
-		LineBytes.Reset();
-		const int32 Ordinal = RowOrdinal++;
-		return Row.TrimStartAndEnd().IsEmpty() || OnRow(Row, Ordinal, OutError);
-	};
-
-	const int64 Total = Handle->Size();
-	int64 Offset = 0;
-	uint8 Buffer[16384];
-	while (Offset < Total)
-	{
-		const int64 Chunk = FMath::Min<int64>(static_cast<int64>(sizeof(Buffer)), Total - Offset);
-		if (!Handle->Read(Buffer, Chunk))
-		{
-			OutError = FString::Printf(TEXT("Failed to read '%s'"), *Path);
-			return false;
-		}
-
-		if (!State.Update(Buffer, Chunk))
-		{
-			OutError = FString::Printf(TEXT("Failed to hash '%s'"), *Path);
-			return false;
-		}
-
-		for (int64 ByteIndex = 0; ByteIndex < Chunk; ++ByteIndex)
-		{
-			const uint8 Byte = Buffer[ByteIndex];
-			if (Byte != '\n')
-			{
-				LineBytes.Add(Byte);
-				continue;
-			}
-
-			// Strip only the CR of a CRLF terminator; an embedded CR stays in the row so JSON/key
-			// validation sees the malformed content instead of a repaired row.
-			if (LineBytes.Num() > 0 && LineBytes.Last() == '\r')
-			{
-				LineBytes.RemoveAt(LineBytes.Num() - 1);
-			}
-
-			if (!FlushRow())
-			{
-				return false;
-			}
-		}
-
-		Offset += Chunk;
-	}
-
-	if (LineBytes.Num() > 0 && !FlushRow())
-	{
-		return false;
-	}
-
-	Handle.Reset();
-	return State.Finish(OutSha256, OutError);
 }
 
 // ---------------------------------------------------------------------------
