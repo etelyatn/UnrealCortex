@@ -7,52 +7,54 @@
 namespace
 {
 #if WITH_DEV_AUTOMATION_TESTS
-TFunction<TOptional<uint32>()> GMarkerOverride;
+TFunction<CortexEditorUserInputActivity::FCortexUserInputActivitySample()> GSampleOverride;
 #endif
 }
 
 namespace CortexEditorUserInputActivity
 {
-TOptional<uint32> SampleLastInputMarker()
+FCortexUserInputActivitySample Sample()
 {
 #if WITH_DEV_AUTOMATION_TESTS
-	if (GMarkerOverride)
+	if (GSampleOverride)
 	{
-		return GMarkerOverride();
+		return GSampleOverride();
 	}
 #endif
+	FCortexUserInputActivitySample Result;
 #if PLATFORM_WINDOWS
 	LASTINPUTINFO Info;
 	Info.cbSize = sizeof(Info);
 	Info.dwTime = 0;
 	if (::GetLastInputInfo(&Info))
 	{
-		return static_cast<uint32>(Info.dwTime);
+		Result.LastInputTick = static_cast<uint32>(Info.dwTime);
+		Result.NowTick = static_cast<uint32>(::GetTickCount());
 	}
 #endif
-	return TOptional<uint32>();
+	return Result;
 }
 
-bool HasInputSince(const TOptional<uint32>& Baseline)
+bool IsInputRecent(const FCortexUserInputActivitySample& InSample, int32 MaxAgeMilliseconds)
 {
-	if (!Baseline.IsSet())
+	if (!InSample.LastInputTick.IsSet() || MaxAgeMilliseconds < 0)
 	{
 		return true;
 	}
-	// Inequality rather than ordering: the marker is a millisecond tick that wraps.
-	const TOptional<uint32> Current = SampleLastInputMarker();
-	return !Current.IsSet() || Current.GetValue() != Baseline.GetValue();
+	// Unsigned difference in one time base: wrap-safe, and no ordering assumption on the ticks.
+	const uint32 Age = InSample.NowTick - InSample.LastInputTick.GetValue();
+	return Age <= static_cast<uint32>(MaxAgeMilliseconds);
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
-void SetMarkerOverrideForTests(TFunction<TOptional<uint32>()>&& Override)
+void SetSampleOverrideForTests(TFunction<FCortexUserInputActivitySample()>&& Override)
 {
-	GMarkerOverride = MoveTemp(Override);
+	GSampleOverride = MoveTemp(Override);
 }
 
-void ClearMarkerOverrideForTests()
+void ClearSampleOverrideForTests()
 {
-	GMarkerOverride = nullptr;
+	GSampleOverride = nullptr;
 }
 #endif
 }

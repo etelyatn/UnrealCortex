@@ -7016,8 +7016,7 @@ bool FCortexPhysicalInputReplayPointerMovesRealCursorTest::RunTest(const FString
 // When a game shows its cursor, FSceneViewport::ShowCursor replies with SetMousePos, which Slate
 // applies through FSlateUser::SetCursorPosition without refreshing LastPlatformCursorPosition; the
 // platform move that follows arrives as a non-synthetic FSlateApplication::OnMouseMove event. Only
-// platform evidence of real user input (the last-input marker) may turn such a move into an
-// interruption.
+// recent platform evidence of real user input turns such a move into an interruption.
 // ---------------------------------------------------------------------------
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayEngineCursorWarpTest,
 	"Cortex.Editor.PhysicalInput.ReplayEngineCursorWarpNotForeign",
@@ -7056,10 +7055,13 @@ bool FCortexPhysicalInputReplayEngineCursorWarpTest::RunTest(const FString& Para
 				return;
 			}
 
-			// No user touches an input device until the marker advances below.
-			uint32 Marker = 1000;
-			SetMarkerOverrideForTests([&Marker]() { return TOptional<uint32>(Marker); });
-			ON_SCOPE_EXIT { ClearMarkerOverrideForTests(); };
+			// Platform input clock under test control: stale, so only the engine moved the cursor;
+			// recent, so the next platform move is human.
+			FCortexUserInputActivitySample Clock;
+			Clock.NowTick = 100000;
+			Clock.LastInputTick = 1000;
+			SetSampleOverrideForTests([&Clock]() { return Clock; });
+			ON_SCOPE_EXIT { ClearSampleOverrideForTests(); };
 			FCortexCursorPositionRestore Restore;
 
 			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
@@ -7075,22 +7077,135 @@ bool FCortexPhysicalInputReplayEngineCursorWarpTest::RunTest(const FString& Para
 			// Refresh Slate's platform bookkeeping at a known position, then move the real cursor the
 			// way a SetMousePos reply does and deliver the resulting platform move.
 			const TSharedRef<FSlateUser> CursorUser = Slate.GetCursorUser().ToSharedRef();
-			Slate.SetCursorPos(Geometry.LocalToAbsolute(FVector2D(40.0, 40.0)));
+			const FVector2D Parked = Geometry.LocalToAbsolute(FVector2D(40.0, 40.0));
 			const FVector2D Warp = Geometry.LocalToAbsolute(Geometry.GetLocalSize() * 0.5);
+			Slate.SetCursorPos(Parked);
 			CursorUser->SetCursorPosition(Warp);
+			// The platform move exists only if the cursor really moved; otherwise the assertion below
+			// would pass without any event reaching the session.
+			if (!Test.TestTrue(TEXT("The engine move really relocated the platform cursor"),
+					FVector2D::Distance(Slate.GetCursorPos(), Warp) < 2.0
+					&& FVector2D::Distance(Slate.GetCursorPos(), Parked) > 2.0))
+			{
+				return;
+			}
 			Slate.OnMouseMove();
-			Test.TestEqual(TEXT("An engine cursor move without user input did not interrupt the replay"),
+			Test.TestEqual(TEXT("An engine cursor move without recent user input did not interrupt the replay"),
 				F.InterruptionCount, 0);
 
-			// The same platform move after real user input is interference.
-			Marker = 1001;
+			// The same platform move while real input is recent is interference.
+			Clock.LastInputTick = Clock.NowTick - 5;
 			CursorUser->SetCursorPosition(Geometry.LocalToAbsolute(FVector2D(60.0, 60.0)));
 			Slate.OnMouseMove();
-			Test.TestEqual(TEXT("A cursor move after real user input interrupted the replay"),
+			Test.TestEqual(TEXT("A cursor move while user input is recent interrupted the replay"),
 				F.InterruptionCount, 1);
 			Test.TestFalse(TEXT("Interruption reports a non-success result"), F.Interruption.bSuccess);
+
+			// Disarm before the fixture tears the session down, so the restore move and teardown run
+			// outside an epoch and cannot add interruptions after these assertions.
+			F.Session->ReleaseHeldInputs();
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The cursor-move exception must not swallow other packets: a key press from the selected device
+// still interrupts an armed replay even when no user input is recent.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayStaleMarkerKeyInterruptTest,
+	"Cortex.Editor.PhysicalInput.ReplayKeyStillInterruptsWithoutRecentInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayStaleMarkerKeyInterruptTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping replay key interruption test"));
+		return true;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ReplayKeyStillInterrupts"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {},
+		/*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			using namespace CortexEditorUserInputActivity;
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+
+			FCortexUserInputActivitySample Clock;
+			Clock.NowTick = 100000;
+			Clock.LastInputTick = 1000;
+			SetSampleOverrideForTests([&Clock]() { return Clock; });
+			ON_SCOPE_EXIT { ClearSampleOverrideForTests(); };
+
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			EnsureSelectedRouteWindowActive(*F.Session);
+			const FCortexCommandResult Armed = F.Session->BeginReplayEpoch();
+			Test.TestTrue(TEXT("Replay epoch armed"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return; }
+
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::Q, Modifiers, Binding.InputDevice, false, 0, 0,
+				Binding.SlateUserIndex));
+			Test.TestEqual(TEXT("A key press interrupts the replay even with no recent pointer input"),
+				F.InterruptionCount, 1);
+			Test.TestFalse(TEXT("Interruption reports a non-success result"), F.Interruption.bSuccess);
+			F.Session->ReleaseHeldInputs();
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The recency predicate itself: unknown platform input answers "human" (fail closed), the age
+// boundary is inclusive, and the tick difference is wrap-safe.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputUserActivityRecentTest,
+	"Cortex.Editor.PhysicalInput.UserInputActivityRecent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputUserActivityRecentTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexEditorUserInputActivity;
+	ON_SCOPE_EXIT { ClearSampleOverrideForTests(); };
+
+	FCortexUserInputActivitySample Unknown;
+	TestTrue(TEXT("Unreadable platform input counts as human"), IsInputRecent(Unknown, 500));
+
+	FCortexUserInputActivitySample Fresh;
+	Fresh.NowTick = 5000;
+	Fresh.LastInputTick = 5000;
+	TestTrue(TEXT("Input in the current tick counts as recent"), IsInputRecent(Fresh, 500));
+
+	FCortexUserInputActivitySample Boundary;
+	Boundary.NowTick = 5000;
+	Boundary.LastInputTick = 4500;
+	TestTrue(TEXT("Input exactly at the age limit counts as recent"), IsInputRecent(Boundary, 500));
+
+	FCortexUserInputActivitySample Stale;
+	Stale.NowTick = 5000;
+	Stale.LastInputTick = 4499;
+	TestFalse(TEXT("Input one tick past the age limit is not recent"), IsInputRecent(Stale, 500));
+
+	FCortexUserInputActivitySample Wrapped;
+	Wrapped.NowTick = 16;
+	Wrapped.LastInputTick = 0xFFFFFFF0u;
+	TestTrue(TEXT("Tick wrap keeps a 32 ms old input recent"), IsInputRecent(Wrapped, 500));
 	return true;
 }
 

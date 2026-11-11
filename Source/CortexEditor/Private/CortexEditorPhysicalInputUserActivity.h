@@ -15,24 +15,38 @@
  * non-synthetic FSlateApplication::OnMouseMove event (SlateApplication.cpp:6288-6350) that carries no
  * evidence of who moved the cursor.
  *
- * Windows' last-input time advances for hardware (and injected) keyboard/mouse input but not for
- * SetCursorPos, so an unchanged marker proves no user touched an input device in between.
+ * Windows' last-input time advances for keyboard/mouse input delivered to this session, and does not
+ * advance when the application moves the cursor itself with SetCursorPos. Input delivered with
+ * SendInput does advance it, so a pointer move that closely follows real input is treated as human.
  */
 namespace CortexEditorUserInputActivity
 {
-/** Opaque marker of the most recent real user input; unset when the platform cannot report it. */
-TOptional<uint32> SampleLastInputMarker();
+/** One reading of the platform's last-input time and of the current tick, in the same time base. */
+struct FCortexUserInputActivitySample
+{
+	/** Time of the last input this session received; unset when the platform cannot report it. */
+	TOptional<uint32> LastInputTick;
+	/** Current time in the same time base as LastInputTick. */
+	uint32 NowTick = 0;
+};
+
+/** How recent real input must be for a pointer move to count as human, in milliseconds. */
+constexpr int32 DefaultRecentInputMilliseconds = 500;
+
+/** Reads the platform. Unset LastInputTick when the platform cannot report it. */
+FCortexUserInputActivitySample Sample();
 
 /**
- * True when real user input may have occurred after Baseline was sampled. An unset baseline or an
- * unreadable marker answers true, so a platform without the evidence keeps treating every packet as
- * human input.
+ * True when a pointer move may be human: real input arrived within MaxAgeMilliseconds of NowTick, or
+ * the platform cannot report input at all. An unreadable reading answers true, so a platform without
+ * this evidence keeps treating every move as human input.
  */
-bool HasInputSince(const TOptional<uint32>& Baseline);
+bool IsInputRecent(const FCortexUserInputActivitySample& InSample,
+	int32 MaxAgeMilliseconds = DefaultRecentInputMilliseconds);
 
 #if WITH_DEV_AUTOMATION_TESTS
-/** Test-support replacement for the platform marker; production always reads the platform. */
-void SetMarkerOverrideForTests(TFunction<TOptional<uint32>()>&& Override);
-void ClearMarkerOverrideForTests();
+/** Test-support replacement for the platform reading; production always reads the platform. */
+void SetSampleOverrideForTests(TFunction<FCortexUserInputActivitySample()>&& Override);
+void ClearSampleOverrideForTests();
 #endif
 }
