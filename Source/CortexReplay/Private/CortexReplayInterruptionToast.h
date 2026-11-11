@@ -37,6 +37,9 @@ public:
 	/** Starts a human replay of the recording; a refusal is shown as its own toast. */
 	void ReplayAgain(int32 RecordingId);
 
+	/** Fades every toast this presenter still shows; bound to OnRunAdmitted so an old toast is never clickable during a new run. */
+	void FadeLiveItems();
+
 	/** Test seam: replaces the Slate notification manager and returns the item to fade. */
 	TFunction<TSharedPtr<SNotificationItem>(const FNotificationInfo&)> PresentOverrideForTesting;
 

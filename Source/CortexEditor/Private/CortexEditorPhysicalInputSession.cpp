@@ -72,9 +72,16 @@ FCortexCommandResult WithCause(FCortexCommandResult Result, const TCHAR* Cause)
 	return Result;
 }
 
+/** The bound world, viewport, game instance, Slate user or route window is gone: labelled `target_lost`. */
 FCortexCommandResult MakeInvalidTargetResult(const FString& Message)
 {
 	return WithCause(FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message), TEXT("target_lost"));
+}
+
+/** The target is still there but its pawn or controller identity changed: no `cause`, the reason speaks for itself. */
+FCortexCommandResult MakeTargetIdentityChangedResult(const FString& Message)
+{
+	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message);
 }
 
 /** A real human packet interrupted replay playback; Edge is nullptr for moves and wheel. */
@@ -714,12 +721,12 @@ bool FCortexEditorPhysicalInputSession::ValidateTarget(FCortexCommandResult& Out
 	}
 	if (Controller->GetPawn() != Pawn)
 	{
-		OutError = MakeInvalidTargetResult(TEXT("Bound pawn was replaced instead of being adopted"));
+		OutError = MakeTargetIdentityChangedResult(TEXT("Bound pawn was replaced instead of being adopted"));
 		return false;
 	}
 	if (BoundPawnClass.IsValid() && Pawn->GetClass() != BoundPawnClass.Get())
 	{
-		OutError = MakeInvalidTargetResult(TEXT("Bound pawn class changed"));
+		OutError = MakeTargetIdentityChangedResult(TEXT("Bound pawn class changed"));
 		return false;
 	}
 
@@ -729,7 +736,7 @@ bool FCortexEditorPhysicalInputSession::ValidateTarget(FCortexCommandResult& Out
 		: nullptr;
 	if (LocalPlayer == nullptr || LocalPlayer->GetPlayerController(World) != Controller)
 	{
-		OutError = MakeInvalidTargetResult(TEXT("Selected local player no longer owns the bound controller"));
+		OutError = MakeTargetIdentityChangedResult(TEXT("Selected local player no longer owns the bound controller"));
 		return false;
 	}
 
@@ -1061,7 +1068,7 @@ bool FCortexEditorPhysicalInputSession::ResolveTarget(
 		}
 		if (StablePawnClassObservations < CortexStablePawnClassObservationsRequired)
 		{
-			OutError = MakeInvalidTargetResult(TEXT("Pawn class has not been stable across consecutive frames"));
+			OutError = MakeTargetIdentityChangedResult(TEXT("Pawn class has not been stable across consecutive frames"));
 			return false;
 		}
 	}

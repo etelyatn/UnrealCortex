@@ -18,6 +18,9 @@ class SWidget;
 /** Broadcast once when a replay run's terminal record is published. */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexReplayRunTerminal, const FCortexReplayRunRecord&);
 
+/** Broadcast once when a replay run has been admitted (StartReplay succeeded). */
+DECLARE_MULTICAST_DELEGATE(FOnCortexReplayRunAdmitted);
+
 /**
  * Single owner of native capture orchestration, replay scheduling and run finalization.
  *
@@ -125,6 +128,12 @@ public:
 	 * operation synchronously: the service is still inside its own tick.
 	 */
 	FOnCortexReplayRunTerminal& OnRunTerminal();
+
+	/**
+	 * Broadcast as the last step of a successful StartReplay, after all run state is set. Handlers must
+	 * not start an operation synchronously.
+	 */
+	FOnCortexReplayRunAdmitted& OnRunAdmitted();
 
 private:
 	/**

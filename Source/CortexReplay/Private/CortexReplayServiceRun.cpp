@@ -487,6 +487,9 @@ void FCortexReplayService::FImpl::TickRun()
 				return;
 			}
 			CountdownStartedSeconds = FPlatformTime::Seconds();
+			// A target that became ready inside the preparation budget always gets its full countdown:
+			// the countdown must not create a new preparation timeout.
+			PrepareDeadline = FMath::Max(PrepareDeadline, CountdownStartedSeconds + CountdownSeconds + 1.0);
 		}
 
 		if (CountdownSeconds > 0.0)
@@ -987,7 +990,12 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	Data->SetStringField(TEXT("editor_instance_id"), State.EditorInstanceId);
 	Data->SetStringField(TEXT("state"), ServiceStateToString(State.RunState));
 	Data->SetNumberField(TEXT("countdown_seconds"), State.CountdownSeconds);
-	return FCortexCommandRouter::Success(Data);
+
+	// Last statement of a successful admission, after all run state is set. Handlers must not start an
+	// operation synchronously (same rule as the terminal delegate).
+	const FCortexCommandResult Started = FCortexCommandRouter::Success(Data);
+	State.RunAdmittedDelegate.Broadcast();
+	return Started;
 }
 
 FCortexCommandResult FCortexReplayService::CancelReplay(const FGuid& Id, bool bAIOnly)

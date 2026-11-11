@@ -46,6 +46,8 @@ void FCortexReplayModule::StartupModule()
 	InterruptionToast = MakeShared<FCortexReplayInterruptionToast>(ReplayService);
 	RunTerminalHandle = ReplayService->OnRunTerminal().AddSP(
 		InterruptionToast.ToSharedRef(), &FCortexReplayInterruptionToast::Present);
+	RunAdmittedHandle = ReplayService->OnRunAdmitted().AddSP(
+		InterruptionToast.ToSharedRef(), &FCortexReplayInterruptionToast::FadeLiveItems);
 
 	Registry.RegisterDomain(
 		TEXT("replay"),
@@ -77,8 +79,10 @@ void FCortexReplayModule::ShutdownModule()
 	if (ReplayService.IsValid())
 	{
 		ReplayService->OnRunTerminal().Remove(RunTerminalHandle);
+		ReplayService->OnRunAdmitted().Remove(RunAdmittedHandle);
 	}
 	RunTerminalHandle.Reset();
+	RunAdmittedHandle.Reset();
 	InterruptionToast.Reset();
 
 	// Module-unload barrier: no callback into this module may outlive it (an explicit unload or hot

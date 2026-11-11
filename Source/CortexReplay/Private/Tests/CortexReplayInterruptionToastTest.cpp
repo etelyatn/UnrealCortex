@@ -167,6 +167,38 @@ bool FCortexReplayInterruptionToastOnlyInterruptedTest::RunTest(const FString& P
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayInterruptionToastFadesOnRunAdmittedTest,
+	"Cortex.Replay.InterruptionToast.FadesOnRunAdmitted",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayInterruptionToastFadesOnRunAdmittedTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexReplayTestFixture Fixture;
+	const TSharedRef<FCortexReplayService> Service = MakeShared<FCortexReplayService>(Fixture.GetProjectRoot());
+	const TSharedRef<FCortexReplayInterruptionToast> Toast =
+		MakeShared<FCortexReplayInterruptionToast>(Service);
+	FPresentationLog Log;
+	Toast->PresentOverrideForTesting = Log.MakeOverride();
+	Service->OnRunAdmitted().AddSP(Toast, &FCortexReplayInterruptionToast::FadeLiveItems);
+
+	const FCortexReplayRunRecord Run = MakeInterruptedRun(MakeForeignKeyCause());
+	Toast->Present(Run);
+	Toast->Present(Run);
+	if (!TestEqual(TEXT("Two toasts are live"), Log.Items.Num(), 2))
+	{
+		return false;
+	}
+
+	Service->OnRunAdmitted().Broadcast();
+	for (int32 Index = 0; Index < Log.Items.Num(); ++Index)
+	{
+		TestEqual(*FString::Printf(TEXT("Toast %d fades once when a new run is admitted"), Index),
+			Log.Items[Index]->FadeoutCalls, 1);
+	}
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayInterruptionToastButtonsFadeOutTest,
 	"Cortex.Replay.InterruptionToast.ButtonsFadeOut",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

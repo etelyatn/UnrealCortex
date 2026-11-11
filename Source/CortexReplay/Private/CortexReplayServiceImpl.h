@@ -132,6 +132,8 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	bool bUnloading = false;
 	/** Raised once when a run's terminal record is published; see FCortexReplayService::OnRunTerminal. */
 	FOnCortexReplayRunTerminal RunTerminalDelegate;
+	/** Raised once when a run is admitted; see FCortexReplayService::OnRunAdmitted. */
+	FOnCortexReplayRunAdmitted RunAdmittedDelegate;
 
 	bool Tick(float DeltaSeconds);
 	void EnsureTicker();

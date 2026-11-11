@@ -423,6 +423,11 @@ FOnCortexReplayRunTerminal& FCortexReplayService::OnRunTerminal()
 	return Impl->RunTerminalDelegate;
 }
 
+FOnCortexReplayRunAdmitted& FCortexReplayService::OnRunAdmitted()
+{
+	return Impl->RunAdmittedDelegate;
+}
+
 void FCortexReplayService::Shutdown()
 {
 	if (!Impl.IsValid())

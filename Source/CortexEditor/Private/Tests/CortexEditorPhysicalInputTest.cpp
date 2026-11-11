@@ -7518,6 +7518,21 @@ bool FCortexInvalidTargetCauseTest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this, [Fixture](FAutomationTestBase& Test)
 	{
+		// A replaced pawn is not a lost session: the result keeps its code and carries no cause.
+		APlayerController* Controller = GEditor->PlayWorld ? GEditor->PlayWorld->GetFirstPlayerController() : nullptr;
+		if (!Test.TestNotNull(TEXT("Owned PIE has a player controller"), Controller)) { return; }
+		Controller->UnPossess();
+		FCortexCommandResult PawnError;
+		Test.TestFalse(TEXT("An unpossessed pawn invalidates the target"), Fixture->Session->ValidateTarget(PawnError));
+		Test.TestEqual(TEXT("Pawn change keeps its error code"), PawnError.ErrorCode,
+			FString(CortexErrorCodes::InvalidOperation));
+		FString PawnCause;
+		const bool bHasCause = PawnError.ErrorDetails.IsValid()
+			&& PawnError.ErrorDetails->TryGetStringField(TEXT("cause"), PawnCause);
+		Test.TestFalse(TEXT("Pawn change carries no cause"), bHasCause);
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this, [Fixture](FAutomationTestBase& Test)
+	{
 		Fixture->Session->EndOwnedPIE();
 		FCortexCommandResult Error;
 		Test.TestFalse(TEXT("Ended PIE invalidates the target"), Fixture->Session->ValidateTarget(Error));

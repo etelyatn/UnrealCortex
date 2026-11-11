@@ -568,6 +568,9 @@ private:
 	/**
 	 * True when the selected user's current keyboard focus/window still belongs to the selected
 	 * route. A foreign focus or a different active window means replay no longer owns input.
+	 * On false, OutReason says what was lost and OutCause is the `details.cause` value for the
+	 * resulting interruption: `focus_lost` when keyboard focus or the active window left the route,
+	 * `target_lost` when Slate, the selected user or the route window is gone.
 	 */
 	bool IsSelectedRouteOwnershipIntact(FString& OutReason, const TCHAR*& OutCause) const;
 

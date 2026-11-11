@@ -31,6 +31,11 @@ FCortexReplayInterruptionToast::FCortexReplayInterruptionToast(TWeakPtr<FCortexR
 
 FCortexReplayInterruptionToast::~FCortexReplayInterruptionToast()
 {
+	FadeLiveItems();
+}
+
+void FCortexReplayInterruptionToast::FadeLiveItems()
+{
 	for (const TWeakPtr<SNotificationItem>& Item : LiveItems)
 	{
 		if (const TSharedPtr<SNotificationItem> Pinned = Item.Pin())

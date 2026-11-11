@@ -5515,7 +5515,7 @@ bool FCortexReplayLifecycleCountdownIgnoresInputTest::RunTest(const FString& Par
 
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitPhase(this, Service, RunId, TEXT("countdown"), Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[](FAutomationTestBase& T)
+		[Service, RunId](FAutomationTestBase& T)
 		{
 			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
 			T.TestNotNull(TEXT("Owned replay PIE world exists"), PlayWorld);
@@ -5531,6 +5531,8 @@ bool FCortexReplayLifecycleCountdownIgnoresInputTest::RunTest(const FString& Par
 			Route.MoveMouse();
 			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
 			FSlateApplication::Get().SetCursorPos(SavedCursor);
+			T.TestEqual(TEXT("The injected input leaves the run in its countdown"),
+				RunPhase(Service->GetRun(RunId, true)), FString(TEXT("countdown")));
 		}, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
@@ -5538,8 +5540,34 @@ bool FCortexReplayLifecycleCountdownIgnoresInputTest::RunTest(const FString& Par
 		[Service, RunId, Fixture, Clock](FAutomationTestBase& T)
 		{
 			const FCortexCommandResult Run = Service->GetRun(RunId, true);
-			T.TestEqual(TEXT("Input during the countdown does not interrupt the run"),
-				RunState(Run), FString(TEXT("Completed")));
+			const FString State = RunState(Run);
+			FString Diagnosis;
+			if (State != TEXT("Completed"))
+			{
+				// A red run must say why: the terminal error code, cause and reason.
+				const TSharedPtr<FJsonObject>* Error = nullptr;
+				if (Run.Data.IsValid() && Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
+					&& Error != nullptr && Error->IsValid())
+				{
+					FString Cause;
+					FString Reason;
+					const TSharedPtr<FJsonObject>* Details = nullptr;
+					if ((*Error)->TryGetObjectField(TEXT("details"), Details) && Details != nullptr
+						&& Details->IsValid())
+					{
+						(*Details)->TryGetStringField(TEXT("cause"), Cause);
+						(*Details)->TryGetStringField(TEXT("reason"), Reason);
+					}
+					Diagnosis = FString::Printf(TEXT(" (state=%s code=%s cause=%s reason=%s)"), *State,
+						*(*Error)->GetStringField(TEXT("code")), *Cause, *Reason);
+				}
+				else
+				{
+					Diagnosis = FString::Printf(TEXT(" (state=%s, no execution_error)"), *State);
+				}
+			}
+			T.TestEqual(*(FString(TEXT("Input during the countdown does not interrupt the run")) + Diagnosis),
+				State, FString(TEXT("Completed")));
 		}, Fixture));
 
 	return true;

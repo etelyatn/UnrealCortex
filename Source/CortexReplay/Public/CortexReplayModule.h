@@ -48,6 +48,7 @@ private:
 	/** Shows the interruption toast for runs that end Interrupted; destroyed before the service shuts down. */
 	TSharedPtr<FCortexReplayInterruptionToast> InterruptionToast;
 	FDelegateHandle RunTerminalHandle;
+	FDelegateHandle RunAdmittedHandle;
 
 	FDelegateHandle ToolsMenuStartupCallbackHandle;
 	FDelegateHandle ToolbarStartupCallbackHandle;
