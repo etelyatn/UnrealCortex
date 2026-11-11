@@ -1204,10 +1204,10 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
                 }
                 for (const auto& Pair : Supplied->Values)
                 {
-                    const FString AssetPath = CortexEngineCompat::JsonKeyToString(Pair.Key);
-                    if (!Modified.ContainsByPredicate([&AssetPath](const FAssetPlan* Asset) { return Asset->AssetPath == AssetPath; }))
+                    const FString SuppliedPath = CortexEngineCompat::JsonKeyToString(Pair.Key);
+                    if (!Modified.ContainsByPredicate([&SuppliedPath](const FAssetPlan* Asset) { return Asset->AssetPath == SuppliedPath; }))
                     {
-                        Extra.Add(MakeShared<FJsonValueString>(AssetPath));
+                        Extra.Add(MakeShared<FJsonValueString>(SuppliedPath));
                     }
                 }
                 if (!Missing.IsEmpty() || !Extra.IsEmpty() || !Stale.IsEmpty())
