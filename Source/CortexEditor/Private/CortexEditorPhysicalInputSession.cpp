@@ -65,9 +65,31 @@ namespace
 /** The declared pawn class must be observed on at least this many consecutive polls. */
 constexpr int32 CortexStablePawnClassObservationsRequired = 2;
 
+/** Adds `details.cause` to a result without changing its code or message. */
+FCortexCommandResult WithCause(FCortexCommandResult Result, const TCHAR* Cause)
+{
+	Result.AddContext(TEXT("cause"), FString(Cause));
+	return Result;
+}
+
 FCortexCommandResult MakeInvalidTargetResult(const FString& Message)
 {
-	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message);
+	return WithCause(FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message), TEXT("target_lost"));
+}
+
+/** A real human packet interrupted replay playback; Edge is nullptr for moves and wheel. */
+FCortexCommandResult MakeForeignInterruption(const TCHAR* InputKind, const FString& Input, const TCHAR* Edge)
+{
+	FCortexCommandResult Result = MakeErrorResult(CortexEditorPhysicalInputErrorCodes::ForeignInterruption,
+		TEXT("Foreign physical input interrupted replay playback"));
+	Result.AddContext(TEXT("cause"), FString(TEXT("foreign_input")));
+	Result.AddContext(TEXT("input_kind"), FString(InputKind));
+	Result.AddContext(TEXT("input"), Input);
+	if (Edge != nullptr)
+	{
+		Result.AddContext(TEXT("edge"), FString(Edge));
+	}
+	return Result;
 }
 
 /** Appends one labelled boolean to the canonical input-configuration encoding. */
@@ -346,11 +368,13 @@ bool FCortexEditorPhysicalInputSession::TickInternal(float DeltaTime)
 		&& CaptureState.IsValid() && !CaptureState->bInterrupted)
 	{
 		FString OwnershipReason;
-		if (!IsSelectedRouteOwnershipIntact(OwnershipReason))
+		const TCHAR* OwnershipCause = TEXT("target_lost");
+		if (!IsSelectedRouteOwnershipIntact(OwnershipReason, OwnershipCause))
 		{
 			UE_LOG(LogCortexEditor, Display,
 				TEXT("Replay route ownership lost during playback; interrupting: %s"), *OwnershipReason);
-			NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation, OwnershipReason));
+			NotifyInterruption(WithCause(
+				MakeErrorResult(CortexErrorCodes::InvalidOperation, OwnershipReason), OwnershipCause));
 		}
 	}
 
@@ -1753,8 +1777,7 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorKey(const FKeyEvent& Key
 	// it targets (device-wide, see BeginReplayEpoch); the recording's origin never suppresses it.
 	if (bReplayInProgress)
 	{
-		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("Foreign physical input interrupted replay playback")));
+		NotifyInterruption(MakeForeignInterruption(TEXT("key"), Key.ToString(), bKeyDown ? TEXT("press") : TEXT("release")));
 	}
 
 	// Pre-baseline owned preparation: a real packet on the provisional owned route invalidates the
@@ -1842,8 +1865,8 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseButton(
 	// it targets (device-wide, see BeginReplayEpoch); the recording's origin never suppresses it.
 	if (bReplayInProgress)
 	{
-		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("Foreign physical input interrupted replay playback")));
+		NotifyInterruption(MakeForeignInterruption(TEXT("mouse_button"), Button.ToString(),
+			bDownEdge ? TEXT("press") : TEXT("release")));
 	}
 
 	// Pre-baseline owned preparation: a real packet on the provisional owned route invalidates the
@@ -1907,8 +1930,7 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseMove(const FPointer
 	if (bReplayInProgress && (!DispatchContext.IsValid()
 		|| CortexEditorUserInputActivity::IsInputRecent(CortexEditorUserInputActivity::Sample())))
 	{
-		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("Foreign physical input interrupted replay playback")));
+		NotifyInterruption(MakeForeignInterruption(TEXT("pointer_move"), EKeys::Mouse2D.ToString(), nullptr));
 	}
 
 	// Pre-baseline owned preparation: a real packet on the provisional owned route invalidates the
@@ -1971,8 +1993,7 @@ void FCortexEditorPhysicalInputSession::ObserveProcessorMouseWheel(const FPointe
 	// it targets (device-wide, see BeginReplayEpoch); the recording's origin never suppresses it.
 	if (bReplayInProgress)
 	{
-		NotifyInterruption(MakeErrorResult(CortexErrorCodes::InvalidOperation,
-			TEXT("Foreign physical input interrupted replay playback")));
+		NotifyInterruption(MakeForeignInterruption(TEXT("wheel"), EKeys::MouseWheelAxis.ToString(), nullptr));
 	}
 
 	// Pre-baseline owned preparation: a real packet on the provisional owned route invalidates the
@@ -2302,16 +2323,18 @@ bool FCortexEditorPhysicalInputSession::IsKeyboardFocusOnSelectedRoute() const
 	return IsWidgetOnSelectedRoute(Focused);
 }
 
-bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& OutReason) const
+bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& OutReason, const TCHAR*& OutCause) const
 {
 	if (!FSlateApplication::IsInitialized())
 	{
+		OutCause = TEXT("target_lost");
 		OutReason = TEXT("Slate is not initialized");
 		return false;
 	}
 	FSlateApplication& Slate = FSlateApplication::Get();
 	if (!Slate.GetUser(Binding.SlateUserIndex).IsValid())
 	{
+		OutCause = TEXT("target_lost");
 		OutReason = TEXT("The selected Slate user is no longer available");
 		return false;
 	}
@@ -2328,6 +2351,7 @@ bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& 
 		UE_LOG(LogCortexEditor, Display,
 			TEXT("Replay route loss: target route is not the active application (appActive=%d activeTopLevelValid=%d)"),
 			Slate.IsActive() ? 1 : 0, Slate.GetActiveTopLevelWindow().IsValid() ? 1 : 0);
+		OutCause = TEXT("focus_lost");
 		OutReason = TEXT("Replay target route is not the active application");
 		return false;
 	}
@@ -2336,6 +2360,7 @@ bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& 
 		UE_LOG(LogCortexEditor, Display,
 			TEXT("Replay route loss: route window unresolvable (appActive=%d activeTopLevelValid=%d)"),
 			Slate.IsActive() ? 1 : 0, Slate.GetActiveTopLevelWindow().IsValid() ? 1 : 0);
+		OutCause = TEXT("target_lost");
 		OutReason = TEXT("Replay target route window is no longer resolvable");
 		return false;
 	}
@@ -2346,6 +2371,7 @@ bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& 
 			TEXT("Replay route loss: route window is not the active top-level window (appActive=%d activeTopLevelValid=%d sameWindow=%d)"),
 			Slate.IsActive() ? 1 : 0, ActiveTopLevel.IsValid() ? 1 : 0,
 			(ActiveTopLevel.IsValid() && ActiveTopLevel == RouteWindow) ? 1 : 0);
+		OutCause = TEXT("focus_lost");
 		OutReason = TEXT("Replay target route window is not the active top-level window");
 		return false;
 	}
@@ -2360,6 +2386,7 @@ bool FCortexEditorPhysicalInputSession::IsSelectedRouteOwnershipIntact(FString& 
 			TEXT("Replay route loss: foreign keyboard focus (appActive=%d focusedValid=%d focusedOnRoute=%d)"),
 			Slate.IsActive() ? 1 : 0, Focused.IsValid() ? 1 : 0,
 			IsWidgetOnSelectedRoute(Focused) ? 1 : 0);
+		OutCause = TEXT("focus_lost");
 		OutReason = TEXT("Replay lost the selected route to a foreign keyboard focus");
 		return false;
 	}
@@ -2542,9 +2569,11 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::Dispatch(const FCortexEd
 	if (bReplayInProgress)
 	{
 		FString OwnershipReason;
-		if (!IsSelectedRouteOwnershipIntact(OwnershipReason))
+		const TCHAR* OwnershipCause = TEXT("target_lost");
+		if (!IsSelectedRouteOwnershipIntact(OwnershipReason, OwnershipCause))
 		{
-			const FCortexCommandResult Lost = MakeErrorResult(CortexErrorCodes::InvalidOperation, OwnershipReason);
+			const FCortexCommandResult Lost = WithCause(
+				MakeErrorResult(CortexErrorCodes::InvalidOperation, OwnershipReason), OwnershipCause);
 			NotifyInterruption(Lost);
 			return Lost;
 		}
