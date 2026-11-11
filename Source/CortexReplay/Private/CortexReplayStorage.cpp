@@ -259,9 +259,11 @@ bool FCortexReplaySha256State::Finish(FString& OutHex, FString& OutError)
 	}
 
 	OutHex.Reserve(static_cast<int32>(sizeof(Digest)) * 2);
+	constexpr TCHAR HexDigits[] = TEXT("0123456789abcdef");
 	for (const uint8 Byte : Digest)
 	{
-		OutHex += FString::Printf(TEXT("%02x"), static_cast<int32>(Byte));
+		OutHex.AppendChar(HexDigits[Byte >> 4]);
+		OutHex.AppendChar(HexDigits[Byte & 0x0f]);
 	}
 
 	return true;
