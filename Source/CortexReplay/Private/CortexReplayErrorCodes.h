@@ -37,4 +37,6 @@ namespace CortexReplayErrorCodes
 	constexpr TCHAR ReplayPoseGuardFailed[] = TEXT("REPLAY_POSE_GUARD_FAILED");
 	constexpr TCHAR ReplayUIGuardFailed[] = TEXT("REPLAY_UI_GUARD_FAILED");
 	constexpr TCHAR ReplayUIWaitTimeout[] = TEXT("REPLAY_UI_WAIT_TIMEOUT");
+	/** The user's own mouse, keyboard or wheel input stopped a replay. */
+	constexpr TCHAR ReplayInterruptedByInput[] = TEXT("REPLAY_INTERRUPTED_BY_INPUT");
 }

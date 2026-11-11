@@ -1,6 +1,7 @@
 #include "CortexReplayServiceImpl.h"
 
 #include "CortexReplayErrorCodes.h"
+#include "CortexReplayInterruptionText.h"
 
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -568,6 +569,20 @@ void FCortexReplayService::FImpl::TickFinalization()
 	else
 	{
 		Terminal.ExecutionError = PendingTerminalResult;
+		if (PendingTerminalState == ECortexReplayState::Interrupted && !PendingTerminalResult.ErrorCode.IsEmpty())
+		{
+			double StoppedAtSeconds = 0.0;
+			if (Snapshot.IsValid())
+			{
+				const int32 FramesToSum = FMath::Min(ActiveRun.CompletedFrames, Snapshot->Frames.Num());
+				for (int32 FrameIndex = 0; FrameIndex < FramesToSum; ++FrameIndex)
+				{
+					StoppedAtSeconds += Snapshot->Frames[FrameIndex].AppDeltaSeconds;
+				}
+			}
+			Terminal.ExecutionError = CortexReplayInterruptionText::ToRunError(PendingTerminalResult,
+				ActiveRun.CompletedFrames, ActiveRun.FrameCount, StoppedAtSeconds);
+		}
 		if (Terminal.ExecutionError.ErrorCode.IsEmpty() && PendingTerminalState == ECortexReplayState::Error)
 		{
 			// A terminal Error must always carry a bounded execution code so the retained record

@@ -176,6 +176,13 @@ public:
 		FSlateApplication::Get().ProcessKeyDownEvent(FKeyEvent(EKeys::Escape, Modifiers, UserIndex, bRepeat, 27, 0));
 	}
 
+	/** Presses a physical key on the route's user without releasing it. */
+	void PressKey(const FKey& Key)
+	{
+		const FModifierKeysState Modifiers;
+		FSlateApplication::Get().ProcessKeyDownEvent(FKeyEvent(Key, Modifiers, UserIndex, false, 0, 0));
+	}
+
 	void PressDown()
 	{
 		const FModifierKeysState Modifiers;
@@ -4114,6 +4121,93 @@ bool FCortexReplayLifecycleInterruptedRunRetainsCauseTest::RunTest(const FString
 					Inner.TestEqual(TEXT("The cancelled run exposes the revocation cause"),
 						RunExecutionErrorCode(Cancelled), FString(CortexReplayErrorCodes::PermissionDenied));
 				}, Fixture));
+		}, Fixture));
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A physical key the user presses during a replay interrupts it; the stored record carries the fixed
+// title, the input that did it and the stop point.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleForeignKeyInterruptionDetailsTest,
+	"Cortex.Replay.Lifecycle.ForeignKeyInterruptionDetails",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleForeignKeyInterruptionDetailsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true, 2.0))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("AI replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 2, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[](FAutomationTestBase& T)
+		{
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned replay PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			Route.PressKey(EKeys::Q);
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId, Fixture, Clock](FAutomationTestBase& T)
+		{
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("A foreign key interrupts the run"), RunState(Run), FString(TEXT("Interrupted")));
+			T.TestEqual(TEXT("Stored code names the input"), RunExecutionErrorCode(Run),
+				FString(TEXT("REPLAY_INTERRUPTED_BY_INPUT")));
+			const TSharedPtr<FJsonObject>* Error = nullptr;
+			if (!Run.Data.IsValid() || !Run.Data->TryGetObjectField(TEXT("execution_error"), Error)
+				|| Error == nullptr || !Error->IsValid())
+			{
+				T.AddError(TEXT("The interrupted run carries no execution_error"));
+				return;
+			}
+			T.TestEqual(TEXT("Stored message is the fixed title"),
+				(*Error)->GetStringField(TEXT("message")), FString(TEXT("Replay stopped: you pressed Q")));
+			const TSharedPtr<FJsonObject>* Details = nullptr;
+			if (!T.TestTrue(TEXT("Details are stored"),
+				(*Error)->TryGetObjectField(TEXT("details"), Details) && Details != nullptr && Details->IsValid()))
+			{
+				return;
+			}
+			T.TestEqual(TEXT("Details name the input"), (*Details)->GetStringField(TEXT("input")),
+				FString(TEXT("Q")));
+			const int32 CompletedFrames = static_cast<int32>(Run.Data->GetNumberField(TEXT("completed_frames")));
+			T.TestEqual(TEXT("Stop frame is the completed frame count"),
+				static_cast<int32>((*Details)->GetNumberField(TEXT("stopped_at_frame"))), CompletedFrames);
+			T.TestTrue(TEXT("Stop point is after the start"),
+				(*Details)->GetNumberField(TEXT("stopped_at_seconds")) > 0.0);
 		}, Fixture));
 
 	return true;
