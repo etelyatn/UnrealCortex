@@ -1,4 +1,5 @@
 #include "Operations/CortexBPGraphMetricsOps.h"
+#include "CortexEngineCompat.h"
 
 #include "CortexBlueprintModule.h"
 #include "CortexGraphTree.h"
@@ -385,12 +386,13 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("thresholds must be an object"));
 		}
 
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*ThresholdsPtr)->Values)
+		for (const auto& Pair : (*ThresholdsPtr)->Values)
 		{
-			if (Pair.Key != TEXT("max_nodes_per_entry") && Pair.Key != TEXT("max_nodes_per_blueprint"))
+			const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
+			if (Key != TEXT("max_nodes_per_entry") && Key != TEXT("max_nodes_per_blueprint"))
 			{
 				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(
-					TEXT("Unknown thresholds key '%s'; allowed: max_nodes_per_entry, max_nodes_per_blueprint"), *Pair.Key));
+					TEXT("Unknown thresholds key '%s'; allowed: max_nodes_per_entry, max_nodes_per_blueprint"), *Key));
 			}
 		}
 

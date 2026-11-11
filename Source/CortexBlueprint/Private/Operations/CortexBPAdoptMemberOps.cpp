@@ -1,4 +1,5 @@
 #include "Operations/CortexBPAdoptMemberOps.h"
+#include "CortexEngineCompat.h"
 
 #include "CortexBlueprintModule.h"
 #include "CortexCommandRouter.h"
@@ -796,12 +797,13 @@ namespace
 				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Each mapping must be an object {bp_variable, native_property, default?}"));
 				return false;
 			}
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : (*Item)->Values)
+			for (const auto& Field : (*Item)->Values)
 			{
-				if (Field.Key != TEXT("bp_variable") && Field.Key != TEXT("native_property") && Field.Key != TEXT("default"))
+				const FString FieldName = CortexEngineCompat::JsonKeyToString(Field.Key);
+				if (FieldName != TEXT("bp_variable") && FieldName != TEXT("native_property") && FieldName != TEXT("default"))
 				{
 					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-						FString::Printf(TEXT("Unknown mapping field '%s' (allowed: bp_variable, native_property, default)"), *Field.Key));
+						FString::Printf(TEXT("Unknown mapping field '%s' (allowed: bp_variable, native_property, default)"), *FieldName));
 					return false;
 				}
 			}
@@ -880,9 +882,9 @@ namespace
 		Details->SetBoolField(TEXT("can_apply"), false);
 		if (First.Details.IsValid())
 		{
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : First.Details->Values)
+			for (const auto& Field : First.Details->Values)
 			{
-				Details->SetField(Field.Key, Field.Value);
+				Details->SetField(CortexEngineCompat::JsonKeyToString(Field.Key), Field.Value);
 			}
 		}
 		return FCortexCommandRouter::Error(First.Code, First.Message, Details);

@@ -1,6 +1,7 @@
 // blueprint.replace_interface (#122 Task 9): the thin entry over the CortexGraph replace_interface migration.
 
 #include "Misc/AutomationTest.h"
+#include "CortexEngineCompat.h"
 #include "UObject/Interface.h"
 
 #include "CortexAdoptTestHelpers.h"
@@ -459,7 +460,7 @@ bool FCortexBPReplaceInterfaceTest::RunTest(const FString& Parameters)
 				if (Data->TryGetObjectField(TEXT("node_mappings"), Mappings))
 				{
 					TArray<FString> Keys;
-					for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*Mappings)->Values) { Keys.Add(Pair.Key); }
+					for (const auto& Pair : (*Mappings)->Values) { Keys.Add(CortexEngineCompat::JsonKeyToString(Pair.Key)); }
 					Keys.Sort();
 					Text += FString::Join(Keys, TEXT(","));
 				}
@@ -482,7 +483,7 @@ namespace CortexIssue122ReplaceInterfaceEntryTest
 		{
 			TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
 			TArray<TPair<FString, TSharedPtr<FJsonValue>>> Pairs;
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Value->AsObject()->Values) { Pairs.Add(Pair); }
+			for (const auto& Pair : Value->AsObject()->Values) { Pairs.Emplace(CortexEngineCompat::JsonKeyToString(Pair.Key), Pair.Value); }
 			for (int32 Index = Pairs.Num() - 1; Index >= 0; --Index) { Out->SetField(Pairs[Index].Key, Reordered(Pairs[Index].Value)); }
 			return MakeShared<FJsonValueObject>(Out);
 		}

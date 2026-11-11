@@ -1980,12 +1980,13 @@ bool ParseGuard(
 bool HasOnlyKeys(const FJsonObject& Object, TArrayView<const TCHAR* const> Allowed, const TCHAR* Context,
 	FString& OutError)
 {
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Member : Object.Values)
+	for (const auto& Member : Object.Values)
 	{
+		const FString MemberKey = CortexEngineCompat::JsonKeyToString(Member.Key);
 		bool bKnown = false;
 		for (const TCHAR* Key : Allowed)
 		{
-			if (Member.Key == Key)
+			if (MemberKey == Key)
 			{
 				bKnown = true;
 				break;
@@ -1994,7 +1995,7 @@ bool HasOnlyKeys(const FJsonObject& Object, TArrayView<const TCHAR* const> Allow
 
 		if (!bKnown)
 		{
-			OutError = FString::Printf(TEXT("%s has an unknown key '%s'"), Context, *Member.Key);
+			OutError = FString::Printf(TEXT("%s has an unknown key '%s'"), Context, *MemberKey);
 			return false;
 		}
 	}

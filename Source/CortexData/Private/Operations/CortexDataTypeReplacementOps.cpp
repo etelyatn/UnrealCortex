@@ -1,4 +1,5 @@
 #include "Operations/CortexDataTypeReplacementOps.h"
+#include "CortexEngineCompat.h"
 
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -67,15 +68,16 @@ namespace
 			OutError = FString::Printf(TEXT("%s must be an object of strings"), Field);
 			return false;
 		}
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*Object)->Values)
+		for (const auto& Pair : (*Object)->Values)
 		{
+			const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
 			FString Value;
 			if (!Pair.Value.IsValid() || !Pair.Value->TryGetString(Value) || Value.IsEmpty())
 			{
-				OutError = FString::Printf(TEXT("%s.%s must be a non-empty string"), Field, *Pair.Key);
+				OutError = FString::Printf(TEXT("%s.%s must be a non-empty string"), Field, *Key);
 				return false;
 			}
-			Out.Add(Pair.Key, Value);
+			Out.Add(Key, Value);
 		}
 		return true;
 	}

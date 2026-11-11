@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "CortexEngineCompat.h"
 #include "CortexBPCommandHandler.h"
 #include "CortexTypes.h"
 #include "Engine/Blueprint.h"
@@ -338,9 +339,9 @@ bool FCortexBPAnalyzeForMigrationSectionsSelectorTest::RunTest(const FString& Pa
 	if (Selected.bSuccess && Selected.Data.IsValid())
 	{
 		TSet<FString> Keys;
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Selected.Data->Values)
+		for (const auto& Pair : Selected.Data->Values)
 		{
-			Keys.Add(FString(*Pair.Key));
+			Keys.Add(CortexEngineCompat::JsonKeyToString(Pair.Key));
 		}
 		const TSet<FString> Expected = {
 			TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("native_parent_class"),
