@@ -2,6 +2,7 @@
 
 #include "CortexCoreModule.h"
 #include "CortexReplayCommandHandler.h"
+#include "CortexReplayInterruptionToast.h"
 #include "CortexReplayService.h"
 #include "CoreGlobals.h"
 #include "Framework/Application/SlateApplication.h"
@@ -42,6 +43,9 @@ void FCortexReplayModule::StartupModule()
 	// The service is the single native owner of replay orchestration; the transport handler only
 	// forwards the five AI operations to it, and the human window shares this same owner.
 	ReplayService = MakeShared<FCortexReplayService>(FPaths::ProjectDir());
+	InterruptionToast = MakeShared<FCortexReplayInterruptionToast>(ReplayService);
+	RunTerminalHandle = ReplayService->OnRunTerminal().AddSP(
+		InterruptionToast.ToSharedRef(), &FCortexReplayInterruptionToast::Present);
 
 	Registry.RegisterDomain(
 		TEXT("replay"),
@@ -67,6 +71,15 @@ void FCortexReplayModule::ShutdownModule()
 
 	UnregisterMenuEntries();
 	UnregisterTabSpawner();
+
+	// The toast goes first: its callbacks reach the service, and a service that is shutting down raises
+	// no further terminal notifications.
+	if (ReplayService.IsValid())
+	{
+		ReplayService->OnRunTerminal().Remove(RunTerminalHandle);
+	}
+	RunTerminalHandle.Reset();
+	InterruptionToast.Reset();
 
 	// Module-unload barrier: no callback into this module may outlive it (an explicit unload or hot
 	// reload frees the code). Owned input/PIE is neutralized and the single terminal result is

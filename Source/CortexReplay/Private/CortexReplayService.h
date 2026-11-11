@@ -15,6 +15,9 @@ struct FCortexReplayRunRecord;
 class UWorld;
 class SWidget;
 
+/** Broadcast once when a replay run's terminal record is published. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexReplayRunTerminal, const FCortexReplayRunRecord&);
+
 /**
  * Single owner of native capture orchestration, replay scheduling and run finalization.
  *
@@ -110,6 +113,13 @@ public:
 
 	/** Test hook: the active run's game-view overlay, or null when none is shown. */
 	TSharedPtr<SWidget> GetRunOverlayForTesting() const;
+
+	/**
+	 * Broadcast once per run, after its terminal record is published and its session released, from the
+	 * finalization tick on the game thread, never during Shutdown. Handlers must not start an
+	 * operation synchronously: the service is still inside its own tick.
+	 */
+	FOnCortexReplayRunTerminal& OnRunTerminal();
 
 private:
 	/**

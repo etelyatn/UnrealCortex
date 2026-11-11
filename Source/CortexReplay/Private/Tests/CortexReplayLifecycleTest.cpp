@@ -7,6 +7,7 @@
 #include "CortexReplayLibrary.h"
 #include "CortexReplayLivePrerequisites.h"
 #include "CortexReplayService.h"
+#include "CortexReplayRunStore.h"
 #include "CortexReplayTestUtils.h"
 #include "CortexReplayTypes.h"
 #include "Dom/JsonObject.h"
@@ -4232,6 +4233,126 @@ bool FCortexReplayLifecycleForeignKeyInterruptionDetailsTest::RunTest(const FStr
 				(*Details)->GetNumberField(TEXT("stopped_at_seconds")) > 0.0);
 		}, Fixture));
 
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The terminal delegate fires exactly once per run, after the terminal record is published, and never
+// while the service shuts down (the interruption toast must not appear while the editor is closing).
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTerminalDelegateFiresOnceTest,
+	"Cortex.Replay.Lifecycle.TerminalDelegateFiresOnce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleTerminalDelegateFiresOnceTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	const FString MapPath = MakeReplayMapAssetPath();
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MapPath,
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true, 2.0))
+	{
+		return false;
+	}
+
+	struct FObserved
+	{
+		int32 Count = 0;
+		ECortexReplayState State = ECortexReplayState::Preparing;
+		FGuid RunId;
+		int32 RecordingId = 0;
+		FString Message;
+		bool bPublishedWhenFired = false;
+	};
+	const TSharedRef<FObserved> Observed = MakeShared<FObserved>();
+	TWeakPtr<FCortexReplayService> WeakService = Service;
+	const FDelegateHandle Handle = Service->OnRunTerminal().AddLambda(
+		[Observed, WeakService](const FCortexReplayRunRecord& Run)
+		{
+			++Observed->Count;
+			Observed->State = Run.State;
+			Observed->RunId = Run.Id;
+			Observed->RecordingId = Run.RecordingId;
+			Observed->Message = Run.ExecutionError.ErrorMessage;
+			const TSharedPtr<FCortexReplayService> Pinned = WeakService.Pin();
+			Observed->bPublishedWhenFired = Pinned.IsValid() && Pinned->GetRun(Run.Id, true).bSuccess;
+		});
+
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("AI replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	const FGuid RunId = ParseRunId(Started);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(this, Service, RunId,
+		TEXT("Replaying"), Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitDispatchedEvents(this, Service, RunId, 2, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Observed](FAutomationTestBase& T)
+		{
+			T.TestEqual(TEXT("Nothing is broadcast while the run is live"), Observed->Count, 0);
+			UWorld* PlayWorld = GEditor ? GEditor->PlayWorld : nullptr;
+			T.TestNotNull(TEXT("Owned replay PIE world exists"), PlayWorld);
+			if (!PlayWorld || !FSlateApplication::IsInitialized()) { return; }
+			FCortexReplayOwnedPointerRoute Route;
+			if (!Route.Resolve(T, *PlayWorld)) { return; }
+			const bool bSavedInactiveInputHandling =
+				FSlateApplication::Get().GetHandleDeviceInputWhenApplicationNotActive();
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(true);
+			Route.PressKey(EKeys::Q);
+			FSlateApplication::Get().SetHandleDeviceInputWhenApplicationNotActive(bSavedInactiveInputHandling);
+		}, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, Observed, RunId, Fixture](FAutomationTestBase& T)
+		{
+			T.TestEqual(TEXT("The interrupted run broadcasts exactly once"), Observed->Count, 1);
+			T.TestEqual(TEXT("The broadcast carries the Interrupted state"), Observed->State,
+				ECortexReplayState::Interrupted);
+			T.TestEqual(TEXT("The broadcast carries the run's identity"), Observed->RunId, RunId);
+			T.TestEqual(TEXT("The broadcast carries the recording id"), Observed->RecordingId, 1);
+			T.TestEqual(TEXT("The broadcast carries the fixed title"), Observed->Message,
+				FString(TEXT("Replay stopped: you pressed Q")));
+			T.TestTrue(TEXT("The terminal record was already published when it fired"),
+				Observed->bPublishedWhenFired);
+
+			// A second run ended by service shutdown is a terminal run too, but never a broadcast.
+			const FCortexCommandResult Second = Service->StartReplay(1, ECortexReplayOrigin::AI);
+			if (!T.TestTrue(TEXT("Second AI replay admitted"), Second.bSuccess))
+			{
+				return;
+			}
+			const FGuid SecondId = ParseRunId(Second);
+			FAutomationTestBase* Test = &T;
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunState(Test, Service, SecondId,
+				TEXT("Replaying"), Fixture));
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(Test,
+				[Service, Observed](FAutomationTestBase& Inner)
+				{
+					Service->ShutdownForModuleUnload();
+					Inner.TestTrue(TEXT("Nothing of the service remains installed"), Service->IsQuiescent());
+					Inner.TestEqual(TEXT("Service shutdown broadcasts nothing"), Observed->Count, 1);
+				}, Fixture));
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(Test, Fixture));
+			ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(Test,
+				[Observed](FAutomationTestBase& Inner)
+				{
+					Inner.TestEqual(TEXT("Still exactly one broadcast after teardown"), Observed->Count, 1);
+				}, Fixture));
+		}, Fixture));
+
+	(void)Handle;
 	return true;
 }
 

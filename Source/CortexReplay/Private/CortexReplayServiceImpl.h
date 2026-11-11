@@ -130,6 +130,8 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	 * because this module's code is about to be freed (the owned PIE teardown continues in CortexEditor).
 	 */
 	bool bUnloading = false;
+	/** Raised once when a run's terminal record is published; see FCortexReplayService::OnRunTerminal. */
+	FOnCortexReplayRunTerminal RunTerminalDelegate;
 
 	bool Tick(float DeltaSeconds);
 	void EnsureTicker();

@@ -408,6 +408,11 @@ TSharedPtr<SWidget> FCortexReplayService::GetRunOverlayForTesting() const
 	return Impl.IsValid() ? TSharedPtr<SWidget>(Impl->RunOverlay) : nullptr;
 }
 
+FOnCortexReplayRunTerminal& FCortexReplayService::OnRunTerminal()
+{
+	return Impl->RunTerminalDelegate;
+}
+
 void FCortexReplayService::Shutdown()
 {
 	if (!Impl.IsValid())

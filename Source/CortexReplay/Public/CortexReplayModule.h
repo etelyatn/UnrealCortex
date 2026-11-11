@@ -6,6 +6,7 @@
 DECLARE_LOG_CATEGORY_EXTERN(LogCortexReplay, Log, All);
 
 class FCortexReplayService;
+class FCortexReplayInterruptionToast;
 class FSpawnTabArgs;
 class SDockTab;
 
@@ -43,6 +44,10 @@ private:
 
 	/** Backend owner for the domain handler and the human window. */
 	TSharedPtr<FCortexReplayService> ReplayService;
+
+	/** Shows the interruption toast for runs that end Interrupted; destroyed before the service shuts down. */
+	TSharedPtr<FCortexReplayInterruptionToast> InterruptionToast;
+	FDelegateHandle RunTerminalHandle;
 
 	FDelegateHandle ToolsMenuStartupCallbackHandle;
 	FDelegateHandle ToolbarStartupCallbackHandle;

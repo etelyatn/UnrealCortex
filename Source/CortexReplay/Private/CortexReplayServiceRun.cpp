@@ -740,6 +740,14 @@ void FCortexReplayService::FImpl::TickFinalization()
 	{
 		DetachTickerAndSession();
 	}
+
+	// Last statement: a handler that reads the service sees the finished run. The record is copied so a
+	// handler that touches the service cannot invalidate what the other handlers receive.
+	if (!bShutdown)
+	{
+		const FCortexReplayRunRecord Published = Terminal;
+		RunTerminalDelegate.Broadcast(Published);
+	}
 }
 
 FCortexReplayGuardDecision FCortexReplayService::FImpl::EvaluateGuard(const FCortexReplayEvent& Event)
