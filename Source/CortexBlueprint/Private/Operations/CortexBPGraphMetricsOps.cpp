@@ -388,10 +388,11 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 
 		for (const auto& Pair : (*ThresholdsPtr)->Values)
 		{
-			if (CortexEngineCompat::JsonKeyToString(Pair.Key) != TEXT("max_nodes_per_entry") && CortexEngineCompat::JsonKeyToString(Pair.Key) != TEXT("max_nodes_per_blueprint"))
+			const FString Key = CortexEngineCompat::JsonKeyToString(Pair.Key);
+			if (Key != TEXT("max_nodes_per_entry") && Key != TEXT("max_nodes_per_blueprint"))
 			{
 				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(
-					TEXT("Unknown thresholds key '%s'; allowed: max_nodes_per_entry, max_nodes_per_blueprint"), *CortexEngineCompat::JsonKeyToString(Pair.Key)));
+					TEXT("Unknown thresholds key '%s'; allowed: max_nodes_per_entry, max_nodes_per_blueprint"), *Key));
 			}
 		}
 

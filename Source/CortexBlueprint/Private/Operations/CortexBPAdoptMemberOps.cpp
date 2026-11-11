@@ -799,10 +799,11 @@ namespace
 			}
 			for (const auto& Field : (*Item)->Values)
 			{
-				if (CortexEngineCompat::JsonKeyToString(Field.Key) != TEXT("bp_variable") && CortexEngineCompat::JsonKeyToString(Field.Key) != TEXT("native_property") && CortexEngineCompat::JsonKeyToString(Field.Key) != TEXT("default"))
+				const FString FieldName = CortexEngineCompat::JsonKeyToString(Field.Key);
+				if (FieldName != TEXT("bp_variable") && FieldName != TEXT("native_property") && FieldName != TEXT("default"))
 				{
 					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-						FString::Printf(TEXT("Unknown mapping field '%s' (allowed: bp_variable, native_property, default)"), *CortexEngineCompat::JsonKeyToString(Field.Key)));
+						FString::Printf(TEXT("Unknown mapping field '%s' (allowed: bp_variable, native_property, default)"), *FieldName));
 					return false;
 				}
 			}

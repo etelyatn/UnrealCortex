@@ -182,20 +182,21 @@ FCortexCommandResult WriteReportWithSummary(
 	TSharedRef<FJsonObject> Summary = MakeShared<FJsonObject>();
 	for (const auto& Field : Full->Values)
 	{
+		const FString Key = CortexEngineCompat::JsonKeyToString(Field.Key);
 		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
-		if (TruncatedArrays.Contains(CortexEngineCompat::JsonKeyToString(Field.Key)) && Field.Value.IsValid() && Field.Value->TryGetArray(Array))
+		if (TruncatedArrays.Contains(Key) && Field.Value.IsValid() && Field.Value->TryGetArray(Array))
 		{
 			TArray<TSharedPtr<FJsonValue>> First;
 			for (int32 Index = 0; Index < Array->Num() && Index < SummaryEntryLimit; ++Index)
 			{
 				First.Add((*Array)[Index]);
 			}
-			Summary->SetArrayField(CortexEngineCompat::JsonKeyToString(Field.Key), First);
-			Summary->SetNumberField(CortexEngineCompat::JsonKeyToString(Field.Key) + TEXT("_total"), Array->Num());
+			Summary->SetArrayField(Key, First);
+			Summary->SetNumberField(Key + TEXT("_total"), Array->Num());
 		}
 		else
 		{
-			Summary->SetField(CortexEngineCompat::JsonKeyToString(Field.Key), Field.Value);
+			Summary->SetField(Key, Field.Value);
 		}
 	}
 	Summary->SetStringField(TEXT("out_path"), OutPath.AbsolutePath);

@@ -341,7 +341,7 @@ bool FCortexBPAnalyzeForMigrationSectionsSelectorTest::RunTest(const FString& Pa
 		TSet<FString> Keys;
 		for (const auto& Pair : Selected.Data->Values)
 		{
-			Keys.Add(FString(*CortexEngineCompat::JsonKeyToString(Pair.Key)));
+			Keys.Add(CortexEngineCompat::JsonKeyToString(Pair.Key));
 		}
 		const TSet<FString> Expected = {
 			TEXT("name"), TEXT("asset_path"), TEXT("type"), TEXT("parent_class"), TEXT("native_parent_class"),

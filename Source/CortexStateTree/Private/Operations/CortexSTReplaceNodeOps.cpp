@@ -1113,14 +1113,15 @@ FCortexCommandResult FCortexSTReplaceNodeOps::ReplaceNode(const TSharedPtr<FJson
 		}
 		for (const auto& Entry : (*MapObject)->Values)
 		{
+			const FString OldName = CortexEngineCompat::JsonKeyToString(Entry.Key);
 			FString NewName;
-			if (!Entry.Value.IsValid() || !Entry.Value->TryGetString(NewName) || NewName.IsEmpty() || CortexEngineCompat::JsonKeyToString(Entry.Key).IsEmpty())
+			if (!Entry.Value.IsValid() || !Entry.Value->TryGetString(NewName) || NewName.IsEmpty() || OldName.IsEmpty())
 			{
 				return FCortexCommandRouter::Error(
 					CortexErrorCodes::InvalidField,
-					FString::Printf(TEXT("property_map value for '%s' must be a non-empty string"), *CortexEngineCompat::JsonKeyToString(Entry.Key)));
+					FString::Printf(TEXT("property_map value for '%s' must be a non-empty string"), *OldName));
 			}
-			Request.PropertyMap.Add(FName(*CortexEngineCompat::JsonKeyToString(Entry.Key)), FName(*NewName));
+			Request.PropertyMap.Add(FName(*OldName), FName(*NewName));
 		}
 	}
 	if (Params->HasField(TEXT("acknowledged_losses")))

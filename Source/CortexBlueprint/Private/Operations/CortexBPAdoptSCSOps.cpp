@@ -583,10 +583,11 @@ namespace CortexAdoptSCSPrivate
 			}
 			for (const auto& Field : (*Item)->Values)
 			{
-				if (CortexEngineCompat::JsonKeyToString(Field.Key) != TEXT("scs_node") && CortexEngineCompat::JsonKeyToString(Field.Key) != TEXT("native_component"))
+				const FString FieldName = CortexEngineCompat::JsonKeyToString(Field.Key);
+				if (FieldName != TEXT("scs_node") && FieldName != TEXT("native_component"))
 				{
 					OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
-						FString::Printf(TEXT("Unknown mapping field '%s' (allowed: scs_node, native_component)"), *CortexEngineCompat::JsonKeyToString(Field.Key)));
+						FString::Printf(TEXT("Unknown mapping field '%s' (allowed: scs_node, native_component)"), *FieldName));
 					return false;
 				}
 			}
