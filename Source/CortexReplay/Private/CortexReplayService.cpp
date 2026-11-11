@@ -3,6 +3,7 @@
 #include "CortexReplayServiceImpl.h"
 
 #include "CortexReplayErrorCodes.h"
+#include "Widgets/SCortexReplayRunOverlay.h"
 
 #include "Dom/JsonValue.h"
 
@@ -32,6 +33,7 @@ void FCortexReplayService::FImpl::EnsureTicker()
 
 void FCortexReplayService::FImpl::DetachTickerAndSession()
 {
+	RemoveRunOverlay();
 	// The frame observer detaches from its exact session in its own destructor, so it must be
 	// uninstalled while that session is still alive. Uninstall clears the session link, which makes a
 	// later destructor call harmless.
@@ -399,6 +401,11 @@ void FCortexReplayService::SetCountdownSecondsForTesting(double Seconds)
 	{
 		Impl->CountdownSeconds = FMath::Max(0.0, Seconds);
 	}
+}
+
+TSharedPtr<SWidget> FCortexReplayService::GetRunOverlayForTesting() const
+{
+	return Impl.IsValid() ? TSharedPtr<SWidget>(Impl->RunOverlay) : nullptr;
 }
 
 void FCortexReplayService::Shutdown()

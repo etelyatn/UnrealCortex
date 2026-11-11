@@ -2,9 +2,11 @@
 
 #include "CortexReplayErrorCodes.h"
 #include "CortexReplayInterruptionText.h"
+#include "Widgets/SCortexReplayRunOverlay.h"
 
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "Engine/GameViewportClient.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
@@ -233,6 +235,62 @@ double FCortexReplayService::FImpl::GetCountdownRemainingSeconds() const
 	return FMath::Max(0.0, CountdownSeconds - (FPlatformTime::Seconds() - CountdownStartedSeconds));
 }
 
+void FCortexReplayService::FImpl::ShowRunOverlay()
+{
+	if (!Session.IsValid())
+	{
+		return;
+	}
+	UWorld* World = Session->GetTargetBinding().World.Get();
+	UGameViewportClient* Viewport = World ? World->GetGameViewport() : nullptr;
+	if (Viewport == nullptr)
+	{
+		return;
+	}
+	if (RunOverlay.IsValid() && OverlayViewport.Get() == Viewport)
+	{
+		return;
+	}
+	// A different (or vanished) viewport than the one that holds the overlay: start over.
+	RemoveRunOverlay();
+	// The overlay is display only: hit-test invisible, so it never appears in the widget path under
+	// the cursor, and never focusable, so showing it cannot change focus or the active window.
+	RunOverlay = SNew(SCortexReplayRunOverlay).Visibility(EVisibility::HitTestInvisible);
+	OverlayViewport = Viewport;
+	Viewport->AddViewportWidgetContent(RunOverlay.ToSharedRef(), ReplayOverlayZOrder);
+}
+
+void FCortexReplayService::FImpl::UpdateCountdownOverlay()
+{
+	ShowRunOverlay();
+	if (RunOverlay.IsValid())
+	{
+		RunOverlay->ShowCountdown(FMath::CeilToInt(GetCountdownRemainingSeconds()));
+	}
+}
+
+void FCortexReplayService::FImpl::ShowPlayingOverlay()
+{
+	ShowRunOverlay();
+	if (RunOverlay.IsValid() && Snapshot.IsValid())
+	{
+		RunOverlay->ShowPlaying(Snapshot->Metadata.Name);
+	}
+}
+
+void FCortexReplayService::FImpl::RemoveRunOverlay()
+{
+	if (RunOverlay.IsValid())
+	{
+		if (UGameViewportClient* Viewport = OverlayViewport.Get())
+		{
+			Viewport->RemoveViewportWidgetContent(RunOverlay.ToSharedRef());
+		}
+	}
+	RunOverlay.Reset();
+	OverlayViewport.Reset();
+}
+
 FCortexCommandResult FCortexReplayService::FImpl::PrepareRecordedFrame(int32 FrameIndex,
 	ECortexReplayFramePreparation& OutPreparation)
 {
@@ -354,6 +412,7 @@ void FCortexReplayService::FImpl::ResetRun()
 	PermissionCheckedFrame = TNumericLimits<uint64>::Max();
 	bTerminalSaveFailed = false;
 	LastTerminalSaveAttemptSeconds = 0.0;
+	RemoveRunOverlay();
 	// The clock is a synchronous save/restore pair, so every reset path can hand it back at once.
 	RemoveFrameHooks();
 	Clock.Release();
@@ -364,6 +423,13 @@ void FCortexReplayService::FImpl::TickRun()
 	if (!bRunActive || bFinalizing || !Snapshot.IsValid())
 	{
 		return;
+	}
+
+	// The world (and its viewport) can vanish under a run; a stale overlay is only forgotten here,
+	// the viewport released its content with it.
+	if (RunOverlay.IsValid() && !OverlayViewport.IsValid())
+	{
+		RunOverlay.Reset();
 	}
 
 	if (RunState == ECortexReplayState::Preparing)
@@ -433,6 +499,7 @@ void FCortexReplayService::FImpl::TickRun()
 			}
 			if (IsInCountdown() && GetCountdownRemainingSeconds() > 0.0)
 			{
+				UpdateCountdownOverlay();
 				return;
 			}
 			// The grant may have been revoked while the user was being warned.
@@ -494,6 +561,7 @@ void FCortexReplayService::FImpl::TickRun()
 		}
 
 		SetRunState(ECortexReplayState::Replaying);
+		ShowPlayingOverlay();
 
 		// The epoch frame R commits nothing: capture's epoch frame had already ticked when its epoch was
 		// established, exactly like this engine frame. Recorded frame k is consumed by engine frame R+1+k.
@@ -757,6 +825,8 @@ FCortexCommandResult FCortexReplayService::Finalize(ECortexReplayState TerminalS
 	if (!State.bFinalizing)
 	{
 		State.bFinalizing = true;
+		// The overlay leaves before anything of the owned session is torn down.
+		State.RemoveRunOverlay();
 		State.bFrozen = true;
 		State.PendingTerminalState = TerminalState;
 		State.PendingTerminalResult = ExecutionResult;

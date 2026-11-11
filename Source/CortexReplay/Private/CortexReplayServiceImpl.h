@@ -18,8 +18,14 @@
 #include "Misc/DateTime.h"
 #include "Misc/Guid.h"
 #include "Templates/SharedPointer.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
+class SCortexReplayRunOverlay;
+class UGameViewportClient;
 class UWorld;
+
+/** Z-order of the run overlay in the game viewport's widget stack. */
+inline constexpr int32 ReplayOverlayZOrder = 1000;
 
 /** The hands-off interval between a replay run's readiness and its first replayed frame. */
 inline constexpr double ReplayCountdownSeconds = 3.0;
@@ -290,6 +296,23 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	/** Terminal persistence retries wait one second after a failed write. */
 	bool bTerminalSaveFailed = false;
 	double LastTerminalSaveAttemptSeconds = 0.0;
+
+	// ---- game-view overlay ----
+	/** The countdown/banner overlay on the owned PIE's game viewport; null when none is shown. */
+	TSharedPtr<SCortexReplayRunOverlay> RunOverlay;
+	/** The viewport holding the overlay; weak, so a torn-down world never leaves a dangling pointer. */
+	TWeakObjectPtr<UGameViewportClient> OverlayViewport;
+	/**
+	 * Adds the overlay to the target world's game viewport if it is not there yet. A missing world or
+	 * viewport leaves the run without an overlay and never affects the run.
+	 */
+	void ShowRunOverlay();
+	/** Shows the countdown number for the time left; creates the overlay on first use. */
+	void UpdateCountdownOverlay();
+	/** Switches the overlay to the playing banner; creates the overlay when no countdown ran. */
+	void ShowPlayingOverlay();
+	/** Removes the overlay from its viewport (when that still exists) and forgets it. */
+	void RemoveRunOverlay();
 
 	void TickRun();
 	void TickFinalization();

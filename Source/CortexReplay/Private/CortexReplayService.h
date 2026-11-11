@@ -13,6 +13,7 @@ class FJsonObject;
 class FCortexReplayScheduler;
 struct FCortexReplayRunRecord;
 class UWorld;
+class SWidget;
 
 /**
  * Single owner of native capture orchestration, replay scheduling and run finalization.
@@ -106,6 +107,9 @@ public:
 	 * measure replay behavior pass zero; production keeps the default.
 	 */
 	void SetCountdownSecondsForTesting(double Seconds);
+
+	/** Test hook: the active run's game-view overlay, or null when none is shown. */
+	TSharedPtr<SWidget> GetRunOverlayForTesting() const;
 
 private:
 	/**
