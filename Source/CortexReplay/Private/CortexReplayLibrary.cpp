@@ -164,6 +164,14 @@ FCortexCommandResult FCortexReplayLibrary::List(bool bAIOnly, TArray<FCortexRepl
 	return ReplaySuccess();
 }
 
+bool FCortexReplayLibrary::ReadMetadata(int32 Id, FCortexReplayMetadata& Out) const
+{
+	TArray<uint8> MetadataBytes;
+	FString ParseError;
+	return ReadFileBytes(GetMetadataPath(GetRecordingDirectory(ProjectRoot, Id)), MetadataBytes)
+		&& ParseMetadata(Utf8BytesToFString(MetadataBytes), Id, Out, ParseError);
+}
+
 FCortexCommandResult FCortexReplayLibrary::ListEntries(TArray<FCortexReplayLibraryEntry>& Out) const
 {
 	Out.Reset();

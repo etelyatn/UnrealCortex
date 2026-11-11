@@ -88,11 +88,7 @@ void FCortexReplayInterruptionToast::Present(const FCortexReplayRunRecord& Run)
 	FString RecordingName;
 	if (const TSharedPtr<FCortexReplayService> PinnedService = Service.Pin())
 	{
-		const FCortexCommandResult Recording = PinnedService->GetRecording(Run.RecordingId, false);
-		if (Recording.bSuccess && Recording.Data.IsValid())
-		{
-			Recording.Data->TryGetStringField(TEXT("name"), RecordingName);
-		}
+		RecordingName = PinnedService->GetRecordingDisplayName(Run.RecordingId);
 	}
 	if (RecordingName.IsEmpty())
 	{

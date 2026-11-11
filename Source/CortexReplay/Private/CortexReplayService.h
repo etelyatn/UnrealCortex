@@ -85,6 +85,11 @@ public:
 	FCortexCommandResult GetLastCaptureResult() const;
 
 	FCortexCommandResult GetRecording(int32 Id, bool bAIOnly) const;
+	/**
+	 * The recording's name for user-facing text, empty when it cannot be determined. Reads the live
+	 * run's snapshot when it is that recording, otherwise metadata only; never loads payload streams.
+	 */
+	FString GetRecordingDisplayName(int32 Id) const;
 	FCortexCommandResult SaveMetadata(int32 Id, const FString& Name,
 		const FString& Description, bool bAIEnabled);
 	FCortexCommandResult DeleteRecording(int32 Id);

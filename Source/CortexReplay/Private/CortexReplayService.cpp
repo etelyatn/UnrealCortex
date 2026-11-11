@@ -236,6 +236,16 @@ bool FCortexReplayService::IsRecordInUse(int32 Id) const
 	return false;
 }
 
+FString FCortexReplayService::GetRecordingDisplayName(int32 Id) const
+{
+	if (Impl->Snapshot.IsValid() && Impl->Snapshot->Metadata.RecordingId == Id)
+	{
+		return Impl->Snapshot->Metadata.Name;
+	}
+	FCortexReplayMetadata Metadata;
+	return Impl->Library.ReadMetadata(Id, Metadata) ? Metadata.Name : FString();
+}
+
 FCortexCommandResult FCortexReplayService::GetRecording(int32 Id, bool bAIOnly) const
 {
 	TSharedPtr<const FCortexReplaySnapshot> LoadedSnapshot;

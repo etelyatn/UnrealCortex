@@ -6,6 +6,7 @@
 #include "CortexReplayErrorCodes.h"
 #include "CortexReplayLibrary.h"
 #include "CortexReplayLivePrerequisites.h"
+#include "CortexReplayInterruptionToast.h"
 #include "CortexReplayService.h"
 #include "CortexReplayRunStore.h"
 #include "CortexReplayTestUtils.h"
@@ -4274,6 +4275,19 @@ bool FCortexReplayLifecycleTerminalDelegateFiresOnceTest::RunTest(const FString&
 		bool bPublishedWhenFired = false;
 	};
 	const TSharedRef<FObserved> Observed = MakeShared<FObserved>();
+	// A distinctive name proves the toast reads the real name, not the "Recording <id>" fallback.
+	if (!TestTrue(TEXT("Recording renamed"), Service->SaveMetadata(1, TEXT("Toast Walk"), FString(), true).bSuccess))
+	{
+		return false;
+	}
+	const TSharedRef<FCortexReplayInterruptionToast> Toast = MakeShared<FCortexReplayInterruptionToast>(Service);
+	const TSharedRef<TArray<FString>> PresentedSubTexts = MakeShared<TArray<FString>>();
+	Toast->PresentOverrideForTesting = [PresentedSubTexts](const FNotificationInfo& Info)
+	{
+		PresentedSubTexts->Add(Info.SubText.Get().ToString());
+		return TSharedPtr<SNotificationItem>();
+	};
+	Service->OnRunTerminal().AddSP(Toast, &FCortexReplayInterruptionToast::Present);
 	TWeakPtr<FCortexReplayService> WeakService = Service;
 	const FDelegateHandle Handle = Service->OnRunTerminal().AddLambda(
 		[Observed, WeakService](const FCortexReplayRunRecord& Run)
@@ -4315,8 +4329,13 @@ bool FCortexReplayLifecycleTerminalDelegateFiresOnceTest::RunTest(const FString&
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitRunTerminal(this, Service, RunId, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
-		[Service, Observed, RunId, Fixture](FAutomationTestBase& T)
+		[Service, Observed, RunId, Fixture, Toast, PresentedSubTexts](FAutomationTestBase& T)
 		{
+			if (T.TestEqual(TEXT("The interrupted run presents exactly one toast"), PresentedSubTexts->Num(), 1))
+			{
+				T.TestTrue(TEXT("The toast names the recording from its metadata"),
+					(*PresentedSubTexts)[0].StartsWith(TEXT("Toast Walk \u2014 ")));
+			}
 			T.TestEqual(TEXT("The interrupted run broadcasts exactly once"), Observed->Count, 1);
 			T.TestEqual(TEXT("The broadcast carries the Interrupted state"), Observed->State,
 				ECortexReplayState::Interrupted);
