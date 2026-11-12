@@ -1130,7 +1130,7 @@ bool FCortexReplayCommandsRecoveryTest::RunTest(const FString& Parameters)
 
 	// Revocation does not erase the terminal result or its admitted identity.
 	TestTrue(TEXT("Permission revoked by the human surface"),
-		Harness.Library->SaveMetadata(1, TEXT("Recovery"), TEXT("Recovery flow"), false).bSuccess);
+		Harness.Library->SaveMetadata(1, TEXT("Recovery"), TEXT("Recovery flow"), false, true).bSuccess);
 	{
 		const FCortexCommandResult Run = Harness.Execute(TEXT("replay.get_run"), ReplayCommandsRunParams(RunText));
 		TestTrue(TEXT("Revoked run remains queryable"), Run.bSuccess);
@@ -1538,7 +1538,7 @@ bool FCortexReplayCommandsPageTest::RunTest(const FString& Parameters)
 			{
 				RevokedIds.Add(RevokedId);
 				TestTrue(TEXT("Unvisited recording revoked between pages"),
-					Harness.Library->SaveMetadata(RevokedId, WorstName, WorstDescription, false).bSuccess);
+					Harness.Library->SaveMetadata(RevokedId, WorstName, WorstDescription, false, true).bSuccess);
 			}
 		}
 
@@ -1570,7 +1570,7 @@ bool FCortexReplayCommandsPageTest::RunTest(const FString& Parameters)
 	// Enabling a recording below an already-traversed cursor is only visible through a fresh
 	// first-page discovery, never via the existing cursor.
 	TestTrue(TEXT("Previously disabled recording enabled"),
-		Harness.Library->SaveMetadata(5, WorstName, WorstDescription, true).bSuccess);
+		Harness.Library->SaveMetadata(5, WorstName, WorstDescription, true, true).bSuccess);
 	{
 		// A cursor above the newly enabled recording: it is below the traversed position.
 		const int32 TraversedCursor = MaxRecordings / 2;

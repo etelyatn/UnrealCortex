@@ -232,10 +232,11 @@ private:
 /** Publishes one valid AI-eligible recording whose map is a real loadable PIE map. */
 bool PublishReplayRecording(FAutomationTestBase& Test, FCortexReplayTestFixture& Fixture,
 	int32 Id, const FString& MapPath, const TArray<FCortexReplayTimedEvent>& Events, bool bAIEnabled,
-	double DurationOverrideSeconds = 0.0)
+	double DurationOverrideSeconds = 0.0, bool bCountdownEnabled = true)
 {
 	FCortexReplaySnapshot Snapshot = Fixture.MakeRecording(Id, bAIEnabled, Events);
 	Snapshot.Metadata.MapAssetPath = MapPath;
+	Snapshot.Metadata.bCountdownEnabled = bCountdownEnabled;
 	Snapshot.InitialState.PawnClassPath = ReplayPawnClassPath;
 	if (DurationOverrideSeconds > 0.0)
 	{
@@ -1791,7 +1792,7 @@ bool FCortexReplayLifecycleRevocationTest::RunTest(const FString& Parameters)
 
 			// Revoking permission after the run already ended must not overwrite its result.
 			const FCortexCommandResult Revoked = Service->SaveMetadata(1, TEXT("Revoked"),
-				TEXT("ai disabled"), false);
+				TEXT("ai disabled"), false, true);
 			T.TestTrue(TEXT("Human metadata save revokes permission"), Revoked.bSuccess);
 
 			const FCortexCommandResult After = Service->GetRun(RunId, true);
@@ -2070,7 +2071,7 @@ bool FCortexReplayLifecycleMetadataWriteFailureTest::RunTest(const FString& Para
 
 	FCortexReplayService Service(Fixture->GetProjectRoot());
 	const FCortexCommandResult Denied = Service.SaveMetadata(1, TEXT("Renamed"),
-		TEXT("should not commit"), true);
+		TEXT("should not commit"), true, true);
 	TestFalse(TEXT("Metadata write failure is rejected"), Denied.bSuccess);
 
 	// Restore write access and verify the committed permission is untouched.
@@ -4276,7 +4277,7 @@ bool FCortexReplayLifecycleTerminalDelegateFiresOnceTest::RunTest(const FString&
 	};
 	const TSharedRef<FObserved> Observed = MakeShared<FObserved>();
 	// A distinctive name proves the toast reads the real name, not the "Recording <id>" fallback.
-	if (!TestTrue(TEXT("Recording renamed"), Service->SaveMetadata(1, TEXT("Toast Walk"), FString(), true).bSuccess))
+	if (!TestTrue(TEXT("Recording renamed"), Service->SaveMetadata(1, TEXT("Toast Walk"), FString(), true, true).bSuccess))
 	{
 		return false;
 	}
@@ -5479,6 +5480,56 @@ bool FCortexReplayLifecycleCountdownPrecedesPlaybackTest::RunTest(const FString&
 			const FCortexCommandResult Run = Service->GetRun(RunId, true);
 			T.TestEqual(TEXT("The run completes"), RunState(Run), FString(TEXT("Completed")));
 			T.TestEqual(TEXT("A terminal run reports no phase"), RunPhase(Run), FString());
+		}, Fixture));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCountdownDisabledTest,
+	"Cortex.Replay.Lifecycle.CountdownDisabledStartsImmediately",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexReplayLifecycleCountdownDisabledTest::RunTest(const FString& Parameters)
+{
+	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
+	{
+		return true;
+	}
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	// The service is configured with a countdown; the recording's own switch must override it.
+	constexpr double ConfiguredCountdownSeconds = 2.0;
+	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
+	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
+	Service->SetCountdownSecondsForTesting(ConfiguredCountdownSeconds);
+	const TSharedPtr<FCortexReplayFixedStepBaseline> Clock = MakeDistinctHumanClock();
+
+	if (!PublishReplayRecording(*this, *Fixture, 1, MakeReplayMapAssetPath(),
+		{ MakeKeyPress(0, 0.0, ECortexEditorPhysicalInputKind::KeyDown, EKeys::W),
+		  MakeKeyPress(1, 0.05, ECortexEditorPhysicalInputKind::KeyUp, EKeys::W) }, true, 0.0, false))
+	{
+		return false;
+	}
+	const FCortexCommandResult Started = Service->StartReplay(1, ECortexReplayOrigin::AI);
+	if (!TestTrue(TEXT("AI replay admitted"), Started.bSuccess))
+	{
+		return false;
+	}
+	TestTrue(TEXT("start_replay reports no countdown"),
+		Started.Data.IsValid() && FMath::IsNearlyZero(Started.Data->GetNumberField(TEXT("countdown_seconds"))));
+	const FGuid RunId = ParseRunId(Started);
+	const TSharedRef<FCortexReplayCountdownSamples> Samples = MakeShared<FCortexReplayCountdownSamples>();
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplaySampleCountdown(this, Service, RunId, Samples,
+		ConfiguredCountdownSeconds, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayAwaitNoPieWorlds(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexReplayRunOnce(this,
+		[Service, RunId, Samples, Fixture, Clock](FAutomationTestBase& T)
+		{
+			T.TestEqual(TEXT("The run never reports the countdown phase"), Samples->CountdownSamples, 0);
+			T.TestTrue(TEXT("No countdown time is ever reported"), Samples->bRemainingOnlyWhileCounting);
+			T.TestTrue(TEXT("The playback phase was observed"), Samples->FirstPlaybackSeconds > 0.0);
+			const FCortexCommandResult Run = Service->GetRun(RunId, true);
+			T.TestEqual(TEXT("The run completes"), RunState(Run), FString(TEXT("Completed")));
 		}, Fixture));
 
 	return true;

@@ -220,10 +220,15 @@ bool FCortexReplayService::FImpl::IsLiveReplaying() const
 	return bRunActive && !bFinalizing && RunState == ECortexReplayState::Replaying;
 }
 
+double FCortexReplayService::FImpl::GetEffectiveCountdownSeconds() const
+{
+	return Snapshot.IsValid() && !Snapshot->Metadata.bCountdownEnabled ? 0.0 : CountdownSeconds;
+}
+
 bool FCortexReplayService::FImpl::IsInCountdown() const
 {
 	return bRunActive && !bFinalizing && RunState == ECortexReplayState::Preparing
-		&& CountdownSeconds > 0.0 && CountdownStartedSeconds > 0.0;
+		&& GetEffectiveCountdownSeconds() > 0.0 && CountdownStartedSeconds > 0.0;
 }
 
 double FCortexReplayService::FImpl::GetCountdownRemainingSeconds() const
@@ -232,7 +237,7 @@ double FCortexReplayService::FImpl::GetCountdownRemainingSeconds() const
 	{
 		return 0.0;
 	}
-	return FMath::Max(0.0, CountdownSeconds - (FPlatformTime::Seconds() - CountdownStartedSeconds));
+	return FMath::Max(0.0, GetEffectiveCountdownSeconds() - (FPlatformTime::Seconds() - CountdownStartedSeconds));
 }
 
 void FCortexReplayService::FImpl::ShowRunOverlay()
@@ -489,10 +494,11 @@ void FCortexReplayService::FImpl::TickRun()
 			CountdownStartedSeconds = FPlatformTime::Seconds();
 			// A target that became ready inside the preparation budget always gets its full countdown:
 			// the countdown must not create a new preparation timeout.
-			PrepareDeadline = FMath::Max(PrepareDeadline, CountdownStartedSeconds + CountdownSeconds + 1.0);
+			PrepareDeadline = FMath::Max(PrepareDeadline,
+				CountdownStartedSeconds + GetEffectiveCountdownSeconds() + 1.0);
 		}
 
-		if (CountdownSeconds > 0.0)
+		if (GetEffectiveCountdownSeconds() > 0.0)
 		{
 			FCortexCommandResult CountdownTargetError;
 			if (!Session->ValidateTarget(CountdownTargetError))
@@ -989,7 +995,7 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	Data->SetNumberField(TEXT("recording_id"), Id);
 	Data->SetStringField(TEXT("editor_instance_id"), State.EditorInstanceId);
 	Data->SetStringField(TEXT("state"), ServiceStateToString(State.RunState));
-	Data->SetNumberField(TEXT("countdown_seconds"), State.CountdownSeconds);
+	Data->SetNumberField(TEXT("countdown_seconds"), State.GetEffectiveCountdownSeconds());
 
 	// Last statement of a successful admission, after all run state is set. Handlers must not start an
 	// operation synchronously (same rule as the terminal delegate).

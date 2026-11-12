@@ -265,6 +265,12 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	// ---- countdown ----
 	/** Service configuration (survives ResetRun): the hands-off interval between readiness and playback. */
 	double CountdownSeconds = ReplayCountdownSeconds;
+	/**
+	 * The countdown this run uses: the configured interval, or zero when the admitted recording
+	 * switched its countdown off. Reads the admitted snapshot, so editing the flag mid-run only
+	 * affects the next run.
+	 */
+	double GetEffectiveCountdownSeconds() const;
 
 	/** True while the run is Preparing and its hands-off countdown is running. */
 	bool IsInCountdown() const;

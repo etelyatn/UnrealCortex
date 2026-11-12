@@ -14,9 +14,10 @@ class SEditableTextBox;
 class SMultiLineEditableTextBox;
 class STextBlock;
 
-/** Commit of the three editable metadata fields; only Save fires this. */
-DECLARE_DELEGATE_ThreeParams(FOnCortexReplayMetadataCommitted,
-	const FString& /*Name*/, const FString& /*Description*/, bool /*bAIEnabled*/);
+/** Commit of the editable metadata fields; only Save fires this. */
+DECLARE_DELEGATE_FourParams(FOnCortexReplayMetadataCommitted,
+	const FString& /*Name*/, const FString& /*Description*/, bool /*bAIEnabled*/,
+	bool /*bCountdownEnabled*/);
 
 /** Cancel/Escape dismissal; drafts are discarded by the owner. */
 DECLARE_DELEGATE(FOnCortexReplayMetadataDismissed);
@@ -49,9 +50,11 @@ public:
 	FString GetDraftName() const;
 	FString GetDraftDescription() const;
 	bool IsDraftAIEnabled() const;
+	bool IsDraftCountdownEnabled() const;
 	void EditDraftName(const FString& Name);
 	void EditDraftDescription(const FString& Description);
 	void SetDraftAIEnabled(bool bEnabled);
+	void SetDraftCountdownEnabled(bool bEnabled);
 
 	/** Full canonical recorded map path shown read-only for context. */
 	FText GetReadOnlyMapPath() const;
@@ -82,6 +85,7 @@ public:
 	TSharedPtr<SEditableTextBox> NameEdit;
 	TSharedPtr<SMultiLineEditableTextBox> DescriptionEdit;
 	TSharedPtr<SCheckBox> AIEdit;
+	TSharedPtr<SCheckBox> CountdownEdit;
 
 	TSharedPtr<SButton> SaveButton;
 	TSharedPtr<SButton> CancelButton;
@@ -90,11 +94,13 @@ private:
 	void HandleNameChanged(const FText& NewText);
 	void HandleDescriptionChanged(const FText& NewText);
 	void HandleAIChanged(ECheckBoxState NewState);
+	void HandleCountdownChanged(ECheckBoxState NewState);
 
 	FCortexReplayMetadata Recording;
 	FString DraftName;
 	FString DraftDescription;
 	bool bDraftAIEnabled = false;
+	bool bDraftCountdownEnabled = true;
 	FOnCortexReplayMetadataCommitted OnCommitted;
 	FOnCortexReplayMetadataDismissed OnDismissed;
 };

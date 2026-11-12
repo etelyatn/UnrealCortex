@@ -94,7 +94,7 @@ public:
 	 */
 	FString GetRecordingDisplayName(int32 Id) const;
 	FCortexCommandResult SaveMetadata(int32 Id, const FString& Name,
-		const FString& Description, bool bAIEnabled);
+		const FString& Description, bool bAIEnabled, bool bCountdownEnabled);
 	FCortexCommandResult DeleteRecording(int32 Id);
 
 	/** True while preparation, capture, playback, wait or finalization owns the record. */

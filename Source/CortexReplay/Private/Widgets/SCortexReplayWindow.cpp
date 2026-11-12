@@ -461,9 +461,9 @@ TSharedPtr<SCortexReplayMetadataDialog> SCortexReplayWindow::OpenMetadataDialog(
 	MetadataDialog = SNew(SCortexReplayMetadataDialog)
 		.Recording(Entries[Index].Metadata.GetValue())
 		.OnCommitted_Lambda([this, RecordingId](const FString& Name, const FString& Description,
-			bool bAIEnabled)
+			bool bAIEnabled, bool bCountdownEnabled)
 		{
-			HandleMetadataCommitted(RecordingId, Name, Description, bAIEnabled);
+			HandleMetadataCommitted(RecordingId, Name, Description, bAIEnabled, bCountdownEnabled);
 		})
 		.OnDismissed(this, &SCortexReplayWindow::HandleMetadataDismissed);
 
@@ -972,7 +972,7 @@ void SCortexReplayWindow::HidePopup()
 
 
 void SCortexReplayWindow::HandleMetadataCommitted(int32 RecordingId, const FString& Name,
-	const FString& Description, bool bAIEnabled)
+	const FString& Description, bool bAIEnabled, bool bCountdownEnabled)
 {
 	if (!Service.IsValid())
 	{
@@ -981,7 +981,8 @@ void SCortexReplayWindow::HandleMetadataCommitted(int32 RecordingId, const FStri
 
 	LastStatusMessage.Reset();
 
-	const FCortexCommandResult Saved = Service->SaveMetadata(RecordingId, Name, Description, bAIEnabled);
+	const FCortexCommandResult Saved =
+		Service->SaveMetadata(RecordingId, Name, Description, bAIEnabled, bCountdownEnabled);
 	if (!Saved.bSuccess)
 	{
 		// Keep the popup and its drafts so the human can correct the invalid value; the native

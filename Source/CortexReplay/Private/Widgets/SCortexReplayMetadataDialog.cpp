@@ -23,6 +23,7 @@ void SCortexReplayMetadataDialog::Construct(const FArguments& InArgs)
 	DraftName = Recording.Name;
 	DraftDescription = Recording.Description;
 	bDraftAIEnabled = Recording.bAIEnabled;
+	bDraftCountdownEnabled = Recording.bCountdownEnabled;
 
 	ChildSlot
 	[
@@ -137,6 +138,24 @@ void SCortexReplayMetadataDialog::Construct(const FArguments& InArgs)
 
 				+ SVerticalBox::Slot()
 				.AutoHeight()
+				.Padding(0.0f, 0.0f, 0.0f, 8.0f)
+				[
+					SAssignNew(CountdownEdit, SCheckBox)
+					.IsChecked(bDraftCountdownEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+					.ToolTipText(LOCTEXT("CountdownEditTooltip",
+						"Show a 3-2-1 hands-off countdown before playback starts. Turn off when the game "
+						"needs input or events in the first seconds."))
+					.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState)
+					{
+						HandleCountdownChanged(NewState);
+					})
+					[
+						SNew(STextBlock).Text(LOCTEXT("CountdownEditLabel", "Countdown before replay"))
+					]
+				]
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
 				.HAlign(HAlign_Right)
 				[
 					SNew(SHorizontalBox)
@@ -186,6 +205,11 @@ bool SCortexReplayMetadataDialog::IsDraftAIEnabled() const
 	return bDraftAIEnabled;
 }
 
+bool SCortexReplayMetadataDialog::IsDraftCountdownEnabled() const
+{
+	return bDraftCountdownEnabled;
+}
+
 void SCortexReplayMetadataDialog::EditDraftName(const FString& Name)
 {
 	DraftName = Name;
@@ -210,6 +234,15 @@ void SCortexReplayMetadataDialog::SetDraftAIEnabled(bool bEnabled)
 	if (AIEdit.IsValid())
 	{
 		AIEdit->SetIsChecked(bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+	}
+}
+
+void SCortexReplayMetadataDialog::SetDraftCountdownEnabled(bool bEnabled)
+{
+	bDraftCountdownEnabled = bEnabled;
+	if (CountdownEdit.IsValid())
+	{
+		CountdownEdit->SetIsChecked(bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
 	}
 }
 
@@ -253,7 +286,7 @@ void SCortexReplayMetadataDialog::SetCommitError(const FString& Message)
 
 FReply SCortexReplayMetadataDialog::OnSaveClicked()
 {
-	OnCommitted.ExecuteIfBound(DraftName, DraftDescription, bDraftAIEnabled);
+	OnCommitted.ExecuteIfBound(DraftName, DraftDescription, bDraftAIEnabled, bDraftCountdownEnabled);
 	return FReply::Handled();
 }
 
@@ -291,6 +324,11 @@ void SCortexReplayMetadataDialog::HandleDescriptionChanged(const FText& NewText)
 void SCortexReplayMetadataDialog::HandleAIChanged(ECheckBoxState NewState)
 {
 	bDraftAIEnabled = NewState == ECheckBoxState::Checked;
+}
+
+void SCortexReplayMetadataDialog::HandleCountdownChanged(ECheckBoxState NewState)
+{
+	bDraftCountdownEnabled = NewState == ECheckBoxState::Checked;
 }
 
 #undef LOCTEXT_NAMESPACE

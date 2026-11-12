@@ -49,6 +49,7 @@ TSharedRef<FJsonObject> ServiceMetadataToJson(const FCortexReplayMetadata& Metad
 	Object->SetStringField(TEXT("created_at_utc"), ServiceIsoUtc(Metadata.CreatedAtUtc));
 	Object->SetNumberField(TEXT("duration_seconds"), Metadata.DurationSeconds);
 	Object->SetBoolField(TEXT("ai_enabled"), Metadata.bAIEnabled);
+	Object->SetBoolField(TEXT("countdown_enabled"), Metadata.bCountdownEnabled);
 	Object->SetBoolField(TEXT("complete"), Metadata.bComplete);
 	Object->SetStringField(TEXT("initial_state_sha256"), Metadata.InitialStateSha256);
 	Object->SetStringField(TEXT("inputs_sha256"), Metadata.InputsSha256);

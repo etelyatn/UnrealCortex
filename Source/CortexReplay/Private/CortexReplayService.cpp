@@ -368,10 +368,11 @@ int64 FCortexReplayService::GetLibraryRevision() const
 }
 
 FCortexCommandResult FCortexReplayService::SaveMetadata(int32 Id, const FString& Name,
-	const FString& Description, bool bAIEnabled)
+	const FString& Description, bool bAIEnabled, bool bCountdownEnabled)
 {
 	FImpl& State = *Impl;
-	const FCortexCommandResult Saved = State.Library.SaveMetadata(Id, Name, Description, bAIEnabled);
+	const FCortexCommandResult Saved =
+		State.Library.SaveMetadata(Id, Name, Description, bAIEnabled, bCountdownEnabled);
 	if (!Saved.bSuccess)
 	{
 		return Saved;

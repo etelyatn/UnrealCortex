@@ -665,7 +665,8 @@ FCortexCommandResult FCortexReplayLibrary::SaveMetadata(
 	int32 Id,
 	const FString& Name,
 	const FString& Description,
-	bool bAIEnabled)
+	bool bAIEnabled,
+	bool bCountdownEnabled)
 {
 	if (Id <= 0)
 	{
@@ -715,6 +716,7 @@ FCortexCommandResult FCortexReplayLibrary::SaveMetadata(
 	MetadataObject->SetStringField(TEXT("name"), Name);
 	MetadataObject->SetStringField(TEXT("description"), Description);
 	MetadataObject->SetBoolField(TEXT("ai_enabled"), bAIEnabled);
+	MetadataObject->SetBoolField(TEXT("countdown_enabled"), bCountdownEnabled);
 
 	FString WriteError;
 	if (!WriteFileAtomically(MetadataPath, ToUtf8Bytes(SerializeCanonicalJson(MetadataObject.ToSharedRef())), WriteError))

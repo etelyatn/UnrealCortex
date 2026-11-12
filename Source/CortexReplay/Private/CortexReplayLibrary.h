@@ -24,7 +24,7 @@ public:
 		TSharedPtr<const FCortexReplaySnapshot>& Out) const;
 	FCortexCommandResult Publish(const FCortexReplaySnapshot& Recording);
 	FCortexCommandResult SaveMetadata(int32 Id, const FString& Name,
-		const FString& Description, bool bAIEnabled);
+		const FString& Description, bool bAIEnabled, bool bCountdownEnabled);
 	/** Removes the recording directory under the authoring lock, whether or not it still loads. */
 	FCortexCommandResult Delete(int32 Id);
 
