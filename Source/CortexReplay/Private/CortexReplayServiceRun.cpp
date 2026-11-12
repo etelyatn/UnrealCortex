@@ -2,6 +2,7 @@
 
 #include "CortexReplayErrorCodes.h"
 #include "CortexReplayInterruptionText.h"
+#include "CortexReplayModule.h"
 #include "Widgets/SCortexReplayRunOverlay.h"
 
 #include "Engine/LocalPlayer.h"
