@@ -13,6 +13,13 @@ class FJsonObject;
 class FCortexReplayScheduler;
 struct FCortexReplayRunRecord;
 class UWorld;
+class SWidget;
+
+/** Broadcast once when a replay run's terminal record is published. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnCortexReplayRunTerminal, const FCortexReplayRunRecord&);
+
+/** Broadcast once when a replay run has been admitted (StartReplay succeeded). */
+DECLARE_MULTICAST_DELEGATE(FOnCortexReplayRunAdmitted);
 
 /**
  * Single owner of native capture orchestration, replay scheduling and run finalization.
@@ -81,8 +88,13 @@ public:
 	FCortexCommandResult GetLastCaptureResult() const;
 
 	FCortexCommandResult GetRecording(int32 Id, bool bAIOnly) const;
+	/**
+	 * The recording's name for user-facing text, empty when it cannot be determined. Reads the live
+	 * run's snapshot when it is that recording, otherwise metadata only; never loads payload streams.
+	 */
+	FString GetRecordingDisplayName(int32 Id) const;
 	FCortexCommandResult SaveMetadata(int32 Id, const FString& Name,
-		const FString& Description, bool bAIEnabled);
+		const FString& Description, bool bAIEnabled, bool bCountdownEnabled);
 	FCortexCommandResult DeleteRecording(int32 Id);
 
 	/** True while preparation, capture, playback, wait or finalization owns the record. */
@@ -100,6 +112,28 @@ public:
 
 	/** True when no ticker, frame delegate, session or capture observer of this service is installed. */
 	bool IsQuiescent() const;
+
+	/**
+	 * Test hook: sets the hands-off countdown length for this service's later runs. Tests that
+	 * measure replay behavior pass zero; production keeps the default.
+	 */
+	void SetCountdownSecondsForTesting(double Seconds);
+
+	/** Test hook: the active run's game-view overlay, or null when none is shown. */
+	TSharedPtr<SWidget> GetRunOverlayForTesting() const;
+
+	/**
+	 * Broadcast once per run, after its terminal record is published and its session released, from the
+	 * finalization tick on the game thread, never during Shutdown. Handlers must not start an
+	 * operation synchronously: the service is still inside its own tick.
+	 */
+	FOnCortexReplayRunTerminal& OnRunTerminal();
+
+	/**
+	 * Broadcast as the last step of a successful StartReplay, after all run state is set. Handlers must
+	 * not start an operation synchronously.
+	 */
+	FOnCortexReplayRunAdmitted& OnRunAdmitted();
 
 private:
 	/**

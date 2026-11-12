@@ -195,6 +195,7 @@ struct FRoundTripState
 
 	FRoundTripState()
 	{
+		Service->SetCountdownSecondsForTesting(0.0);
 		BeginFrameHandle = FCoreDelegates::OnBeginFrame.AddRaw(this, &FRoundTripState::OnBeginFrame);
 		TickEndHandle = FWorldDelegates::OnWorldTickEnd.AddRaw(this, &FRoundTripState::OnWorldTickEnd);
 	}

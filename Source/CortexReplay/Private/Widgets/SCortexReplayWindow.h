@@ -170,7 +170,7 @@ private:
 	void HandleRowSelected(int32 RecordingId);
 
 	void HandleMetadataCommitted(int32 RecordingId, const FString& Name,
-		const FString& Description, bool bAIEnabled);
+		const FString& Description, bool bAIEnabled, bool bCountdownEnabled);
 	void HandleMetadataDismissed();
 	void HandleDeleteConfirmed(int32 RecordingId);
 	void HandleDeleteDismissed();

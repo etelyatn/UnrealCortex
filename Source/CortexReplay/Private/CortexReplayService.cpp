@@ -3,6 +3,7 @@
 #include "CortexReplayServiceImpl.h"
 
 #include "CortexReplayErrorCodes.h"
+#include "Widgets/SCortexReplayRunOverlay.h"
 
 #include "Dom/JsonValue.h"
 
@@ -32,6 +33,7 @@ void FCortexReplayService::FImpl::EnsureTicker()
 
 void FCortexReplayService::FImpl::DetachTickerAndSession()
 {
+	RemoveRunOverlay();
 	// The frame observer detaches from its exact session in its own destructor, so it must be
 	// uninstalled while that session is still alive. Uninstall clears the session link, which makes a
 	// later destructor call harmless.
@@ -154,6 +156,7 @@ FCortexCommandResult FCortexReplayService::GetCurrentOperation() const
 		Data->SetNumberField(TEXT("total_events"), State.ActiveRun.TotalEvents);
 		Data->SetNumberField(TEXT("authorized_wait_seconds"), State.ActiveRun.AuthorizedWaitSeconds);
 		Data->SetNumberField(TEXT("behind_seconds"), State.ActiveRun.BehindSeconds);
+		State.AddPhaseFields(*Data);
 		if (State.IsLiveReplaying() && State.Scheduler.IsValid()
 			&& State.Scheduler->GetWaitingSequence() != INDEX_NONE)
 		{
@@ -231,6 +234,16 @@ bool FCortexReplayService::IsRecordInUse(int32 Id) const
 		return true;
 	}
 	return false;
+}
+
+FString FCortexReplayService::GetRecordingDisplayName(int32 Id) const
+{
+	if (Impl->Snapshot.IsValid() && Impl->Snapshot->Metadata.RecordingId == Id)
+	{
+		return Impl->Snapshot->Metadata.Name;
+	}
+	FCortexReplayMetadata Metadata;
+	return Impl->Library.ReadMetadata(Id, Metadata) ? Metadata.Name : FString();
 }
 
 FCortexCommandResult FCortexReplayService::GetRecording(int32 Id, bool bAIOnly) const
@@ -355,10 +368,11 @@ int64 FCortexReplayService::GetLibraryRevision() const
 }
 
 FCortexCommandResult FCortexReplayService::SaveMetadata(int32 Id, const FString& Name,
-	const FString& Description, bool bAIEnabled)
+	const FString& Description, bool bAIEnabled, bool bCountdownEnabled)
 {
 	FImpl& State = *Impl;
-	const FCortexCommandResult Saved = State.Library.SaveMetadata(Id, Name, Description, bAIEnabled);
+	const FCortexCommandResult Saved =
+		State.Library.SaveMetadata(Id, Name, Description, bAIEnabled, bCountdownEnabled);
 	if (!Saved.bSuccess)
 	{
 		return Saved;
@@ -390,6 +404,29 @@ FCortexCommandResult FCortexReplayService::DeleteRecording(int32 Id)
 		return ServiceError(CortexErrorCodes::EditorBusy, TEXT("Recording is in use"));
 	}
 	return Impl->Library.Delete(Id);
+}
+
+void FCortexReplayService::SetCountdownSecondsForTesting(double Seconds)
+{
+	if (Impl.IsValid())
+	{
+		Impl->CountdownSeconds = FMath::Max(0.0, Seconds);
+	}
+}
+
+TSharedPtr<SWidget> FCortexReplayService::GetRunOverlayForTesting() const
+{
+	return Impl.IsValid() ? TSharedPtr<SWidget>(Impl->RunOverlay) : nullptr;
+}
+
+FOnCortexReplayRunTerminal& FCortexReplayService::OnRunTerminal()
+{
+	return Impl->RunTerminalDelegate;
+}
+
+FOnCortexReplayRunAdmitted& FCortexReplayService::OnRunAdmitted()
+{
+	return Impl->RunAdmittedDelegate;
 }
 
 void FCortexReplayService::Shutdown()

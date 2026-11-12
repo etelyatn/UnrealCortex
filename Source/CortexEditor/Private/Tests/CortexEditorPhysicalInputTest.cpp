@@ -14,6 +14,7 @@
 #include "CortexEditorPhysicalInputGuards.h"
 #include "CortexEditorPhysicalInputSession.h"
 #include "CortexEditorPhysicalInputSelfCursorMove.h"
+#include "CortexEditorPhysicalInputUserActivity.h"
 #include "Misc/ScopeExit.h"
 #include "CortexEditorEngineFrameObserver.h"
 #include "HAL/PlatformProcess.h"
@@ -7007,6 +7008,582 @@ bool FCortexPhysicalInputReplayPointerMovesRealCursorTest::RunTest(const FString
 			Test.TestEqual(TEXT("Replay was not interrupted by its own cursor move"), F.InterruptionCount, 0);
 		}));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A cursor move the engine makes itself during an armed replay is not human interference.
+// When a game shows its cursor, FSceneViewport::ShowCursor replies with SetMousePos, which Slate
+// applies through FSlateUser::SetCursorPosition without refreshing LastPlatformCursorPosition; the
+// platform move that follows arrives as a non-synthetic FSlateApplication::OnMouseMove event. Only
+// recent platform evidence of real user input turns such a move into an interruption.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayEngineCursorWarpTest,
+	"Cortex.Editor.PhysicalInput.ReplayEngineCursorWarpNotForeign",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayEngineCursorWarpTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping replay engine cursor warp test"));
+		return true;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ReplayEngineCursorWarp"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {},
+		/*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			using namespace CortexEditorUserInputActivity;
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const TSharedPtr<SWidget> Viewport = F.Session->GetTargetBinding().ViewportWidget.Pin();
+			if (!Test.TestTrue(TEXT("Replay viewport widget resolvable"), Viewport.IsValid())) { return; }
+			const FGeometry Geometry = Viewport->GetCachedGeometry();
+			if (Geometry.GetLocalSize().X <= 100.0 || Geometry.GetLocalSize().Y <= 100.0)
+			{
+				Test.AddError(TEXT("Replay viewport has no usable geometry"));
+				return;
+			}
+
+			// Platform input clock under test control: stale, so only the engine moved the cursor;
+			// recent, so the next platform move is human.
+			FCortexUserInputActivitySample Clock;
+			Clock.NowTick = 100000;
+			Clock.LastInputTick = 1000;
+			SetSampleOverrideForTests([&Clock]() { return Clock; });
+			ON_SCOPE_EXIT { ClearSampleOverrideForTests(); };
+			FCortexCursorPositionRestore Restore;
+
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			EnsureSelectedRouteWindowActive(*F.Session);
+			const FCortexCommandResult Armed = F.Session->BeginReplayEpoch();
+			Test.TestTrue(TEXT("Replay epoch armed"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return; }
+
+			// Refresh Slate's platform bookkeeping at a known position, then move the real cursor the
+			// way a SetMousePos reply does and deliver the resulting platform move.
+			const TSharedRef<FSlateUser> CursorUser = Slate.GetCursorUser().ToSharedRef();
+			const FVector2D Parked = Geometry.LocalToAbsolute(FVector2D(40.0, 40.0));
+			const FVector2D Warp = Geometry.LocalToAbsolute(Geometry.GetLocalSize() * 0.5);
+			Slate.SetCursorPos(Parked);
+			CursorUser->SetCursorPosition(Warp);
+			// The platform move exists only if the cursor really moved; otherwise the assertion below
+			// would pass without any event reaching the session.
+			if (!Test.TestTrue(TEXT("The engine move really relocated the platform cursor"),
+					FVector2D::Distance(Slate.GetCursorPos(), Warp) < 2.0
+					&& FVector2D::Distance(Slate.GetCursorPos(), Parked) > 2.0))
+			{
+				return;
+			}
+			Slate.OnMouseMove();
+			Test.TestEqual(TEXT("An engine cursor move without recent user input did not interrupt the replay"),
+				F.InterruptionCount, 0);
+
+			// The same platform move while real input is recent is interference.
+			Clock.LastInputTick = Clock.NowTick - 5;
+			CursorUser->SetCursorPosition(Geometry.LocalToAbsolute(FVector2D(60.0, 60.0)));
+			Slate.OnMouseMove();
+			Test.TestEqual(TEXT("A cursor move while user input is recent interrupted the replay"),
+				F.InterruptionCount, 1);
+			Test.TestFalse(TEXT("Interruption reports a non-success result"), F.Interruption.bSuccess);
+
+			// Disarm before the fixture tears the session down, so the restore move and teardown run
+			// outside an epoch and cannot add interruptions after these assertions.
+			F.Session->ReleaseHeldInputs();
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The cursor-move exception must not swallow other packets: a key press from the selected device
+// still interrupts an armed replay even when no user input is recent.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputReplayStaleMarkerKeyInterruptTest,
+	"Cortex.Editor.PhysicalInput.ReplayKeyStillInterruptsWithoutRecentInput",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputReplayStaleMarkerKeyInterruptTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddInfo(TEXT("Slate not initialized - skipping replay key interruption test"));
+		return true;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ReplayKeyStillInterrupts"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {},
+		/*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			using namespace CortexEditorUserInputActivity;
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+
+			FCortexUserInputActivitySample Clock;
+			Clock.NowTick = 100000;
+			Clock.LastInputTick = 1000;
+			SetSampleOverrideForTests([&Clock]() { return Clock; });
+			ON_SCOPE_EXIT { ClearSampleOverrideForTests(); };
+
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			EnsureSelectedRouteWindowActive(*F.Session);
+			const FCortexCommandResult Armed = F.Session->BeginReplayEpoch();
+			Test.TestTrue(TEXT("Replay epoch armed"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return; }
+
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FModifierKeysState Modifiers;
+			Slate.ProcessKeyDownEvent(FKeyEvent(EKeys::Q, Modifiers, Binding.InputDevice, false, 0, 0,
+				Binding.SlateUserIndex));
+			Test.TestEqual(TEXT("A key press interrupts the replay even with no recent pointer input"),
+				F.InterruptionCount, 1);
+			Test.TestFalse(TEXT("Interruption reports a non-success result"), F.Interruption.bSuccess);
+			F.Session->ReleaseHeldInputs();
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Every replay interruption is labelled with its cause. A session reports only its first
+// interruption and ReleaseHeldInputs freezes dispatch, so each case owns its own PIE fixture.
+// ---------------------------------------------------------------------------
+namespace
+{
+struct FCortexForeignInterruptionExpectation
+{
+	const TCHAR* InputKind = nullptr;
+	const TCHAR* Input = nullptr;
+	/** nullptr: the edge detail must be absent. */
+	const TCHAR* Edge = nullptr;
+};
+
+using FCortexForeignInjection = TFunction<void(FCortexEditorPhysicalInputTestFixture&,
+	const FGeometry&, CortexEditorUserInputActivity::FCortexUserInputActivitySample&)>;
+
+void AssertForeignInterruption(FAutomationTestBase& Test,
+	const FCortexEditorPhysicalInputTestFixture& F, const FCortexForeignInterruptionExpectation& Expected)
+{
+	Test.TestEqual(TEXT("Exactly one interruption was reported"), F.InterruptionCount, 1);
+	Test.TestFalse(TEXT("Interruption reports a non-success result"), F.Interruption.bSuccess);
+	Test.TestEqual(TEXT("Foreign input has its own error code"), F.Interruption.ErrorCode,
+		FString(CortexEditorPhysicalInputErrorCodes::ForeignInterruption));
+	Test.TestEqual(TEXT("Message is unchanged"), F.Interruption.ErrorMessage,
+		FString(TEXT("Foreign physical input interrupted replay playback")));
+	if (!Test.TestTrue(TEXT("Interruption carries details"), F.Interruption.ErrorDetails.IsValid()))
+	{
+		return;
+	}
+	const TSharedPtr<FJsonObject>& Details = F.Interruption.ErrorDetails;
+	FString Value;
+	Test.TestTrue(TEXT("cause present"), Details->TryGetStringField(TEXT("cause"), Value));
+	Test.TestEqual(TEXT("cause"), Value, FString(TEXT("foreign_input")));
+	Value.Reset();
+	Test.TestTrue(TEXT("input_kind present"), Details->TryGetStringField(TEXT("input_kind"), Value));
+	Test.TestEqual(TEXT("input_kind"), Value, FString(Expected.InputKind));
+	Value.Reset();
+	Test.TestTrue(TEXT("input present"), Details->TryGetStringField(TEXT("input"), Value));
+	Test.TestEqual(TEXT("input"), Value, FString(Expected.Input));
+	if (Expected.Edge)
+	{
+		Value.Reset();
+		Test.TestTrue(TEXT("edge present"), Details->TryGetStringField(TEXT("edge"), Value));
+		Test.TestEqual(TEXT("edge"), Value, FString(Expected.Edge));
+	}
+	else
+	{
+		Test.TestFalse(TEXT("edge is absent"), Details->HasField(TEXT("edge")));
+	}
+}
+
+/**
+ * One owned-PIE fixture: arm capture, optionally inject a pre-epoch edge, arm the replay epoch,
+ * inject one foreign edge and assert the labelled interruption.
+ */
+bool RunForeignInterruptionCase(FAutomationTestBase& Test, const TCHAR* Label,
+	FCortexForeignInjection PreEpoch, FCortexForeignInjection Inject,
+	const FCortexForeignInterruptionExpectation& Expected, const bool bRecentInput,
+	FCortexForeignInjection PostAssert = nullptr)
+{
+	if (!GEditor) { Test.AddError(TEXT("GEditor missing")); return false; }
+	if (!FSlateApplication::IsInitialized())
+	{
+		Test.AddInfo(TEXT("Slate not initialized - skipping foreign interruption identity test"));
+		return true;
+	}
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { Test.AddError(TEXT("Editor world missing")); return false; }
+	Test.TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(&Test, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(&Test, Fixture, Label,
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {},
+		/*bInstallProbe=*/false, /*bArmCapture=*/true, /*bOpenMenu=*/false));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(&Test, 2,
+		[Fixture, PreEpoch, Inject, Expected, bRecentInput, PostAssert](FAutomationTestBase& InTest)
+		{
+			using namespace CortexEditorUserInputActivity;
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+
+			FCortexUserInputActivitySample Clock;
+			Clock.NowTick = 100000;
+			Clock.LastInputTick = bRecentInput ? Clock.NowTick : 1000;
+			SetSampleOverrideForTests([&Clock]() { return Clock; });
+			ON_SCOPE_EXIT { ClearSampleOverrideForTests(); };
+
+			const TSharedPtr<SWidget> Viewport = F.Session->GetTargetBinding().ViewportWidget.Pin();
+			if (!InTest.TestTrue(TEXT("Viewport widget resolvable"), Viewport.IsValid())) { return; }
+			const FGeometry Geometry = Viewport->GetCachedGeometry();
+			if (Geometry.GetLocalSize().X <= 100.0 || Geometry.GetLocalSize().Y <= 100.0)
+			{
+				InTest.AddError(TEXT("Viewport has no usable geometry"));
+				return;
+			}
+
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			EnsureSelectedRouteWindowActive(*F.Session);
+			if (PreEpoch)
+			{
+				PreEpoch(F, Geometry, Clock);
+			}
+			const FCortexCommandResult Armed = F.Session->BeginReplayEpoch();
+			InTest.TestTrue(TEXT("Replay epoch armed"), Armed.bSuccess);
+			if (!Armed.bSuccess) { return; }
+			InTest.TestEqual(TEXT("No interruption before the foreign edge"), F.InterruptionCount, 0);
+
+			Inject(F, Geometry, Clock);
+			AssertForeignInterruption(InTest, F, Expected);
+			if (PostAssert)
+			{
+				// Balance the real edge so Slate's process-global state does not outlive the fixture.
+				PostAssert(F, Geometry, Clock);
+				InTest.TestEqual(TEXT("Slate pressed buttons balanced after the real Up"),
+					FSlateApplication::Get().GetPressedMouseButtons().Num(), 0);
+				InTest.TestEqual(TEXT("Still exactly one interruption"), F.InterruptionCount, 1);
+			}
+			F.Session->ReleaseHeldInputs();
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(&Test, Fixture));
+	return true;
+}
+
+void InjectKey(FCortexEditorPhysicalInputTestFixture& F, const bool bDown)
+{
+	auto& Slate = FSlateApplication::Get();
+	const auto& Binding = F.Session->GetTargetBinding();
+	const FKeyEvent Event(EKeys::Q, FModifierKeysState(), Binding.InputDevice, false, 0, 0,
+		Binding.SlateUserIndex);
+	if (bDown)
+	{
+		Slate.ProcessKeyDownEvent(Event);
+	}
+	else
+	{
+		Slate.ProcessKeyUpEvent(Event);
+	}
+}
+
+void InjectLeftButton(FCortexEditorPhysicalInputTestFixture& F, const FGeometry& Geometry, const bool bDown)
+{
+	auto& Slate = FSlateApplication::Get();
+	const auto& Binding = F.Session->GetTargetBinding();
+	const FVector2D Center = Geometry.LocalToAbsolute(Geometry.GetLocalSize() * 0.5);
+	TSet<FKey> Pressed;
+	if (bDown)
+	{
+		Pressed.Add(EKeys::LeftMouseButton);
+		Slate.ProcessMouseButtonDownEvent(nullptr, FPointerEvent(Binding.InputDevice,
+			FSlateApplicationBase::CursorPointerIndex, Center, Center, Pressed, EKeys::LeftMouseButton,
+			0.0f, FModifierKeysState(), Binding.SlateUserIndex));
+	}
+	else
+	{
+		Slate.ProcessMouseButtonUpEvent(FPointerEvent(Binding.InputDevice,
+			FSlateApplicationBase::CursorPointerIndex, Center, Center, Pressed, EKeys::LeftMouseButton,
+			0.0f, FModifierKeysState(), Binding.SlateUserIndex));
+	}
+}
+} // namespace
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexForeignInterruptionKeyPressTest,
+	"Cortex.Editor.PhysicalInput.ForeignInterruptionIdentity.KeyPress",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexForeignInterruptionKeyPressTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	return RunForeignInterruptionCase(*this, TEXT("ForeignKeyPress"), nullptr,
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry&,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectKey(F, true); },
+		{ TEXT("key"), TEXT("Q"), TEXT("press") }, false,
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry&,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectKey(F, false); });
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexForeignInterruptionKeyReleaseTest,
+	"Cortex.Editor.PhysicalInput.ForeignInterruptionIdentity.KeyRelease",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexForeignInterruptionKeyReleaseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	return RunForeignInterruptionCase(*this, TEXT("ForeignKeyRelease"),
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry&,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectKey(F, true); },
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry&,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectKey(F, false); },
+		{ TEXT("key"), TEXT("Q"), TEXT("release") }, false);
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexForeignInterruptionButtonPressTest,
+	"Cortex.Editor.PhysicalInput.ForeignInterruptionIdentity.ButtonPress",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexForeignInterruptionButtonPressTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	return RunForeignInterruptionCase(*this, TEXT("ForeignButtonPress"), nullptr,
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry& Geometry,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectLeftButton(F, Geometry, true); },
+		{ TEXT("mouse_button"), TEXT("LeftMouseButton"), TEXT("press") }, false,
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry& Geometry,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectLeftButton(F, Geometry, false); });
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexForeignInterruptionButtonReleaseTest,
+	"Cortex.Editor.PhysicalInput.ForeignInterruptionIdentity.ButtonRelease",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexForeignInterruptionButtonReleaseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	return RunForeignInterruptionCase(*this, TEXT("ForeignButtonRelease"),
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry& Geometry,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectLeftButton(F, Geometry, true); },
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry& Geometry,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&) { InjectLeftButton(F, Geometry, false); },
+		{ TEXT("mouse_button"), TEXT("LeftMouseButton"), TEXT("release") }, false);
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexForeignInterruptionWheelTest,
+	"Cortex.Editor.PhysicalInput.ForeignInterruptionIdentity.Wheel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexForeignInterruptionWheelTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	return RunForeignInterruptionCase(*this, TEXT("ForeignWheel"), nullptr,
+		[](FCortexEditorPhysicalInputTestFixture& F, const FGeometry& Geometry,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample&)
+		{
+			const auto& Binding = F.Session->GetTargetBinding();
+			const FVector2D Center = Geometry.LocalToAbsolute(Geometry.GetLocalSize() * 0.5);
+			const TSet<FKey> Pressed;
+			FSlateApplication::Get().ProcessMouseWheelOrGestureEvent(FPointerEvent(Binding.InputDevice,
+				FSlateApplicationBase::CursorPointerIndex, Center, Center, Pressed, EKeys::Invalid, 1.0f,
+				FModifierKeysState(), Binding.SlateUserIndex), nullptr);
+		},
+		{ TEXT("wheel"), TEXT("MouseWheelAxis"), nullptr }, false);
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexForeignInterruptionPointerMoveTest,
+	"Cortex.Editor.PhysicalInput.ForeignInterruptionIdentity.PointerMove",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexForeignInterruptionPointerMoveTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	return RunForeignInterruptionCase(*this, TEXT("ForeignPointerMove"), nullptr,
+		[](FCortexEditorPhysicalInputTestFixture&, const FGeometry& Geometry,
+			CortexEditorUserInputActivity::FCortexUserInputActivitySample& Clock)
+		{
+			auto& Slate = FSlateApplication::Get();
+			FCortexCursorPositionRestore Restore;
+			const TSharedRef<FSlateUser> CursorUser = Slate.GetCursorUser().ToSharedRef();
+			Slate.SetCursorPos(Geometry.LocalToAbsolute(FVector2D(40.0, 40.0)));
+			CursorUser->SetCursorPosition(Geometry.LocalToAbsolute(Geometry.GetLocalSize() * 0.5));
+			// Real input is recent, so the platform move is a human one.
+			Clock.LastInputTick = Clock.NowTick;
+			Slate.OnMouseMove();
+		},
+		{ TEXT("pointer_move"), TEXT("Mouse2D"), nullptr }, false);
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexForeignInterruptionFocusLostTest,
+	"Cortex.Editor.PhysicalInput.ForeignInterruptionIdentity.FocusLost",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexForeignInterruptionFocusLostTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexDrivePhysicalInput(this, Fixture, TEXT("ForeignFocusLost"),
+		[](FAutomationTestBase&, FCortexEditorPhysicalInputTestFixture&) {}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 2,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			auto& Slate = FSlateApplication::Get();
+			const int32 User = F.Session->GetTargetBinding().SlateUserIndex;
+			F.Session->SetInterruptionCallback([Fixture](const FCortexCommandResult& Result)
+			{
+				Fixture->InterruptionCount++;
+				Fixture->Interruption = Result;
+			});
+			Test.TestTrue(TEXT("Replay epoch armed"), F.Session->BeginReplayEpoch().bSuccess);
+
+			const TSharedRef<SCortexPhysicalForeignKeyConsumer> Foreign =
+				SNew(SCortexPhysicalForeignKeyConsumer).Fixture(Fixture);
+			F.ForeignKeyConsumer = Foreign;
+			const TSharedRef<SWindow> HostWindow =
+				SNew(SWindow).ClientSize(FVector2D(200.0f, 120.0f))[Foreign];
+			F.ForeignKeyHostWindow = HostWindow;
+			Slate.AddWindow(HostWindow);
+			Slate.SetUserFocus(User, Foreign, EFocusCause::SetDirectly);
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunAfterFrames(this, 3,
+		[Fixture](FAutomationTestBase& Test)
+		{
+			FCortexEditorPhysicalInputTestFixture& F = *Fixture;
+			Test.TestEqual(TEXT("Exactly one interruption was reported"), F.InterruptionCount, 1);
+			Test.TestEqual(TEXT("Ownership loss keeps its error code"), F.Interruption.ErrorCode,
+				FString(CortexErrorCodes::InvalidOperation));
+			if (Test.TestTrue(TEXT("Interruption carries details"), F.Interruption.ErrorDetails.IsValid()))
+			{
+				FString Cause;
+				Test.TestTrue(TEXT("cause present"),
+					F.Interruption.ErrorDetails->TryGetStringField(TEXT("cause"), Cause));
+				Test.TestEqual(TEXT("cause"), Cause, FString(TEXT("focus_lost")));
+			}
+			if (F.ForeignKeyHostWindow.IsValid())
+			{
+				FSlateApplication::Get().RequestDestroyWindow(F.ForeignKeyHostWindow.ToSharedRef());
+			}
+			F.Session->ReleaseHeldInputs();
+		}));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// A lost target is labelled target_lost.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexInvalidTargetCauseTest,
+	"Cortex.Editor.PhysicalInput.InvalidTargetCause",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexInvalidTargetCauseTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this, [Fixture](FAutomationTestBase& Test)
+	{
+		// A replaced pawn is not a lost session: the result keeps its code and carries no cause.
+		APlayerController* Controller = GEditor->PlayWorld ? GEditor->PlayWorld->GetFirstPlayerController() : nullptr;
+		if (!Test.TestNotNull(TEXT("Owned PIE has a player controller"), Controller)) { return; }
+		Controller->UnPossess();
+		FCortexCommandResult PawnError;
+		Test.TestFalse(TEXT("An unpossessed pawn invalidates the target"), Fixture->Session->ValidateTarget(PawnError));
+		Test.TestEqual(TEXT("Pawn change keeps its error code"), PawnError.ErrorCode,
+			FString(CortexErrorCodes::InvalidOperation));
+		FString PawnCause;
+		const bool bHasCause = PawnError.ErrorDetails.IsValid()
+			&& PawnError.ErrorDetails->TryGetStringField(TEXT("cause"), PawnCause);
+		Test.TestFalse(TEXT("Pawn change carries no cause"), bHasCause);
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunOnceCommand(this, [Fixture](FAutomationTestBase& Test)
+	{
+		Fixture->Session->EndOwnedPIE();
+		FCortexCommandResult Error;
+		Test.TestFalse(TEXT("Ended PIE invalidates the target"), Fixture->Session->ValidateTarget(Error));
+		Test.TestEqual(TEXT("Invalid target keeps its error code"), Error.ErrorCode,
+			FString(CortexErrorCodes::InvalidOperation));
+		if (Test.TestTrue(TEXT("Invalid target carries details"), Error.ErrorDetails.IsValid()))
+		{
+			FString Cause;
+			Test.TestTrue(TEXT("cause present"), Error.ErrorDetails->TryGetStringField(TEXT("cause"), Cause));
+			Test.TestEqual(TEXT("cause"), Cause, FString(TEXT("target_lost")));
+		}
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitForOwnedInputEnded(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// The recency predicate itself: unknown platform input answers "human" (fail closed), the age
+// boundary is inclusive, and the tick difference is wrap-safe.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputUserActivityRecentTest,
+	"Cortex.Editor.PhysicalInput.UserInputActivityRecent",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputUserActivityRecentTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexEditorUserInputActivity;
+	ON_SCOPE_EXIT { ClearSampleOverrideForTests(); };
+
+	FCortexUserInputActivitySample Unknown;
+	TestTrue(TEXT("Unreadable platform input counts as human"), IsInputRecent(Unknown, 500));
+
+	FCortexUserInputActivitySample Fresh;
+	Fresh.NowTick = 5000;
+	Fresh.LastInputTick = 5000;
+	TestTrue(TEXT("Input in the current tick counts as recent"), IsInputRecent(Fresh, 500));
+
+	FCortexUserInputActivitySample Boundary;
+	Boundary.NowTick = 5000;
+	Boundary.LastInputTick = 4500;
+	TestTrue(TEXT("Input exactly at the age limit counts as recent"), IsInputRecent(Boundary, 500));
+
+	FCortexUserInputActivitySample Stale;
+	Stale.NowTick = 5000;
+	Stale.LastInputTick = 4499;
+	TestFalse(TEXT("Input one tick past the age limit is not recent"), IsInputRecent(Stale, 500));
+
+	FCortexUserInputActivitySample Wrapped;
+	Wrapped.NowTick = 16;
+	Wrapped.LastInputTick = 0xFFFFFFF0u;
+	TestTrue(TEXT("Tick wrap keeps a 32 ms old input recent"), IsInputRecent(Wrapped, 500));
 	return true;
 }
 

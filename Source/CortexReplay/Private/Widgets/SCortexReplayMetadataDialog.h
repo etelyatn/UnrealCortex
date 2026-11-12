@@ -14,9 +14,10 @@ class SEditableTextBox;
 class SMultiLineEditableTextBox;
 class STextBlock;
 
-/** Commit of the three editable metadata fields; only Save fires this. */
-DECLARE_DELEGATE_ThreeParams(FOnCortexReplayMetadataCommitted,
-	const FString& /*Name*/, const FString& /*Description*/, bool /*bAIEnabled*/);
+/** Commit of the editable metadata fields; only Save fires this. */
+DECLARE_DELEGATE_FourParams(FOnCortexReplayMetadataCommitted,
+	const FString& /*Name*/, const FString& /*Description*/, bool /*bAIEnabled*/,
+	bool /*bCountdownEnabled*/);
 
 /** Cancel/Escape dismissal; drafts are discarded by the owner. */
 DECLARE_DELEGATE(FOnCortexReplayMetadataDismissed);
@@ -24,11 +25,11 @@ DECLARE_DELEGATE(FOnCortexReplayMetadataDismissed);
 /**
  * Editable metadata popup for one recording.
  *
- * The dialog owns only the editable draft name, description and AI permission. The recording ID,
+ * The dialog owns only the editable draft name, description, AI permission and countdown switch. The recording ID,
  * creation date, canonical recorded map and guard coverage are read-only context, and the map is
  * shown in full and never editable. A partial-coverage recording surfaces an explicit warning that
  * names the unavailable UI presses; the press-only protection limit is always stated, because
- * enabling AI use never upgrades coverage. Save commits the three drafts together through
+ * enabling AI use never upgrades coverage. Save commits the four drafts together through
  * OnCommitted; Cancel (or Escape) discards drafts through OnDismissed.
  */
 class SCortexReplayMetadataDialog : public SCompoundWidget
@@ -49,9 +50,11 @@ public:
 	FString GetDraftName() const;
 	FString GetDraftDescription() const;
 	bool IsDraftAIEnabled() const;
+	bool IsDraftCountdownEnabled() const;
 	void EditDraftName(const FString& Name);
 	void EditDraftDescription(const FString& Description);
 	void SetDraftAIEnabled(bool bEnabled);
+	void SetDraftCountdownEnabled(bool bEnabled);
 
 	/** Full canonical recorded map path shown read-only for context. */
 	FText GetReadOnlyMapPath() const;
@@ -82,6 +85,7 @@ public:
 	TSharedPtr<SEditableTextBox> NameEdit;
 	TSharedPtr<SMultiLineEditableTextBox> DescriptionEdit;
 	TSharedPtr<SCheckBox> AIEdit;
+	TSharedPtr<SCheckBox> CountdownEdit;
 
 	TSharedPtr<SButton> SaveButton;
 	TSharedPtr<SButton> CancelButton;
@@ -90,11 +94,13 @@ private:
 	void HandleNameChanged(const FText& NewText);
 	void HandleDescriptionChanged(const FText& NewText);
 	void HandleAIChanged(ECheckBoxState NewState);
+	void HandleCountdownChanged(ECheckBoxState NewState);
 
 	FCortexReplayMetadata Recording;
 	FString DraftName;
 	FString DraftDescription;
 	bool bDraftAIEnabled = false;
+	bool bDraftCountdownEnabled = true;
 	FOnCortexReplayMetadataCommitted OnCommitted;
 	FOnCortexReplayMetadataDismissed OnDismissed;
 };

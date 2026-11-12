@@ -179,7 +179,7 @@ bool WriteRetainedRun(const FCortexReplayTestFixture& Fixture, const FGuid& RunI
 /** Save through the metadata popup's own action; the window's commit path runs. */
 TSharedPtr<SCortexReplayMetadataDialog> SaveMetadataThroughDialog(FAutomationTestBase& Test,
 	SCortexReplayWindow& Window, int32 RecordingId, const TCHAR* Name, const TCHAR* Description,
-	bool bAIEnabled)
+	bool bAIEnabled, bool bCountdownEnabled = true)
 {
 	TSharedPtr<SCortexReplayMetadataDialog> Dialog = Window.OpenMetadataDialog(RecordingId);
 	Test.TestTrue(TEXT("Metadata dialog opened"), Dialog.IsValid());
@@ -190,6 +190,7 @@ TSharedPtr<SCortexReplayMetadataDialog> SaveMetadataThroughDialog(FAutomationTes
 	Dialog->EditDraftName(Name);
 	Dialog->EditDraftDescription(Description);
 	Dialog->SetDraftAIEnabled(bAIEnabled);
+	Dialog->SetDraftCountdownEnabled(bCountdownEnabled);
 	Dialog->OnSaveClicked();
 	// The window closes the popup only on a successful commit.
 	return Dialog;
@@ -197,7 +198,8 @@ TSharedPtr<SCortexReplayMetadataDialog> SaveMetadataThroughDialog(FAutomationTes
 
 /** Edits drafts then Cancels, leaving the committed metadata untouched. */
 TSharedPtr<SCortexReplayMetadataDialog> CancelMetadataDraft(FAutomationTestBase& Test,
-	SCortexReplayWindow& Window, int32 RecordingId, const TCHAR* Name, bool bAIEnabled)
+	SCortexReplayWindow& Window, int32 RecordingId, const TCHAR* Name, bool bAIEnabled,
+	bool bCountdownEnabled = true)
 {
 	TSharedPtr<SCortexReplayMetadataDialog> Dialog = Window.OpenMetadataDialog(RecordingId);
 	Test.TestTrue(TEXT("Metadata dialog reopened"), Dialog.IsValid());
@@ -207,6 +209,7 @@ TSharedPtr<SCortexReplayMetadataDialog> CancelMetadataDraft(FAutomationTestBase&
 	}
 	Dialog->EditDraftName(Name);
 	Dialog->SetDraftAIEnabled(bAIEnabled);
+	Dialog->SetDraftCountdownEnabled(bCountdownEnabled);
 	Dialog->OnCancelClicked();
 	return Dialog;
 }
@@ -358,7 +361,9 @@ bool WindowIsTerminalState(const FString& State)
 
 TSharedRef<FCortexReplayService> MakeWindowService(const FCortexReplayTestFixture& Fixture)
 {
-	return MakeShared<FCortexReplayService>(Fixture.GetProjectRoot());
+	TSharedRef<FCortexReplayService> Service = MakeShared<FCortexReplayService>(Fixture.GetProjectRoot());
+	Service->SetCountdownSecondsForTesting(0.0);
+	return Service;
 }
 
 // --- Latent helpers (active-run window lifecycle) ---------------------------------------------
@@ -712,7 +717,7 @@ bool FCortexReplayWindowMetadataSaveCancelTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("Library row exposes no editable control"),
 		CountEditableControls(Row.ToSharedRef()), 0);
 
-	SaveMetadataThroughDialog(*this, *Window, Id, TEXT("Renamed"), TEXT("Updated flow"), true);
+	SaveMetadataThroughDialog(*this, *Window, Id, TEXT("Renamed"), TEXT("Updated flow"), true, false);
 	Window->RefreshLibrary();
 
 	const FCortexReplayMetadata Reloaded = ReadMetadata(Fixture, Id);
@@ -728,11 +733,13 @@ bool FCortexReplayWindowMetadataSaveCancelTest::RunTest(const FString& Parameter
 	TestEqual(TEXT("Saved name"), Reloaded.Name, FString(TEXT("Renamed")));
 	TestEqual(TEXT("Saved description"), Reloaded.Description, FString(TEXT("Updated flow")));
 	TestTrue(TEXT("Saved AI permission"), Reloaded.bAIEnabled);
+	TestFalse(TEXT("Saved countdown switch"), Reloaded.bCountdownEnabled);
 
-	CancelMetadataDraft(*this, *Window, Id, TEXT("Discard me"), false);
+	CancelMetadataDraft(*this, *Window, Id, TEXT("Discard me"), false, true);
 	TestEqual(TEXT("Cancel preserves committed name"), ReadMetadata(Fixture, Id).Name,
 		FString(TEXT("Renamed")));
 	TestTrue(TEXT("Cancel preserves committed AI permission"), ReadMetadata(Fixture, Id).bAIEnabled);
+	TestFalse(TEXT("Cancel preserves committed countdown switch"), ReadMetadata(Fixture, Id).bCountdownEnabled);
 
 	return true;
 }

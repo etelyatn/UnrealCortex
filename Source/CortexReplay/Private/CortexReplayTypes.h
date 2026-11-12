@@ -102,6 +102,8 @@ struct FCortexReplayMetadata
 	FDateTime CreatedAtUtc;
 	double DurationSeconds = 0.0;
 	bool bAIEnabled = false;
+	/** Whether a replay of this recording shows the 3-2-1 hands-off countdown first. Human-edited. */
+	bool bCountdownEnabled = true;
 	bool bComplete = false;
 	FCortexEditorPhysicalInputTargetInfo Prerequisites;
 	FCortexReplayGuardCoverage GuardCoverage;

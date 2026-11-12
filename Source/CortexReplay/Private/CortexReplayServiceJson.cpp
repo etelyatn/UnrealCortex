@@ -49,6 +49,7 @@ TSharedRef<FJsonObject> ServiceMetadataToJson(const FCortexReplayMetadata& Metad
 	Object->SetStringField(TEXT("created_at_utc"), ServiceIsoUtc(Metadata.CreatedAtUtc));
 	Object->SetNumberField(TEXT("duration_seconds"), Metadata.DurationSeconds);
 	Object->SetBoolField(TEXT("ai_enabled"), Metadata.bAIEnabled);
+	Object->SetBoolField(TEXT("countdown_enabled"), Metadata.bCountdownEnabled);
 	Object->SetBoolField(TEXT("complete"), Metadata.bComplete);
 	Object->SetStringField(TEXT("initial_state_sha256"), Metadata.InitialStateSha256);
 	Object->SetStringField(TEXT("inputs_sha256"), Metadata.InputsSha256);
@@ -167,7 +168,22 @@ TSharedRef<FJsonObject> FCortexReplayService::BuildRunData(const FCortexReplayRu
 	return Data;
 }
 
+void FCortexReplayService::FImpl::AddPhaseFields(FJsonObject& Data) const
+{
+	if (IsInCountdown())
+	{
+		Data.SetStringField(TEXT("phase"), TEXT("countdown"));
+		Data.SetNumberField(TEXT("countdown_remaining_seconds"), GetCountdownRemainingSeconds());
+	}
+	else if (IsLiveReplaying())
+	{
+		Data.SetStringField(TEXT("phase"), TEXT("playback"));
+	}
+}
+
 TSharedRef<FJsonObject> FCortexReplayService::FImpl::BuildActiveRunData() const
 {
-	return BuildRunData(ActiveRun, IsLiveReplaying(), Scheduler.Get());
+	const TSharedRef<FJsonObject> Data = BuildRunData(ActiveRun, IsLiveReplaying(), Scheduler.Get());
+	AddPhaseFields(*Data);
+	return Data;
 }

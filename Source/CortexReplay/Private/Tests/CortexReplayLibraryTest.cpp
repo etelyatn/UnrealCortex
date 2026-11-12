@@ -514,7 +514,7 @@ bool FCortexReplayLibrarySaveMetadataTest::RunTest(const FString& Parameters)
 	const FString InputsHash = Before->Metadata.InputsSha256;
 
 	TestTrue(TEXT("Save metadata"),
-		Library.SaveMetadata(Id, TEXT("Renamed"), TEXT("Edited description"), true).bSuccess);
+		Library.SaveMetadata(Id, TEXT("Renamed"), TEXT("Edited description"), true, false).bSuccess);
 
 	FCortexReplayLibrary Reopened(Fixture.GetProjectRoot());
 	TSharedPtr<const FCortexReplaySnapshot> After;
@@ -527,6 +527,7 @@ bool FCortexReplayLibrarySaveMetadataTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Name updated"), After->Metadata.Name, FString(TEXT("Renamed")));
 	TestEqual(TEXT("Description updated"), After->Metadata.Description, FString(TEXT("Edited description")));
 	TestTrue(TEXT("AI flag updated"), After->Metadata.bAIEnabled);
+	TestFalse(TEXT("Countdown flag updated"), After->Metadata.bCountdownEnabled);
 
 	TArray<uint8> InitialAfter;
 	TArray<uint8> InputAfter;
@@ -534,6 +535,68 @@ bool FCortexReplayLibrarySaveMetadataTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Read input bytes after save"), FFileHelper::LoadFileToArray(InputAfter, *Fixture.GetInputsPath(Id)));
 	TestTrue(TEXT("Initial bytes unchanged"), InitialAfter == InitialBytes);
 	TestTrue(TEXT("Input bytes unchanged"), InputAfter == InputBytes);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexReplayLibraryCountdownFlagTest,
+	"Cortex.Replay.Library.CountdownFlagParsing",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexReplayLibraryCountdownFlagTest::RunTest(const FString& Parameters)
+{
+	FCortexReplayTestFixture Fixture;
+	FCortexReplayLibrary Library(Fixture.GetProjectRoot());
+
+	int32 Id = 0;
+	TestTrue(TEXT("Reserve"), Library.ReserveId(Id).bSuccess);
+	TestTrue(TEXT("Publish"), Library.Publish(Fixture.MakeRecording(Id, false, { MakeKeyDownEvent(0, 0.0) })).bSuccess);
+
+	const FString MetadataPath = FPaths::Combine(RecordingDirectoryPath(Fixture, Id), TEXT("metadata.json"));
+	const TSharedPtr<FJsonObject> Published = LoadJsonObject(MetadataPath);
+	if (!TestTrue(TEXT("Metadata readable"), Published.IsValid()))
+	{
+		return false;
+	}
+	TestTrue(TEXT("Capture publishes the countdown field"), Published->HasField(TEXT("countdown_enabled")));
+
+	{
+		FCortexReplayLibrary Reader(Fixture.GetProjectRoot());
+		TSharedPtr<const FCortexReplaySnapshot> Snapshot;
+		TestTrue(TEXT("Published recording loads"), Reader.Load(Id, false, Snapshot).bSuccess);
+		TestTrue(TEXT("Default is enabled"), Snapshot.IsValid() && Snapshot->Metadata.bCountdownEnabled);
+	}
+
+	// A recording written before the field existed keeps loading with the countdown on.
+	Published->RemoveField(TEXT("countdown_enabled"));
+	TestTrue(TEXT("Legacy metadata written"), SaveJsonObject(MetadataPath, Published));
+	{
+		FCortexReplayLibrary Reader(Fixture.GetProjectRoot());
+		TSharedPtr<const FCortexReplaySnapshot> Snapshot;
+		TestTrue(TEXT("Legacy recording loads"), Reader.Load(Id, false, Snapshot).bSuccess);
+		TestTrue(TEXT("Absent field means enabled"), Snapshot.IsValid() && Snapshot->Metadata.bCountdownEnabled);
+	}
+
+	// false round-trips.
+	Published->SetBoolField(TEXT("countdown_enabled"), false);
+	TestTrue(TEXT("False metadata written"), SaveJsonObject(MetadataPath, Published));
+	{
+		FCortexReplayLibrary Reader(Fixture.GetProjectRoot());
+		TSharedPtr<const FCortexReplaySnapshot> Snapshot;
+		TestTrue(TEXT("Disabled recording loads"), Reader.Load(Id, false, Snapshot).bSuccess);
+		TestTrue(TEXT("False is preserved"), Snapshot.IsValid() && !Snapshot->Metadata.bCountdownEnabled);
+	}
+
+	// A present non-bool value is a parse error.
+	Published->SetStringField(TEXT("countdown_enabled"), TEXT("no"));
+	TestTrue(TEXT("Malformed metadata written"), SaveJsonObject(MetadataPath, Published));
+	{
+		FCortexReplayLibrary Reader(Fixture.GetProjectRoot());
+		TSharedPtr<const FCortexReplaySnapshot> Snapshot;
+		TestFalse(TEXT("Non-bool countdown_enabled is rejected"), Reader.Load(Id, false, Snapshot).bSuccess);
+	}
 
 	return true;
 }
@@ -671,7 +734,7 @@ bool FCortexReplayLibraryUnicodeTextTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Supplementary name occupies 130 UTF-16 units"), Supplementary.Len(), 130);
 
 	TestTrue(TEXT("65 supplementary characters are accepted"),
-		Library.SaveMetadata(Id, Supplementary, TEXT(""), false).bSuccess);
+		Library.SaveMetadata(Id, Supplementary, TEXT(""), false, true).bSuccess);
 
 	FCortexReplayLibrary Reopened(Fixture.GetProjectRoot());
 	TSharedPtr<const FCortexReplaySnapshot> Snapshot;
@@ -679,17 +742,17 @@ bool FCortexReplayLibraryUnicodeTextTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Supplementary name is preserved"), Snapshot->Metadata.Name, Supplementary);
 
 	TestTrue(TEXT("128-character name accepted"),
-		Library.SaveMetadata(Id, FString::ChrN(128, TEXT('a')), TEXT(""), false).bSuccess);
+		Library.SaveMetadata(Id, FString::ChrN(128, TEXT('a')), TEXT(""), false, true).bSuccess);
 	TestFalse(TEXT("129-character name rejected"),
-		Library.SaveMetadata(Id, FString::ChrN(129, TEXT('a')), TEXT(""), false).bSuccess);
+		Library.SaveMetadata(Id, FString::ChrN(129, TEXT('a')), TEXT(""), false, true).bSuccess);
 
 	FString LoneSurrogate = FString(TEXT("bad"));
 	LoneSurrogate.AppendChar(static_cast<TCHAR>(0xD800));
 	TestFalse(TEXT("Unpaired surrogate rejected"),
-		Library.SaveMetadata(Id, LoneSurrogate, TEXT(""), false).bSuccess);
+		Library.SaveMetadata(Id, LoneSurrogate, TEXT(""), false, true).bSuccess);
 
 	TestFalse(TEXT("Over-long description rejected"),
-		Library.SaveMetadata(Id, TEXT("Valid"), FString::ChrN(1025, TEXT('d')), false).bSuccess);
+		Library.SaveMetadata(Id, TEXT("Valid"), FString::ChrN(1025, TEXT('d')), false, true).bSuccess);
 
 	return true;
 }

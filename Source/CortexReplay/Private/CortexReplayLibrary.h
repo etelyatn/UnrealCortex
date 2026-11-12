@@ -16,13 +16,15 @@ public:
 	 * a directory whose metadata cannot be used is still reported, with LoadError explaining why.
 	 */
 	FCortexCommandResult ListEntries(TArray<FCortexReplayLibraryEntry>& Out) const;
+	/** Reads and parses metadata.json only (no payload is read or hashed); false when unusable. */
+	bool ReadMetadata(int32 Id, FCortexReplayMetadata& Out) const;
 	FCortexCommandResult ListPage(bool bAIOnly, int32 AfterId, int32 PageSize,
 		TArray<FCortexReplayMetadata>& Out, bool& bHasMore) const;
 	FCortexCommandResult Load(int32 Id, bool bAIOnly,
 		TSharedPtr<const FCortexReplaySnapshot>& Out) const;
 	FCortexCommandResult Publish(const FCortexReplaySnapshot& Recording);
 	FCortexCommandResult SaveMetadata(int32 Id, const FString& Name,
-		const FString& Description, bool bAIEnabled);
+		const FString& Description, bool bAIEnabled, bool bCountdownEnabled);
 	/** Removes the recording directory under the authoring lock, whether or not it still loads. */
 	FCortexCommandResult Delete(int32 Id);
 

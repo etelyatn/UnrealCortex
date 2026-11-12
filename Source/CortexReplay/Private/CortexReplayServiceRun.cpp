@@ -1,9 +1,12 @@
 #include "CortexReplayServiceImpl.h"
 
 #include "CortexReplayErrorCodes.h"
+#include "CortexReplayInterruptionText.h"
+#include "Widgets/SCortexReplayRunOverlay.h"
 
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "Engine/GameViewportClient.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
@@ -217,6 +220,82 @@ bool FCortexReplayService::FImpl::IsLiveReplaying() const
 	return bRunActive && !bFinalizing && RunState == ECortexReplayState::Replaying;
 }
 
+double FCortexReplayService::FImpl::GetEffectiveCountdownSeconds() const
+{
+	return Snapshot.IsValid() && !Snapshot->Metadata.bCountdownEnabled ? 0.0 : CountdownSeconds;
+}
+
+bool FCortexReplayService::FImpl::IsInCountdown() const
+{
+	return bRunActive && !bFinalizing && RunState == ECortexReplayState::Preparing
+		&& GetEffectiveCountdownSeconds() > 0.0 && CountdownStartedSeconds > 0.0;
+}
+
+double FCortexReplayService::FImpl::GetCountdownRemainingSeconds() const
+{
+	if (!IsInCountdown())
+	{
+		return 0.0;
+	}
+	return FMath::Max(0.0, GetEffectiveCountdownSeconds() - (FPlatformTime::Seconds() - CountdownStartedSeconds));
+}
+
+void FCortexReplayService::FImpl::ShowRunOverlay()
+{
+	if (!Session.IsValid())
+	{
+		return;
+	}
+	UWorld* World = Session->GetTargetBinding().World.Get();
+	UGameViewportClient* Viewport = World ? World->GetGameViewport() : nullptr;
+	if (Viewport == nullptr)
+	{
+		return;
+	}
+	if (RunOverlay.IsValid() && OverlayViewport.Get() == Viewport)
+	{
+		return;
+	}
+	// A different (or vanished) viewport than the one that holds the overlay: start over.
+	RemoveRunOverlay();
+	// The overlay is display only: hit-test invisible, so it never appears in the widget path under
+	// the cursor, and never focusable, so showing it cannot change focus or the active window.
+	RunOverlay = SNew(SCortexReplayRunOverlay).Visibility(EVisibility::HitTestInvisible);
+	OverlayViewport = Viewport;
+	Viewport->AddViewportWidgetContent(RunOverlay.ToSharedRef(), ReplayOverlayZOrder);
+}
+
+void FCortexReplayService::FImpl::UpdateCountdownOverlay()
+{
+	ShowRunOverlay();
+	if (RunOverlay.IsValid())
+	{
+		RunOverlay->ShowCountdown(FMath::CeilToInt(GetCountdownRemainingSeconds()));
+	}
+}
+
+void FCortexReplayService::FImpl::ShowPlayingOverlay()
+{
+	ShowRunOverlay();
+	if (RunOverlay.IsValid() && Snapshot.IsValid())
+	{
+		RunOverlay->ShowPlaying(Snapshot->Metadata.Name);
+	}
+}
+
+void FCortexReplayService::FImpl::RemoveRunOverlay()
+{
+	if (RunOverlay.IsValid())
+	{
+		if (UGameViewportClient* Viewport = OverlayViewport.Get())
+		{
+			Viewport->RemoveViewportWidgetContent(RunOverlay.ToSharedRef());
+		}
+	}
+	RunOverlay.Reset();
+	OverlayViewport.Reset();
+}
+
 FCortexCommandResult FCortexReplayService::FImpl::PrepareRecordedFrame(int32 FrameIndex,
 	ECortexReplayFramePreparation& OutPreparation)
 {
@@ -328,6 +407,7 @@ void FCortexReplayService::FImpl::ResetRun()
 	Scheduler.Reset();
 	PrepareDeadline = 0.0;
 	ReplayEpoch = 0.0;
+	CountdownStartedSeconds = 0.0;
 	ArmedFrame = INDEX_NONE;
 	ArmedFrameCounter = 0;
 	bArmedFramePrepared = false;
@@ -337,6 +417,7 @@ void FCortexReplayService::FImpl::ResetRun()
 	PermissionCheckedFrame = TNumericLimits<uint64>::Max();
 	bTerminalSaveFailed = false;
 	LastTerminalSaveAttemptSeconds = 0.0;
+	RemoveRunOverlay();
 	// The clock is a synchronous save/restore pair, so every reset path can hand it back at once.
 	RemoveFrameHooks();
 	Clock.Release();
@@ -347,6 +428,13 @@ void FCortexReplayService::FImpl::TickRun()
 	if (!bRunActive || bFinalizing || !Snapshot.IsValid())
 	{
 		return;
+	}
+
+	// The world (and its viewport) can vanish under a run; a stale overlay is only forgotten here,
+	// the viewport released its content with it.
+	if (RunOverlay.IsValid() && !OverlayViewport.IsValid())
+	{
+		RunOverlay.Reset();
 	}
 
 	if (RunState == ECortexReplayState::Preparing)
@@ -380,24 +468,57 @@ void FCortexReplayService::FImpl::TickRun()
 			return;
 		}
 
-		// Recheck the live grant after readiness and before the epoch starts; only the permission bit
-		// is read, never the admitted payload.
-		if (!CheckLivePermission())
+		// The live grant and the target's compatibility are checked once, when readiness arrives; the
+		// countdown that follows only watches that the target survives.
+		if (CountdownStartedSeconds == 0.0)
 		{
-			UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s lost eligibility after readiness: %s"),
-				*ServiceGuidToString(ActiveRun.Id), *PermissionRevocationResult.ErrorMessage);
-			Owner->Finalize(ECortexReplayState::Error, PermissionRevocationResult);
-			return;
+			// Recheck the live grant after readiness and before the epoch starts; only the permission
+			// bit is read, never the admitted payload.
+			if (!CheckLivePermission())
+			{
+				UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s lost eligibility after readiness: %s"),
+					*ServiceGuidToString(ActiveRun.Id), *PermissionRevocationResult.ErrorMessage);
+				Owner->Finalize(ECortexReplayState::Error, PermissionRevocationResult);
+				return;
+			}
+
+			// The live target must match what the recording was captured on, before anything is replayed.
+			const FCortexCommandResult Compatible = CheckLivePrerequisites();
+			if (!Compatible.bSuccess)
+			{
+				UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s prerequisites mismatch: %s"),
+					*ServiceGuidToString(ActiveRun.Id), *Compatible.ErrorMessage);
+				Owner->Finalize(ECortexReplayState::Error, Compatible);
+				return;
+			}
+			CountdownStartedSeconds = FPlatformTime::Seconds();
+			// A target that became ready inside the preparation budget always gets its full countdown:
+			// the countdown must not create a new preparation timeout.
+			PrepareDeadline = FMath::Max(PrepareDeadline,
+				CountdownStartedSeconds + GetEffectiveCountdownSeconds() + 1.0);
 		}
 
-		// The live target must match what the recording was captured on, before anything is replayed.
-		const FCortexCommandResult Compatible = CheckLivePrerequisites();
-		if (!Compatible.bSuccess)
+		if (GetEffectiveCountdownSeconds() > 0.0)
 		{
-			UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s prerequisites mismatch: %s"),
-				*ServiceGuidToString(ActiveRun.Id), *Compatible.ErrorMessage);
-			Owner->Finalize(ECortexReplayState::Error, Compatible);
-			return;
+			FCortexCommandResult CountdownTargetError;
+			if (!Session->ValidateTarget(CountdownTargetError))
+			{
+				Owner->Finalize(ECortexReplayState::Interrupted, CountdownTargetError);
+				return;
+			}
+			if (IsInCountdown() && GetCountdownRemainingSeconds() > 0.0)
+			{
+				UpdateCountdownOverlay();
+				return;
+			}
+			// The grant may have been revoked while the user was being warned.
+			if (!CheckLivePermission())
+			{
+				UE_LOG(LogCortexReplay, Log, TEXT("Replay run %s lost eligibility during the countdown: %s"),
+					*ServiceGuidToString(ActiveRun.Id), *PermissionRevocationResult.ErrorMessage);
+				Owner->Finalize(ECortexReplayState::Error, PermissionRevocationResult);
+				return;
+			}
 		}
 
 		// One-time pose restoration and immediate readback.
@@ -449,6 +570,7 @@ void FCortexReplayService::FImpl::TickRun()
 		}
 
 		SetRunState(ECortexReplayState::Replaying);
+		ShowPlayingOverlay();
 
 		// The epoch frame R commits nothing: capture's epoch frame had already ticked when its epoch was
 		// established, exactly like this engine frame. Recorded frame k is consumed by engine frame R+1+k.
@@ -568,6 +690,20 @@ void FCortexReplayService::FImpl::TickFinalization()
 	else
 	{
 		Terminal.ExecutionError = PendingTerminalResult;
+		if (PendingTerminalState == ECortexReplayState::Interrupted && !PendingTerminalResult.ErrorCode.IsEmpty())
+		{
+			double StoppedAtSeconds = 0.0;
+			if (Snapshot.IsValid())
+			{
+				const int32 FramesToSum = FMath::Min(ActiveRun.CompletedFrames, Snapshot->Frames.Num());
+				for (int32 FrameIndex = 0; FrameIndex < FramesToSum; ++FrameIndex)
+				{
+					StoppedAtSeconds += Snapshot->Frames[FrameIndex].AppDeltaSeconds;
+				}
+			}
+			Terminal.ExecutionError = CortexReplayInterruptionText::ToRunError(PendingTerminalResult,
+				ActiveRun.CompletedFrames, ActiveRun.FrameCount, StoppedAtSeconds);
+		}
 		if (Terminal.ExecutionError.ErrorCode.IsEmpty() && PendingTerminalState == ECortexReplayState::Error)
 		{
 			// A terminal Error must always carry a bounded execution code so the retained record
@@ -612,6 +748,14 @@ void FCortexReplayService::FImpl::TickFinalization()
 	if (bShutdown)
 	{
 		DetachTickerAndSession();
+	}
+
+	// Last statement: a handler that reads the service sees the finished run. The record is copied so a
+	// handler that touches the service cannot invalidate what the other handlers receive.
+	if (!bShutdown)
+	{
+		const FCortexReplayRunRecord Published = Terminal;
+		RunTerminalDelegate.Broadcast(Published);
 	}
 }
 
@@ -698,6 +842,8 @@ FCortexCommandResult FCortexReplayService::Finalize(ECortexReplayState TerminalS
 	if (!State.bFinalizing)
 	{
 		State.bFinalizing = true;
+		// The overlay leaves before anything of the owned session is torn down.
+		State.RemoveRunOverlay();
 		State.bFrozen = true;
 		State.PendingTerminalState = TerminalState;
 		State.PendingTerminalResult = ExecutionResult;
@@ -849,7 +995,13 @@ FCortexCommandResult FCortexReplayService::StartReplay(int32 Id, ECortexReplayOr
 	Data->SetNumberField(TEXT("recording_id"), Id);
 	Data->SetStringField(TEXT("editor_instance_id"), State.EditorInstanceId);
 	Data->SetStringField(TEXT("state"), ServiceStateToString(State.RunState));
-	return FCortexCommandRouter::Success(Data);
+	Data->SetNumberField(TEXT("countdown_seconds"), State.GetEffectiveCountdownSeconds());
+
+	// Last statement of a successful admission, after all run state is set. Handlers must not start an
+	// operation synchronously (same rule as the terminal delegate).
+	const FCortexCommandResult Started = FCortexCommandRouter::Success(Data);
+	State.RunAdmittedDelegate.Broadcast();
+	return Started;
 }
 
 FCortexCommandResult FCortexReplayService::CancelReplay(const FGuid& Id, bool bAIOnly)

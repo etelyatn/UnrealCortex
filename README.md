@@ -12,7 +12,7 @@
 
 Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, analyzing Blueprints for bugs and performance issues, generating 3D assets, playing and testing your game autonomously, and replaying gameplay you recorded by hand, frame for frame. No copy-pasting, no file exports. Changes appear live with full undo support.
 
-> **Status:** v0.4.2 Beta — All 15 modules shipped and tested.
+> **Status:** v0.4.4 Beta — All 15 modules shipped and tested.
 
 ---
 
@@ -177,6 +177,8 @@ Every mutation wrapped in `FScopedTransaction`. Large responses auto-truncate wi
 **Record:** In the **Cortex Replay** window a human records a PIE session: real keyboard and mouse input (keys, buttons, pointer and raw mouse motion, wheel) together with every engine frame's time step, the starting map, the player pose and the viewport/input prerequisites. Stopping PIE with its own stop key ends and saves the recording. The list shows each recording's ID, name, map, length and recording date (local time; the exact UTC time is in the tooltip), and whether AI may use it.
 
 **Replay:** Replay starts a fresh PIE on the recorded map, restores the recorded start pose, then dispatches each recorded frame on exactly one engine frame with that frame's recorded delta. Movement and look therefore integrate exactly as they did when recorded. No custom engine and no custom time step are needed, so it runs on a stock engine.
+
+**Hands-off countdown and interruption notice:** Every replay, human- or AI-started, shows a 3·2·1 "don't touch the mouse or keyboard" countdown on the game view, then a "Replaying…" banner while it plays. Turn the countdown off per recording in the Edit dialog ("Countdown before replay") when the game needs input or events in its first seconds. If you touch the mouse or keyboard or the game window loses focus, the replay stops and an editor toast says why ("Replay stopped: you pressed W") and where (time and frame), with **Replay again**. Engine-driven cursor moves (for example a game showing its cursor) no longer count as your input.
 
 **AI access:** AI can only replay recordings a human has enabled, through `replay_cmd` (`list_recordings`, `get_recording`, `start_replay`, `get_run`, `cancel_replay`). Every key/button press is guarded against pose drift; a drifted pose, a changed time step or a prerequisite mismatch ends the run with a structured error instead of playing on. A finished run reports frame and event counts and the recording digests, so an agent can verify that the recording still replays faithfully. Replay has no gameplay assertions; combine it with QA when you need a pass/fail.
 

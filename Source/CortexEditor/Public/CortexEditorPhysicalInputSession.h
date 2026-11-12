@@ -34,6 +34,12 @@ namespace CortexEditorPhysicalInputErrorCodes
 	/** Production preparation deadline (30s) elapsed before the owned target was ready. */
 	constexpr TCHAR PreparationTimeout[] = TEXT("INPUT_PREPARATION_TIMEOUT");
 
+	/**
+	 * A human (foreign) physical input interrupted replay playback. ErrorDetails carry
+	 * cause=foreign_input, input_kind, input and (for key/button edges) edge.
+	 */
+	constexpr TCHAR ForeignInterruption[] = TEXT("INPUT_FOREIGN_INTERRUPTION");
+
 	/** A captured pose and the observed pose differ beyond the fixed tolerances. */
 	constexpr TCHAR PoseMismatch[] = TEXT("INPUT_POSE_MISMATCH");
 
@@ -562,8 +568,11 @@ private:
 	/**
 	 * True when the selected user's current keyboard focus/window still belongs to the selected
 	 * route. A foreign focus or a different active window means replay no longer owns input.
+	 * On false, OutReason says what was lost and OutCause is the `details.cause` value for the
+	 * resulting interruption: `focus_lost` when keyboard focus or the active window left the route,
+	 * `target_lost` when Slate, the selected user or the route window is gone.
 	 */
-	bool IsSelectedRouteOwnershipIntact(FString& OutReason) const;
+	bool IsSelectedRouteOwnershipIntact(FString& OutReason, const TCHAR*& OutCause) const;
 
 	/**
 	 * Retains the exact captor/drag-drop/high-precision identities this operation's own dispatch

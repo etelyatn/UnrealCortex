@@ -897,7 +897,8 @@ TSharedPtr<FJsonObject> MakeCoverageJson(const FCortexReplayGuardCoverage& Cover
 
 /**
  * The single metadata JSON builder. The immutable subset is what the recording snapshot digest
- * covers; metadata.json additionally carries the editable name, description and AI flag.
+ * covers; metadata.json additionally carries the editable name, description, AI flag and
+ * countdown switch.
  */
 TSharedPtr<FJsonObject> MakeMetadataJson(
 	const FCortexReplayMetadata& Metadata,
@@ -929,6 +930,7 @@ TSharedPtr<FJsonObject> MakeMetadataJson(
 		Object->SetStringField(TEXT("name"), Metadata.Name);
 		Object->SetStringField(TEXT("description"), Metadata.Description);
 		Object->SetBoolField(TEXT("ai_enabled"), Metadata.bAIEnabled);
+		Object->SetBoolField(TEXT("countdown_enabled"), Metadata.bCountdownEnabled);
 	}
 
 	return Object;
@@ -1654,6 +1656,13 @@ bool ParseMetadata(
 	if (!TryReadJsonNumber(Object, TEXT("duration_seconds"), Metadata.DurationSeconds, OutError)
 		|| !TryReadJsonBool(Object, TEXT("ai_enabled"), Metadata.bAIEnabled, OutError)
 		|| !TryReadJsonBool(Object, TEXT("complete"), Metadata.bComplete, OutError))
+	{
+		return false;
+	}
+
+	// Optional and additive: recordings written before the switch existed keep their countdown.
+	if (Object->HasField(TEXT("countdown_enabled"))
+		&& !TryReadJsonBool(Object, TEXT("countdown_enabled"), Metadata.bCountdownEnabled, OutError))
 	{
 		return false;
 	}

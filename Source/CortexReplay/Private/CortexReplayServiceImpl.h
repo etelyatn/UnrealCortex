@@ -18,8 +18,17 @@
 #include "Misc/DateTime.h"
 #include "Misc/Guid.h"
 #include "Templates/SharedPointer.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
+class SCortexReplayRunOverlay;
+class UGameViewportClient;
 class UWorld;
+
+/** Z-order of the run overlay in the game viewport's widget stack. */
+inline constexpr int32 ReplayOverlayZOrder = 1000;
+
+/** The hands-off interval between a replay run's readiness and its first replayed frame. */
+inline constexpr double ReplayCountdownSeconds = 3.0;
 
 /**
  * Helpers shared by the service translation units (facade, capture, run, JSON). Helpers used by a
@@ -121,6 +130,10 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	 * because this module's code is about to be freed (the owned PIE teardown continues in CortexEditor).
 	 */
 	bool bUnloading = false;
+	/** Raised once when a run's terminal record is published; see FCortexReplayService::OnRunTerminal. */
+	FOnCortexReplayRunTerminal RunTerminalDelegate;
+	/** Raised once when a run is admitted; see FCortexReplayService::OnRunAdmitted. */
+	FOnCortexReplayRunAdmitted RunAdmittedDelegate;
 
 	bool Tick(float DeltaSeconds);
 	void EnsureTicker();
@@ -249,6 +262,21 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	/** Stable short name used by capture lifecycle logging and the discard outcome message. */
 	static const TCHAR* CapturePhaseToString(ECapturePhase Phase);
 
+	// ---- countdown ----
+	/** Service configuration (survives ResetRun): the hands-off interval between readiness and playback. */
+	double CountdownSeconds = ReplayCountdownSeconds;
+	/**
+	 * The countdown this run uses: the configured interval, or zero when the admitted recording
+	 * switched its countdown off. Reads the admitted snapshot, so editing the flag mid-run only
+	 * affects the next run.
+	 */
+	double GetEffectiveCountdownSeconds() const;
+
+	/** True while the run is Preparing and its hands-off countdown is running. */
+	bool IsInCountdown() const;
+	/** Seconds of the countdown left, clamped to zero; zero when no countdown is running. */
+	double GetCountdownRemainingSeconds() const;
+
 	// ---- run ----
 	bool bRunActive = false;
 	bool bFinalizing = false;
@@ -261,6 +289,8 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	TSharedPtr<FCortexReplayScheduler> Scheduler;
 	double PrepareDeadline = 0.0;
 	double ReplayEpoch = 0.0;
+	/** Monotonic start of the hands-off countdown; 0 until the run's checks pass and it begins. */
+	double CountdownStartedSeconds = 0.0;
 	bool bReadySeen = false;
 	FCortexCommandResult PreparationResult;
 	bool bCancellationRequested = false;
@@ -277,6 +307,23 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	bool bTerminalSaveFailed = false;
 	double LastTerminalSaveAttemptSeconds = 0.0;
 
+	// ---- game-view overlay ----
+	/** The countdown/banner overlay on the owned PIE's game viewport; null when none is shown. */
+	TSharedPtr<SCortexReplayRunOverlay> RunOverlay;
+	/** The viewport holding the overlay; weak, so a torn-down world never leaves a dangling pointer. */
+	TWeakObjectPtr<UGameViewportClient> OverlayViewport;
+	/**
+	 * Adds the overlay to the target world's game viewport if it is not there yet. A missing world or
+	 * viewport leaves the run without an overlay and never affects the run.
+	 */
+	void ShowRunOverlay();
+	/** Shows the countdown number for the time left; creates the overlay on first use. */
+	void UpdateCountdownOverlay();
+	/** Switches the overlay to the playing banner; creates the overlay when no countdown ran. */
+	void ShowPlayingOverlay();
+	/** Removes the overlay from its viewport (when that still exists) and forgets it. */
+	void RemoveRunOverlay();
+
 	void TickRun();
 	void TickFinalization();
 	void ResetRun();
@@ -287,6 +334,8 @@ struct FCortexReplayService::FImpl : public TSharedFromThis<FCortexReplayService
 	bool IsLiveReplaying() const;
 	/** The active run's wire object, built with the live predicate. */
 	TSharedRef<FJsonObject> BuildActiveRunData() const;
+	/** Adds `phase` (countdown while counting, playback while replaying) and the countdown time left. */
+	void AddPhaseFields(FJsonObject& Data) const;
 	/**
 	 * After readiness and before the epoch: compares the recording's viewport size, DPI, player-input
 	 * class, input-config identity and viewport capture/high-precision state with the live owned target.
