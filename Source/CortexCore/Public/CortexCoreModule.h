@@ -4,6 +4,7 @@
 #include "Modules/ModuleManager.h"
 #include "ICortexCommandRegistry.h"
 #include "CortexTcpServer.h"
+#include "CortexHttpServer.h"
 #include "CortexConversionTypes.h"
 #include "CortexAnalysisTypes.h"
 #include "CortexCoreDelegates.h"
@@ -65,6 +66,8 @@ private:
 	TUniquePtr<FCortexCommandRouter> CommandRouter;
 	TUniquePtr<FCortexTcpServer> TcpServer;
 	FString InstanceId;
+	// POC: optional in-editor HTTP/SSE MCP transport (opt-in via cortex.http.port CVar).
+	TUniquePtr<class FCortexHttpServer> HttpServer;
 
 	FOnCortexConversionRequested ConversionRequestedDelegate;
 	FOnCortexAnalysisRequested AnalysisRequestedDelegate;
