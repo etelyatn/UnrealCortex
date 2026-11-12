@@ -84,6 +84,12 @@ FCortexCommandResult MakeTargetIdentityChangedResult(const FString& Message)
 	return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message);
 }
 
+/** PIE is still running but the bound pawn or controller was destroyed (death, kill volume, script): `player_lost`. */
+FCortexCommandResult MakePlayerLostResult(const FString& Message)
+{
+	return WithCause(FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Message), TEXT("player_lost"));
+}
+
 /** A real human packet interrupted replay playback; Edge is nullptr for moves and wheel. */
 FCortexCommandResult MakeForeignInterruption(const TCHAR* InputKind, const FString& Input, const TCHAR* Edge)
 {
@@ -716,7 +722,7 @@ bool FCortexEditorPhysicalInputSession::ValidateTarget(FCortexCommandResult& Out
 	APawn* Pawn = Binding.Pawn.Get();
 	if (!IsValid(Controller) || !IsValid(Pawn))
 	{
-		OutError = MakeInvalidTargetResult(TEXT("Bound controller or pawn is no longer valid"));
+		OutError = MakePlayerLostResult(TEXT("Bound controller or pawn is no longer valid"));
 		return false;
 	}
 	if (Controller->GetPawn() != Pawn)
