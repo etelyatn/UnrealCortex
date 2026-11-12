@@ -897,7 +897,8 @@ TSharedPtr<FJsonObject> MakeCoverageJson(const FCortexReplayGuardCoverage& Cover
 
 /**
  * The single metadata JSON builder. The immutable subset is what the recording snapshot digest
- * covers; metadata.json additionally carries the editable name, description and AI flag.
+ * covers; metadata.json additionally carries the editable name, description, AI flag and
+ * countdown switch.
  */
 TSharedPtr<FJsonObject> MakeMetadataJson(
 	const FCortexReplayMetadata& Metadata,

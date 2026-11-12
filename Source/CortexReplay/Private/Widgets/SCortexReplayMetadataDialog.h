@@ -25,11 +25,11 @@ DECLARE_DELEGATE(FOnCortexReplayMetadataDismissed);
 /**
  * Editable metadata popup for one recording.
  *
- * The dialog owns only the editable draft name, description and AI permission. The recording ID,
+ * The dialog owns only the editable draft name, description, AI permission and countdown switch. The recording ID,
  * creation date, canonical recorded map and guard coverage are read-only context, and the map is
  * shown in full and never editable. A partial-coverage recording surfaces an explicit warning that
  * names the unavailable UI presses; the press-only protection limit is always stated, because
- * enabling AI use never upgrades coverage. Save commits the three drafts together through
+ * enabling AI use never upgrades coverage. Save commits the four drafts together through
  * OnCommitted; Cancel (or Escape) discards drafts through OnDismissed.
  */
 class SCortexReplayMetadataDialog : public SCompoundWidget
