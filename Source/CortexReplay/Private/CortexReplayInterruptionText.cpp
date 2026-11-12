@@ -62,6 +62,10 @@ FString CortexReplayInterruptionText::MakeTitle(const FCortexCommandResult& Caus
 	{
 		return TEXT("Replay stopped: the game window lost focus");
 	}
+	if (CauseKind == TEXT("player_lost"))
+	{
+		return TEXT("Replay stopped: the player character was destroyed");
+	}
 	if (CauseKind == TEXT("target_lost") || Cause.ErrorCode == CortexReplayErrorCodes::TargetUnavailable)
 	{
 		return TEXT("Replay stopped: the game session ended");

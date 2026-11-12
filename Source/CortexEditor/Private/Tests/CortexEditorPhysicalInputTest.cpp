@@ -1936,6 +1936,13 @@ bool FCortexPhysicalInputPawnReplacedTest::RunTest(const FString& Parameters)
 
 			FCortexCommandResult DestroyedError;
 			Test.TestFalse(TEXT("Destroyed pawn invalidates the target"), Fixture->Session->ValidateTarget(DestroyedError));
+			// PIE is still running: a destroyed player is not a lost session.
+			Test.TestEqual(TEXT("Destroyed pawn keeps its error code"), DestroyedError.ErrorCode,
+				FString(CortexErrorCodes::InvalidOperation));
+			FString DestroyedCause;
+			Test.TestTrue(TEXT("Destroyed pawn carries a cause"), DestroyedError.ErrorDetails.IsValid()
+				&& DestroyedError.ErrorDetails->TryGetStringField(TEXT("cause"), DestroyedCause));
+			Test.TestEqual(TEXT("Destroyed pawn cause"), DestroyedCause, FString(TEXT("player_lost")));
 			FCortexEditorPhysicalInputPlayerPose Pose;
 			Test.TestFalse(TEXT("Destroyed pawn is not readable"), Fixture->Session->ReadPlayerPose(Pose).bSuccess);
 

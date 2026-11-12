@@ -67,6 +67,10 @@ bool FCortexReplayInterruptionTextTitlesTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Target lost"),
 		MakeTitle(MakeCauseWithCode(TEXT("INVALID_OPERATION"), TEXT("Target is gone"), TEXT("target_lost"))),
 		FString(TEXT("Replay stopped: the game session ended")));
+	TestEqual(TEXT("Player lost"),
+		MakeTitle(MakeCauseWithCode(TEXT("INVALID_OPERATION"), TEXT("Bound controller or pawn is no longer valid"),
+			TEXT("player_lost"))),
+		FString(TEXT("Replay stopped: the player character was destroyed")));
 	TestEqual(TEXT("Target unavailable code"),
 		MakeTitle(MakeCauseWithCode(TEXT("TARGET_UNAVAILABLE"), TEXT("No target"), nullptr)),
 		FString(TEXT("Replay stopped: the game session ended")));
