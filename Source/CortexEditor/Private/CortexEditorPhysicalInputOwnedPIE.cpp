@@ -10,6 +10,7 @@
 #include "Editor/EditorEngine.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "GameFramework/GameModeBase.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/PackageName.h"
 #include "PlayInEditorDataTypes.h"

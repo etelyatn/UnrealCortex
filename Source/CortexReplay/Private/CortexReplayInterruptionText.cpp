@@ -87,10 +87,7 @@ FCortexCommandResult CortexReplayInterruptionText::ToRunError(const FCortexComma
 	Error.ErrorDetails = MakeShared<FJsonObject>();
 	if (Cause.ErrorDetails.IsValid())
 	{
-		for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : Cause.ErrorDetails->Values)
-		{
-			Error.ErrorDetails->SetField(Field.Key, Field.Value);
-		}
+		Error.ErrorDetails->Values = Cause.ErrorDetails->Values;
 	}
 	Error.ErrorDetails->SetStringField(TEXT("reason"), Cause.ErrorMessage);
 	Error.ErrorDetails->SetNumberField(TEXT("stopped_at_frame"), CompletedFrames);

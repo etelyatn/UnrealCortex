@@ -2,6 +2,7 @@
 
 #include "CortexReplayErrorCodes.h"
 #include "CortexReplayFormat.h"
+#include "CortexReplayModule.h"
 
 #include "Dom/JsonValue.h"
 #include "Framework/Commands/InputChord.h"
