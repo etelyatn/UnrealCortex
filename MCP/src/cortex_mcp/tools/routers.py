@@ -94,6 +94,28 @@ _CACHED_READ_COMMANDS = {
     ("level", "list_actor_classes"),
 }
 
+# Commands with these prefixes do not change editor state. Anything else is treated as a write:
+# a read misclassified as a write only costs one extra fetch, the reverse serves stale data.
+_READ_COMMAND_PREFIXES = ("list_", "get_", "find_", "search_", "describe_", "query_", "trace_")
+_READ_COMMANDS = {"batch_query", "schema_status", "ping"}
+_WRITE_INVALIDATED_PREFIXES = tuple(
+    f"{read_domain}.{read_command}:" for read_domain, read_command in sorted(_CACHED_READ_COMMANDS)
+) + ("data.get_data_catalog:",)
+
+
+def _is_read_command(command: str) -> bool:
+    return command in _READ_COMMANDS or command.startswith(_READ_COMMAND_PREFIXES)
+
+
+def _invalidate_cached_reads(connection) -> None:
+    """Drop cached reads that a write may have made stale."""
+    invalidate = getattr(connection, "invalidate_cache", None)
+    if not callable(invalidate):
+        return
+    for prefix in _WRITE_INVALIDATED_PREFIXES:
+        invalidate(prefix)
+
+
 # Native-owned reads consume limit/offset themselves. Their window is authoritative: a native
 # limit above the Python cache maximum, or the native limit=0 "unlimited" sentinel, is forwarded
 # unchanged and never reinterpreted as a Python pagination request. No Python cursor is ever added
@@ -837,6 +859,12 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
             )
         except (RuntimeError, ValueError, KeyError) as exc:
             return f"Error: {exc}"
+        finally:
+            # Cached reads (list_scs_components, the data catalog, ...) live for minutes. Without
+            # this a read after add/remove/rename returns the pre-write payload. A failed write
+            # may still have applied in part, so invalidate on every outcome.
+            if not _is_read_command(command.rsplit(".", 1)[-1]):
+                _invalidate_cached_reads(connection)
 
     router.__name__ = f"{domain}_cmd"
     router.__doc__ = docstring

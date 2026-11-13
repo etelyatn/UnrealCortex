@@ -1369,3 +1369,81 @@ def test_register_router_tools_disables_structured_output_for_replay_only():
     assert mcp.tools["replay_cmd"]["options"]["structured_output"] is False
     for domain in CORE_DOMAINS:
         assert mcp.tools[f"{domain}_cmd"]["options"]["structured_output"] is None
+
+
+def _counting_connection():
+    from cortex_mcp.tcp_client import UEConnection
+
+    conn = UEConnection(port=99999)
+    conn.connect = lambda: None
+    sent = []
+    state = {"components": ["Root"]}
+
+    def send(command, params=None, timeout=None):
+        sent.append(command)
+        if command == "blueprint.add_scs_component":
+            state["components"].append(params["name"])
+        if command == "blueprint.rename_scs_component":
+            raise UECommandError(command, "COMPILE_FAILED", "compile failed after rename")
+        return {"success": True, "data": {"components": list(state["components"])}}
+
+    conn._send_and_receive = send
+    return conn, sent
+
+
+def test_cached_read_is_refetched_after_a_write_in_the_same_session():
+    from cortex_mcp.tools.routers import make_router
+
+    conn, sent = _counting_connection()
+    blueprint_cmd = make_router("blueprint", conn, "doc")
+    read_params = {"asset_path": "/Game/BP_Door"}
+
+    first = json.loads(blueprint_cmd("list_scs_components", read_params))
+    assert first["components"] == ["Root"]
+    assert json.loads(blueprint_cmd("list_scs_components", read_params)) == first
+    assert sent == ["blueprint.list_scs_components"]
+
+    blueprint_cmd("add_scs_component", {"asset_path": "/Game/BP_Door", "name": "Hinge", "class": "SceneComponent"})
+
+    after = json.loads(blueprint_cmd("list_scs_components", read_params))
+    assert after["components"] == ["Root", "Hinge"]
+    assert sent == [
+        "blueprint.list_scs_components",
+        "blueprint.add_scs_component",
+        "blueprint.list_scs_components",
+    ]
+
+
+def test_cached_read_survives_other_reads():
+    from cortex_mcp.tools.routers import make_router
+
+    conn, sent = _counting_connection()
+    blueprint_cmd = make_router("blueprint", conn, "doc")
+    read_params = {"asset_path": "/Game/BP_Door"}
+
+    blueprint_cmd("list_scs_components", read_params)
+    blueprint_cmd("get_info", {"asset_path": "/Game/BP_Door"})
+    blueprint_cmd("list_scs_components", read_params)
+
+    assert sent == ["blueprint.list_scs_components", "blueprint.get_info"]
+
+
+def test_cached_read_is_refetched_after_a_write_from_another_domain_or_a_failed_write():
+    from cortex_mcp.tools.routers import make_router
+
+    conn, sent = _counting_connection()
+    blueprint_cmd = make_router("blueprint", conn, "doc")
+    core_cmd = make_router("core", conn, "doc")
+    read_params = {"asset_path": "/Game/BP_Door"}
+
+    blueprint_cmd("list_scs_components", read_params)
+    core_cmd("delete_asset", {"asset_path": "/Game/BP_Door"})
+    blueprint_cmd("list_scs_components", read_params)
+    assert sent.count("blueprint.list_scs_components") == 2
+
+    # A write that fails may still have applied in part.
+    failed = json.loads(blueprint_cmd("rename_scs_component", {"asset_path": "/Game/BP_Door"}))
+    assert failed["_error"] == "COMPILE_FAILED"
+    blueprint_cmd("list_scs_components", read_params)
+    assert sent.count("blueprint.list_scs_components") == 3
+
