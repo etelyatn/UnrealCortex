@@ -815,3 +815,45 @@ def test_registration_allowlist_excludes_unlisted_tools_without_wrapping():
         assert recorder.recorded == []
 
     _run(scenario)
+
+
+def test_registered_tool_schemas_carry_no_generated_titles():
+    """Pydantic titles restate each property name and cost tokens in every tool listing."""
+    from cortex_mcp import server
+
+    async def scenario():
+        tools = await server.mcp.list_tools()
+        assert tools
+        for tool in tools:
+            schema_text = json.dumps(tool.inputSchema)
+            assert '"title"' not in schema_text, tool.name
+            # Stripping must leave the argument contract itself intact.
+            assert tool.inputSchema.get("type") == "object", tool.name
+            assert isinstance(tool.inputSchema.get("properties"), dict), tool.name
+
+    _run(scenario)
+
+
+def test_strip_schema_titles_keeps_a_property_named_title():
+    from cortex_mcp.tool_output import strip_schema_titles
+
+    schema = {
+        "title": "Args",
+        "type": "object",
+        "properties": {
+            "title": {"title": "Title", "type": "string"},
+            "items": {"anyOf": [{"title": "Item", "type": "object"}, {"type": "null"}], "title": "Items"},
+        },
+        "required": ["title"],
+    }
+
+    assert strip_schema_titles(schema) == {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "items": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+        },
+        "required": ["title"],
+    }
+    assert schema["title"] == "Args"
+
