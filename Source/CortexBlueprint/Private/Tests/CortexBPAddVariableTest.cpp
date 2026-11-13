@@ -63,6 +63,27 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// Test: an unresolvable type is rejected instead of creating a wildcard variable
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), TestBPPath);
+		Params->SetStringField(TEXT("name"), TEXT("Typo"));
+		Params->SetStringField(TEXT("type"), TEXT("CortexNoSuchType_Flaot"));
+
+		FCortexCommandResult Result = Handler.Execute(TEXT("add_variable"), Params);
+		TestFalse(TEXT("add_variable with an unknown type should fail"), Result.bSuccess);
+		TestEqual(TEXT("Unknown type should be INVALID_VALUE"), Result.ErrorCode, CortexErrorCodes::InvalidValue);
+
+		UBlueprint* LoadedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
+		TestNotNull(TEXT("Blueprint should load"), LoadedBP);
+		if (LoadedBP)
+		{
+			const bool bHasTypo = LoadedBP->NewVariables.ContainsByPredicate(
+				[](const FBPVariableDescription& Var) { return Var.VarName == FName(TEXT("Typo")); });
+			TestFalse(TEXT("Rejected variable should not be added"), bHasTypo);
+		}
+	}
+
 	// Test: add a bool variable
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();

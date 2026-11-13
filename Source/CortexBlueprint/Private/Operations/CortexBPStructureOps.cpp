@@ -137,6 +137,14 @@ FCortexCommandResult FCortexBPStructureOps::AddVariable(const TSharedPtr<FJsonOb
 	}
 
 	FEdGraphPinType PinType = ResolveVariableType(VarType);
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Wildcard)
+	{
+		// An unresolved type would create a wildcard member that never compiles.
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidValue,
+			FString::Printf(TEXT("Unknown type '%s' for variable '%s'"), *VarType, *VarName)
+		);
+	}
 
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex:Add Variable %s"), *VarName)
