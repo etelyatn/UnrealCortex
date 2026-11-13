@@ -29,6 +29,7 @@ from cortex_mcp.schema_generator import (
 )
 from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
 from cortex_mcp.tcp_client import UECommandError
+from cortex_mcp.tool_output import strip_schema_titles
 
 
 logger = logging.getLogger(__name__)
@@ -884,7 +885,7 @@ def _register_strict_router(mcp, domain: str, strict_router) -> None:
             params=(Annotated[Any, WithJsonSchema({"type": "object"})], None),
         )
         tool.fn_metadata.arg_model = argument_model
-        tool.parameters = argument_model.model_json_schema(by_alias=True)
+        tool.parameters = strip_schema_titles(argument_model.model_json_schema(by_alias=True))
 
 
 def _qualify_command(domain: str, command: str) -> str:
