@@ -51,6 +51,14 @@ class UECommandNotDispatchedError(ConnectionError):
     """Connection failure before a one-shot command was sent."""
 
 
+class UECommandTimeoutError(ConnectionError):
+    """No response arrived in time for a command that was already sent.
+
+    The editor may still execute the command once its game thread unblocks,
+    so the command must not be replayed automatically.
+    """
+
+
 @dataclasses.dataclass(frozen=True)
 class EditorConnection:
     """Metadata for a discovered Unreal Editor instance."""
@@ -387,8 +395,11 @@ class UEConnection:
         """Send a command to the UE plugin and return the response.
 
         On connection failure, automatically retries once after a brief delay.
+        A response timeout is not retried: the request is already queued in the
+        editor and replaying it would run the command twice.
         Timeout applies to the total operation (including deferred ack + final).
         Raises ConnectionError if not connected after retry.
+        Raises UECommandTimeoutError if a sent command got no response in time.
         Raises RuntimeError if the command fails.
 
         Args:
@@ -405,6 +416,11 @@ class UEConnection:
                     self._telemetry["tcp_calls"] += 1
                     self._record_metric("tcp_call", {"command": command, "attempt": attempt + 1})
                     return self._send_and_receive(command, params, timeout=timeout)
+            except UECommandTimeoutError:
+                # The request reached the editor and may still run when the game
+                # thread unblocks. Replaying it would execute the command twice.
+                self.disconnect()
+                raise
             except ConnectionError as e:
                 last_error = e
                 self.disconnect()
@@ -678,7 +694,7 @@ class UEConnection:
         while b"\n" not in self._recv_buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise ConnectionError("Timed out waiting for Unreal Editor response")
+                raise UECommandTimeoutError("Timed out waiting for Unreal Editor response")
 
             self._socket.settimeout(remaining)
             chunk = self._socket.recv(65536)
@@ -754,6 +770,15 @@ class UEConnection:
 
             return response
 
+        except UECommandTimeoutError:
+            self.disconnect()
+            raise
+        except TimeoutError as e:
+            # socket.timeout is TimeoutError; keep it distinct from a dropped connection.
+            self.disconnect()
+            raise UECommandTimeoutError(
+                f"Timed out waiting for Unreal Editor response to '{command}': {e}"
+            ) from e
         except (BrokenPipeError, ConnectionResetError, OSError, json.JSONDecodeError) as e:
             self.disconnect()
             raise ConnectionError(f"Lost connection to Unreal Editor: {e}") from e
