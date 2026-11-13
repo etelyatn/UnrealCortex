@@ -181,6 +181,56 @@ def test_send_command_once_distinguishes_failure_before_dispatch(monkeypatch):
 
     connect.assert_called_once()
     send_attempt.assert_not_called()
+
+
+def _fail_first_attempt(conn, monkeypatch):
+    attempts = []
+
+    def send(command, params=None, timeout=None):
+        attempts.append(conn.port)
+        if len(attempts) == 1:
+            raise ConnectionError("connection reset")
+        return {"success": True, "data": {}}
+
+    monkeypatch.setattr(conn, "connect", lambda: None)
+    monkeypatch.setattr(conn, "_send_and_receive", send)
+    monkeypatch.setattr("cortex_mcp.tcp_client.time.sleep", lambda _seconds: None)
+    return attempts
+
+
+def test_reconnect_keeps_explicit_port(monkeypatch):
+    """CORTEX_PORT pins one editor; a reconnect must not switch to another."""
+    conn = UEConnection(port=8750)
+    discover = MagicMock(return_value=(8742, 4321, "/Projects/Other", "Other"))
+    monkeypatch.setattr("cortex_mcp.tcp_client._discover_port", discover)
+    attempts = _fail_first_attempt(conn, monkeypatch)
+
+    conn.send_command("data.list_datatables", {})
+
+    assert attempts == [8750, 8750]
+    assert conn._expected_project == ""
+    discover.assert_not_called()
+
+
+def test_reconnect_rediscovers_auto_discovered_port(monkeypatch):
+    """Without an explicit port, a restarted editor is found on its new port."""
+    monkeypatch.setattr("cortex_mcp.tcp_client._get_expected_project", lambda: "Game")
+    monkeypatch.setattr(
+        "cortex_mcp.tcp_client._discover_port",
+        lambda: (8742, 100, "/Projects/Game", "Game"),
+    )
+    conn = UEConnection()
+    monkeypatch.setattr(
+        "cortex_mcp.tcp_client._discover_port",
+        lambda: (8743, 200, "/Projects/Game", "Game"),
+    )
+    attempts = _fail_first_attempt(conn, monkeypatch)
+
+    conn.send_command("data.list_datatables", {})
+
+    assert attempts == [8742, 8743]
+
+
 class TestPortFileParsing:
     """Tests for JSON and plain-text port file backward compatibility."""
 

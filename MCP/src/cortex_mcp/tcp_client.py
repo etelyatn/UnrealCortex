@@ -268,6 +268,8 @@ class UEConnection:
         self._pid: int | None = None
         self._project_path: str | None = None
         self._expected_project: str = ""
+        # An explicit port pins the connection; reconnects must not rediscover.
+        self._explicit_port = port is not None
         if port is not None:
             # Explicit port — caller knows what they're connecting to
             self.port = port
@@ -420,8 +422,10 @@ class UEConnection:
                         logger.info(
                             "Cleared %d cache entries on reconnect", cleared
                         )
-                    # Re-discover port in case editor restarted on a different port
-                    result = _discover_port()
+                    # Re-discover port in case editor restarted on a different port.
+                    # An explicit port (CORTEX_PORT) names one editor; rediscovery
+                    # would silently retarget the most recently started one.
+                    result = None if self._explicit_port else _discover_port()
                     if result is not None:
                         new_port, new_pid, new_project_path, new_project = result
                         if new_port != self.port:
