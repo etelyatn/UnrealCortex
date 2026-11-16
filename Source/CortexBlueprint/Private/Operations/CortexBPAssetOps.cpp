@@ -931,15 +931,26 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 		return Result;
 	}
 
-	// Check if asset already exists (guard with FindPackage/DoesPackageExist to avoid warnings)
+	// Check if an asset of any class already holds the name (guard with FindPackage/DoesPackageExist to avoid warnings)
 	const FString ExistingPkgName = FPackageName::ObjectPathToPackageName(PackagePath);
 	const bool bPackageExists = CortexBPAssetOpsPrivate::DoesBlueprintPackageExist(ExistingPkgName);
-	UObject* ExistingAsset = bPackageExists ? LoadObject<UBlueprint>(nullptr, *PackagePath) : nullptr;
+	UObject* ExistingAsset = bPackageExists
+		? LoadObject<UObject>(nullptr, *FString::Printf(TEXT("%s.%s"), *PackagePath, *Name))
+		: nullptr;
 	if (ExistingAsset)
 	{
 		Result.bSuccess = false;
-		Result.ErrorCode = CortexErrorCodes::BlueprintAlreadyExists;
-		Result.ErrorMessage = FString::Printf(TEXT("Blueprint already exists at path: %s"), *PackagePath);
+		if (ExistingAsset->IsA<UBlueprint>())
+		{
+			Result.ErrorCode = CortexErrorCodes::BlueprintAlreadyExists;
+			Result.ErrorMessage = FString::Printf(TEXT("Blueprint already exists at path: %s"), *PackagePath);
+		}
+		else
+		{
+			Result.ErrorCode = CortexErrorCodes::AssetAlreadyExists;
+			Result.ErrorMessage = FString::Printf(TEXT("A %s asset already exists at path: %s"),
+				*ExistingAsset->GetClass()->GetName(), *PackagePath);
+		}
 		return Result;
 	}
 
@@ -1604,15 +1615,16 @@ FCortexCommandResult FCortexBPAssetOps::Duplicate(const TSharedPtr<FJsonObject>&
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ValidationError);
 	}
 
-	// Check if destination already exists
+	// Check if an asset of any class already holds the destination name
 	if (CortexBPAssetOpsPrivate::DoesBlueprintPackageExist(NewPackagePath))
 	{
-		UObject* ExistingAsset = LoadObject<UBlueprint>(nullptr, *NewPackagePath);
+		UObject* ExistingAsset = LoadObject<UObject>(nullptr, *FString::Printf(TEXT("%s.%s"), *NewPackagePath, *NewName));
 		if (ExistingAsset != nullptr)
 		{
+			const bool bIsBlueprint = ExistingAsset->IsA<UBlueprint>();
 			return FCortexCommandRouter::Error(
-				CortexErrorCodes::BlueprintAlreadyExists,
-				FString::Printf(TEXT("Asset already exists: %s"), *NewPackagePath)
+				bIsBlueprint ? CortexErrorCodes::BlueprintAlreadyExists : CortexErrorCodes::AssetAlreadyExists,
+				FString::Printf(TEXT("Asset already exists: %s (%s)"), *NewPackagePath, *ExistingAsset->GetClass()->GetName())
 			);
 		}
 	}

@@ -62,6 +62,19 @@ FCortexCommandResult FCortexUMGWidgetAnimationOps::CreateAnimation(
             CortexErrorCodes::InvalidOperation, TEXT("Animation name conflicts with an existing Designer variable identity"));
     }
 
+    // Other objects outered to the Widget Blueprint (graphs, the tree) share its namespace; NewObject over another
+    // class is fatal. A removed animation keeps its UWidgetAnimation for undo and stays reusable.
+    if (const UObject* Occupant = StaticFindObjectFast(nullptr, WBP, RequestedName))
+    {
+        if (Occupant->GetClass() != UWidgetAnimation::StaticClass())
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::NameCollision,
+                FString::Printf(TEXT("Animation name '%s' is already used by a %s in the Widget Blueprint"),
+                    *AnimName, *Occupant->GetClass()->GetName()));
+        }
+    }
+
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Create Animation %s"), *AnimName)));
     WBP->Modify();

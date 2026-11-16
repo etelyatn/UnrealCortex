@@ -253,6 +253,89 @@ bool FCortexLevelAddComponentTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelAddComponentNameCollisionTest,
+    "Cortex.Level.Component.AddComponentNameCollision",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelAddComponentNameCollisionTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterComponent();
+    const FString ActorName = SpawnActor(Router, TEXT("PointLight"));
+    if (!TestFalse(TEXT("Spawn should succeed"), ActorName.IsEmpty()))
+    {
+        return false;
+    }
+
+    const auto Add = [&Router, &ActorName](const FString& ClassName, const FString& Name)
+    {
+        TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+        Params->SetStringField(TEXT("actor"), ActorName);
+        Params->SetStringField(TEXT("class"), ClassName);
+        if (!Name.IsEmpty())
+        {
+            Params->SetStringField(TEXT("name"), Name);
+        }
+        return Router.Execute(TEXT("level.add_component"), Params);
+    };
+    const auto ClassOf = [&Router, &ActorName](const FString& Name)
+    {
+        for (const TSharedPtr<FJsonValue>& Value : ListComponents(Router, ActorName))
+        {
+            const TSharedPtr<FJsonObject>* Obj = nullptr;
+            if (Value->TryGetObject(Obj) && Obj && (*Obj)->GetStringField(TEXT("name")) == Name)
+            {
+                return (*Obj)->GetStringField(TEXT("class"));
+            }
+        }
+        return FString();
+    };
+
+    // Unnamed adds of the same class get distinct components instead of re-initialising the first.
+    const FCortexCommandResult FirstDefault = Add(TEXT("SceneComponent"), FString());
+    const FCortexCommandResult SecondDefault = Add(TEXT("SceneComponent"), FString());
+    if (TestTrue(TEXT("Both unnamed adds succeed"), FirstDefault.bSuccess && SecondDefault.bSuccess))
+    {
+        const FString FirstName = FirstDefault.Data->GetStringField(TEXT("name"));
+        const FString SecondName = SecondDefault.Data->GetStringField(TEXT("name"));
+        TestNotEqual(TEXT("Unnamed adds report distinct names"), FirstName, SecondName);
+        TestEqual(TEXT("First unnamed component is still listed"), ClassOf(FirstName), FString(TEXT("SceneComponent")));
+        TestEqual(TEXT("Second unnamed component is listed"), ClassOf(SecondName), FString(TEXT("SceneComponent")));
+    }
+
+    // An explicit name held by another object of the actor is refused, whatever its class.
+    TestTrue(TEXT("Named add succeeds"), Add(TEXT("SceneComponent"), TEXT("Probe")).bSuccess);
+    const FCortexCommandResult OtherClass = Add(TEXT("BoxComponent"), TEXT("Probe"));
+    TestFalse(TEXT("Named add over another class is refused"), OtherClass.bSuccess);
+    TestEqual(TEXT("Other-class refusal is NAME_COLLISION"), OtherClass.ErrorCode, CortexErrorCodes::NameCollision);
+    const FCortexCommandResult SameClass = Add(TEXT("SceneComponent"), TEXT("Probe"));
+    TestFalse(TEXT("Named add over the same class is refused"), SameClass.bSuccess);
+    TestEqual(TEXT("Same-class refusal is NAME_COLLISION"), SameClass.ErrorCode, CortexErrorCodes::NameCollision);
+    TestEqual(TEXT("The existing component keeps its class"), ClassOf(TEXT("Probe")), FString(TEXT("SceneComponent")));
+
+    // A removed component still holds its name until garbage collection: another class is refused,
+    // the same class may reuse it.
+    TSharedPtr<FJsonObject> RemoveParams = MakeShared<FJsonObject>();
+    RemoveParams->SetStringField(TEXT("actor"), ActorName);
+    RemoveParams->SetStringField(TEXT("component"), TEXT("Probe"));
+    TestTrue(TEXT("remove_component succeeds"), Router.Execute(TEXT("level.remove_component"), RemoveParams).bSuccess);
+    const FCortexCommandResult RemovedOtherClass = Add(TEXT("BoxComponent"), TEXT("Probe"));
+    TestFalse(TEXT("Another class cannot take a removed component's name"), RemovedOtherClass.bSuccess);
+    TestEqual(TEXT("Removed-name refusal is NAME_COLLISION"), RemovedOtherClass.ErrorCode, CortexErrorCodes::NameCollision);
+    TestTrue(TEXT("The same class can re-add a removed name"), Add(TEXT("SceneComponent"), TEXT("Probe")).bSuccess);
+    TestEqual(TEXT("Re-added component is listed"), ClassOf(TEXT("Probe")), FString(TEXT("SceneComponent")));
+
+    DeleteActor(Router, ActorName);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexLevelRemoveComponentTest,
     "Cortex.Level.Component.RemoveComponent",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter

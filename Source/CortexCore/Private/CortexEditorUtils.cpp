@@ -202,6 +202,31 @@ bool FCortexEditorUtils::IsWritableMountedContentPath(const FString& InPath, FSt
 	return false;
 }
 
+bool FCortexEditorUtils::ValidateNewAssetPackageName(const FString& PackageName, FString& OutFilename, FString& OutError)
+{
+	OutFilename.Reset();
+
+	FText Reason;
+	if (!FPackageName::IsValidLongPackageName(PackageName, false, &Reason))
+	{
+		OutError = FString::Printf(TEXT("Invalid asset package path '%s': %s"), *PackageName, *Reason.ToString());
+		return false;
+	}
+
+	if (!IsWritableMountedContentPath(PackageName, OutError))
+	{
+		return false;
+	}
+
+	if (!FPackageName::TryConvertLongPackageNameToFilename(PackageName, OutFilename, FPackageName::GetAssetPackageExtension()))
+	{
+		OutError = FString::Printf(TEXT("Asset package path '%s' does not map to a content directory."), *PackageName);
+		return false;
+	}
+
+	return true;
+}
+
 TArray<FString> FCortexEditorUtils::GetWritableMountedContentRoots()
 {
 	TArray<FString> Roots;
