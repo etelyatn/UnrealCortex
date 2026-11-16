@@ -9,6 +9,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
+#include "UObject/ObjectRedirector.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPDeleteTest,
@@ -185,6 +186,115 @@ bool FCortexBPDeleteKeepsFileWhenEngineRefusesTest::RunTest(const FString& Param
 	TestTrue(TEXT("The package file survives the engine veto"),
 		IFileManager::Get().FileExists(*Fixture.PackageFilename));
 	TestTrue(TEXT("The Blueprint object survives the engine veto"), IsValid(Blueprint));
+
+	return true;
+}
+
+// Sibling of "Cortex.Blueprint.Delete" on purpose: a child test path would make UE 5.8 treat the
+// existing leaf as a suite node and drop the leaf's own test from filtered runs.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPDeleteRefusesRedirectedPathTest,
+	"Cortex.Blueprint.DeleteRefusesRedirectedPath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPDeleteRefusesRedirectedPathTest::RunTest(const FString& Parameters)
+{
+	FCortexBPCommandHandler Handler;
+
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString Root = FString::Printf(TEXT("/Game/Temp/CortexIssue218_%s"), *Suffix);
+	const FString OldName = FString::Printf(TEXT("BP_RedirectOld_%s"), *Suffix);
+	const FString OldPackage = FString::Printf(TEXT("%s/%s"), *Root, *OldName);
+	const FString OldPath = FString::Printf(TEXT("%s.%s"), *OldPackage, *OldName);
+	const FString OldFilename = FPackageName::LongPackageNameToFilename(
+		OldPackage, FPackageName::GetAssetPackageExtension());
+	const FString DestName = FString::Printf(TEXT("BP_RedirectDest_%s"), *Suffix);
+	const FString DestPath = FString::Printf(TEXT("%s/%s"), *Root, *DestName);
+	const FString DestPackage = FPackageName::ObjectPathToPackageName(DestPath);
+	const FString DestFilename = FPackageName::LongPackageNameToFilename(
+		DestPackage, FPackageName::GetAssetPackageExtension());
+
+	// Renaming a real Blueprint is what leaves a redirector package at the old path.
+	{
+		TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+		CreateParams->SetStringField(TEXT("name"), OldName);
+		CreateParams->SetStringField(TEXT("path"), Root);
+		CreateParams->SetStringField(TEXT("type"), TEXT("Actor"));
+		if (!TestTrue(TEXT("Fixture Blueprint is created"),
+			Handler.Execute(TEXT("create"), CreateParams).bSuccess))
+		{
+			return false;
+		}
+	}
+
+	{
+		TSharedPtr<FJsonObject> RenameParams = MakeShared<FJsonObject>();
+		RenameParams->SetStringField(TEXT("source_path"), OldPath);
+		RenameParams->SetStringField(TEXT("dest_path"), DestPath);
+		if (!TestTrue(TEXT("The fixture Blueprint is renamed to the destination path"),
+			Handler.Execute(TEXT("rename"), RenameParams).bSuccess))
+		{
+			return false;
+		}
+	}
+
+	{
+		TSharedPtr<FJsonObject> SaveParams = MakeShared<FJsonObject>();
+		SaveParams->SetStringField(TEXT("asset_path"), DestPath);
+		if (!TestTrue(TEXT("The renamed Blueprint is saved"),
+			Handler.Execute(TEXT("save"), SaveParams).bSuccess))
+		{
+			return false;
+		}
+	}
+
+	// Weak on purpose: the pre-fix delete frees the destination, so a raw pointer would assert here.
+	UBlueprint* const LoadedDestination = LoadObject<UBlueprint>(nullptr, *DestPath);
+	TWeakObjectPtr<UBlueprint> Destination(LoadedDestination);
+	if (!TestNotNull(TEXT("The destination Blueprint is loadable"), LoadedDestination)
+		|| !TestTrue(TEXT("The destination package file exists"),
+			IFileManager::Get().FileExists(*DestFilename))
+		|| !TestTrue(TEXT("The old path holds a redirector package"),
+			IFileManager::Get().FileExists(*OldFilename)))
+	{
+		return false;
+	}
+
+	// Deleting through the redirector path must never resolve to (and delete) the destination.
+	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+	DeleteParams->SetStringField(TEXT("asset_path"), OldPath);
+	const FCortexCommandResult Result = Handler.Execute(TEXT("delete"), DeleteParams);
+
+	TestFalse(TEXT("A redirector path is refused"), Result.bSuccess);
+	TestEqual(TEXT("Error code should be INVALID_FIELD"),
+		Result.ErrorCode, CortexErrorCodes::InvalidField);
+	TestTrue(TEXT("The refusal names the redirector destination package"),
+		Result.ErrorMessage.Contains(DestPackage));
+	TestTrue(TEXT("The destination file survives"), IFileManager::Get().FileExists(*DestFilename));
+	TestTrue(TEXT("The destination Blueprint survives"), Destination.IsValid());
+	TestTrue(TEXT("The redirector file survives"), IFileManager::Get().FileExists(*OldFilename));
+
+	// Cleanup: the redirector goes first so no live reference outlives the destination.
+	if (UObjectRedirector* const LeftoverRedirector =
+		FindObject<UObjectRedirector>(nullptr, *OldPath))
+	{
+		TArray<UObject*> RedirectorsToDelete;
+		RedirectorsToDelete.Add(LeftoverRedirector);
+		FCortexEditorUtils::DeleteLoadedAssets(RedirectorsToDelete);
+	}
+	if (IFileManager::Get().FileExists(*DestFilename))
+	{
+		UBlueprint* const LeftoverDestination = LoadObject<UBlueprint>(nullptr, *DestPath);
+		if (IsValid(LeftoverDestination))
+		{
+			TArray<UObject*> DestinationsToDelete;
+			DestinationsToDelete.Add(LeftoverDestination);
+			FCortexEditorUtils::DeleteLoadedAssets(DestinationsToDelete);
+		}
+	}
+	IFileManager::Get().DeleteDirectory(
+		*FPackageName::LongPackageNameToFilename(Root), false, true);
 
 	return true;
 }

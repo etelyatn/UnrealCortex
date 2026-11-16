@@ -9,6 +9,7 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
+#include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 
@@ -343,6 +344,109 @@ bool FCortexMaterialDeleteCollectionRefusesReferencedTest::RunTest(const FString
 	}
 	IFileManager::Get().DeleteDirectory(
 		*FPackageName::LongPackageNameToFilename(CollDir), false, true);
+
+	return true;
+}
+
+// Sibling of "Cortex.Material.Collection.DeleteCollection" on purpose: a child test path would make
+// UE 5.8 treat the existing leaf as a suite node and drop the leaf's own test from filtered runs.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialDeleteCollectionRefusesRedirectedPathTest,
+	"Cortex.Material.Collection.DeleteCollectionRefusesRedirectedPath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialDeleteCollectionRefusesRedirectedPathTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString Root = FString::Printf(TEXT("/Game/Temp/CortexCollTest_Redirect_%s"), *Suffix);
+	const FString DestName = FString::Printf(TEXT("MPC_RedirectDest_%s"), *Suffix);
+	const FString DestPath = FString::Printf(TEXT("%s/%s"), *Root, *DestName);
+	const FString DestPackage = FPackageName::ObjectPathToPackageName(DestPath);
+	const FString DestFilename = FPackageName::LongPackageNameToFilename(
+		DestPackage, FPackageName::GetAssetPackageExtension());
+	const FString OldName = FString::Printf(TEXT("MPC_RedirectOld_%s"), *Suffix);
+	const FString OldPackage = FString::Printf(TEXT("%s/%s"), *Root, *OldName);
+	const FString OldPath = FString::Printf(TEXT("%s.%s"), *OldPackage, *OldName);
+	const FString OldFilename = FPackageName::LongPackageNameToFilename(
+		OldPackage, FPackageName::GetAssetPackageExtension());
+
+	FCortexMaterialCommandHandler Handler;
+
+	// The destination collection is real content on disk.
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), Root);
+	CreateParams->SetStringField(TEXT("name"), DestName);
+	if (!TestTrue(TEXT("create_collection should succeed"),
+		Handler.Execute(TEXT("create_collection"), CreateParams).bSuccess))
+	{
+		return false;
+	}
+
+	// Weak on purpose: the pre-fix delete frees the destination, so a raw pointer would assert here.
+	UMaterialParameterCollection* const LoadedDestination =
+		LoadObject<UMaterialParameterCollection>(nullptr, *DestPath);
+	TWeakObjectPtr<UMaterialParameterCollection> Destination(LoadedDestination);
+	if (!TestNotNull(TEXT("The destination collection is loadable"), LoadedDestination)
+		|| !TestTrue(TEXT("The destination package file exists"),
+			IFileManager::Get().FileExists(*DestFilename)))
+	{
+		return false;
+	}
+
+	// A rename leaves a saved redirector package at the old path; serialize the same shape here.
+	UPackage* const OldPackageObject = CreatePackage(*OldPackage);
+	TWeakObjectPtr<UObjectRedirector> Redirector = NewObject<UObjectRedirector>(
+		OldPackageObject, *OldName, RF_Public | RF_Standalone);
+	if (!TestTrue(TEXT("The old path holds a redirector"), Redirector.IsValid()))
+	{
+		return false;
+	}
+	Redirector->DestinationObject = LoadedDestination;
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	if (!TestTrue(TEXT("The redirector package saves"),
+		UPackage::SavePackage(OldPackageObject, Redirector.Get(), *OldFilename, SaveArgs)))
+	{
+		return false;
+	}
+
+	// Deleting through the redirector path must never resolve to (and delete) the destination.
+	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+	DeleteParams->SetStringField(TEXT("asset_path"), OldPath);
+	const FCortexCommandResult Result = Handler.Execute(TEXT("delete_collection"), DeleteParams);
+
+	TestFalse(TEXT("A redirector path is refused"), Result.bSuccess);
+	TestEqual(TEXT("Error code should be INVALID_FIELD"),
+		Result.ErrorCode, CortexErrorCodes::InvalidField);
+	TestTrue(TEXT("The refusal names the redirector destination package"),
+		Result.ErrorMessage.Contains(DestPackage));
+	TestTrue(TEXT("The destination file survives"), IFileManager::Get().FileExists(*DestFilename));
+	TestTrue(TEXT("The destination collection survives"), Destination.IsValid());
+	TestTrue(TEXT("The redirector file survives"), IFileManager::Get().FileExists(*OldFilename));
+
+	// Cleanup: the redirector goes first so no live reference outlives the destination.
+	if (UObjectRedirector* const LeftoverRedirector = Redirector.Get())
+	{
+		TArray<UObject*> RedirectorsToDelete;
+		RedirectorsToDelete.Add(LeftoverRedirector);
+		FCortexEditorUtils::DeleteLoadedAssets(RedirectorsToDelete);
+	}
+	if (IFileManager::Get().FileExists(*DestFilename))
+	{
+		UMaterialParameterCollection* const LeftoverDestination =
+			LoadObject<UMaterialParameterCollection>(nullptr, *DestPath);
+		if (IsValid(LeftoverDestination))
+		{
+			TArray<UObject*> DestinationsToDelete;
+			DestinationsToDelete.Add(LeftoverDestination);
+			FCortexEditorUtils::DeleteLoadedAssets(DestinationsToDelete);
+		}
+	}
+	IFileManager::Get().DeleteDirectory(
+		*FPackageName::LongPackageNameToFilename(Root), false, true);
 
 	return true;
 }

@@ -261,6 +261,21 @@ FCortexCommandResult FCortexMaterialCollectionOps::DeleteCollection(const TShare
 		return LoadError;
 	}
 
+	// LoadObject follows a UObjectRedirector, so the loaded collection can live in a different package
+	// than the requested one. The mount check above and the referencer check below both use the
+	// requested package, so deleting here would delete the redirector's destination with the wrong
+	// guards (including inside a non-writable mount).
+	const FString LoadedCollectionPackage = Collection->GetOutermost()->GetName();
+	if (!LoadedCollectionPackage.Equals(PackageName, ESearchCase::IgnoreCase))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(
+				TEXT("'%s' is a redirector to '%s'. Delete the destination by its own path."),
+				*PackageName,
+				*LoadedCollectionPackage));
+	}
+
 	TArray<FString> Referencers;
 	if (!bForce)
 	{

@@ -1473,6 +1473,22 @@ FCortexCommandResult FCortexBPAssetOps::Delete(const TSharedPtr<FJsonObject>& Pa
 		);
 	}
 
+	// LoadBlueprint resolves through a UObjectRedirector, so the loaded Blueprint can live in a
+	// different package than the requested one. The mount check above only validated the redirector's
+	// own path, so deleting here would delete the redirector's destination under the wrong guards.
+	const FString RequestedPackageName = FPackageName::ObjectPathToPackageName(
+		CortexBPAssetOpsPrivate::NormalizeBlueprintContentPath(AssetPath));
+	const FString LoadedBlueprintPackage = Blueprint->GetOutermost()->GetName();
+	if (!LoadedBlueprintPackage.Equals(RequestedPackageName, ESearchCase::IgnoreCase))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(
+				TEXT("'%s' is a redirector to '%s'. Delete the destination by its own path."),
+				*RequestedPackageName,
+				*LoadedBlueprintPackage));
+	}
+
 	// Check for references unless force is true
 	if (!bForce)
 	{
