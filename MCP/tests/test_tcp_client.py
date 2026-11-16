@@ -740,3 +740,25 @@ class TestFragmentedResponseReassembly:
 
         # The second line was already buffered behind the first line's delimiter.
         assert sock.recv.call_count == 3
+
+
+def test_cached_read_racing_a_write_is_not_cached(monkeypatch):
+    """A read whose response predates a completed write must not repopulate the cache."""
+    conn = UEConnection(port=99999)
+    monkeypatch.setattr(conn, "connect", lambda: None)
+    calls = []
+
+    def send_and_receive(command, params=None, timeout=None):
+        calls.append(command)
+        if len(calls) == 1:
+            # A concurrent write completes before this read's response is cached.
+            conn.invalidate_cache("blueprint.list_scs_components:")
+        return {"success": True, "data": {"components": []}}
+
+    monkeypatch.setattr(conn, "_send_and_receive", send_and_receive)
+    params = {"asset_path": "/Game/BP_Door"}
+
+    conn.send_command_cached("blueprint.list_scs_components", params)
+    conn.send_command_cached("blueprint.list_scs_components", params)
+
+    assert calls == ["blueprint.list_scs_components", "blueprint.list_scs_components"]

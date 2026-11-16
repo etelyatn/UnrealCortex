@@ -26,6 +26,34 @@ _CONNECT_TIMEOUT = 5.0
 _RECV_TIMEOUT = 60.0
 _RECONNECT_DELAY = 0.5
 
+# Reads whose responses the router caches for minutes. Invalidation is owned here rather than by
+# each caller so composite tools and batch steps, which dispatch outside the router, cannot leave
+# a stale entry behind.
+CACHED_READ_COMMANDS = frozenset({
+    ("blueprint", "list_scs_components"),
+    ("blueprint", "list_inherited_properties"),
+    ("blueprint", "list_settable_defaults"),
+    ("graph", "list_event_handlers"),
+    ("level", "list_actor_classes"),
+})
+
+# Read detection for write-triggered invalidation. Unknown commands count as writes: a read
+# misclassified as a write costs one extra fetch, while the reverse serves stale data.
+# batch_query is a write because its steps may mutate; class_hierarchy and blueprint_catalog are
+# reads whose verbs do not follow the prefix convention.
+_READ_COMMAND_PREFIXES = ("list_", "get_", "find_", "search_", "describe_", "query_", "trace_")
+_READ_COMMAND_NAMES = frozenset({"schema_status", "ping", "class_hierarchy", "blueprint_catalog"})
+_INVALIDATE_ON_WRITE_PREFIXES = tuple(
+    f"{domain}.{command}:" for domain, command in sorted(CACHED_READ_COMMANDS)
+) + ("data.get_data_catalog:",)
+
+
+def _is_read_command(command: str) -> bool:
+    """Return whether a qualified command leaves editor state unchanged."""
+    bare = command.rsplit(".", 1)[-1]
+    return bare in _READ_COMMAND_NAMES or bare.startswith(_READ_COMMAND_PREFIXES)
+
+
 # Invocation-local command attribution. The public output adapter opens one scope per public
 # invocation; `record_tool_invocation` records the qualified command routed inside that scope.
 # A ContextVar keeps concurrent awaitable invocations isolated and is reset per invocation, so a
@@ -388,6 +416,11 @@ class UEConnection:
             self._socket = None
         self._recv_buffer = b""
 
+    def _invalidate_cached_reads(self) -> None:
+        """Drop cached reads that a write may have made stale."""
+        for prefix in _INVALIDATE_ON_WRITE_PREFIXES:
+            self._cache.invalidate(prefix)
+
     def send_command(
         self,
         command: str,
@@ -411,50 +444,56 @@ class UEConnection:
         """
         last_error: Exception | None = None
 
-        for attempt in range(2):
-            try:
-                with self._socket_lock:
-                    self.connect()
-                    self._telemetry["tcp_calls"] += 1
-                    self._record_metric("tcp_call", {"command": command, "attempt": attempt + 1})
-                    return self._send_and_receive(command, params, timeout=timeout)
-            except UECommandTimeoutError:
-                # The request reached the editor and may still run when the game
-                # thread unblocks. Replaying it would execute the command twice.
-                self.disconnect()
-                raise
-            except ConnectionError as e:
-                last_error = e
-                self.disconnect()
-                if attempt == 0:
-                    logger.debug(
-                        "Connection lost during '%s', reconnecting in %.1fs",
-                        command,
-                        _RECONNECT_DELAY,
-                    )
-                    # Connection dropped - clear all caches (editor may have restarted)
-                    cleared = self._cache.invalidate(None)
-                    if cleared > 0:
-                        logger.info(
-                            "Cleared %d cache entries on reconnect", cleared
+        try:
+            for attempt in range(2):
+                try:
+                    with self._socket_lock:
+                        self.connect()
+                        self._telemetry["tcp_calls"] += 1
+                        self._record_metric("tcp_call", {"command": command, "attempt": attempt + 1})
+                        return self._send_and_receive(command, params, timeout=timeout)
+                except UECommandTimeoutError:
+                    # The request reached the editor and may still run when the game
+                    # thread unblocks. Replaying it would execute the command twice.
+                    self.disconnect()
+                    raise
+                except ConnectionError as e:
+                    last_error = e
+                    self.disconnect()
+                    if attempt == 0:
+                        logger.debug(
+                            "Connection lost during '%s', reconnecting in %.1fs",
+                            command,
+                            _RECONNECT_DELAY,
                         )
-                    # Re-discover port in case editor restarted on a different port.
-                    # An explicit port (CORTEX_PORT) names one editor; rediscovery
-                    # would silently retarget the most recently started one.
-                    result = None if self._explicit_port else _discover_port()
-                    if result is not None:
-                        new_port, new_pid, new_project_path, new_project = result
-                        if new_port != self.port:
+                        # Connection dropped - clear all caches (editor may have restarted)
+                        cleared = self._cache.invalidate(None)
+                        if cleared > 0:
                             logger.info(
-                                "Port changed %d → %d, updating", self.port, new_port
+                                "Cleared %d cache entries on reconnect", cleared
                             )
-                            self.port = new_port
-                        self._pid = new_pid
-                        self._project_path = new_project_path
-                        self._expected_project = new_project
-                    time.sleep(_RECONNECT_DELAY)
+                        # Re-discover port in case editor restarted on a different port.
+                        # An explicit port (CORTEX_PORT) names one editor; rediscovery
+                        # would silently retarget the most recently started one.
+                        result = None if self._explicit_port else _discover_port()
+                        if result is not None:
+                            new_port, new_pid, new_project_path, new_project = result
+                            if new_port != self.port:
+                                logger.info(
+                                    "Port changed %d → %d, updating", self.port, new_port
+                                )
+                                self.port = new_port
+                            self._pid = new_pid
+                            self._project_path = new_project_path
+                            self._expected_project = new_project
+                        time.sleep(_RECONNECT_DELAY)
 
-        raise last_error
+            raise last_error
+        finally:
+            # A write may still have applied in part even when it raised, so invalidate on every
+            # outcome. Composite tools and batch steps dispatch here too, not only through routers.
+            if not _is_read_command(command):
+                self._invalidate_cached_reads()
 
     def send_command_once(
         self,
@@ -475,6 +514,9 @@ class UEConnection:
         except ConnectionError:
             self.disconnect()
             raise
+        finally:
+            if not _is_read_command(command):
+                self._invalidate_cached_reads()
 
     def send_command_cached(
         self,
@@ -500,8 +542,9 @@ class UEConnection:
             self._record_metric("cache_hit", {"command": command, "layer": "python"})
             return cached
 
+        generation = self._cache.generation
         response = self.send_command(command, params, timeout=timeout)
-        self._cache.set(key, response, ttl)
+        self._cache.set(key, response, ttl, expected_generation=generation)
         return response
 
     def invalidate_cache(self, pattern: str | None) -> int:

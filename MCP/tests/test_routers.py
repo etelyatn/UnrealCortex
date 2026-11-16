@@ -1447,3 +1447,35 @@ def test_cached_read_is_refetched_after_a_write_from_another_domain_or_a_failed_
     blueprint_cmd("list_scs_components", read_params)
     assert sent.count("blueprint.list_scs_components") == 3
 
+
+
+def test_cached_read_is_refetched_after_a_composite_write():
+    """Composite tools forward graph.apply_patch through connection.send_command, not the router."""
+    from cortex_mcp.tools.routers import make_router
+
+    conn, sent = _counting_connection()
+    blueprint_cmd = make_router("blueprint", conn, "doc")
+    read_params = {"asset_path": "/Game/BP_Door"}
+
+    blueprint_cmd("list_scs_components", read_params)
+    conn.send_command("graph.apply_patch", {"asset_path": "/Game/BP_Door", "ops": []})
+    blueprint_cmd("list_scs_components", read_params)
+
+    assert sent.count("blueprint.list_scs_components") == 2
+
+
+def test_cached_read_is_refetched_after_a_writable_batch_query():
+    """batch_query executes arbitrary steps, including mutations, so it cannot leave cached reads."""
+    from cortex_mcp.tools.routers import make_router
+
+    conn, sent = _counting_connection()
+    blueprint_cmd = make_router("blueprint", conn, "doc")
+    read_params = {"asset_path": "/Game/BP_Door"}
+
+    blueprint_cmd("list_scs_components", read_params)
+    conn.send_command("core.batch_query", {
+        "commands": [{"command": "blueprint.add_scs_component", "params": {"asset_path": "/Game/BP_Door"}}],
+    })
+    blueprint_cmd("list_scs_components", read_params)
+
+    assert sent.count("blueprint.list_scs_components") == 2
