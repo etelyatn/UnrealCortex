@@ -18,6 +18,15 @@ class ResponseCache:
         self._store: dict[str, tuple[float, dict]] = {}  # key -> (expires_at, value)
         self._hits = 0
         self._misses = 0
+        # Bumped by every invalidation. A read captures it before dispatching so a write that
+        # completes while the fetch is in flight prevents that pre-write response from being
+        # cached after the invalidation.
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        """Invalidation generation; changes whenever the cache may no longer be current."""
+        return self._generation
 
     @property
     def stats(self) -> dict:
@@ -55,16 +64,33 @@ class ResponseCache:
         logger.debug("Cache HIT: %s", key)
         return value
 
-    def set(self, key: str, value: dict, ttl: float) -> None:
-        """Store a value with TTL in seconds."""
+    def set(
+        self,
+        key: str,
+        value: dict,
+        ttl: float,
+        *,
+        expected_generation: int | None = None,
+    ) -> bool:
+        """Store a value with TTL in seconds.
+
+        With ``expected_generation``, skip the store when the cache was invalidated after the
+        caller started its fetch: that response predates the write and must not be served.
+        Returns whether the value was stored.
+        """
+        if expected_generation is not None and expected_generation != self._generation:
+            logger.debug("Cache SKIP: %s (invalidated during fetch)", key)
+            return False
         self._store[key] = (time.monotonic() + ttl, value)
         logger.debug("Cache SET: %s (ttl=%.0fs)", key, ttl)
+        return True
 
     def invalidate(self, pattern: str | None) -> int:
         """Invalidate cache entries matching a pattern prefix, or all if pattern is None.
 
         Returns the number of entries removed.
         """
+        self._generation += 1
         if pattern is None:
             count = len(self._store)
             self._store.clear()
