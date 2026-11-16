@@ -1129,7 +1129,7 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 		const UEnum* Enum = EnumProp->GetEnum();
 		const FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
 		int64 Value = UnderlyingProp->GetSignedIntPropertyValue(ValuePtr);
-		FString EnumName = Enum->GetNameStringByIndex(static_cast<int32>(Value));
+		FString EnumName = Enum->GetNameStringByValue(Value);
 		return MakeShared<FJsonValueString>(EnumName);
 	}
 
@@ -1139,7 +1139,7 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 		if (const UEnum* Enum = ByteProp->GetIntPropertyEnum())
 		{
 			int64 Value = static_cast<int64>(ByteProp->GetPropertyValue(ValuePtr));
-			FString EnumName = Enum->GetNameStringByIndex(static_cast<int32>(Value));
+			FString EnumName = Enum->GetNameStringByValue(Value);
 			return MakeShared<FJsonValueString>(EnumName);
 		}
 		return MakeShared<FJsonValueNumber>(static_cast<double>(ByteProp->GetPropertyValue(ValuePtr)));
