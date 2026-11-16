@@ -166,6 +166,10 @@ struct FIssue218Fixture
 			return nullptr;
 		}
 
+		// Record before saving: a failed save still leaves a loaded RF_Standalone object behind, and
+		// the destructor has to be able to delete it.
+		CreatedObjects.Add(Library);
+
 		Library->ObjectBaseClass = UObject::StaticClass();
 		Library->bHasBlueprintClasses = false;
 		Library->UseWeakReferences(false);
@@ -184,7 +188,6 @@ struct FIssue218Fixture
 		}
 
 		SavedFiles.Add(Filename);
-		CreatedObjects.Add(Library);
 		return Library;
 	}
 
