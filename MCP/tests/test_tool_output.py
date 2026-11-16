@@ -817,6 +817,17 @@ def test_registration_allowlist_excludes_unlisted_tools_without_wrapping():
     _run(scenario)
 
 
+def _schema_string_titles(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "title" and isinstance(value, str):
+                yield value
+            yield from _schema_string_titles(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _schema_string_titles(item)
+
+
 def test_registered_tool_schemas_carry_no_generated_titles():
     """Pydantic titles restate each property name and cost tokens in every tool listing."""
     from cortex_mcp import server
@@ -825,8 +836,9 @@ def test_registered_tool_schemas_carry_no_generated_titles():
         tools = await server.mcp.list_tools()
         assert tools
         for tool in tools:
-            schema_text = json.dumps(tool.inputSchema)
-            assert '"title"' not in schema_text, tool.name
+            # A property *named* title is part of the contract; a string-valued title annotation
+            # is the generated noise. Check the value, not the key spelling.
+            assert list(_schema_string_titles(tool.inputSchema)) == [], tool.name
             # Stripping must leave the argument contract itself intact.
             assert tool.inputSchema.get("type") == "object", tool.name
             assert isinstance(tool.inputSchema.get("properties"), dict), tool.name
