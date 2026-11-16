@@ -88,11 +88,15 @@ def register_material_collection_tools(mcp, connection: UEConnection):
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
-    def delete_material_collection(asset_path: str) -> str:
-        """Delete a material parameter collection.
+    def delete_material_collection(asset_path: str, force: bool = False) -> str:
+        """Delete a material parameter collection and its package file.
+
+        Refuses non-writable mounts. Without force, refuses with HAS_REFERENCES
+        when other packages (for example materials) reference the collection.
 
         Args:
             asset_path: Full asset path to the collection to delete
+            force: Delete even when other packages reference the collection
 
         Returns:
             JSON with:
@@ -100,7 +104,7 @@ def register_material_collection_tools(mcp, connection: UEConnection):
             - deleted: True if successful
         """
         try:
-            params = {"asset_path": asset_path}
+            params = {"asset_path": asset_path, "force": force}
             result = connection.send_command("material.delete_collection", params)
             return format_response(result.get("data", {}), "delete_material_collection")
         except Exception as e:
