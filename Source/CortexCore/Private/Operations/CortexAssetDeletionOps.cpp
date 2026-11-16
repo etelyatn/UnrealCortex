@@ -1,99 +1,53 @@
 #include "Operations/CortexAssetDeletionOps.h"
 #include "CortexCommandRouter.h"
 #include "CortexCoreModule.h"
+#include "CortexEditorUtils.h"
+#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/PackageName.h"
-#include "ObjectTools.h"
-#include "ScopedTransaction.h"
-#include "Misc/TextBuffer.h"
-#include "UObject/SavePackage.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
-	bool TryDeletePackageFile(const FString& PackageFilename, int32 MaxAttempts)
+TSharedPtr<FJsonObject> MakeReferencerDetails(const TArray<FString>& Referencers)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	Values.Reserve(Referencers.Num());
+	for (const FString& Referencer : Referencers)
 	{
-		for (int32 Attempt = 0; Attempt < MaxAttempts; ++Attempt)
-		{
-			if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
-			{
-				return true;
-			}
-			if (IFileManager::Get().Delete(*PackageFilename, false, false, true))
-			{
-				return true;
-			}
-			FPlatformProcess::Sleep(0.01f);
-		}
-		return !FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename);
+		Values.Add(MakeShared<FJsonValueString>(Referencer));
 	}
 
-	bool DeleteSingleAsset(const FString& AssetPath, FString& OutError)
+	TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+	Details->SetArrayField(TEXT("referencers"), Values);
+	return Details;
+}
+
+TSharedPtr<FJsonObject> MakeAssetEntry(const FString& AssetPath, const bool bDeleted, const FString& Error)
+{
+	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("asset_path"), AssetPath);
+	Entry->SetBoolField(TEXT("deleted"), bDeleted);
+	if (!Error.IsEmpty())
 	{
-		const FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
-		if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
-		{
-			OutError = FString::Printf(TEXT("Asset not found: %s"), *AssetPath);
-			return false;
-		}
-
-		const FString ObjName = FPackageName::GetShortName(PkgName);
-		const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *PkgName, *ObjName);
-
-		UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *ObjectPath);
-		if (!Asset)
-		{
-			OutError = FString::Printf(TEXT("Failed to load asset: %s"), *AssetPath);
-			return false;
-		}
-
-		UPackage* Package = Asset->GetOutermost();
-		const FString PackageFilename = FPackageName::LongPackageNameToFilename(
-			Package->GetName(),
-			FPackageName::GetAssetPackageExtension());
-
-		// Delete on-disk package first to avoid file watcher race warnings.
-		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
-		{
-			TryDeletePackageFile(PackageFilename, 20);
-		}
-
-		// Guard object prevents false-positive "package marked deleted but modified on disk" warnings
-		// if a queued file watcher event races with ForceDeleteObjects.
-		UTextBuffer* DeleteGuard = nullptr;
-		if (IsValid(Package))
-		{
-			DeleteGuard = NewObject<UTextBuffer>(Package, TEXT("__CortexDeleteGuard__"), RF_Public);
-		}
-
-		TArray<UObject*> ObjectsToDelete;
-		ObjectsToDelete.Add(Asset);
-		const int32 DeletedCount = ObjectTools::ForceDeleteObjects(ObjectsToDelete, false);
-
-		if (DeleteGuard != nullptr)
-		{
-			DeleteGuard->ClearFlags(RF_Public | RF_Standalone);
-		}
-
-		// Retry file deletion after object destruction if file still exists on disk.
-		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
-		{
-			TryDeletePackageFile(PackageFilename, 20);
-		}
-
-		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*PackageFilename))
-		{
-			OutError = FString::Printf(TEXT("Failed to delete asset file: %s"), *PackageFilename);
-			return false;
-		}
-
-		if (DeletedCount == 0)
-		{
-			OutError = FString::Printf(TEXT("Failed to delete asset: %s (may have references)"), *AssetPath);
-			return false;
-		}
-
-		return true;
+		Entry->SetStringField(TEXT("error"), Error);
 	}
+
+	return Entry;
+}
+
+/** True when the folder path names a mounted content root itself (for example /Game) rather than a
+ *  folder inside one. Deleting a whole content root is never a single-asset operation. */
+bool IsContentRootFolder(const FString& NormalizedFolderPath)
+{
+	FString RemainingPath = NormalizedFolderPath;
+	RemainingPath.RemoveFromStart(TEXT("/"));
+
+	TArray<FString> Segments;
+	RemainingPath.ParseIntoArray(Segments, TEXT("/"), true);
+	return Segments.Num() < 2;
+}
 }
 
 FCortexCommandResult FCortexAssetDeletionOps::DeleteAsset(const TSharedPtr<FJsonObject>& Params)
@@ -111,13 +65,65 @@ FCortexCommandResult FCortexAssetDeletionOps::DeleteAsset(const TSharedPtr<FJson
 			TEXT("Missing or empty 'asset_path' field"));
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Delete Asset %s"), *AssetPath)));
+	bool bForce = false;
+	Params->TryGetBoolField(TEXT("force"), bForce);
 
-	FString Error;
-	if (!DeleteSingleAsset(AssetPath, Error))
+	const FString PackageName = FPackageName::ObjectPathToPackageName(AssetPath);
+
+	FString MountError;
+	if (!FCortexEditorUtils::IsWritableMountedContentPath(PackageName, MountError))
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound, Error);
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, MountError);
+	}
+
+	if (!FindPackage(nullptr, *PackageName) && !FPackageName::DoesPackageExist(PackageName))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::AssetNotFound,
+			FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+	}
+
+	const FString ObjectPath = FString::Printf(
+		TEXT("%s.%s"),
+		*PackageName,
+		*FPackageName::GetShortName(PackageName));
+
+	UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *ObjectPath);
+	if (Asset == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("Failed to load asset: %s"), *AssetPath));
+	}
+
+	TArray<FString> Referencers;
+	if (!bForce)
+	{
+		TArray<FName> PackageNames;
+		PackageNames.Add(FName(*PackageName));
+		Referencers = FCortexEditorUtils::GetExternalReferencers(PackageNames);
+	}
+
+	if (Referencers.Num() > 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::HasReferences,
+			FString::Printf(
+				TEXT("Asset '%s' is referenced by %d package(s). Use force=true to delete anyway."),
+				*AssetPath,
+				Referencers.Num()),
+			MakeReferencerDetails(Referencers));
+	}
+
+	TArray<UObject*> AssetsToDelete;
+	AssetsToDelete.Add(Asset);
+	const TArray<FString> DeleteErrors = FCortexEditorUtils::DeleteLoadedAssets(AssetsToDelete);
+	if (!DeleteErrors[0].IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("%s (asset_path: %s)"), *DeleteErrors[0], *AssetPath),
+			MakeReferencerDetails(Referencers));
 	}
 
 	UE_LOG(LogCortex, Log, TEXT("Deleted asset: %s"), *AssetPath);
@@ -146,54 +152,109 @@ FCortexCommandResult FCortexAssetDeletionOps::DeleteFolder(const TSharedPtr<FJso
 	bool bRecursive = true;
 	Params->TryGetBoolField(TEXT("recursive"), bRecursive);
 
-	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+	bool bForce = false;
+	Params->TryGetBoolField(TEXT("force"), bForce);
+
+	const FString NormalizedFolderPath = FCortexEditorUtils::NormalizeMountedContentPath(FolderPath);
+
+	FString MountError;
+	if (!FCortexEditorUtils::IsWritableMountedContentPath(NormalizedFolderPath, MountError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, MountError);
+	}
+
+	if (IsContentRootFolder(NormalizedFolderPath))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(
+				TEXT("Refusing to delete content root '%s': pass a folder inside the root."),
+				*NormalizedFolderPath));
+	}
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
 
 	TArray<FAssetData> AssetsInFolder;
-	AssetRegistry.GetAssetsByPath(FName(*FolderPath), AssetsInFolder, bRecursive);
+	AssetRegistry.GetAssetsByPath(FName(*NormalizedFolderPath), AssetsInFolder, bRecursive);
 
 	if (AssetsInFolder.Num() == 0)
 	{
 		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 		Data->SetNumberField(TEXT("deleted_count"), 0);
-		Data->SetStringField(TEXT("folder_path"), FolderPath);
+		Data->SetStringField(TEXT("folder_path"), NormalizedFolderPath);
 		Data->SetArrayField(TEXT("assets"), TArray<TSharedPtr<FJsonValue>>());
 		return FCortexCommandRouter::Success(Data);
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Delete Folder %s"), *FolderPath)));
+	TArray<FString> Referencers;
+	if (!bForce)
+	{
+		TArray<FName> PackageNames;
+		PackageNames.Reserve(AssetsInFolder.Num());
+		for (const FAssetData& AssetData : AssetsInFolder)
+		{
+			PackageNames.Add(AssetData.PackageName);
+		}
 
-	TArray<TSharedPtr<FJsonValue>> DeletedAssets;
+		Referencers = FCortexEditorUtils::GetExternalReferencers(PackageNames);
+	}
+
+	if (Referencers.Num() > 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::HasReferences,
+			FString::Printf(
+				TEXT("Assets in folder '%s' are referenced by %d package(s) outside it. Use force=true to delete anyway."),
+				*NormalizedFolderPath,
+				Referencers.Num()),
+			MakeReferencerDetails(Referencers));
+	}
+
+	TArray<UObject*> LoadedAssets;
+	TArray<FString> LoadedAssetPaths;
 	TArray<TSharedPtr<FJsonValue>> FailedAssets;
-	int32 DeletedCount = 0;
 
 	for (const FAssetData& AssetData : AssetsInFolder)
 	{
 		const FString AssetPath = AssetData.GetObjectPathString();
-		FString Error;
-		if (DeleteSingleAsset(AssetPath, Error))
+		UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+		if (Asset == nullptr)
 		{
-			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
-			Entry->SetStringField(TEXT("asset_path"), AssetPath);
-			Entry->SetBoolField(TEXT("deleted"), true);
-			DeletedAssets.Add(MakeShared<FJsonValueObject>(Entry));
+			FailedAssets.Add(MakeShared<FJsonValueObject>(MakeAssetEntry(
+				AssetPath,
+				false,
+				FString::Printf(TEXT("Failed to load asset: %s"), *AssetPath))));
+			continue;
+		}
+
+		LoadedAssets.Add(Asset);
+		LoadedAssetPaths.Add(AssetPath);
+	}
+
+	const TArray<FString> DeleteErrors = FCortexEditorUtils::DeleteLoadedAssets(LoadedAssets);
+
+	TArray<TSharedPtr<FJsonValue>> DeletedAssets;
+	int32 DeletedCount = 0;
+
+	for (int32 Index = 0; Index < LoadedAssets.Num(); ++Index)
+	{
+		if (DeleteErrors[Index].IsEmpty())
+		{
+			DeletedAssets.Add(MakeShared<FJsonValueObject>(MakeAssetEntry(LoadedAssetPaths[Index], true, FString())));
 			++DeletedCount;
 		}
 		else
 		{
-			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
-			Entry->SetStringField(TEXT("asset_path"), AssetPath);
-			Entry->SetBoolField(TEXT("deleted"), false);
-			Entry->SetStringField(TEXT("error"), Error);
-			FailedAssets.Add(MakeShared<FJsonValueObject>(Entry));
+			FailedAssets.Add(MakeShared<FJsonValueObject>(MakeAssetEntry(LoadedAssetPaths[Index], false, DeleteErrors[Index])));
 		}
 	}
 
-	UE_LOG(LogCortex, Log, TEXT("Deleted %d assets from folder: %s"), DeletedCount, *FolderPath);
+	UE_LOG(LogCortex, Log, TEXT("Deleted %d assets from folder: %s"), DeletedCount, *NormalizedFolderPath);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetNumberField(TEXT("deleted_count"), DeletedCount);
-	Data->SetStringField(TEXT("folder_path"), FolderPath);
+	Data->SetStringField(TEXT("folder_path"), NormalizedFolderPath);
 	Data->SetArrayField(TEXT("assets"), DeletedAssets);
 	if (FailedAssets.Num() > 0)
 	{

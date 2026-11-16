@@ -1,8 +1,17 @@
 #include "Misc/AutomationTest.h"
+#include "CortexEditorUtils.h"
 #include "CortexMaterialCommandHandler.h"
 #include "CortexTypes.h"
-#include "Misc/Guid.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Engine/ObjectLibrary.h"
+#include "HAL/FileManager.h"
 #include "Materials/MaterialParameterCollection.h"
+#include "Misc/Guid.h"
+#include "Misc/PackageName.h"
+#include "UObject/ObjectRedirector.h"
+#include "UObject/Package.h"
+#include "UObject/SavePackage.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexMaterialCreateCollectionTest,
@@ -130,14 +139,44 @@ bool FCortexMaterialDeleteCollectionTest::RunTest(const FString& Parameters)
 	const FString CollName = FString::Printf(TEXT("MPC_TestDelete_%s"), *Suffix);
 	const FString CollDir = FString::Printf(TEXT("/Game/Temp/CortexCollTest_Delete_%s"), *Suffix);
 	const FString CollPath = FString::Printf(TEXT("%s/%s"), *CollDir, *CollName);
+	const FString CollPackage = FPackageName::ObjectPathToPackageName(CollPath);
+	const FString CollFilename = FPackageName::LongPackageNameToFilename(
+		CollPackage, FPackageName::GetAssetPackageExtension());
 
 	FCortexMaterialCommandHandler Handler;
+
+	// A non-writable content root is refused before anything is loaded or touched.
+	{
+		TSharedPtr<FJsonObject> MountParams = MakeShared<FJsonObject>();
+		MountParams->SetStringField(
+			TEXT("asset_path"), FString::Printf(TEXT("/Engine/CortexCollDelete_%s/MPC_Missing"), *Suffix));
+		const FCortexCommandResult MountResult = Handler.Execute(TEXT("delete_collection"), MountParams);
+		TestFalse(TEXT("A non-writable mount is refused"), MountResult.bSuccess);
+		TestEqual(TEXT("Error code should be INVALID_FIELD"),
+			MountResult.ErrorCode, CortexErrorCodes::InvalidField);
+	}
 
 	// Create collection
 	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
 	CreateParams->SetStringField(TEXT("asset_path"), CollDir);
 	CreateParams->SetStringField(TEXT("name"), CollName);
-	Handler.Execute(TEXT("create_collection"), CreateParams);
+	const FCortexCommandResult CreateResult = Handler.Execute(TEXT("create_collection"), CreateParams);
+	TestTrue(TEXT("create_collection should succeed"), CreateResult.bSuccess);
+
+	const bool bFileExistedBeforeDelete = IFileManager::Get().FileExists(*CollFilename);
+	TestTrue(TEXT("create_collection writes the package file"), bFileExistedBeforeDelete);
+
+	FAssetRegistryModule& AssetRegistryModule =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+	if (bFileExistedBeforeDelete)
+	{
+		AssetRegistry.ScanFilesSynchronous({CollFilename}, true);
+	}
+
+	TArray<FAssetData> AssetsBeforeDelete;
+	AssetRegistry.GetAssetsByPackageName(FName(*CollPackage), AssetsBeforeDelete);
+	TestEqual(TEXT("The registry knows the collection before the delete"), AssetsBeforeDelete.Num(), 1);
 
 	// Delete collection
 	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
@@ -151,7 +190,263 @@ bool FCortexMaterialDeleteCollectionTest::RunTest(const FString& Parameters)
 		bool bDeleted = false;
 		Result.Data->TryGetBoolField(TEXT("deleted"), bDeleted);
 		TestTrue(TEXT("deleted should be true"), bDeleted);
+
+		FString AssetPath;
+		Result.Data->TryGetStringField(TEXT("asset_path"), AssetPath);
+		TestEqual(TEXT("asset_path should match"), AssetPath, CollPath);
 	}
+
+	TestFalse(TEXT("The collection package file is removed"),
+		IFileManager::Get().FileExists(*CollFilename));
+	TestFalse(TEXT("The collection package no longer exists"),
+		FPackageName::DoesPackageExist(CollPackage));
+
+	TArray<FAssetData> AssetsAfterDelete;
+	AssetRegistry.GetAssetsByPackageName(FName(*CollPackage), AssetsAfterDelete);
+	TestEqual(TEXT("The registry no longer lists the collection"), AssetsAfterDelete.Num(), 0);
+
+	// Cleanup: remove anything the delete left behind, then the owned temp folder.
+	if (IFileManager::Get().FileExists(*CollFilename))
+	{
+		UMaterialParameterCollection* Leftover =
+			LoadObject<UMaterialParameterCollection>(nullptr, *CollPath);
+		if (IsValid(Leftover))
+		{
+			TArray<UObject*> Leftovers;
+			Leftovers.Add(Leftover);
+			FCortexEditorUtils::DeleteLoadedAssets(Leftovers);
+		}
+	}
+	IFileManager::Get().DeleteDirectory(
+		*FPackageName::LongPackageNameToFilename(CollDir), false, true);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialDeleteCollectionRefusesReferencedTest,
+	"Cortex.Material.Collection.DeleteCollectionRefusesReferencedWithoutForce",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialDeleteCollectionRefusesReferencedTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString CollName = FString::Printf(TEXT("MPC_TestDeleteRef_%s"), *Suffix);
+	const FString CollDir = FString::Printf(TEXT("/Game/Temp/CortexCollTest_DeleteRef_%s"), *Suffix);
+	const FString CollPath = FString::Printf(TEXT("%s/%s"), *CollDir, *CollName);
+	const FString CollPackage = FPackageName::ObjectPathToPackageName(CollPath);
+	const FString CollFilename = FPackageName::LongPackageNameToFilename(
+		CollPackage, FPackageName::GetAssetPackageExtension());
+	const FString ReferencerName = FString::Printf(TEXT("OL_TestDeleteRef_%s"), *Suffix);
+	const FString ReferencerPath = FString::Printf(TEXT("%s/%s"), *CollDir, *ReferencerName);
+	const FString ReferencerPackage = FPackageName::ObjectPathToPackageName(ReferencerPath);
+	const FString ReferencerFilename = FPackageName::LongPackageNameToFilename(
+		ReferencerPackage, FPackageName::GetAssetPackageExtension());
+
+	FCortexMaterialCommandHandler Handler;
+
+	// Create the collection, then a saved UObjectLibrary that strongly references it so the asset
+	// registry records a real package dependency (a package dependency is what the guard checks).
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), CollDir);
+	CreateParams->SetStringField(TEXT("name"), CollName);
+	TestTrue(TEXT("create_collection should succeed"),
+		Handler.Execute(TEXT("create_collection"), CreateParams).bSuccess);
+
+	UMaterialParameterCollection* Collection = LoadObject<UMaterialParameterCollection>(nullptr, *CollPath);
+	if (!TestNotNull(TEXT("The created collection is loadable"), Collection))
+	{
+		return false;
+	}
+
+	UPackage* ReferencerPackageObject = CreatePackage(*ReferencerPackage);
+	UObjectLibrary* Referencer = NewObject<UObjectLibrary>(
+		ReferencerPackageObject, *ReferencerName, RF_Public | RF_Standalone);
+	if (!TestNotNull(TEXT("The referencing library object is created"), Referencer))
+	{
+		return false;
+	}
+	Referencer->ObjectBaseClass = UObject::StaticClass();
+	Referencer->bHasBlueprintClasses = false;
+	Referencer->UseWeakReferences(false);
+	Referencer->AddObject(Collection);
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	TestTrue(TEXT("The referencing library saves"),
+		UPackage::SavePackage(ReferencerPackageObject, Referencer, *ReferencerFilename, SaveArgs));
+
+	FAssetRegistryModule& AssetRegistryModule =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	AssetRegistryModule.Get().ScanFilesSynchronous({CollFilename, ReferencerFilename}, true);
+
+	// Without force the reference blocks the delete and nothing is touched.
+	TSharedPtr<FJsonObject> RefuseParams = MakeShared<FJsonObject>();
+	RefuseParams->SetStringField(TEXT("asset_path"), CollPath);
+	const FCortexCommandResult Refused = Handler.Execute(TEXT("delete_collection"), RefuseParams);
+
+	TestFalse(TEXT("A referenced collection is refused without force"), Refused.bSuccess);
+	TestEqual(TEXT("Error code should be HAS_REFERENCES"),
+		Refused.ErrorCode, CortexErrorCodes::HasReferences);
+
+	const TArray<TSharedPtr<FJsonValue>>* ReferencerValues = nullptr;
+	const bool bHasReferencerDetails = Refused.ErrorDetails.IsValid()
+		&& Refused.ErrorDetails->TryGetArrayField(TEXT("referencers"), ReferencerValues)
+		&& ReferencerValues != nullptr;
+	if (TestTrue(TEXT("The refusal reports referencers"), bHasReferencerDetails))
+	{
+		bool bFoundReferencer = false;
+		for (const TSharedPtr<FJsonValue>& Value : *ReferencerValues)
+		{
+			if (Value.IsValid() && Value->AsString() == ReferencerPackage)
+			{
+				bFoundReferencer = true;
+			}
+		}
+		TestTrue(TEXT("The referencing package is reported"), bFoundReferencer);
+	}
+
+	TestTrue(TEXT("The refused collection keeps its file"), IFileManager::Get().FileExists(*CollFilename));
+	TestTrue(TEXT("The refused collection stays loaded"), IsValid(Collection));
+
+	// force=true deletes it, and an object-path form works for the mount check.
+	TSharedPtr<FJsonObject> ForcedParams = MakeShared<FJsonObject>();
+	ForcedParams->SetStringField(TEXT("asset_path"),
+		FString::Printf(TEXT("%s.%s"), *CollPackage, *FPackageName::GetShortName(CollPackage)));
+	ForcedParams->SetBoolField(TEXT("force"), true);
+	const FCortexCommandResult Forced = Handler.Execute(TEXT("delete_collection"), ForcedParams);
+
+	TestTrue(TEXT("The forced delete succeeds"), Forced.bSuccess);
+	TestFalse(TEXT("The forced delete removes the file"), IFileManager::Get().FileExists(*CollFilename));
+
+	// Cleanup: the referencer and its folder are owned by this test.
+	TArray<UObject*> Leftovers;
+	if (IFileManager::Get().FileExists(*ReferencerFilename))
+	{
+		if (UObject* LoadedReferencer = LoadObject<UObject>(nullptr, *ReferencerPath))
+		{
+			Leftovers.Add(LoadedReferencer);
+		}
+	}
+	if (IFileManager::Get().FileExists(*CollFilename))
+	{
+		if (UMaterialParameterCollection* LeftoverCollection =
+			LoadObject<UMaterialParameterCollection>(nullptr, *CollPath))
+		{
+			Leftovers.Add(LeftoverCollection);
+		}
+	}
+	if (Leftovers.Num() > 0)
+	{
+		FCortexEditorUtils::DeleteLoadedAssets(Leftovers);
+	}
+	IFileManager::Get().DeleteDirectory(
+		*FPackageName::LongPackageNameToFilename(CollDir), false, true);
+
+	return true;
+}
+
+// Sibling of "Cortex.Material.Collection.DeleteCollection" on purpose: a child test path would make
+// UE 5.8 treat the existing leaf as a suite node and drop the leaf's own test from filtered runs.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialDeleteCollectionRefusesRedirectedPathTest,
+	"Cortex.Material.Collection.DeleteCollectionRefusesRedirectedPath",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialDeleteCollectionRefusesRedirectedPathTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString Root = FString::Printf(TEXT("/Game/Temp/CortexCollTest_Redirect_%s"), *Suffix);
+	const FString DestName = FString::Printf(TEXT("MPC_RedirectDest_%s"), *Suffix);
+	const FString DestPath = FString::Printf(TEXT("%s/%s"), *Root, *DestName);
+	const FString DestPackage = FPackageName::ObjectPathToPackageName(DestPath);
+	const FString DestFilename = FPackageName::LongPackageNameToFilename(
+		DestPackage, FPackageName::GetAssetPackageExtension());
+	const FString OldName = FString::Printf(TEXT("MPC_RedirectOld_%s"), *Suffix);
+	const FString OldPackage = FString::Printf(TEXT("%s/%s"), *Root, *OldName);
+	const FString OldPath = FString::Printf(TEXT("%s.%s"), *OldPackage, *OldName);
+	const FString OldFilename = FPackageName::LongPackageNameToFilename(
+		OldPackage, FPackageName::GetAssetPackageExtension());
+
+	FCortexMaterialCommandHandler Handler;
+
+	// The destination collection is real content on disk.
+	TSharedPtr<FJsonObject> CreateParams = MakeShared<FJsonObject>();
+	CreateParams->SetStringField(TEXT("asset_path"), Root);
+	CreateParams->SetStringField(TEXT("name"), DestName);
+	if (!TestTrue(TEXT("create_collection should succeed"),
+		Handler.Execute(TEXT("create_collection"), CreateParams).bSuccess))
+	{
+		return false;
+	}
+
+	// Weak on purpose: the pre-fix delete frees the destination, so a raw pointer would assert here.
+	UMaterialParameterCollection* const LoadedDestination =
+		LoadObject<UMaterialParameterCollection>(nullptr, *DestPath);
+	TWeakObjectPtr<UMaterialParameterCollection> Destination(LoadedDestination);
+	if (!TestNotNull(TEXT("The destination collection is loadable"), LoadedDestination)
+		|| !TestTrue(TEXT("The destination package file exists"),
+			IFileManager::Get().FileExists(*DestFilename)))
+	{
+		return false;
+	}
+
+	// A rename leaves a saved redirector package at the old path; serialize the same shape here.
+	UPackage* const OldPackageObject = CreatePackage(*OldPackage);
+	TWeakObjectPtr<UObjectRedirector> Redirector = NewObject<UObjectRedirector>(
+		OldPackageObject, *OldName, RF_Public | RF_Standalone);
+	if (!TestTrue(TEXT("The old path holds a redirector"), Redirector.IsValid()))
+	{
+		return false;
+	}
+	Redirector->DestinationObject = LoadedDestination;
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	if (!TestTrue(TEXT("The redirector package saves"),
+		UPackage::SavePackage(OldPackageObject, Redirector.Get(), *OldFilename, SaveArgs)))
+	{
+		return false;
+	}
+
+	// Deleting through the redirector path must never resolve to (and delete) the destination.
+	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+	DeleteParams->SetStringField(TEXT("asset_path"), OldPath);
+	const FCortexCommandResult Result = Handler.Execute(TEXT("delete_collection"), DeleteParams);
+
+	TestFalse(TEXT("A redirector path is refused"), Result.bSuccess);
+	TestEqual(TEXT("Error code should be INVALID_FIELD"),
+		Result.ErrorCode, CortexErrorCodes::InvalidField);
+	TestTrue(TEXT("The refusal names the redirector destination package"),
+		Result.ErrorMessage.Contains(DestPackage));
+	TestTrue(TEXT("The destination file survives"), IFileManager::Get().FileExists(*DestFilename));
+	TestTrue(TEXT("The destination collection survives"), Destination.IsValid());
+	TestTrue(TEXT("The redirector file survives"), IFileManager::Get().FileExists(*OldFilename));
+
+	// Cleanup: the redirector goes first so no live reference outlives the destination.
+	if (UObjectRedirector* const LeftoverRedirector = Redirector.Get())
+	{
+		TArray<UObject*> RedirectorsToDelete;
+		RedirectorsToDelete.Add(LeftoverRedirector);
+		FCortexEditorUtils::DeleteLoadedAssets(RedirectorsToDelete);
+	}
+	if (IFileManager::Get().FileExists(*DestFilename))
+	{
+		UMaterialParameterCollection* const LeftoverDestination =
+			LoadObject<UMaterialParameterCollection>(nullptr, *DestPath);
+		if (IsValid(LeftoverDestination))
+		{
+			TArray<UObject*> DestinationsToDelete;
+			DestinationsToDelete.Add(LeftoverDestination);
+			FCortexEditorUtils::DeleteLoadedAssets(DestinationsToDelete);
+		}
+	}
+	IFileManager::Get().DeleteDirectory(
+		*FPackageName::LongPackageNameToFilename(Root), false, true);
 
 	return true;
 }
