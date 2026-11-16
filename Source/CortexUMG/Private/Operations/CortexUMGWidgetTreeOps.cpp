@@ -425,28 +425,19 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::AddWidget(const TSharedPtr<FJsonOb
             FString::Printf(TEXT("Unknown widget class: %s"), *WidgetClassName));
     }
 
-    if (CortexUMGUtils::WidgetNameExists(WBP->WidgetTree, Name))
+    if (CortexUMGUtils::WidgetNameExists(WBP->WidgetTree, Name)
+        || CortexUMGUtils::WidgetNameHeldByOtherClass(WBP->WidgetTree, Name, WidgetClass))
     {
         return FCortexCommandRouter::Error(
             CortexErrorCodes::WidgetNameExists,
             FString::Printf(TEXT("Widget name already exists: %s"), *Name));
     }
 
-    FScopedTransaction Transaction(FText::FromString(
-        FString::Printf(TEXT("Cortex: Add Widget %s"), *Name)));
-    WBP->Modify();
-
-    UWidget* NewWidget = WBP->WidgetTree->ConstructWidget<UWidget>(WidgetClass, FName(*Name));
-    if (!NewWidget)
-    {
-        return FCortexCommandRouter::Error(
-            CortexErrorCodes::InvalidWidgetClass,
-            FString::Printf(TEXT("Failed to construct widget of class: %s"), *WidgetClassName));
-    }
-
-    int32 SlotIndex = -1;
-    FString ActualParent;
-
+    // Validate the whole target before constructing: a constructed widget is outered to the tree and
+    // would keep its name even when the addition is then refused.
+    UPanelWidget* ParentPanel = nullptr;
+    int32 RequestedSlot = -1;
+    const bool bHasRequestedSlot = Params->TryGetNumberField(TEXT("slot_index"), RequestedSlot);
     if (ParentName.IsEmpty())
     {
         if (WBP->WidgetTree->RootWidget != nullptr)
@@ -455,13 +446,6 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::AddWidget(const TSharedPtr<FJsonOb
                 CortexErrorCodes::InvalidParent,
                 TEXT("Root widget already exists. Specify parent_name to add as child."));
         }
-        // Journal the tree before changing membership so undo/redo restores the root alongside the
-        // identity map (the engine's own add-widget path journals the tree the same way).
-        WBP->WidgetTree->SetFlags(RF_Transactional);
-        WBP->WidgetTree->Modify();
-        WBP->WidgetTree->RootWidget = NewWidget;
-        ActualParent = TEXT("");
-        SlotIndex = 0;
     }
     else
     {
@@ -473,39 +457,66 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::AddWidget(const TSharedPtr<FJsonOb
                 FString::Printf(TEXT("Parent widget not found: %s"), *ParentName));
         }
 
-        UPanelWidget* ParentPanel = Cast<UPanelWidget>(ParentWidget);
+        ParentPanel = Cast<UPanelWidget>(ParentWidget);
         if (!ParentPanel)
         {
             return FCortexCommandRouter::Error(
                 CortexErrorCodes::InvalidParent,
                 FString::Printf(TEXT("Parent '%s' is not a panel widget (cannot have children)"), *ParentName));
         }
+        if (!ParentPanel->CanAddMoreChildren())
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::InvalidParent,
+                FString::Printf(TEXT("Parent '%s' already holds its only child"), *ParentName));
+        }
+        if (bHasRequestedSlot && (RequestedSlot < 0 || RequestedSlot > ParentPanel->GetChildrenCount()))
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::InvalidSlotIndex,
+                FString::Printf(TEXT("Slot index %d out of range [0, %d]"),
+                    RequestedSlot, ParentPanel->GetChildrenCount()));
+        }
+    }
 
-        // Journal the tree and the parent panel before changing membership so undo/redo restores the
-        // child slot alongside the identity map (the engine's own add-widget path journals both).
-        WBP->WidgetTree->SetFlags(RF_Transactional);
-        WBP->WidgetTree->Modify();
+    FScopedTransaction Transaction(FText::FromString(
+        FString::Printf(TEXT("Cortex: Add Widget %s"), *Name)));
+    WBP->Modify();
+    // Journal the tree (and the parent panel) before changing membership so undo/redo restores the
+    // child slot alongside the identity map (the engine's own add-widget path journals both).
+    WBP->WidgetTree->SetFlags(RF_Transactional);
+    WBP->WidgetTree->Modify();
+    if (ParentPanel)
+    {
         ParentPanel->SetFlags(RF_Transactional);
         ParentPanel->Modify();
+    }
 
-        int32 RequestedSlot = -1;
-        if (Params->TryGetNumberField(TEXT("slot_index"), RequestedSlot))
+    UWidget* NewWidget = WBP->WidgetTree->ConstructWidget<UWidget>(WidgetClass, FName(*Name));
+    if (!NewWidget)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidWidgetClass,
+            FString::Printf(TEXT("Failed to construct widget of class: %s"), *WidgetClassName));
+    }
+
+    int32 SlotIndex = 0;
+    FString ActualParent;
+    if (!ParentPanel)
+    {
+        WBP->WidgetTree->RootWidget = NewWidget;
+    }
+    else
+    {
+        if (bHasRequestedSlot)
         {
-            if (RequestedSlot < 0 || RequestedSlot > ParentPanel->GetChildrenCount())
-            {
-                return FCortexCommandRouter::Error(
-                    CortexErrorCodes::InvalidSlotIndex,
-                    FString::Printf(TEXT("Slot index %d out of range [0, %d]"),
-                        RequestedSlot, ParentPanel->GetChildrenCount()));
-            }
             ParentPanel->InsertChildAt(RequestedSlot, NewWidget);
-            SlotIndex = RequestedSlot;
         }
         else
         {
             ParentPanel->AddChild(NewWidget);
-            SlotIndex = ParentPanel->GetChildrenCount() - 1;
         }
+        SlotIndex = ParentPanel->GetChildIndex(NewWidget);
         ActualParent = ParentName;
     }
 
@@ -653,18 +664,38 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RemoveWidget(const TSharedPtr<FJso
     }
 
     const int32 ChildrenRemoved = CortexUMGUtils::CountWidgets(Widget) - 1;
+    TArray<UWidget*> Subtree;
+    Subtree.Add(Widget);
+    UWidgetTree::GetChildWidgets(Widget, Subtree);
 
+    // Mirrors FWidgetBlueprintEditorUtils::DeleteWidgets without its graph-node removal: journal every
+    // written object so undo restores membership, names and outers together.
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Remove Widget %s"), *WidgetName)));
+    WBP->WidgetTree->SetFlags(RF_Transactional);
+    WBP->WidgetTree->Modify();
     WBP->Modify();
-
-    if (Widget == WBP->WidgetTree->RootWidget)
+    if (UPanelWidget* Parent = Widget->GetParent())
     {
-        WBP->WidgetTree->RootWidget = nullptr;
+        Parent->SetFlags(RF_Transactional);
+        Parent->Modify();
+        Widget->Slot->SetFlags(RF_Transactional);
+        Widget->Slot->Modify();
     }
-    else if (UPanelWidget* Parent = Widget->GetParent())
+    for (UWidget* Removed : Subtree)
     {
-        Parent->RemoveChild(Widget);
+        Removed->SetFlags(RF_Transactional);
+        Removed->Modify();
+    }
+
+    WBP->WidgetTree->RemoveWidget(Widget);
+
+    // Move the removed subtree out of the tree so its names are free for later widgets.
+    for (UWidget* Removed : Subtree)
+    {
+        const FName RemovedName = Removed->GetFName();
+        Removed->Rename(nullptr, GetTransientPackage());
+        WBP->OnVariableRemoved(RemovedName);
     }
 
     FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);
@@ -713,33 +744,64 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::Reparent(const TSharedPtr<FJsonObj
             FString::Printf(TEXT("New parent '%s' is not a panel widget"), *NewParentName));
     }
 
-    FString OldParentName;
-    if (UPanelWidget* OldParent = Widget->GetParent())
+    // A widget cannot move under itself or its own descendant: the tree would become a cycle.
+    for (const UWidget* Ancestor = NewParentWidget; Ancestor != nullptr; Ancestor = Ancestor->GetParent())
     {
-        OldParentName = OldParent->GetName();
+        if (Ancestor == Widget)
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::InvalidParent,
+                FString::Printf(TEXT("New parent '%s' is '%s' or one of its descendants"),
+                    *NewParentName, *WidgetName));
+        }
+    }
+
+    if (!NewParentPanel->CanAddMoreChildren())
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidParent,
+            FString::Printf(TEXT("New parent '%s' already holds its only child"), *NewParentName));
+    }
+
+    UPanelWidget* OldParent = Widget->GetParent();
+    const FString OldParentName = OldParent ? OldParent->GetName() : FString();
+
+    int32 RequestedSlot = -1;
+    const bool bHasRequestedSlot = Params->TryGetNumberField(TEXT("slot_index"), RequestedSlot);
+    // Moving within the same parent frees the widget's own slot first.
+    const int32 MaxSlot = NewParentPanel->GetChildrenCount() - (OldParent == NewParentPanel ? 1 : 0);
+    if (bHasRequestedSlot && (RequestedSlot < 0 || RequestedSlot > MaxSlot))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidSlotIndex,
+            FString::Printf(TEXT("Slot index %d out of range [0, %d]"), RequestedSlot, MaxSlot));
     }
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Reparent %s to %s"), *WidgetName, *NewParentName)));
     WBP->Modify();
-
-    if (UPanelWidget* OldParent = Widget->GetParent())
+    Widget->SetFlags(RF_Transactional);
+    Widget->Modify();
+    if (OldParent)
     {
-        OldParent->RemoveChild(Widget);
+        OldParent->SetFlags(RF_Transactional);
+        OldParent->Modify();
+        Widget->Slot->SetFlags(RF_Transactional);
+        Widget->Slot->Modify();
     }
+    NewParentPanel->SetFlags(RF_Transactional);
+    NewParentPanel->Modify();
 
-    int32 SlotIndex = -1;
-    int32 RequestedSlot = -1;
-    if (Params->TryGetNumberField(TEXT("slot_index"), RequestedSlot))
+    // AddChild detaches the widget from its old parent itself, after its own capacity check.
+    if (bHasRequestedSlot)
     {
         NewParentPanel->InsertChildAt(RequestedSlot, Widget);
-        SlotIndex = RequestedSlot;
     }
     else
     {
         NewParentPanel->AddChild(Widget);
-        SlotIndex = NewParentPanel->GetChildrenCount() - 1;
     }
+    const int32 SlotIndex = NewParentPanel->GetChildIndex(Widget);
 
     FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);
 
@@ -911,16 +973,48 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::DuplicateWidget(const TSharedPtr<F
             FString::Printf(TEXT("Widget not found: %s"), *WidgetName));
     }
 
-    if (CortexUMGUtils::WidgetNameExists(WBP->WidgetTree, NewName))
+    // The copy joins the source's parent, so a parentless root or a full single-child parent cannot
+    // take it; refuse before constructing anything.
+    UPanelWidget* Parent = SourceWidget->GetParent();
+    if (!Parent)
     {
         return FCortexCommandRouter::Error(
-            CortexErrorCodes::WidgetNameExists,
-            FString::Printf(TEXT("Widget name already exists: %s"), *NewName));
+            CortexErrorCodes::InvalidParent,
+            FString::Printf(TEXT("Widget '%s' has no parent panel to hold a duplicate"), *WidgetName));
+    }
+    if (!Parent->CanAddMoreChildren())
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidParent,
+            FString::Printf(TEXT("Parent '%s' already holds its only child"), *Parent->GetName()));
+    }
+
+    // Every planned copy name must be free, including the descendants' prefixed names.
+    TArray<UWidget*> SourceSubtree;
+    SourceSubtree.Add(SourceWidget);
+    UWidgetTree::GetChildWidgets(SourceWidget, SourceSubtree);
+    TSet<FName> SeenNames;
+    for (const UWidget* Source : SourceSubtree)
+    {
+        const FString PlannedName = Source == SourceWidget ? NewName : NamePrefix + Source->GetName();
+        bool bAlreadySeen = false;
+        SeenNames.Add(FName(*PlannedName), &bAlreadySeen);
+        if (bAlreadySeen || CortexUMGUtils::WidgetNameExists(WBP->WidgetTree, PlannedName)
+            || CortexUMGUtils::WidgetNameHeldByOtherClass(WBP->WidgetTree, PlannedName, Source->GetClass()))
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::WidgetNameExists,
+                FString::Printf(TEXT("Widget name already exists: %s"), *PlannedName));
+        }
     }
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Duplicate Widget %s"), *WidgetName)));
     WBP->Modify();
+    WBP->WidgetTree->SetFlags(RF_Transactional);
+    WBP->WidgetTree->Modify();
+    Parent->SetFlags(RF_Transactional);
+    Parent->Modify();
 
     TSharedPtr<FJsonObject> NameMapping = MakeShared<FJsonObject>();
     int32 WidgetsCreated = 0;
@@ -969,10 +1063,7 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::DuplicateWidget(const TSharedPtr<F
             TEXT("Failed to duplicate widget"));
     }
 
-    if (UPanelWidget* Parent = SourceWidget->GetParent())
-    {
-        Parent->AddChild(DupRoot);
-    }
+    Parent->AddChild(DupRoot);
 
     FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);
 
