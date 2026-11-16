@@ -1448,6 +1448,7 @@ def test_cached_read_is_refetched_after_a_write_from_another_domain_or_a_failed_
     assert sent.count("blueprint.list_scs_components") == 3
 
 
+
 def test_cached_read_is_refetched_after_a_composite_write():
     """Composite tools forward graph.apply_patch through connection.send_command, not the router."""
     from cortex_mcp.tools.routers import make_router
@@ -1478,4 +1479,3 @@ def test_cached_read_is_refetched_after_a_writable_batch_query():
     blueprint_cmd("list_scs_components", read_params)
 
     assert sent.count("blueprint.list_scs_components") == 2
-

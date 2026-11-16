@@ -79,6 +79,14 @@ class UECommandNotDispatchedError(ConnectionError):
     """Connection failure before a one-shot command was sent."""
 
 
+class UECommandTimeoutError(ConnectionError):
+    """No response arrived in time for a command that was already sent.
+
+    The editor may still execute the command once its game thread unblocks,
+    so the command must not be replayed automatically.
+    """
+
+
 @dataclasses.dataclass(frozen=True)
 class EditorConnection:
     """Metadata for a discovered Unreal Editor instance."""
@@ -296,6 +304,8 @@ class UEConnection:
         self._pid: int | None = None
         self._project_path: str | None = None
         self._expected_project: str = ""
+        # An explicit port pins the connection; reconnects must not rediscover.
+        self._explicit_port = port is not None
         if port is not None:
             # Explicit port — caller knows what they're connecting to
             self.port = port
@@ -420,8 +430,11 @@ class UEConnection:
         """Send a command to the UE plugin and return the response.
 
         On connection failure, automatically retries once after a brief delay.
+        A response timeout is not retried: the request is already queued in the
+        editor and replaying it would run the command twice.
         Timeout applies to the total operation (including deferred ack + final).
         Raises ConnectionError if not connected after retry.
+        Raises UECommandTimeoutError if a sent command got no response in time.
         Raises RuntimeError if the command fails.
 
         Args:
@@ -439,6 +452,11 @@ class UEConnection:
                         self._telemetry["tcp_calls"] += 1
                         self._record_metric("tcp_call", {"command": command, "attempt": attempt + 1})
                         return self._send_and_receive(command, params, timeout=timeout)
+                except UECommandTimeoutError:
+                    # The request reached the editor and may still run when the game
+                    # thread unblocks. Replaying it would execute the command twice.
+                    self.disconnect()
+                    raise
                 except ConnectionError as e:
                     last_error = e
                     self.disconnect()
@@ -454,8 +472,10 @@ class UEConnection:
                             logger.info(
                                 "Cleared %d cache entries on reconnect", cleared
                             )
-                        # Re-discover port in case editor restarted on a different port
-                        result = _discover_port()
+                        # Re-discover port in case editor restarted on a different port.
+                        # An explicit port (CORTEX_PORT) names one editor; rediscovery
+                        # would silently retarget the most recently started one.
+                        result = None if self._explicit_port else _discover_port()
                         if result is not None:
                             new_port, new_pid, new_project_path, new_project = result
                             if new_port != self.port:
@@ -721,7 +741,7 @@ class UEConnection:
         while b"\n" not in self._recv_buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise ConnectionError("Timed out waiting for Unreal Editor response")
+                raise UECommandTimeoutError("Timed out waiting for Unreal Editor response")
 
             self._socket.settimeout(remaining)
             chunk = self._socket.recv(65536)
@@ -797,6 +817,15 @@ class UEConnection:
 
             return response
 
+        except UECommandTimeoutError:
+            self.disconnect()
+            raise
+        except TimeoutError as e:
+            # socket.timeout is TimeoutError; keep it distinct from a dropped connection.
+            self.disconnect()
+            raise UECommandTimeoutError(
+                f"Timed out waiting for Unreal Editor response to '{command}': {e}"
+            ) from e
         except (BrokenPipeError, ConnectionResetError, OSError, json.JSONDecodeError) as e:
             self.disconnect()
             raise ConnectionError(f"Lost connection to Unreal Editor: {e}") from e

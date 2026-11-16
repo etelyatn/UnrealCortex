@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from cortex_mcp.tcp_client import (
     UEConnection,
     UECommandError,
+    UECommandTimeoutError,
     _RECV_TIMEOUT,
     _discover_port,
     _discover_all_editors,
@@ -181,6 +182,148 @@ def test_send_command_once_distinguishes_failure_before_dispatch(monkeypatch):
 
     connect.assert_called_once()
     send_attempt.assert_not_called()
+
+
+def _fail_first_attempt(conn, monkeypatch):
+    attempts = []
+
+    def send(command, params=None, timeout=None):
+        attempts.append(conn.port)
+        if len(attempts) == 1:
+            raise ConnectionError("connection reset")
+        return {"success": True, "data": {}}
+
+    monkeypatch.setattr(conn, "connect", lambda: None)
+    monkeypatch.setattr(conn, "_send_and_receive", send)
+    monkeypatch.setattr("cortex_mcp.tcp_client.time.sleep", lambda _seconds: None)
+    return attempts
+
+
+def test_reconnect_keeps_explicit_port(monkeypatch):
+    """CORTEX_PORT pins one editor; a reconnect must not switch to another."""
+    conn = UEConnection(port=8750)
+    discover = MagicMock(return_value=(8742, 4321, "/Projects/Other", "Other"))
+    monkeypatch.setattr("cortex_mcp.tcp_client._discover_port", discover)
+    attempts = _fail_first_attempt(conn, monkeypatch)
+
+    conn.send_command("data.list_datatables", {})
+
+    assert attempts == [8750, 8750]
+    assert conn._expected_project == ""
+    discover.assert_not_called()
+
+
+def test_reconnect_rediscovers_auto_discovered_port(monkeypatch):
+    """Without an explicit port, a restarted editor is found on its new port."""
+    monkeypatch.setattr("cortex_mcp.tcp_client._get_expected_project", lambda: "Game")
+    monkeypatch.setattr(
+        "cortex_mcp.tcp_client._discover_port",
+        lambda: (8742, 100, "/Projects/Game", "Game"),
+    )
+    conn = UEConnection()
+    monkeypatch.setattr(
+        "cortex_mcp.tcp_client._discover_port",
+        lambda: (8743, 200, "/Projects/Game", "Game"),
+    )
+    attempts = _fail_first_attempt(conn, monkeypatch)
+
+    conn.send_command("data.list_datatables", {})
+
+    assert attempts == [8742, 8743]
+
+
+def _connection_with_socket(monkeypatch, sock):
+    conn = UEConnection(port=99999)
+    conn._socket = sock
+    connect_calls = []
+
+    def fake_connect():
+        connect_calls.append(True)
+        conn._socket = sock
+
+    monkeypatch.setattr(conn, "connect", fake_connect)
+    monkeypatch.setattr("cortex_mcp.tcp_client._discover_port", lambda: None)
+    monkeypatch.setattr("cortex_mcp.tcp_client.time.sleep", lambda _seconds: None)
+    return conn, connect_calls
+
+
+@pytest.mark.parametrize("timeout", [0.01, 0.0])
+def test_send_command_does_not_replay_after_response_timeout(monkeypatch, timeout):
+    """A sent command that times out may still run in the editor; never send it twice."""
+    sent = []
+    sock = MagicMock()
+    sock.sendall.side_effect = lambda payload: sent.append(payload)
+    sock.recv.side_effect = socket.timeout("timed out")
+    conn, connect_calls = _connection_with_socket(monkeypatch, sock)
+
+    with pytest.raises(UECommandTimeoutError):
+        conn.send_command("level.spawn_actor", {"class": "PointLight"}, timeout=timeout)
+
+    assert len(sent) == 1
+    assert len(connect_calls) == 1
+    assert conn._socket is None
+
+
+def test_send_command_does_not_replay_after_deferred_ack_timeout(monkeypatch):
+    """A timeout after the deferred ack is still a dispatched command; never replay."""
+    sent = []
+    sock = MagicMock()
+    sock.sendall.side_effect = lambda payload: sent.append(payload)
+    acked = []
+
+    def recv(_size):
+        if not acked:
+            acked.append(True)
+            request_id = json.loads(sent[-1].decode("utf-8"))["id"]
+            return json.dumps({"id": request_id, "status": "deferred"}).encode("utf-8") + b"\n"
+        raise socket.timeout("timed out after deferred ack")
+
+    sock.recv.side_effect = recv
+    conn, connect_calls = _connection_with_socket(monkeypatch, sock)
+
+    with pytest.raises(UECommandTimeoutError):
+        conn.send_command("editor.run_python", {"code": "print(1)"}, timeout=1.0)
+
+    assert acked == [True]
+    assert len(sent) == 1
+    assert len(connect_calls) == 1
+    assert conn._socket is None
+
+
+def test_send_command_timeout_is_a_connection_error(monkeypatch):
+    """Existing callers that catch ConnectionError keep working."""
+    sock = MagicMock()
+    sock.recv.side_effect = socket.timeout("timed out")
+    conn, _ = _connection_with_socket(monkeypatch, sock)
+
+    with pytest.raises(ConnectionError, match="Timed out"):
+        conn.send_command("data.list_datatables", {}, timeout=0.01)
+
+
+def test_send_command_still_retries_after_connection_drop(monkeypatch):
+    """A stale socket (editor restarted) is still retried once."""
+    sent = []
+    sock = MagicMock()
+    sock.sendall.side_effect = lambda payload: sent.append(payload)
+    responses = [b"", None]
+
+    def recv(_size):
+        value = responses.pop(0)
+        if value is None:
+            request_id = json.loads(sent[-1].decode("utf-8"))["id"]
+            return json.dumps({"id": request_id, "success": True, "data": {}}).encode("utf-8") + b"\n"
+        return value
+
+    sock.recv.side_effect = recv
+    conn, connect_calls = _connection_with_socket(monkeypatch, sock)
+
+    result = conn.send_command("data.list_datatables", {})
+
+    assert result["success"] is True
+    assert len(sent) == 2
+    assert len(connect_calls) == 2
+
+
 class TestPortFileParsing:
     """Tests for JSON and plain-text port file backward compatibility."""
 

@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 TOOLS_DIR = Path(__file__).parent.parent / "tools"
 SRC_DIR = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(TOOLS_DIR))
@@ -86,6 +88,94 @@ class TestSwitchEditorTool:
         conn.disconnect.assert_called_once()
         assert payload["pid"] == 3000
         assert payload["port"] == 8744
+
+    def test_switch_editor_pins_deliberate_target_across_reconnect(self, monkeypatch):
+        """A switched-to editor is deliberate: a reconnect must not rediscover another."""
+        monkeypatch.setattr("cortex_mcp.tcp_client._discover_port", lambda: None)
+        conn = UEConnection()
+        assert conn._explicit_port is False
+
+        router = make_router("core", conn, "core docs")
+        editors = [
+            _editor(8742, 1000, "2026-01-01T00:00:00Z"),
+            _editor(8743, 2000, "2026-01-01T01:00:00Z"),
+        ]
+        with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=editors), patch(
+            "cortex_mcp.tools.routers._is_editor_alive", return_value=True
+        ):
+            json.loads(router("switch_editor", {"pid": 2000}))
+
+        attempts = []
+
+        def send(command, params=None, timeout=None):
+            attempts.append(conn.port)
+            if len(attempts) == 1:
+                raise ConnectionError("connection reset")
+            return {"success": True, "data": {}}
+
+        monkeypatch.setattr(conn, "connect", lambda: None)
+        monkeypatch.setattr(conn, "_send_and_receive", send)
+        monkeypatch.setattr("cortex_mcp.tcp_client.time.sleep", lambda _seconds: None)
+
+        def unexpected_discovery():
+            raise AssertionError("a deliberate switch must stay pinned across reconnect")
+
+        monkeypatch.setattr("cortex_mcp.tcp_client._discover_port", unexpected_discovery)
+
+        conn.send_command("data.list_datatables", {})
+
+        assert attempts == [8743, 8743]
+
+    def test_switch_editor_adopts_target_project_for_validation(self):
+        """Switching projects must update the validation key, not only the port."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = "OldProject"
+        router = make_router("core", conn, "core docs")
+        target = EditorConnection(
+            port=8743,
+            pid=2000,
+            started_at="2026-01-01T01:00:00Z",
+            port_file=Path("CortexPort-2000.txt"),
+            project="OtherGame",
+        )
+        with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=[target]), patch(
+            "cortex_mcp.tools.routers._is_editor_alive", return_value=True
+        ):
+            json.loads(router("switch_editor", {"pid": 2000}))
+
+        sock = MagicMock()
+        sock.recv.return_value = b'{"success":true,"data":{"project_name":"OtherGame"}}\n'
+        conn._socket = sock
+
+        conn._validate_project()
+
+        assert conn._socket is not None
+
+    def test_switch_editor_keeps_guard_when_target_project_is_unknown(self):
+        """A legacy port file without a project must not disable the wrong-editor guard."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = "OldProject"
+        router = make_router("core", conn, "core docs")
+        target = EditorConnection(
+            port=8743,
+            pid=2000,
+            started_at="2026-01-01T01:00:00Z",
+            port_file=Path("CortexPort-2000.txt"),
+            project="",
+        )
+        with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=[target]), patch(
+            "cortex_mcp.tools.routers._is_editor_alive", return_value=True
+        ):
+            json.loads(router("switch_editor", {"pid": 2000}))
+
+        assert conn._expected_project == "OldProject"
+
+        sock = MagicMock()
+        sock.recv.return_value = b'{"success":true,"data":{"project_name":"OtherGame"}}\n'
+        conn._socket = sock
+
+        with pytest.raises(ConnectionError, match="OtherGame.*OldProject"):
+            conn._validate_project()
 
 
 class TestGetStatusTool:
