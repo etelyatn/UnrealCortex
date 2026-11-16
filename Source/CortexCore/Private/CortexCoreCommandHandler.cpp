@@ -276,11 +276,13 @@ TArray<FCortexCommandInfo> FCortexCoreCommandHandler::GetSupportedCommands() con
 			.StrictParams(),
 		FCortexCommandInfo{ TEXT("asset_fingerprint"), TEXT("Read fingerprint metadata for asset path(s)") }
 			.Required(TEXT("paths"), TEXT("array"), TEXT("Asset paths to fingerprint")),
-		FCortexCommandInfo{ TEXT("delete_asset"), TEXT("Delete a single asset by path") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to delete")),
-		FCortexCommandInfo{ TEXT("delete_folder"), TEXT("Delete all assets in a folder") }
+		FCortexCommandInfo{ TEXT("delete_asset"), TEXT("Delete one asset and its package file. Refuses non-writable content mounts and, without force, assets that other packages still reference") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to delete"))
+			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Delete even when other packages reference the asset; their references become null")),
+		FCortexCommandInfo{ TEXT("delete_folder"), TEXT("Delete every asset in a folder and their package files in one batch. Refuses non-writable content mounts, content roots such as /Game, and, without force, assets referenced from outside the folder") }
 			.Required(TEXT("folder_path"), TEXT("string"), TEXT("Folder path to delete"))
-			.Optional(TEXT("recursive"), TEXT("boolean"), TEXT("Delete assets in subfolders as well")),
+			.Optional(TEXT("recursive"), TEXT("boolean"), TEXT("Delete assets in subfolders as well"))
+			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Delete even when packages outside the folder reference its assets")),
 		FCortexCommandInfo{ TEXT("shutdown"), TEXT("Gracefully shut down the editor") }
 			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Discard dirty packages before exit")),
 		FCortexCommandInfo{ TEXT("batch_query"), TEXT("Alias for batch — execute multiple commands in a single transaction with optional graph rollback") }
