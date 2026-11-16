@@ -12,6 +12,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "KismetCompiler.h"
 #include "Misc/ScopeExit.h"
+#include "EdGraph/EdGraph.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexUMGCreateAnimationTest,
@@ -121,6 +122,53 @@ bool FCortexUMGCreateAnimationTest::RunTest(const FString& Parameters)
     FKismetEditorUtilities::CompileBlueprint(Legacy, EBlueprintCompileOptions::None, &LegacyCompile);
     TestEqual(TEXT("Legacy Designer with authored animation compiles"), LegacyCompile.NumErrors, 0);
     TestEqual(TEXT("Legacy Designer compiles without warnings"), LegacyCompile.NumWarnings, 0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexUMGCreateAnimationObjectNameCollisionTest,
+    "Cortex.UMG.CreateAnimationObjectNameCollision",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexUMGCreateAnimationObjectNameCollisionTest::RunTest(const FString& Parameters)
+{
+    UPackage* TestPackage = CreatePackage(
+        *(TEXT("/Temp/CortexUMGAnimationNameCollision_") + FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+    UWidgetBlueprint* WBP = NewObject<UWidgetBlueprint>(
+        TestPackage, TEXT("WBP_AnimationNameCollision"), RF_Public | RF_Standalone | RF_Transactional);
+    ON_SCOPE_EXIT
+    {
+        WBP->MarkAsGarbage();
+        TestPackage->MarkAsGarbage();
+    };
+    WBP->ParentClass = UUserWidget::StaticClass();
+    WBP->WidgetTree = NewObject<UWidgetTree>(WBP, TEXT("WidgetTree"));
+    UEdGraph* Graph = NewObject<UEdGraph>(WBP, TEXT("EventGraph"));
+
+    FCortexCommandRouter Router;
+    Router.RegisterDomain(TEXT("umg"), TEXT("Cortex UMG"), TEXT("1.0.1"),
+        MakeShared<FCortexUMGCommandHandler>());
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("asset_path"), WBP->GetPathName());
+
+    // A name held by another object outered to the Widget Blueprint (here its graph) is refused.
+    Params->SetStringField(TEXT("animation_name"), TEXT("EventGraph"));
+    const FCortexCommandResult Collision = Router.Execute(TEXT("umg.create_animation"), Params);
+    TestFalse(TEXT("create_animation refuses a name held by the graph"), Collision.bSuccess);
+    TestEqual(TEXT("Graph collision is NAME_COLLISION"), Collision.ErrorCode, CortexErrorCodes::NameCollision);
+    TestEqual(TEXT("Refusal creates no animation"), WBP->Animations.Num(), 0);
+    TestFalse(TEXT("Refusal registers no identity"), WBP->WidgetVariableNameToGuidMap.Contains(TEXT("EventGraph")));
+    TestTrue(TEXT("The graph is untouched"),
+        FindObject<UEdGraph>(WBP, TEXT("EventGraph")) == Graph && IsValid(Graph));
+
+    // A removed animation keeps its object for undo; the same name stays reusable.
+    Params->SetStringField(TEXT("animation_name"), TEXT("Fade"));
+    TestTrue(TEXT("create_animation succeeds"), Router.Execute(TEXT("umg.create_animation"), Params).bSuccess);
+    TestTrue(TEXT("remove_animation succeeds"), Router.Execute(TEXT("umg.remove_animation"), Params).bSuccess);
+    TestTrue(TEXT("A removed animation name can be created again"),
+        Router.Execute(TEXT("umg.create_animation"), Params).bSuccess);
+    TestEqual(TEXT("Exactly one animation exists"), WBP->Animations.Num(), 1);
     return true;
 }
 

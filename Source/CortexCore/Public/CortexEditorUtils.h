@@ -20,6 +20,10 @@ public:
 	/** Return true if the path targets a writable mounted content root. */
 	static bool IsWritableMountedContentPath(const FString& InPath, FString& OutError);
 
+	/** Validate the long package name of a new asset before CreatePackage: a valid long package name as given,
+	 *  under a writable mounted root, mapped to a file. On success OutFilename is the .uasset filename to save to. */
+	static bool ValidateNewAssetPackageName(const FString& PackageName, FString& OutFilename, FString& OutError);
+
 	/** Return mounted content roots that Cortex write operations may target. */
 	static TArray<FString> GetWritableMountedContentRoots();
 

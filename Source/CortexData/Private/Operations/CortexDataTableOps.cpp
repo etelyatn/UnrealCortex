@@ -1874,6 +1874,13 @@ FCortexCommandResult FCortexDataTableOps::CreateDataTable(const TSharedPtr<FJson
 	const FString PackagePath = FPackageName::ObjectPathToPackageName(TablePath);
 	const FString AssetName = FPackageName::GetShortName(PackagePath);
 
+	FString PackageFilename;
+	FString PathError;
+	if (!FCortexEditorUtils::ValidateNewAssetPackageName(PackagePath, PackageFilename, PathError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, PathError);
+	}
+
 	if (FindPackage(nullptr, *PackagePath) != nullptr || FPackageName::DoesPackageExist(PackagePath))
 	{
 		return FCortexCommandRouter::Error(
@@ -1906,11 +1913,6 @@ FCortexCommandResult FCortexDataTableOps::CreateDataTable(const TSharedPtr<FJson
 
 	Package->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(NewTable);
-
-	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
-		Package->GetName(),
-		FPackageName::GetAssetPackageExtension()
-	);
 
 	const FString Directory = FPaths::GetPath(PackageFilename);
 	if (!FPaths::DirectoryExists(Directory))

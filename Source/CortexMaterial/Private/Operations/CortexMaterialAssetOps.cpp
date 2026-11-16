@@ -824,8 +824,16 @@ FCortexCommandResult FCortexMaterialAssetOps::CreateInstance(const TSharedPtr<FJ
 		return LoadError;
 	}
 
-	const FString FullPath = FString::Printf(TEXT("%s/%s"), *AssetPath, *Name);
-	const FString PkgName = FPackageName::ObjectPathToPackageName(FullPath);
+	// The package name is validated as given, so a '.' in name is refused rather than split into package and object.
+	const FString PkgName = FString::Printf(TEXT("%s/%s"), *AssetPath, *Name);
+	const FString& FullPath = PkgName;
+	FString PackageFilename;
+	FString PathError;
+	if (!FCortexEditorUtils::ValidateNewAssetPackageName(PkgName, PackageFilename, PathError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, PathError);
+	}
+
 	if (FindPackage(nullptr, *PkgName) || FPackageName::DoesPackageExist(PkgName))
 	{
 		return FCortexCommandRouter::Error(
@@ -847,8 +855,6 @@ FCortexCommandResult FCortexMaterialAssetOps::CreateInstance(const TSharedPtr<FJ
 	Instance->MarkPackageDirty();
 
 	// Save to disk
-	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
-		Package->GetName(), FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	UPackage::SavePackage(Package, Instance, *PackageFilename, SaveArgs);

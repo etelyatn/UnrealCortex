@@ -386,15 +386,36 @@ FCortexCommandResult FCortexLevelComponentOps::AddComponent(const TSharedPtr<FJs
 
     FString ComponentName;
     Params->TryGetStringField(TEXT("name"), ComponentName);
-    if (ComponentName.IsEmpty())
+    const bool bExplicitName = !ComponentName.IsEmpty();
+    FName NewName = bExplicitName
+        ? FName(*ComponentName)
+        : FName(*FString::Printf(TEXT("%s_Cortex"), *ComponentClass->GetName()));
+
+    // NewObject over an existing name of another class is fatal, and over the same class it re-initialises that
+    // object in place. A removed component keeps its name until garbage collection; the same class may reuse it.
+    if (UObject* Occupant = StaticFindObjectFast(nullptr, Actor, NewName))
     {
-        ComponentName = FString::Printf(TEXT("%s_Cortex"), *ComponentClass->GetName());
+        const bool bReusableRemoved = !IsValid(Occupant) && Occupant->GetClass() == ComponentClass;
+        if (!bExplicitName)
+        {
+            NewName = MakeUniqueObjectName(Actor, ComponentClass, NewName);
+        }
+        else if (!bReusableRemoved)
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::NameCollision,
+                FString::Printf(TEXT("Name '%s' is already used in actor '%s' by a %s%s"),
+                    *ComponentName, *Actor->GetActorLabel(), *Occupant->GetClass()->GetName(),
+                    IsValid(Occupant) ? TEXT("") : TEXT(" removed and pending garbage collection")),
+                FCortexLevelUtils::CollectComponentSuggestions(Actor)
+            );
+        }
     }
 
     FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Add Component")));
     Actor->Modify();
 
-    UActorComponent* NewComponent = NewObject<UActorComponent>(Actor, ComponentClass, FName(*ComponentName), RF_Transactional);
+    UActorComponent* NewComponent = NewObject<UActorComponent>(Actor, ComponentClass, NewName, RF_Transactional);
     if (!NewComponent)
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to allocate component"));
