@@ -377,7 +377,10 @@ FCortexCommandResult FCortexCommandRouter::Execute(
 		{
 			if (Domain.Namespace == Namespace)
 			{
-				return Domain.Handler->Execute(SubCommand, Params, MoveTemp(DeferredCallback));
+				// A request without a "params" object arrives here as a null pointer. Domain handlers
+				// dereference Params unconditionally, so hand them an empty object instead.
+				const TSharedPtr<FJsonObject> SafeParams = Params.IsValid() ? Params : TSharedPtr<FJsonObject>(MakeShared<FJsonObject>());
+				return Domain.Handler->Execute(SubCommand, SafeParams, MoveTemp(DeferredCallback));
 			}
 		}
 
