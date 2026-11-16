@@ -282,8 +282,9 @@ def test_send_command_does_not_replay_after_deferred_ack_timeout(monkeypatch):
     conn, connect_calls = _connection_with_socket(monkeypatch, sock)
 
     with pytest.raises(UECommandTimeoutError):
-        conn.send_command("editor.run_python", {"code": "print(1)"}, timeout=0.01)
+        conn.send_command("editor.run_python", {"code": "print(1)"}, timeout=1.0)
 
+    assert acked == [True]
     assert len(sent) == 1
     assert len(connect_calls) == 1
     assert conn._socket is None

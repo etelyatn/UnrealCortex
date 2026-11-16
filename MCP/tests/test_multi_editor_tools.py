@@ -124,6 +124,31 @@ class TestSwitchEditorTool:
 
         assert attempts == [8743, 8743]
 
+    def test_switch_editor_adopts_target_project_for_validation(self):
+        """Switching projects must update the validation key, not only the port."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = "OldProject"
+        router = make_router("core", conn, "core docs")
+        target = EditorConnection(
+            port=8743,
+            pid=2000,
+            started_at="2026-01-01T01:00:00Z",
+            port_file=Path("CortexPort-2000.txt"),
+            project="OtherGame",
+        )
+        with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=[target]), patch(
+            "cortex_mcp.tools.routers._is_editor_alive", return_value=True
+        ):
+            json.loads(router("switch_editor", {"pid": 2000}))
+
+        sock = MagicMock()
+        sock.recv.return_value = b'{"success":true,"data":{"project_name":"OtherGame"}}\n'
+        conn._socket = sock
+
+        conn._validate_project()
+
+        assert conn._socket is not None
+
 
 class TestGetStatusTool:
     def test_get_status_includes_connected_and_available_editors(self):
