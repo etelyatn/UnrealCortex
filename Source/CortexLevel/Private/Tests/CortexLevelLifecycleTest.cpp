@@ -14,6 +14,7 @@
 #include "Misc/Paths.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
+#include "GameFramework/Actor.h"
 
 namespace
 {
@@ -308,6 +309,32 @@ namespace
 		int32 Phase = 0;
 		bool bCreated = false;
 	};
+
+	// Source and destination for duplicate_level refusal tests. The source is checked-in sandbox
+	// content that the refusal paths only read; the destination must never be written.
+	const TCHAR* const DuplicateRefusalSource = TEXT("/Game/Maps/TestRoomMap");
+	const TCHAR* const DuplicateRefusalDest = TEXT("/Game/Maps/_CortexTest/TestDuplicateRefused");
+
+	TSharedPtr<FJsonObject> MakeDuplicateRefusalParams()
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("source_path"), DuplicateRefusalSource);
+		Params->SetStringField(TEXT("dest_path"), DuplicateRefusalDest);
+		return Params;
+	}
+
+	/** Removes a destination written by a regressed duplicate_level so later runs start clean. */
+	void DeleteDuplicateRefusalDest()
+	{
+		const FString DestFile = FPackageName::LongPackageNameToFilename(DuplicateRefusalDest, FPackageName::GetMapPackageExtension());
+		IFileManager::Get().Delete(*DestFile, false, true);
+		if (UPackage* DestPackage = FindPackage(nullptr, DuplicateRefusalDest))
+		{
+			DestPackage->MarkAsGarbage();
+		}
+		const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
+		IFileManager::Get().DeleteDirectory(*TestDir, false, true);
+	}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -666,7 +693,7 @@ bool FCortexLevelOpenLevelTraversalPathTest::RunTest(const FString& Parameters)
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexLevelDuplicateLevelTest,
-	"Cortex.Level.Lifecycle.DuplicateLevel",
+	"Cortex.Level.Lifecycle.DuplicateLevel.Basic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
@@ -693,10 +720,12 @@ bool FCortexLevelDuplicateLevelTest::RunTest(const FString& Parameters)
 		return true;
 	}
 
-	// Duplicate it
+	// Duplicate it. Earlier tests may leave the shared editor world dirty; force=true
+	// explicitly accepts discarding that state instead of tripping the unsaved-changes guard.
 	TSharedPtr<FJsonObject> DupParams = MakeShared<FJsonObject>();
 	DupParams->SetStringField(TEXT("source_path"), SourcePath);
 	DupParams->SetStringField(TEXT("dest_path"), DestPath);
+	DupParams->SetBoolField(TEXT("force"), true);
 
 	FCortexCommandResult Result = Router.Execute(TEXT("level.duplicate_level"), DupParams);
 	TestTrue(TEXT("duplicate_level should succeed"), Result.bSuccess);
@@ -725,6 +754,167 @@ bool FCortexLevelDuplicateLevelTest::RunTest(const FString& Parameters)
 	const FString TestDir = FPackageName::LongPackageNameToFilename(TEXT("/Game/Maps/_CortexTest/"));
 	IFileManager::Get().DeleteDirectory(*TestDir, false, true);
 
+	return true;
+}
+
+// duplicate_level swaps the editor world and reloads the current map from disk, so a dirty
+// current map must be refused rather than silently discarded (issue #217).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelDuplicateLevelUnsavedChangesTest,
+	"Cortex.Level.Lifecycle.DuplicateLevel.UnsavedChanges",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelDuplicateLevelUnsavedChangesTest::RunTest(const FString& Parameters)
+{
+	if (!TestNotNull(TEXT("GEditor is required"), GEditor))
+	{
+		return false;
+	}
+
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!TestNotNull(TEXT("Editor world is required"), World))
+	{
+		return false;
+	}
+
+	UPackage* WorldPackage = World->GetOutermost();
+	if (!FPackageName::DoesPackageExist(WorldPackage->GetName()))
+	{
+		AddInfo(TEXT("Current editor level has no map file - skipping"));
+		return true;
+	}
+
+	const bool bWasDirty = WorldPackage->IsDirty();
+	WorldPackage->MarkPackageDirty();
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.duplicate_level"), MakeDuplicateRefusalParams());
+
+	TestFalse(TEXT("Dirty current level must refuse duplication"), Result.bSuccess);
+	TestEqual(TEXT("Error should be UNSAVED_CHANGES"), Result.ErrorCode, FString(TEXT("UNSAVED_CHANGES")));
+	TestTrue(TEXT("Error details report is_dirty"),
+		Result.ErrorDetails.IsValid() && Result.ErrorDetails->GetBoolField(TEXT("is_dirty")));
+	const bool bWorldKept = GEditor->GetEditorWorldContext().World() == World;
+	TestTrue(TEXT("Editor world must not be replaced"), bWorldKept);
+	TestTrue(TEXT("Unsaved edits must be kept"), bWorldKept && WorldPackage->IsDirty());
+	TestFalse(TEXT("Destination must not be written"),
+		FPackageName::DoesPackageExist(DuplicateRefusalDest));
+
+	if (bWorldKept)
+	{
+		WorldPackage->SetDirtyFlag(bWasDirty);
+	}
+	DeleteDuplicateRefusalDest();
+	return true;
+}
+
+// One-file-per-actor edits dirty only the actor's external package, not the map package;
+// they are discarded by the map reload just the same.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelDuplicateLevelUnsavedExternalActorTest,
+	"Cortex.Level.Lifecycle.DuplicateLevel.UnsavedExternalActor",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelDuplicateLevelUnsavedExternalActorTest::RunTest(const FString& Parameters)
+{
+	if (!TestNotNull(TEXT("GEditor is required"), GEditor))
+	{
+		return false;
+	}
+
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!TestNotNull(TEXT("Editor world is required"), World))
+	{
+		return false;
+	}
+
+	UPackage* WorldPackage = World->GetOutermost();
+	if (!FPackageName::DoesPackageExist(WorldPackage->GetName()))
+	{
+		AddInfo(TEXT("Current editor level has no map file - skipping"));
+		return true;
+	}
+
+	const bool bWasDirty = WorldPackage->IsDirty();
+	// Weak handles: a regressed duplicate_level reloads the map and garbage-collects the fixture.
+	TWeakObjectPtr<AActor> Actor = World->SpawnActor<AActor>();
+	if (!TestTrue(TEXT("Fixture actor spawned"), Actor.IsValid()))
+	{
+		return false;
+	}
+	Actor->SetPackageExternal(true, true);
+	TWeakObjectPtr<UPackage> ExternalPackage = Actor->GetExternalPackage();
+	TestTrue(TEXT("Fixture actor has a dirty external package"), ExternalPackage.IsValid() && ExternalPackage->IsDirty());
+	WorldPackage->SetDirtyFlag(false);
+
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.duplicate_level"), MakeDuplicateRefusalParams());
+
+	TestFalse(TEXT("Dirty external actor package must refuse duplication"), Result.bSuccess);
+	TestEqual(TEXT("Error should be UNSAVED_CHANGES"), Result.ErrorCode, FString(TEXT("UNSAVED_CHANGES")));
+	const bool bWorldKept = GEditor->GetEditorWorldContext().World() == World;
+	TestTrue(TEXT("Editor world must not be replaced"), bWorldKept);
+
+	if (bWorldKept && Actor.IsValid())
+	{
+		Actor->SetPackageExternal(false, false);
+		World->DestroyActor(Actor.Get());
+		WorldPackage->SetDirtyFlag(bWasDirty);
+	}
+	if (ExternalPackage.IsValid())
+	{
+		ExternalPackage->SetDirtyFlag(false);
+		ExternalPackage->MarkAsGarbage();
+	}
+	DeleteDuplicateRefusalDest();
+	return true;
+}
+
+// An Untitled current level has no file to reload after duplication, so the editor would be
+// left on the duplicate with the Untitled level lost; refuse regardless of save_current/force.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexLevelDuplicateLevelUntitledCurrentTest,
+	"Cortex.Level.Lifecycle.DuplicateLevel.UntitledCurrentLevel",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelDuplicateLevelUntitledCurrentTest::RunTest(const FString& Parameters)
+{
+	if (!TestNotNull(TEXT("GEditor is required"), GEditor))
+	{
+		return false;
+	}
+
+	UWorld* OriginalWorld = GEditor->GetEditorWorldContext().World();
+	const FString OriginalPath = OriginalWorld ? OriginalWorld->GetOutermost()->GetName() : FString();
+	if (!FPackageName::DoesPackageExist(OriginalPath))
+	{
+		AddInfo(TEXT("Current editor level has no map file to restore - skipping"));
+		return true;
+	}
+
+	UWorld* UntitledWorld = UEditorLoadingAndSavingUtils::NewBlankMap(false);
+	if (!TestNotNull(TEXT("Untitled fixture world created"), UntitledWorld))
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Params = MakeDuplicateRefusalParams();
+	Params->SetBoolField(TEXT("force"), true);
+	FCortexCommandRouter Router = CreateLifecycleRouter();
+	const FCortexCommandResult Result = Router.Execute(TEXT("level.duplicate_level"), Params);
+
+	TestFalse(TEXT("Untitled current level must refuse duplication"), Result.bSuccess);
+	TestEqual(TEXT("Error should be LEVEL_NOT_SAVED"), Result.ErrorCode, FString(TEXT("LEVEL_NOT_SAVED")));
+	TestTrue(TEXT("Untitled editor world must not be replaced"), GEditor->GetEditorWorldContext().World() == UntitledWorld);
+	TestFalse(TEXT("Destination must not be written"),
+		FPackageName::DoesPackageExist(DuplicateRefusalDest));
+
+	const FString OriginalFile = FPackageName::LongPackageNameToFilename(OriginalPath, FPackageName::GetMapPackageExtension());
+	TestNotNull(TEXT("Original level restored"), UEditorLoadingAndSavingUtils::LoadMap(OriginalFile));
+	DeleteDuplicateRefusalDest();
 	return true;
 }
 

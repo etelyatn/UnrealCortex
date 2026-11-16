@@ -441,10 +441,42 @@ FCortexCommandResult FCortexLevelLifecycleOps::DuplicateLevel(const TSharedPtr<F
 		return FCortexCommandRouter::Error(CortexErrorCodes::EditorBusy, TEXT("Cannot duplicate level while PIE is active"));
 	}
 
-	// Use template+save approach — UEditorAssetSubsystem::DuplicateAsset does not handle World assets reliably
+	// Duplication swaps the editor world and then reloads the current level from disk.
 	UWorld* CurrentWorld = GEditor->GetEditorWorldContext().World();
 	const FString CurrentLevelPath = CurrentWorld ? CurrentWorld->GetOutermost()->GetName() : TEXT("");
 
+	// An Untitled level has no file to reload, so it would be lost and the editor left on the duplicate.
+	if (CurrentWorld && !FPackageName::DoesPackageExist(CurrentLevelPath))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::LevelNotSaved,
+			TEXT("Current level has no map file, so it cannot be reopened after duplication. "
+				 "Save it in the editor or open a saved level first."));
+	}
+
+	bool bSaveCurrent = false;
+	Params->TryGetBoolField(TEXT("save_current"), bSaveCurrent);
+
+	bool bForce = false;
+	Params->TryGetBoolField(TEXT("force"), bForce);
+
+	if (bSaveCurrent && IsCurrentLevelDirty())
+	{
+		FEditorFileUtils::SaveDirtyPackages(false, true, true, true);
+	}
+
+	// Re-checked after save_current: the fast save skips packages that have no file yet.
+	if (!bForce && IsCurrentLevelDirty())
+	{
+		TSharedPtr<FJsonObject> ErrorDetails = MakeShared<FJsonObject>();
+		ErrorDetails->SetBoolField(TEXT("is_dirty"), true);
+		return FCortexCommandRouter::Error(CortexErrorCodes::UnsavedChanges,
+			bSaveCurrent
+				? TEXT("Current level still has unsaved changes after save_current=true (packages without a file are not saved). Save them in the editor, or use force=true to discard.")
+				: TEXT("Current level has unsaved changes. Use save_current=true to save first, or force=true to discard."),
+			ErrorDetails);
+	}
+
+	// Use template+save approach — UEditorAssetSubsystem::DuplicateAsset does not handle World assets reliably
 	const FString SourceFile = FPackageName::LongPackageNameToFilename(SourcePath, FPackageName::GetMapPackageExtension());
 	UWorld* TemplateWorld = UEditorLoadingAndSavingUtils::NewMapFromTemplate(SourceFile, false);
 	if (!TemplateWorld)
@@ -730,22 +762,37 @@ bool FCortexLevelLifecycleOps::IsCurrentLevelDirty()
 		return false;
 	}
 
-	if (World->GetOutermost()->IsDirty())
+	// One-file-per-actor edits dirty only the actors' external packages, not the map package.
+	auto IsLevelDirty = [](const ULevel* Level)
+	{
+		if (!Level)
+		{
+			return false;
+		}
+		if (Level->GetOutermost()->IsDirty())
+		{
+			return true;
+		}
+		for (const UPackage* ExternalPackage : Level->GetLoadedExternalObjectPackages())
+		{
+			if (ExternalPackage && ExternalPackage->IsDirty())
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+
+	if (World->GetOutermost()->IsDirty() || IsLevelDirty(World->PersistentLevel))
 	{
 		return true;
 	}
 
 	for (ULevelStreaming* Streaming : World->GetStreamingLevels())
 	{
-		if (Streaming && Streaming->IsLevelLoaded())
+		if (Streaming && Streaming->IsLevelLoaded() && IsLevelDirty(Streaming->GetLoadedLevel()))
 		{
-			if (ULevel* LoadedLevel = Streaming->GetLoadedLevel())
-			{
-				if (LoadedLevel->GetOutermost()->IsDirty())
-				{
-					return true;
-				}
-			}
+			return true;
 		}
 	}
 
