@@ -32,6 +32,24 @@ _STRUCTURED_MODE = "structured"
 RESPONSE_MODES = (_TEXT_MODE, _STRUCTURED_MODE)
 
 
+def strip_schema_titles(schema: Any) -> Any:
+    """Return a copy of a JSON schema without pydantic's generated ``title`` annotations.
+
+    Titles only restate the property name ("asset_path" -> "Asset Path") and are sent to the
+    model with every tool listing. A property that is itself named ``title`` maps to a schema
+    object, not a string, and is kept.
+    """
+    if isinstance(schema, dict):
+        return {
+            key: strip_schema_titles(value)
+            for key, value in schema.items()
+            if not (key == "title" and isinstance(value, str))
+        }
+    if isinstance(schema, list):
+        return [strip_schema_titles(item) for item in schema]
+    return schema
+
+
 class ToolOutputRegistrar:
     """Register public tools behind a single result-representation owner."""
 
@@ -73,11 +91,18 @@ class ToolOutputRegistrar:
             self._server.tool(name=tool_name, description=description, **kwargs)(
                 self._wrap(fn, tool_name)
             )
+            self._strip_registered_schema_titles(tool_name)
             # Mirror FastMCP: the module-local name keeps the raw implementation so
             # direct internal calls keep their existing string contract.
             return fn
 
         return decorator
+
+    def _strip_registered_schema_titles(self, tool_name: str) -> None:
+        tool_manager = self._tool_manager
+        tool = tool_manager.get_tool(tool_name) if tool_manager is not None else None
+        if tool is not None and isinstance(getattr(tool, "parameters", None), dict):
+            tool.parameters = strip_schema_titles(tool.parameters)
 
     def _wrap(self, fn: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
         if inspect.iscoroutinefunction(fn):

@@ -815,3 +815,57 @@ def test_registration_allowlist_excludes_unlisted_tools_without_wrapping():
         assert recorder.recorded == []
 
     _run(scenario)
+
+
+def _schema_string_titles(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "title" and isinstance(value, str):
+                yield value
+            yield from _schema_string_titles(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _schema_string_titles(item)
+
+
+def test_registered_tool_schemas_carry_no_generated_titles():
+    """Pydantic titles restate each property name and cost tokens in every tool listing."""
+    from cortex_mcp import server
+
+    async def scenario():
+        tools = await server.mcp.list_tools()
+        assert tools
+        for tool in tools:
+            # A property *named* title is part of the contract; a string-valued title annotation
+            # is the generated noise. Check the value, not the key spelling.
+            assert list(_schema_string_titles(tool.inputSchema)) == [], tool.name
+            # Stripping must leave the argument contract itself intact.
+            assert tool.inputSchema.get("type") == "object", tool.name
+            assert isinstance(tool.inputSchema.get("properties"), dict), tool.name
+
+    _run(scenario)
+
+
+def test_strip_schema_titles_keeps_a_property_named_title():
+    from cortex_mcp.tool_output import strip_schema_titles
+
+    schema = {
+        "title": "Args",
+        "type": "object",
+        "properties": {
+            "title": {"title": "Title", "type": "string"},
+            "items": {"anyOf": [{"title": "Item", "type": "object"}, {"type": "null"}], "title": "Items"},
+        },
+        "required": ["title"],
+    }
+
+    assert strip_schema_titles(schema) == {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "items": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+        },
+        "required": ["title"],
+    }
+    assert schema["title"] == "Args"
+
