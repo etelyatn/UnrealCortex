@@ -332,9 +332,11 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .Required(TEXT("path"), TEXT("string"), TEXT("Content path of the level"))
             .Optional(TEXT("save_current"), TEXT("boolean"), TEXT("Save current level before switching"))
             .Optional(TEXT("force"), TEXT("boolean"), TEXT("Discard unsaved changes and open")),
-        FCortexCommandInfo{ TEXT("duplicate_level"), TEXT("Duplicate an existing level asset") }
+        FCortexCommandInfo{ TEXT("duplicate_level"), TEXT("Duplicate an existing level asset; temporarily switches the editor world and reopens the current level from its map file, so a dirty current level returns UNSAVED_CHANGES and an Untitled one returns LEVEL_NOT_SAVED") }
             .Required(TEXT("source_path"), TEXT("string"), TEXT("Source level content path"))
-            .Required(TEXT("dest_path"), TEXT("string"), TEXT("Destination content path")),
+            .Required(TEXT("dest_path"), TEXT("string"), TEXT("Destination content path"))
+            .Optional(TEXT("save_current"), TEXT("boolean"), TEXT("Save the dirty current level before duplicating"))
+            .Optional(TEXT("force"), TEXT("boolean"), TEXT("Discard unsaved changes in the current level and duplicate")),
         FCortexCommandInfo{ TEXT("rename_level"), TEXT("Rename or move a level asset") }
             .Required(TEXT("path"), TEXT("string"), TEXT("Current content path"))
             .Required(TEXT("new_path"), TEXT("string"), TEXT("New content path")),
