@@ -87,6 +87,43 @@ class TestSwitchEditorTool:
         assert payload["pid"] == 3000
         assert payload["port"] == 8744
 
+    def test_switch_editor_pins_deliberate_target_across_reconnect(self, monkeypatch):
+        """A switched-to editor is deliberate: a reconnect must not rediscover another."""
+        monkeypatch.setattr("cortex_mcp.tcp_client._discover_port", lambda: None)
+        conn = UEConnection()
+        assert conn._explicit_port is False
+
+        router = make_router("core", conn, "core docs")
+        editors = [
+            _editor(8742, 1000, "2026-01-01T00:00:00Z"),
+            _editor(8743, 2000, "2026-01-01T01:00:00Z"),
+        ]
+        with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=editors), patch(
+            "cortex_mcp.tools.routers._is_editor_alive", return_value=True
+        ):
+            json.loads(router("switch_editor", {"pid": 2000}))
+
+        attempts = []
+
+        def send(command, params=None, timeout=None):
+            attempts.append(conn.port)
+            if len(attempts) == 1:
+                raise ConnectionError("connection reset")
+            return {"success": True, "data": {}}
+
+        monkeypatch.setattr(conn, "connect", lambda: None)
+        monkeypatch.setattr(conn, "_send_and_receive", send)
+        monkeypatch.setattr("cortex_mcp.tcp_client.time.sleep", lambda _seconds: None)
+
+        def unexpected_discovery():
+            raise AssertionError("a deliberate switch must stay pinned across reconnect")
+
+        monkeypatch.setattr("cortex_mcp.tcp_client._discover_port", unexpected_discovery)
+
+        conn.send_command("data.list_datatables", {})
+
+        assert attempts == [8743, 8743]
+
 
 class TestGetStatusTool:
     def test_get_status_includes_connected_and_available_editors(self):
