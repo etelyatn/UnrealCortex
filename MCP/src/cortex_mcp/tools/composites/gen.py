@@ -8,9 +8,33 @@ import logging
 import time
 from typing import Optional
 
+from cortex_mcp.tcp_client import UECommandError, UECommandTimeoutError
+
 logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = {"imported", "failed", "cancelled", "download_failed", "import_failed"}
+
+
+async def _send(connection, command: str, params: dict) -> dict:
+    """Run one blocking editor command off the event loop; failures become result dicts."""
+    try:
+        return await asyncio.to_thread(connection.send_command, command, params)
+    except UECommandError as exc:
+        return {
+            "success": False,
+            "error": f"{exc.code}: {exc.message}",
+            "details": exc.details,
+        }
+    except UECommandTimeoutError as exc:
+        # The command reached the editor and may still finish; never resubmit blindly.
+        return {
+            "success": False,
+            "error": str(exc),
+            "recovery_required": True,
+            "data": {"status": "unknown"},
+        }
+    except ConnectionError as exc:
+        return {"success": False, "error": str(exc)}
 
 
 async def _submit_and_wait(
@@ -22,9 +46,13 @@ async def _submit_and_wait(
 ) -> str:
     """Submit a gen job and poll until terminal state or timeout."""
     # Submit
-    raw = await connection.send(command, params)
-    submit_result = json.loads(raw) if isinstance(raw, str) else raw
+    submit_result = await _send(connection, command, params)
     if not submit_result.get("success"):
+        if submit_result.get("recovery_required"):
+            submit_result["error"] = (
+                f"{submit_result['error']} The job may have started; "
+                'check gen_cmd(command="list_jobs") before resubmitting.'
+            )
         return json.dumps(submit_result)
 
     job_id = submit_result["data"]["job_id"]
@@ -35,9 +63,16 @@ async def _submit_and_wait(
     while (time.monotonic() - start) < timeout:
         await asyncio.sleep(interval)
 
-        raw = await connection.send("gen.job_status", {"job_id": job_id})
-        poll_result = json.loads(raw) if isinstance(raw, str) else raw
+        poll_result = await _send(connection, "gen.job_status", {"job_id": job_id})
         if not poll_result.get("success"):
+            data = dict(poll_result.get("data") or {})
+            data.setdefault("job_id", job_id)
+            data.setdefault("status", "unknown")
+            poll_result["data"] = data
+            poll_result["error"] = (
+                f"{poll_result.get('error', 'Polling failed')} Job {job_id} may still be running; "
+                'check gen_cmd(command="list_jobs") before resubmitting.'
+            )
             return json.dumps(poll_result)
 
         status = poll_result["data"].get("status", "")

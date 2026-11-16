@@ -377,7 +377,7 @@ class _ProviderTripwire:
     def __init__(self):
         self.send_calls: list[str] = []
 
-    async def send(self, command, params=None, **kwargs):
+    def send_command(self, command, params=None, **kwargs):
         self.send_calls.append(command)
         raise AssertionError("the adapter test must not submit a generation job")
 
