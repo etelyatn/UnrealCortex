@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cortex_mcp.tcp_client import UEConnection, UECommandError
+from cortex_mcp.tcp_client import UEConnection, UECommandError, UECommandTimeoutError
 
 
 def _connection(send_command):
@@ -213,6 +213,45 @@ def test_submit_and_wait_reports_connection_failure():
     data = json.loads(result)
     assert data["success"] is False
     assert "No running Unreal Editor" in data["error"]
+
+
+def test_submit_and_wait_timeout_marks_unknown_outcome():
+    """A timed-out submit may have started a billable job; do not present it as safely retryable."""
+    from cortex_mcp.tools.composites.gen import _submit_and_wait
+
+    def fake_send(command: str, params=None):
+        raise UECommandTimeoutError("Timed out waiting for Unreal Editor response")
+
+    result = asyncio.run(_submit_and_wait(
+        _connection(fake_send), "gen.start_mesh", {"prompt": "test"},
+        poll_interval=0.01, timeout=5.0,
+    ))
+    data = json.loads(result)
+    assert data["success"] is False
+    assert data["recovery_required"] is True
+    assert data["data"]["status"] == "unknown"
+    assert "list_jobs" in data["error"]
+
+
+def test_submit_and_wait_poll_failure_keeps_job_id():
+    """A polling failure must return the job id so a still-running job can be recovered."""
+    from cortex_mcp.tools.composites.gen import _submit_and_wait
+
+    def fake_send(command: str, params=None):
+        if command == "gen.start_mesh":
+            return {"success": True, "data": {"job_id": "gen_kept", "status": "pending"}}
+        raise ConnectionError("No running Unreal Editor found.")
+
+    result = asyncio.run(_submit_and_wait(
+        _connection(fake_send), "gen.start_mesh", {"prompt": "test"},
+        poll_interval=0.01, timeout=5.0,
+    ))
+    data = json.loads(result)
+    assert data["success"] is False
+    assert data["data"]["job_id"] == "gen_kept"
+    assert data["data"]["status"] == "unknown"
+    assert "may still be running" in data["error"]
+    assert "list_jobs" in data["error"]
 
 
 def test_gen_compose_uses_the_real_connection_api():
