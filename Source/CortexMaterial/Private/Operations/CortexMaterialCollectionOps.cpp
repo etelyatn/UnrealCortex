@@ -10,6 +10,24 @@
 #include "ScopedTransaction.h"
 #include "UObject/SavePackage.h"
 
+namespace
+{
+/** Error details for HAS_REFERENCES / SERIALIZATION_ERROR responses: the referencer package list. */
+TSharedPtr<FJsonObject> MakeReferencerDetails(const TArray<FString>& Referencers)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	Values.Reserve(Referencers.Num());
+	for (const FString& Referencer : Referencers)
+	{
+		Values.Add(MakeShared<FJsonValueString>(Referencer));
+	}
+
+	TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+	Details->SetArrayField(TEXT("referencers"), Values);
+	return Details;
+}
+}
+
 UMaterialParameterCollection* FCortexMaterialCollectionOps::LoadCollection(const FString& AssetPath, FCortexCommandResult& OutError)
 {
 	FString PkgName = FPackageName::ObjectPathToPackageName(AssetPath);
@@ -224,6 +242,18 @@ FCortexCommandResult FCortexMaterialCollectionOps::DeleteCollection(const TShare
 			CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
 	}
 
+	bool bForce = false;
+	Params->TryGetBoolField(TEXT("force"), bForce);
+
+	// Validate the mount on the package name so an object path ("/Game/A/B.B") is checked too.
+	const FString PackageName = FPackageName::ObjectPathToPackageName(AssetPath);
+
+	FString MountError;
+	if (!FCortexEditorUtils::IsWritableMountedContentPath(PackageName, MountError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, MountError);
+	}
+
 	FCortexCommandResult LoadError;
 	UMaterialParameterCollection* Collection = LoadCollection(AssetPath, LoadError);
 	if (Collection == nullptr)
@@ -231,12 +261,37 @@ FCortexCommandResult FCortexMaterialCollectionOps::DeleteCollection(const TShare
 		return LoadError;
 	}
 
-	FScopedTransaction Transaction(FText::FromString(
-		FString::Printf(TEXT("Cortex: Delete Material Parameter Collection %s"), *Collection->GetName())
-	));
+	TArray<FString> Referencers;
+	if (!bForce)
+	{
+		TArray<FName> PackageNames;
+		PackageNames.Add(FName(*PackageName));
+		Referencers = FCortexEditorUtils::GetExternalReferencers(PackageNames);
+	}
 
-	Collection->MarkAsGarbage();
-	Collection->MarkPackageDirty();
+	if (Referencers.Num() > 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::HasReferences,
+			FString::Printf(
+				TEXT("Collection '%s' is referenced by %d package(s). Use force=true to delete anyway."),
+				*AssetPath,
+				Referencers.Num()),
+			MakeReferencerDetails(Referencers));
+	}
+
+	TArray<UObject*> AssetsToDelete;
+	AssetsToDelete.Add(Collection);
+	const TArray<FString> DeleteErrors = FCortexEditorUtils::DeleteLoadedAssets(AssetsToDelete);
+	if (!DeleteErrors[0].IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::SerializationError,
+			FString::Printf(TEXT("%s (asset_path: %s)"), *DeleteErrors[0], *AssetPath),
+			MakeReferencerDetails(Referencers));
+	}
+
+	UE_LOG(LogCortexMaterial, Log, TEXT("Deleted material parameter collection: %s"), *AssetPath);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);

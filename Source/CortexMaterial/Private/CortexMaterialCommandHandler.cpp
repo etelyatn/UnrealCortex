@@ -213,7 +213,8 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Destination content path"))
 			.Required(TEXT("name"), TEXT("string"), TEXT("Collection asset name")),
 		FCortexCommandInfo{ TEXT("delete_collection"), TEXT("Delete a material parameter collection") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Collection asset path")),
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Collection asset path"))
+			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Delete even when other packages reference the collection")),
 		FCortexCommandInfo{ TEXT("add_collection_parameter"), TEXT("Add parameter to collection") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Collection asset path"))
 			.Required(TEXT("parameter_name"), TEXT("string"), TEXT("Parameter name"))
