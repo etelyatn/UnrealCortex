@@ -1002,7 +1002,9 @@ def _switch_editor(connection, params: dict) -> str:
     connection._pid = target.pid
     connection._project_path = None
     # Adopt the chosen target's project so validation checks it, not the previous editor.
-    connection._expected_project = target.project
+    # A legacy port file without a project keeps the existing key instead of disabling the guard.
+    if target.project:
+        connection._expected_project = target.project
     # A deliberate switch is a pin: reconnects must not rediscover another editor.
     connection._explicit_port = True
     logger.info("Switched to editor PID %d on port %d", target.pid, target.port)

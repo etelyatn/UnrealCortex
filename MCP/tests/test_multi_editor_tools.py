@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 TOOLS_DIR = Path(__file__).parent.parent / "tools"
 SRC_DIR = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(TOOLS_DIR))
@@ -148,6 +150,32 @@ class TestSwitchEditorTool:
         conn._validate_project()
 
         assert conn._socket is not None
+
+    def test_switch_editor_keeps_guard_when_target_project_is_unknown(self):
+        """A legacy port file without a project must not disable the wrong-editor guard."""
+        conn = UEConnection(port=99999)
+        conn._expected_project = "OldProject"
+        router = make_router("core", conn, "core docs")
+        target = EditorConnection(
+            port=8743,
+            pid=2000,
+            started_at="2026-01-01T01:00:00Z",
+            port_file=Path("CortexPort-2000.txt"),
+            project="",
+        )
+        with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=[target]), patch(
+            "cortex_mcp.tools.routers._is_editor_alive", return_value=True
+        ):
+            json.loads(router("switch_editor", {"pid": 2000}))
+
+        assert conn._expected_project == "OldProject"
+
+        sock = MagicMock()
+        sock.recv.return_value = b'{"success":true,"data":{"project_name":"OtherGame"}}\n'
+        conn._socket = sock
+
+        with pytest.raises(ConnectionError, match="OtherGame.*OldProject"):
+            conn._validate_project()
 
 
 class TestGetStatusTool:
