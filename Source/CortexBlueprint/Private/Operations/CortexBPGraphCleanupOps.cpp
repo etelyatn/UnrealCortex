@@ -9,6 +9,7 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
+#include "EdGraphNode_Comment.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_Event.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -17,6 +18,16 @@
 
 namespace
 {
+	/**
+	 * True for nodes that start execution. UK2Node_Event covers events and custom events; input nodes
+	 * (InputAction, InputKey, InputAxis, EnhancedInputAction...) derive from UK2Node directly and are
+	 * recognised by shape: exec output pins and no exec input pin.
+	 */
+	bool IsExecutionRoot(const UEdGraphNode* Node)
+	{
+		return Node && (Node->IsA<UK2Node_Event>() || CortexBPGraphReachability::IsEntryNode(Node));
+	}
+
 	void GatherReachableExecNodesFromEvents(UEdGraph* Graph, TSet<UEdGraphNode*>& OutReachable, bool& bOutHasEventNode)
 	{
 		bOutHasEventNode = false;
@@ -28,7 +39,7 @@ namespace
 		TArray<UEdGraphNode*> EventNodes;
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
-			if (Node && Node->IsA<UK2Node_Event>())
+			if (IsExecutionRoot(Node))
 			{
 				EventNodes.Add(Node);
 			}
@@ -92,7 +103,13 @@ FCortexCommandResult FCortexBPGraphCleanupOps::DeleteOrphanedNodes(const TShared
 	TArray<UEdGraphNode*> NodesToDelete;
 	for (UEdGraphNode* Node : TargetGraph->Nodes)
 	{
-		if (!Node || Node->IsA<UK2Node_Event>())
+		if (!Node || IsExecutionRoot(Node))
+		{
+			continue;
+		}
+
+		// Comments have no pins, so they are never reachable; they are documentation, not orphans.
+		if (Node->IsA<UEdGraphNode_Comment>() || !Node->CanUserDeleteNode())
 		{
 			continue;
 		}

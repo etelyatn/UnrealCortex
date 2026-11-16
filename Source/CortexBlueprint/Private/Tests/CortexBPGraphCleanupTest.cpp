@@ -6,7 +6,9 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "EdGraph/EdGraph.h"
+#include "EdGraphNode_Comment.h"
 #include "K2Node_Event.h"
+#include "K2Node_InputKey.h"
 #include "K2Node_CallFunction.h"
 #include "EdGraphSchema_K2.h"
 #include "GameFramework/Actor.h"
@@ -332,6 +334,110 @@ bool FCortexBPDeleteOrphanedNodesRejectsFunctionGraphTest::RunTest(const FString
 	const FCortexCommandResult Result = FCortexBPGraphCleanupOps::DeleteOrphanedNodes(Params);
 	TestFalse(TEXT("delete_orphaned_nodes should reject non-event graphs"), Result.bSuccess);
 	TestEqual(TEXT("Error code is InvalidField"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+
+	BP->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPDeleteOrphanedNodesPreservesInputAndCommentsTest,
+	"Cortex.Blueprint.GraphCleanup.DeleteOrphanedNodes.PreservesInputChainsAndComments",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPDeleteOrphanedNodesPreservesInputAndCommentsTest::RunTest(const FString& Parameters)
+{
+	UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		CreateWritableGraphCleanupTestPackage(TEXT("BP_OrphanInputTest")),
+		FName(TEXT("BP_OrphanInputTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("BP created"), BP);
+	if (!BP)
+	{
+		return false;
+	}
+
+	UEdGraph* EventGraph = nullptr;
+	for (UEdGraph* Graph : BP->UbergraphPages)
+	{
+		if (Graph && Graph->GetFName() == UEdGraphSchema_K2::GN_EventGraph)
+		{
+			EventGraph = Graph;
+			break;
+		}
+	}
+	TestNotNull(TEXT("EventGraph found"), EventGraph);
+	if (!EventGraph)
+	{
+		BP->MarkAsGarbage();
+		return false;
+	}
+
+	// Input nodes are execution roots that do not derive from UK2Node_Event.
+	UK2Node_InputKey* InputKeyNode = NewObject<UK2Node_InputKey>(EventGraph);
+	EventGraph->AddNode(InputKeyNode, false, false);
+	InputKeyNode->AllocateDefaultPins();
+
+	UK2Node_CallFunction* InputPrintNode = NewObject<UK2Node_CallFunction>(EventGraph);
+	InputPrintNode->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+	EventGraph->AddNode(InputPrintNode, false, false);
+	InputPrintNode->AllocateDefaultPins();
+
+	UK2Node_CallFunction* OrphanPrintNode = NewObject<UK2Node_CallFunction>(EventGraph);
+	OrphanPrintNode->SetFromFunction(UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("PrintString")));
+	EventGraph->AddNode(OrphanPrintNode, false, false);
+	OrphanPrintNode->AllocateDefaultPins();
+
+	UEdGraphNode_Comment* CommentNode = NewObject<UEdGraphNode_Comment>(EventGraph);
+	CommentNode->NodeComment = TEXT("Input handling");
+	EventGraph->AddNode(CommentNode, false, false);
+
+	UEdGraphPin* InputExecOutPin = nullptr;
+	for (UEdGraphPin* Pin : InputKeyNode->Pins)
+	{
+		if (Pin
+			&& Pin->Direction == EGPD_Output
+			&& Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+		{
+			InputExecOutPin = Pin;
+			break;
+		}
+	}
+	UEdGraphPin* PrintExecPin = InputPrintNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+	TestNotNull(TEXT("Input key exec output pin found"), InputExecOutPin);
+	TestNotNull(TEXT("Print exec pin found"), PrintExecPin);
+	if (!InputExecOutPin || !PrintExecPin)
+	{
+		BP->MarkAsGarbage();
+		return false;
+	}
+	InputExecOutPin->MakeLinkTo(PrintExecPin);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), BP->GetPathName());
+	Params->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+	Params->SetBoolField(TEXT("compile"), false);
+	const FCortexCommandResult Result = FCortexBPGraphCleanupOps::DeleteOrphanedNodes(Params);
+	TestTrue(TEXT("delete_orphaned_nodes succeeded"), Result.bSuccess);
+
+	const auto GraphHasNode = [EventGraph](const UEdGraphNode* Candidate)
+	{
+		for (const UEdGraphNode* Node : EventGraph->Nodes)
+		{
+			if (Node == Candidate)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	TestTrue(TEXT("Input key node is preserved"), GraphHasNode(InputKeyNode));
+	TestTrue(TEXT("Node driven by the input key is preserved"), GraphHasNode(InputPrintNode));
+	TestTrue(TEXT("Comment node is preserved"), GraphHasNode(CommentNode));
+	TestFalse(TEXT("Unconnected node is still deleted"), GraphHasNode(OrphanPrintNode));
 
 	BP->MarkAsGarbage();
 	return true;
