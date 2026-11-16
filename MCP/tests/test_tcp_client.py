@@ -216,6 +216,31 @@ def test_send_command_does_not_replay_after_response_timeout(monkeypatch, timeou
     assert conn._socket is None
 
 
+def test_send_command_does_not_replay_after_deferred_ack_timeout(monkeypatch):
+    """A timeout after the deferred ack is still a dispatched command; never replay."""
+    sent = []
+    sock = MagicMock()
+    sock.sendall.side_effect = lambda payload: sent.append(payload)
+    acked = []
+
+    def recv(_size):
+        if not acked:
+            acked.append(True)
+            request_id = json.loads(sent[-1].decode("utf-8"))["id"]
+            return json.dumps({"id": request_id, "status": "deferred"}).encode("utf-8") + b"\n"
+        raise socket.timeout("timed out after deferred ack")
+
+    sock.recv.side_effect = recv
+    conn, connect_calls = _connection_with_socket(monkeypatch, sock)
+
+    with pytest.raises(UECommandTimeoutError):
+        conn.send_command("editor.run_python", {"code": "print(1)"}, timeout=0.01)
+
+    assert len(sent) == 1
+    assert len(connect_calls) == 1
+    assert conn._socket is None
+
+
 def test_send_command_timeout_is_a_connection_error(monkeypatch):
     """Existing callers that catch ConnectionError keep working."""
     sock = MagicMock()
