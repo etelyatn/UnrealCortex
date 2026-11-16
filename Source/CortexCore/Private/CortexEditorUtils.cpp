@@ -404,18 +404,23 @@ TArray<FString> FCortexEditorUtils::GetExternalReferencers(const TArray<FName>& 
 			continue;
 		}
 
-		TArray<FAssetIdentifier> Referencers;
-		AssetRegistry.GetReferencers(FAssetIdentifier(PackageName), Referencers);
-		for (const FAssetIdentifier& Referencer : Referencers)
+		TArray<FName> Referencers;
+		// Package category only: the default All also reports AssetManager management edges, whose
+		// managers are not packages (primary asset ids where PackageName is empty, or a label package
+		// that manages others) and must never block deleting an asset.
+		AssetRegistry.GetReferencers(
+			PackageName,
+			Referencers,
+			UE::AssetRegistry::EDependencyCategory::Package);
+
+		for (const FName& Referencer : Referencers)
 		{
-			if (!Referencer.PackageName.IsNone() && PackageSet.Contains(Referencer.PackageName))
+			if (PackageSet.Contains(Referencer))
 			{
 				continue;
 			}
 
-			ExternalReferencers.AddUnique(Referencer.PackageName.IsNone()
-				? Referencer.ToString()
-				: Referencer.PackageName.ToString());
+			ExternalReferencers.AddUnique(Referencer.ToString());
 		}
 	}
 

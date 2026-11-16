@@ -39,8 +39,10 @@ public:
 	static TArray<FString> DeleteLoadedAssets(const TArray<UObject*>& Assets);
 
 	/** Return the sorted, unique package names that reference any package in PackageNames from
-	 *  outside that set. References between packages inside the set are not reported, so deleting a
-	 *  folder is not blocked by its own assets referencing each other. */
+	 *  outside that set. Only package dependencies count (an asset must really reference the package);
+	 *  AssetManager management edges are ignored, so a primary asset rule or label never blocks a
+	 *  delete. References between packages inside the set are not reported, so deleting a folder is
+	 *  not blocked by its own assets referencing each other. */
 	static TArray<FString> GetExternalReferencers(const TArray<FName>& PackageNames);
 
 #if WITH_DEV_AUTOMATION_TESTS
