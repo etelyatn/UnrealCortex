@@ -27,7 +27,7 @@ from cortex_mcp.schema_generator import (
     read_meta_from_file,
     read_schema_metadata,
 )
-from cortex_mcp.tcp_client import _discover_all_editors, _is_editor_alive
+from cortex_mcp.tcp_client import CACHED_READ_COMMANDS, _discover_all_editors, _is_editor_alive
 from cortex_mcp.tcp_client import UECommandError
 from cortex_mcp.tool_output import strip_schema_titles
 
@@ -87,13 +87,9 @@ def _dispatch_timeout(qualified: str, params: dict) -> float | None:
 
 
 _pagination_cache = PaginationCache(max_entries=16, ttl_seconds=600.0)
-_CACHED_READ_COMMANDS = {
-    ("blueprint", "list_scs_components"),
-    ("blueprint", "list_inherited_properties"),
-    ("blueprint", "list_settable_defaults"),
-    ("graph", "list_event_handlers"),
-    ("level", "list_actor_classes"),
-}
+# The connection owns which cached reads a write invalidates; router dispatch only reuses the set.
+_CACHED_READ_COMMANDS = CACHED_READ_COMMANDS
+
 
 # Native-owned reads consume limit/offset themselves. Their window is authoritative: a native
 # limit above the Python cache maximum, or the native limit=0 "unlimited" sentinel, is forwarded
