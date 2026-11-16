@@ -124,7 +124,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetText(const TSharedPtr<FJson
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Text on %s"), *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
 
     if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
     {
@@ -190,7 +190,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetColor(const TSharedPtr<FJso
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Color on %s"), *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
 
     if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
     {
@@ -314,7 +314,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetFont(const TSharedPtr<FJson
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Font on %s"), *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
 
     FSlateFontInfo FontInfo = TextBlock->GetFont();
 
@@ -415,7 +415,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetBrush(const TSharedPtr<FJso
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Brush on %s"), *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
 
     bool bApplied = false;
     if (UButton* Button = Cast<UButton>(Widget))
@@ -651,7 +651,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetPadding(const TSharedPtr<FJ
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Padding on %s"), *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
 
     FString Target;
     if (!Params->TryGetStringField(TEXT("target"), Target))
@@ -765,7 +765,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetAnchor(const TSharedPtr<FJs
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Anchor on %s"), *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
 
     if (PresetAnchors != nullptr)
     {
@@ -904,7 +904,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetAlignment(const TSharedPtr<
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Alignment on %s"), *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
 
     if (Widget->Slot)
     {
@@ -988,7 +988,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetSize(const TSharedPtr<FJson
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Size on %s"), *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
 
     if (USizeBox* SizeBox = Cast<USizeBox>(Widget))
     {
@@ -1093,7 +1093,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetVisibility(const TSharedPtr
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Visibility on %s"), *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
 
     Widget->SetVisibility(*Vis);
     FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);
@@ -1137,7 +1137,7 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetProperty(const TSharedPtr<F
 
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Property %s on %s"), *PropertyPath, *WidgetName)));
-    WBP->Modify();
+    CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
     TSharedPtr<FJsonValue> JsonValue = Params->TryGetField(TEXT("value"));
     if (JsonValue.IsValid())
     {

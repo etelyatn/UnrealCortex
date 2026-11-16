@@ -83,6 +83,34 @@ namespace CortexUMGUtils
         return FindWidgetByName(WidgetTree, Name) != nullptr;
     }
 
+    /**
+     * True when a detached object outered to the tree (for example a widget saved by an older remove)
+     * holds the name with a different class. Constructing on that name aborts in StaticAllocateObject;
+     * a same-class occupant, such as a widget whose creation was undone, is reused in place.
+     */
+    inline bool WidgetNameHeldByOtherClass(UWidgetTree* WidgetTree, const FString& Name, const UClass* WidgetClass)
+    {
+        if (!WidgetTree || Name.IsEmpty())
+        {
+            return false;
+        }
+        const UObject* Occupant = StaticFindObjectFast(UObject::StaticClass(), WidgetTree, FName(*Name));
+        return Occupant != nullptr && Occupant->GetClass() != WidgetClass;
+    }
+
+    /** Journals every object a widget property write changes: the asset, the widget and its slot. */
+    inline void ModifyWidgetForEdit(UWidgetBlueprint* WidgetBlueprint, UWidget* Widget)
+    {
+        WidgetBlueprint->Modify();
+        Widget->SetFlags(RF_Transactional);
+        Widget->Modify();
+        if (Widget->Slot)
+        {
+            Widget->Slot->SetFlags(RF_Transactional);
+            Widget->Slot->Modify();
+        }
+    }
+
     inline int32 CountWidgets(UWidget* Widget)
     {
         if (!Widget)
