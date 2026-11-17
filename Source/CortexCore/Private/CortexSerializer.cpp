@@ -28,15 +28,495 @@ namespace
 	constexpr const TCHAR* CortexTextSourceLiteral = TEXT("literal");
 	constexpr const TCHAR* CortexTextSourceStringTable = TEXT("string_table");
 
+	/** Deferred instanced-sub-object retirement while a container value is staged.
+	 *  Container staging seeds from the live value, so the staged copy shares the live value's sub-objects;
+	 *  nothing may be marked garbage until the staged value is committed. Nested stages share the outermost
+	 *  scope, which owns the retirement decision. */
+	struct FDeferredRetirementState
+	{
+		int32 Depth = 0;
+		TArray<UObject*> Created;
+	};
+
+	FDeferredRetirementState DeferredRetirement;
+
+	/** Enters the deferred-retirement scope; only the outermost scope resets and applies the retirement. */
+	struct FDeferredRetireScope
+	{
+		FDeferredRetireScope()
+			: bRoot(DeferredRetirement.Depth++ == 0)
+		{
+			if (bRoot)
+			{
+				DeferredRetirement.Created.Reset();
+			}
+		}
+
+		~FDeferredRetireScope()
+		{
+			--DeferredRetirement.Depth;
+		}
+
+		FDeferredRetireScope(const FDeferredRetireScope&) = delete;
+		FDeferredRetireScope& operator=(const FDeferredRetireScope&) = delete;
+
+		bool IsRoot() const
+		{
+			return bRoot;
+		}
+
+		static bool IsDeferring()
+		{
+			return DeferredRetirement.Depth > 0;
+		}
+
+		bool bRoot = false;
+	};
+
 	/** Retires a replaced instanced sub-object. An instanced property can also reference an independent asset by
-	 *  path; that object is not owned by Outer and must never be marked as garbage. */
+	 *  path; that object is not owned by Outer and must never be marked as garbage. During container staging the
+	 *  retirement is deferred to the scope owner. */
 	void RetireOwnedSubObject(UObject* Existing, const UObject* Outer)
 	{
-		if (Existing != nullptr && Outer != nullptr && Existing->IsIn(Outer))
+		if (Existing != nullptr
+			&& Outer != nullptr
+			&& Existing->IsIn(Outer)
+			&& !FDeferredRetireScope::IsDeferring())
 		{
 			Existing->MarkAsGarbage();
 		}
 	}
+
+	void CollectStructObjectReferences(
+		const UStruct* StructType,
+		const void* StructData,
+		TSet<const UObject*>& OutReferences,
+		TSet<UObject*>& OutOwnedInstanced,
+		const UObject* Owner,
+		TSet<const UObject*>& VisitedObjects,
+		bool bDescendIntoOwnedInstanced);
+
+	/** Collects the hard object references a property value holds, including nested structs and containers.
+	 *  OutReferences holds every object the value references; OutOwnedInstanced holds the instanced objects
+	 *  owned by Owner. When bDescendIntoOwnedInstanced is set, owned instanced objects are also walked, so both
+	 *  sets become the transitive closure (an instanced child can own instanced children of its own). Callers
+	 *  use the transitive form only to protect objects, and the direct form to pick retirement candidates.
+	 *  Soft references are paths, not held objects, and are skipped. */
+	void CollectPropertyObjectReferences(
+		const FProperty* Property,
+		const void* ValuePtr,
+		TSet<const UObject*>& OutReferences,
+		TSet<UObject*>& OutOwnedInstanced,
+		const UObject* Owner,
+		TSet<const UObject*>& VisitedObjects,
+		bool bDescendIntoOwnedInstanced)
+	{
+		if (Property == nullptr || ValuePtr == nullptr)
+		{
+			return;
+		}
+
+		if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
+		{
+			UObject* Object = ObjectProperty->GetObjectPropertyValue(ValuePtr);
+			if (Object != nullptr)
+			{
+				OutReferences.Add(Object);
+
+				const bool bOwnedInstanced = Owner != nullptr
+					&& Property->HasAllPropertyFlags(CPF_InstancedReference)
+					&& Object->IsIn(Owner);
+				if (bOwnedInstanced)
+				{
+					OutOwnedInstanced.Add(Object);
+
+					// Owned instanced objects can own instanced children of their own; walk them so a nested
+					// child is never mistaken for a staged leftover or for an unreferenced old object.
+					if (bDescendIntoOwnedInstanced && !VisitedObjects.Contains(Object))
+					{
+						VisitedObjects.Add(Object);
+						CollectStructObjectReferences(
+							Object->GetClass(),
+							Object,
+							OutReferences,
+							OutOwnedInstanced,
+							Owner,
+							VisitedObjects,
+							bDescendIntoOwnedInstanced);
+					}
+				}
+			}
+			return;
+		}
+
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		{
+			FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+			for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+			{
+				CollectPropertyObjectReferences(
+					ArrayProperty->Inner,
+					ArrayHelper.GetRawPtr(Index),
+					OutReferences,
+					OutOwnedInstanced,
+					Owner,
+					VisitedObjects,
+					bDescendIntoOwnedInstanced);
+			}
+			return;
+		}
+
+		if (const FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+		{
+			FScriptMapHelper MapHelper(MapProperty, ValuePtr);
+			for (int32 Index = 0; Index < MapHelper.GetMaxIndex(); ++Index)
+			{
+				if (!MapHelper.IsValidIndex(Index))
+				{
+					continue;
+				}
+
+				CollectPropertyObjectReferences(
+					MapProperty->KeyProp,
+					MapHelper.GetKeyPtr(Index),
+					OutReferences,
+					OutOwnedInstanced,
+					Owner,
+					VisitedObjects,
+					bDescendIntoOwnedInstanced);
+				CollectPropertyObjectReferences(
+					MapProperty->ValueProp,
+					MapHelper.GetValuePtr(Index),
+					OutReferences,
+					OutOwnedInstanced,
+					Owner,
+					VisitedObjects,
+					bDescendIntoOwnedInstanced);
+			}
+			return;
+		}
+
+		if (const FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+		{
+			FScriptSetHelper SetHelper(SetProperty, ValuePtr);
+			for (int32 Index = 0; Index < SetHelper.GetMaxIndex(); ++Index)
+			{
+				if (!SetHelper.IsValidIndex(Index))
+				{
+					continue;
+				}
+
+				CollectPropertyObjectReferences(
+					SetProperty->ElementProp,
+					SetHelper.GetElementPtr(Index),
+					OutReferences,
+					OutOwnedInstanced,
+					Owner,
+					VisitedObjects,
+					bDescendIntoOwnedInstanced);
+			}
+			return;
+		}
+
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			CollectStructObjectReferences(
+				StructProperty->Struct,
+				ValuePtr,
+				OutReferences,
+				OutOwnedInstanced,
+				Owner,
+				VisitedObjects,
+				bDescendIntoOwnedInstanced);
+		}
+	}
+
+	void CollectStructObjectReferences(
+		const UStruct* StructType,
+		const void* StructData,
+		TSet<const UObject*>& OutReferences,
+		TSet<UObject*>& OutOwnedInstanced,
+		const UObject* Owner,
+		TSet<const UObject*>& VisitedObjects,
+		bool bDescendIntoOwnedInstanced)
+	{
+		if (StructType == nullptr || StructData == nullptr)
+		{
+			return;
+		}
+
+		if (StructType == FInstancedStruct::StaticStruct())
+		{
+			const FInstancedStruct* Instance = static_cast<const FInstancedStruct*>(StructData);
+			if (Instance->IsValid())
+			{
+				CollectStructObjectReferences(
+					Instance->GetScriptStruct(),
+					Instance->GetMemory(),
+					OutReferences,
+					OutOwnedInstanced,
+					Owner,
+					VisitedObjects,
+					bDescendIntoOwnedInstanced);
+			}
+			return;
+		}
+
+		for (TFieldIterator<FProperty> It(StructType); It; ++It)
+		{
+			CollectPropertyObjectReferences(
+				*It,
+				It->ContainerPtrToValuePtr<void>(StructData),
+				OutReferences,
+				OutOwnedInstanced,
+				Owner,
+				VisitedObjects,
+				bDescendIntoOwnedInstanced);
+		}
+	}
+
+	/** Protected set: everything a value reaches through owned instanced objects, with the visited set
+	 *  terminating instanced cycles (UWidget::Slot <-> UPanelSlot::Content). Used to decide what must stay
+	 *  alive; it never widens the retirement candidates. */
+	void CollectReachableObjectReferences(
+		const FProperty* Property,
+		const void* ValuePtr,
+		TSet<const UObject*>& OutReferences,
+		TSet<UObject*>& OutOwnedInstanced,
+		const UObject* Owner)
+	{
+		TSet<const UObject*> VisitedObjects;
+		CollectPropertyObjectReferences(
+			Property, ValuePtr, OutReferences, OutOwnedInstanced, Owner, VisitedObjects,
+			/*bDescendIntoOwnedInstanced*/ true);
+	}
+
+	/** Candidate set: only the instanced objects the value itself holds. A child that is reachable only
+	 *  through another instanced object is not this write's to retire. */
+	void CollectDirectObjectReferences(
+		const FProperty* Property,
+		const void* ValuePtr,
+		TSet<const UObject*>& OutReferences,
+		TSet<UObject*>& OutOwnedInstanced,
+		const UObject* Owner)
+	{
+		TSet<const UObject*> VisitedObjects;
+		CollectPropertyObjectReferences(
+			Property, ValuePtr, OutReferences, OutOwnedInstanced, Owner, VisitedObjects,
+			/*bDescendIntoOwnedInstanced*/ false);
+	}
+
+	/** JSON type name used by refusal warnings. */
+	const TCHAR* JsonTypeName(const TSharedPtr<FJsonValue>& JsonValue)
+	{
+		if (!JsonValue.IsValid())
+		{
+			return TEXT("Invalid");
+		}
+
+		switch (JsonValue->Type)
+		{
+		case EJson::None:
+			return TEXT("None");
+		case EJson::Null:
+			return TEXT("Null");
+		case EJson::String:
+			return TEXT("String");
+		case EJson::Number:
+			return TEXT("Number");
+		case EJson::Boolean:
+			return TEXT("Boolean");
+		case EJson::Array:
+			return TEXT("Array");
+		case EJson::Object:
+			return TEXT("Object");
+		default:
+			return TEXT("Unknown");
+		}
+	}
+
+	/** Records a refusal that names the property, the JSON type it accepts and the type it received. */
+	void AddJsonTypeMismatchWarning(
+		TArray<FString>& OutWarnings,
+		const FProperty* Property,
+		const TCHAR* ExpectedType,
+		const TSharedPtr<FJsonValue>& JsonValue)
+	{
+		OutWarnings.Add(FString::Printf(
+			TEXT("Property '%s' expects a JSON %s value but received %s"),
+			*Property->GetName(),
+			ExpectedType,
+			JsonTypeName(JsonValue)));
+	}
+
+	/** Numeric gate: a JSON number, or a JSON string that parses completely as a number ("5", not "abc"). */
+	bool GetNumericJsonProbe(const TSharedPtr<FJsonValue>& JsonValue, double& OutProbe)
+	{
+		if (!JsonValue.IsValid())
+		{
+			return false;
+		}
+
+		if (JsonValue->Type != EJson::Number && JsonValue->Type != EJson::String)
+		{
+			return false;
+		}
+
+		// The typed integer overloads of a JSON string lex without a range check (and yield 0 for text),
+		// so the numeric gate asks the double overload, which reports whether the string is numeric.
+		return JsonValue->TryGetNumber(OutProbe);
+	}
+
+	/** Range gates applied to the numeric probe before the value is applied to a scalar property. */
+	bool FitsInt32(double Value)
+	{
+		return Value >= static_cast<double>(TNumericLimits<int32>::Min())
+			&& Value <= static_cast<double>(TNumericLimits<int32>::Max());
+	}
+
+	bool FitsInt64(double Value)
+	{
+		// 2^63-1 is not exactly representable as a double, so compare against the exact power of two.
+		return Value >= -9223372036854775808.0 && Value < 9223372036854775808.0;
+	}
+
+	bool FitsUInt8(double Value)
+	{
+		return Value >= 0.0 && Value <= static_cast<double>(TNumericLimits<uint8>::Max());
+	}
+
+	bool FitsFloat(double Value)
+	{
+		return Value >= -static_cast<double>(TNumericLimits<float>::Max())
+			&& Value <= static_cast<double>(TNumericLimits<float>::Max());
+	}
+
+	/**
+	 * Applies a validated numeric JSON value to an integer scalar. A JSON number truncates toward zero
+	 * from the probe, matching the historical static_cast behaviour; a numeric string keeps the exact
+	 * integer lexer so large values do not lose precision through a double.
+	 */
+	template <typename NumericType>
+	bool TryGetIntegerJsonValue(const TSharedPtr<FJsonValue>& JsonValue, double NumericProbe, NumericType& OutValue)
+	{
+		if (JsonValue->Type != EJson::String)
+		{
+			OutValue = static_cast<NumericType>(NumericProbe);
+			return true;
+		}
+
+		return JsonValue->TryGetNumber(OutValue);
+	}
+
+	/** Records that a numeric value cannot be represented by the target property. */
+	void AddJsonRangeWarning(
+		TArray<FString>& OutWarnings,
+		const FProperty* Property,
+		const TSharedPtr<FJsonValue>& JsonValue)
+	{
+		OutWarnings.Add(FString::Printf(
+			TEXT("Property '%s' cannot store the JSON %s value %s: out of range"),
+			*Property->GetName(),
+			JsonTypeName(JsonValue),
+			*JsonValue->AsString()));
+	}
+
+	/** Warns with the declared enumerator names for a value the enum does not accept. */
+	void AddEnumValueWarning(TArray<FString>& OutWarnings, const UEnum* Enum, const FString& InputValue)
+	{
+		TArray<FString> ValidValues;
+		for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
+		{
+			ValidValues.Add(Enum->GetNameStringByIndex(Index));
+		}
+
+		OutWarnings.Add(FString::Printf(
+			TEXT("Unknown enum value '%s' for %s. Valid: %s"),
+			*InputValue, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
+	}
+
+	/**
+	 * Resolves a JSON enum value: a declared enumerator name, or a numeric value the enum accepts.
+	 * Numeric values must be declared (flag enums additionally accept flag combinations), so a value
+	 * outside the enum is refused instead of being stored or wrapped.
+	 */
+	bool TryResolveEnumJsonValue(
+		const TSharedPtr<FJsonValue>& JsonValue,
+		const FProperty* Property,
+		const UEnum* Enum,
+		int64& OutValue,
+		TArray<FString>& OutWarnings)
+	{
+		double NumericProbe = 0.0;
+		if (GetNumericJsonProbe(JsonValue, NumericProbe))
+		{
+			// A numeric enum value must name a declared enumerator exactly: a fractional value must not
+			// round or truncate into a different enumerator.
+			if (!FitsInt64(NumericProbe) || FMath::TruncToDouble(NumericProbe) != NumericProbe)
+			{
+				AddEnumValueWarning(OutWarnings, Enum, JsonValue->AsString());
+				return false;
+			}
+
+			const int64 EnumValue = static_cast<int64>(NumericProbe);
+			if (!Enum->IsValidEnumValueOrBitfield(EnumValue))
+			{
+				AddEnumValueWarning(
+					OutWarnings, Enum, FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue)));
+				return false;
+			}
+
+			OutValue = EnumValue;
+			return true;
+		}
+
+		if (JsonValue->Type != EJson::String)
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("String or Number"), JsonValue);
+			return false;
+		}
+
+		const FString InputValue = JsonValue->AsString();
+		const int64 EnumValue = Enum->GetValueByNameString(InputValue);
+		if (EnumValue == INDEX_NONE)
+		{
+			AddEnumValueWarning(OutWarnings, Enum, InputValue);
+			return false;
+		}
+
+		OutValue = EnumValue;
+		return true;
+	}
+
+	/** Owns a temporary, initialized value buffer so container writes can be converted before they commit. */
+	struct FTemporaryPropertyValue
+	{
+		explicit FTemporaryPropertyValue(const FProperty* InProperty)
+			: Property(InProperty)
+			, Value(FMemory::Malloc(
+				static_cast<SIZE_T>(Property->GetSize()),
+				static_cast<uint32>(Property->GetMinAlignment())))
+		{
+			Property->InitializeValue(Value);
+		}
+
+		~FTemporaryPropertyValue()
+		{
+			Property->DestroyValue(Value);
+			FMemory::Free(Value);
+		}
+
+		FTemporaryPropertyValue(const FTemporaryPropertyValue&) = delete;
+		FTemporaryPropertyValue& operator=(const FTemporaryPropertyValue&) = delete;
+
+		void* Get() const
+		{
+			return Value;
+		}
+
+		const FProperty* Property = nullptr;
+		void* Value = nullptr;
+	};
 
 	void AppendSerializationIssues(FCortexPropertySerializationResult& Target, const FCortexPropertySerializationResult& Source)
 	{
@@ -991,38 +1471,9 @@ namespace
 
 TSharedPtr<FJsonObject> FCortexSerializer::StructToJson(const UStruct* StructType, const void* StructData)
 {
-	TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
-
-	if (StructType == nullptr || StructData == nullptr)
-	{
-		return JsonObject;
-	}
-
-	// Special case: if the top-level struct IS an FInstancedStruct, unwrap it
-	if (StructType == FInstancedStruct::StaticStruct())
-	{
-		const FInstancedStruct* Instance = static_cast<const FInstancedStruct*>(StructData);
-		if (Instance->IsValid())
-		{
-			JsonObject = StructToJson(Instance->GetScriptStruct(), Instance->GetMemory());
-			JsonObject->SetStringField(TEXT("_struct_type"), Instance->GetScriptStruct()->GetName());
-		}
-		return JsonObject;
-	}
-
-	for (TFieldIterator<FProperty> It(StructType); It; ++It)
-	{
-		const FProperty* Property = *It;
-		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(StructData);
-
-		TSharedPtr<FJsonValue> JsonValue = PropertyToJson(Property, ValuePtr);
-		if (JsonValue.IsValid())
-		{
-			JsonObject->SetField(Property->GetName(), JsonValue);
-		}
-	}
-
-	return JsonObject;
+	TArray<const UObject*> ExpandedObjects;
+	return StructToJsonInternal(
+		StructType, StructData, nullptr, ExpandedObjects, 0, FCortexSerializationPolicy().MaxDepth);
 }
 
 TSharedPtr<FJsonObject> FCortexSerializer::StructToJson(const UStruct* StructType, const void* StructData, const TSet<FString>& FieldFilter)
@@ -1032,6 +1483,19 @@ TSharedPtr<FJsonObject> FCortexSerializer::StructToJson(const UStruct* StructTyp
 		return StructToJson(StructType, StructData);
 	}
 
+	TArray<const UObject*> ExpandedObjects;
+	return StructToJsonInternal(
+		StructType, StructData, &FieldFilter, ExpandedObjects, 0, FCortexSerializationPolicy().MaxDepth);
+}
+
+TSharedPtr<FJsonObject> FCortexSerializer::StructToJsonInternal(
+	const UStruct* StructType,
+	const void* StructData,
+	const TSet<FString>* FieldFilter,
+	TArray<const UObject*>& ExpandedObjects,
+	int32 Depth,
+	int32 MaxDepth)
+{
 	TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
 
 	if (StructType == nullptr || StructData == nullptr)
@@ -1039,17 +1503,31 @@ TSharedPtr<FJsonObject> FCortexSerializer::StructToJson(const UStruct* StructTyp
 		return JsonObject;
 	}
 
+	// Special case: if the unfiltered top-level struct IS an FInstancedStruct, unwrap it. The filtered
+	// overload keeps filtering the given struct's own properties, as it always has.
+	if (FieldFilter == nullptr && StructType == FInstancedStruct::StaticStruct())
+	{
+		const FInstancedStruct* Instance = static_cast<const FInstancedStruct*>(StructData);
+		if (Instance->IsValid())
+		{
+			JsonObject = StructToJsonInternal(
+				Instance->GetScriptStruct(), Instance->GetMemory(), FieldFilter, ExpandedObjects, Depth, MaxDepth);
+			JsonObject->SetStringField(TEXT("_struct_type"), Instance->GetScriptStruct()->GetName());
+		}
+		return JsonObject;
+	}
+
 	for (TFieldIterator<FProperty> It(StructType); It; ++It)
 	{
 		const FProperty* Property = *It;
-		if (!FieldFilter.Contains(Property->GetName()))
+		if (FieldFilter != nullptr && !FieldFilter->Contains(Property->GetName()))
 		{
 			continue;
 		}
 
 		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(StructData);
 
-		TSharedPtr<FJsonValue> JsonValue = PropertyToJson(Property, ValuePtr);
+		TSharedPtr<FJsonValue> JsonValue = PropertyToJsonInternal(Property, ValuePtr, ExpandedObjects, Depth, MaxDepth);
 		if (JsonValue.IsValid())
 		{
 			JsonObject->SetField(Property->GetName(), JsonValue);
@@ -1078,6 +1556,17 @@ TSharedPtr<FJsonObject> FCortexSerializer::NonDefaultPropertiesToJson(const UObj
 }
 
 TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Property, const void* ValuePtr)
+{
+	TArray<const UObject*> ExpandedObjects;
+	return PropertyToJsonInternal(Property, ValuePtr, ExpandedObjects, 0, FCortexSerializationPolicy().MaxDepth);
+}
+
+TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJsonInternal(
+	const FProperty* Property,
+	const void* ValuePtr,
+	TArray<const UObject*>& ExpandedObjects,
+	int32 Depth,
+	int32 MaxDepth)
 {
 	if (Property == nullptr || ValuePtr == nullptr)
 	{
@@ -1183,7 +1672,8 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 			const FInstancedStruct* Instance = static_cast<const FInstancedStruct*>(ValuePtr);
 			if (Instance->IsValid())
 			{
-				TSharedPtr<FJsonObject> Obj = StructToJson(Instance->GetScriptStruct(), Instance->GetMemory());
+				TSharedPtr<FJsonObject> Obj = StructToJsonInternal(
+					Instance->GetScriptStruct(), Instance->GetMemory(), nullptr, ExpandedObjects, Depth, MaxDepth);
 				Obj->SetStringField(TEXT("_struct_type"), Instance->GetScriptStruct()->GetName());
 				return MakeShared<FJsonValueObject>(Obj);
 			}
@@ -1198,7 +1688,8 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 		}
 
 		// Default: recursive struct serialization
-		TSharedPtr<FJsonObject> NestedObj = StructToJson(StructProp->Struct, ValuePtr);
+		TSharedPtr<FJsonObject> NestedObj = StructToJsonInternal(
+			StructProp->Struct, ValuePtr, nullptr, ExpandedObjects, Depth, MaxDepth);
 		return MakeShared<FJsonValueObject>(NestedObj);
 	}
 
@@ -1212,7 +1703,8 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 		for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
 		{
 			const void* ElementPtr = ArrayHelper.GetRawPtr(Index);
-			TSharedPtr<FJsonValue> ElementValue = PropertyToJson(ArrayProp->Inner, ElementPtr);
+			TSharedPtr<FJsonValue> ElementValue = PropertyToJsonInternal(
+				ArrayProp->Inner, ElementPtr, ExpandedObjects, Depth, MaxDepth);
 			if (ElementValue.IsValid())
 			{
 				JsonArray.Add(ElementValue);
@@ -1242,7 +1734,8 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 
 			// Get value
 			const void* MapValuePtr = MapHelper.GetValuePtr(Index);
-			TSharedPtr<FJsonValue> JsonValue = PropertyToJson(MapProp->ValueProp, MapValuePtr);
+			TSharedPtr<FJsonValue> JsonValue = PropertyToJsonInternal(
+				MapProp->ValueProp, MapValuePtr, ExpandedObjects, Depth, MaxDepth);
 			if (JsonValue.IsValid())
 			{
 				MapObj->SetField(KeyString, JsonValue);
@@ -1266,7 +1759,8 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 			}
 
 			const void* ElementPtr = SetHelper.GetElementPtr(Index);
-			TSharedPtr<FJsonValue> ElementValue = PropertyToJson(SetProp->ElementProp, ElementPtr);
+			TSharedPtr<FJsonValue> ElementValue = PropertyToJsonInternal(
+				SetProp->ElementProp, ElementPtr, ExpandedObjects, Depth, MaxDepth);
 			if (ElementValue.IsValid())
 			{
 				JsonArray.Add(ElementValue);
@@ -1285,9 +1779,21 @@ TSharedPtr<FJsonValue> FCortexSerializer::PropertyToJson(const FProperty* Proper
 			// Instanced sub-object: serialize as {"_class": "...", "properties": {...}}
 			if (Property->HasAllPropertyFlags(CPF_InstancedReference))
 			{
+				// Cycles (UWidget::Slot -> UPanelSlot::Content -> Slot) and pathological depth would
+				// otherwise recurse forever. The non-instanced representation is the object path.
+				if (ExpandedObjects.Contains(Object) || Depth >= MaxDepth)
+				{
+					return MakeShared<FJsonValueString>(Object->GetPathName());
+				}
+
 				TSharedPtr<FJsonObject> SubObj = MakeShared<FJsonObject>();
 				SubObj->SetStringField(TEXT("_class"), Object->GetClass()->GetName());
-				TSharedPtr<FJsonObject> Props = StructToJson(Object->GetClass(), static_cast<const void*>(Object));
+
+				ExpandedObjects.Add(Object);
+				TSharedPtr<FJsonObject> Props = StructToJsonInternal(
+					Object->GetClass(), static_cast<const void*>(Object), nullptr, ExpandedObjects, Depth + 1, MaxDepth);
+				ExpandedObjects.Pop(EAllowShrinking::No);
+
 				if (Props.IsValid() && Props->Values.Num() > 0)
 				{
 					SubObj->SetObjectField(TEXT("properties"), Props);
@@ -1377,49 +1883,118 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	// Bool
 	if (const FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
 	{
-		BoolProp->SetPropertyValue(ValuePtr, JsonValue->AsBool());
+		bool BoolValue = false;
+		if (JsonValue->Type != EJson::Boolean || !JsonValue->TryGetBool(BoolValue))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("Boolean"), JsonValue);
+			return false;
+		}
+
+		BoolProp->SetPropertyValue(ValuePtr, BoolValue);
 		return true;
 	}
 
 	// Int
 	if (const FIntProperty* IntProp = CastField<FIntProperty>(Property))
 	{
-		IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(JsonValue->AsNumber()));
+		double NumericProbe = 0.0;
+		if (!GetNumericJsonProbe(JsonValue, NumericProbe))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("Number"), JsonValue);
+			return false;
+		}
+
+		int32 IntValue = 0;
+		if (!FitsInt32(NumericProbe) || !TryGetIntegerJsonValue(JsonValue, NumericProbe, IntValue))
+		{
+			AddJsonRangeWarning(OutWarnings, Property, JsonValue);
+			return false;
+		}
+
+		IntProp->SetPropertyValue(ValuePtr, IntValue);
 		return true;
 	}
 
 	// Int64
 	if (const FInt64Property* Int64Prop = CastField<FInt64Property>(Property))
 	{
-		Int64Prop->SetPropertyValue(ValuePtr, static_cast<int64>(JsonValue->AsNumber()));
+		double NumericProbe = 0.0;
+		if (!GetNumericJsonProbe(JsonValue, NumericProbe))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("Number"), JsonValue);
+			return false;
+		}
+
+		int64 Int64Value = 0;
+		if (!FitsInt64(NumericProbe) || !TryGetIntegerJsonValue(JsonValue, NumericProbe, Int64Value))
+		{
+			AddJsonRangeWarning(OutWarnings, Property, JsonValue);
+			return false;
+		}
+
+		Int64Prop->SetPropertyValue(ValuePtr, Int64Value);
 		return true;
 	}
 
 	// Float
 	if (const FFloatProperty* FloatProp = CastField<FFloatProperty>(Property))
 	{
-		FloatProp->SetPropertyValue(ValuePtr, static_cast<float>(JsonValue->AsNumber()));
+		double NumericProbe = 0.0;
+		if (!GetNumericJsonProbe(JsonValue, NumericProbe))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("Number"), JsonValue);
+			return false;
+		}
+
+		if (!FitsFloat(NumericProbe))
+		{
+			AddJsonRangeWarning(OutWarnings, Property, JsonValue);
+			return false;
+		}
+
+		FloatProp->SetPropertyValue(ValuePtr, static_cast<float>(NumericProbe));
 		return true;
 	}
 
 	// Double
 	if (const FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(Property))
 	{
-		DoubleProp->SetPropertyValue(ValuePtr, JsonValue->AsNumber());
+		double DoubleValue = 0.0;
+		if (!GetNumericJsonProbe(JsonValue, DoubleValue))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("Number"), JsonValue);
+			return false;
+		}
+
+		DoubleProp->SetPropertyValue(ValuePtr, DoubleValue);
 		return true;
 	}
 
 	// FString
 	if (const FStrProperty* StrProp = CastField<FStrProperty>(Property))
 	{
-		StrProp->SetPropertyValue(ValuePtr, JsonValue->AsString());
+		FString StringValue;
+		if (JsonValue->Type != EJson::String || !JsonValue->TryGetString(StringValue))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("String"), JsonValue);
+			return false;
+		}
+
+		StrProp->SetPropertyValue(ValuePtr, StringValue);
 		return true;
 	}
 
 	// FName
 	if (const FNameProperty* NameProp = CastField<FNameProperty>(Property))
 	{
-		NameProp->SetPropertyValue(ValuePtr, FName(*JsonValue->AsString()));
+		FString NameText;
+		if (JsonValue->Type != EJson::String || !JsonValue->TryGetString(NameText))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("String"), JsonValue);
+			return false;
+		}
+
+		NameProp->SetPropertyValue(ValuePtr, FName(*NameText));
 		return true;
 	}
 
@@ -1439,33 +2014,18 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
 	{
 		const UEnum* Enum = EnumProp->GetEnum();
-		int64 EnumValue = INDEX_NONE;
-		FString InputValue;
-
-		if (JsonValue->Type == EJson::Number)
+		if (Enum == nullptr)
 		{
-			EnumValue = static_cast<int64>(JsonValue->AsNumber());
-			InputValue = FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue));
-		}
-		else
-		{
-			InputValue = JsonValue->AsString();
-			EnumValue = Enum->GetValueByNameString(InputValue);
-		}
-
-		if (EnumValue == INDEX_NONE)
-		{
-			TArray<FString> ValidValues;
-			for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
-			{
-				ValidValues.Add(Enum->GetNameStringByIndex(Index));
-			}
-
-			OutWarnings.Add(FString::Printf(
-				TEXT("Unknown enum value '%s' for %s. Valid: %s"),
-				*InputValue, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
+			OutWarnings.Add(FString::Printf(TEXT("Enum property '%s' has no enum"), *Property->GetName()));
 			return false;
 		}
+
+		int64 EnumValue = 0;
+		if (!TryResolveEnumJsonValue(JsonValue, Property, Enum, EnumValue, OutWarnings))
+		{
+			return false;
+		}
+
 		FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
 		UnderlyingProp->SetIntPropertyValue(ValuePtr, EnumValue);
 		return true;
@@ -1476,37 +2036,41 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	{
 		if (const UEnum* Enum = ByteProp->GetIntPropertyEnum())
 		{
-			int64 EnumValue = INDEX_NONE;
-			FString InputValue;
-
-			if (JsonValue->Type == EJson::Number)
+			int64 EnumValue = 0;
+			if (!TryResolveEnumJsonValue(JsonValue, Property, Enum, EnumValue, OutWarnings))
 			{
-				EnumValue = static_cast<int64>(JsonValue->AsNumber());
-				InputValue = FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue));
-			}
-			else
-			{
-				InputValue = JsonValue->AsString();
-				EnumValue = Enum->GetValueByNameString(InputValue);
-			}
-
-			if (EnumValue == INDEX_NONE)
-			{
-				TArray<FString> ValidValues;
-				for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
-				{
-					ValidValues.Add(Enum->GetNameStringByIndex(Index));
-				}
-
-				OutWarnings.Add(FString::Printf(
-					TEXT("Unknown enum value '%s' for %s. Valid: %s"),
-					*InputValue, *Enum->GetName(), *FString::Join(ValidValues, TEXT(", "))));
 				return false;
 			}
+
+			if (EnumValue < 0 || EnumValue > TNumericLimits<uint8>::Max())
+			{
+				AddEnumValueWarning(
+					OutWarnings, Enum, FString::Printf(TEXT("%lld"), static_cast<long long>(EnumValue)));
+				return false;
+			}
+
 			ByteProp->SetPropertyValue(ValuePtr, static_cast<uint8>(EnumValue));
 			return true;
 		}
-		ByteProp->SetPropertyValue(ValuePtr, static_cast<uint8>(JsonValue->AsNumber()));
+
+		double NumericProbe = 0.0;
+		if (!GetNumericJsonProbe(JsonValue, NumericProbe))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("Number"), JsonValue);
+			return false;
+		}
+
+		if (!FitsUInt8(NumericProbe))
+		{
+			AddJsonRangeWarning(OutWarnings, Property, JsonValue);
+			return false;
+		}
+
+		// Byte values truncate toward zero for numbers and numeric strings alike; the byte accessor
+		// would round instead.
+		const uint8 ByteValue = static_cast<uint8>(NumericProbe);
+
+		ByteProp->SetPropertyValue(ValuePtr, ByteValue);
 		return true;
 	}
 
@@ -1544,16 +2108,25 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 					return false;
 				}
 
+				// Convert into a detached struct value first: a refused element must change nothing.
+				FTemporaryPropertyValue TempValue(Property);
 				bool bSuccess = true;
 				for (int32 i = 0; i < Fields.Num(); ++i)
 				{
-					void* FieldPtr = Fields[i]->ContainerPtrToValuePtr<void>(ValuePtr);
+					void* FieldPtr = Fields[i]->ContainerPtrToValuePtr<void>(TempValue.Get());
 					if (!JsonToProperty((*JsonArray)[i], Fields[i], FieldPtr, Outer, OutWarnings))
 					{
 						bSuccess = false;
 					}
 				}
-				return bSuccess;
+
+				if (!bSuccess)
+				{
+					return false;
+				}
+
+				StructProp->CopyCompleteValue(ValuePtr, TempValue.Get());
+				return true;
 			}
 		}
 		// ── End array-to-struct promotion ───────────────────────────────────────
@@ -1561,7 +2134,13 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		// FGameplayTag - deserialize from tag string
 		if (StructProp->Struct == FGameplayTag::StaticStruct())
 		{
-			const FString TagString = JsonValue->AsString();
+			FString TagString;
+			if (JsonValue->Type != EJson::String || !JsonValue->TryGetString(TagString))
+			{
+				AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("String"), JsonValue);
+				return false;
+			}
+
 			FGameplayTag* Tag = static_cast<FGameplayTag*>(ValuePtr);
 			if (TagString.IsEmpty())
 			{
@@ -1585,11 +2164,12 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			const TArray<TSharedPtr<FJsonValue>>* JsonArray = nullptr;
 			if (!JsonValue->TryGetArray(JsonArray) || JsonArray == nullptr)
 			{
-				OutWarnings.Add(TEXT("Expected array for FGameplayTagContainer"));
+				AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("Array"), JsonValue);
 				return false;
 			}
-			FGameplayTagContainer* Container = static_cast<FGameplayTagContainer*>(ValuePtr);
-			Container->Reset();
+
+			// Convert into a detached container first: a failing element must not touch the live value.
+			FGameplayTagContainer BuiltContainer;
 			bool bAllTagsValid = true;
 			for (const TSharedPtr<FJsonValue>& Element : *JsonArray)
 			{
@@ -1597,8 +2177,16 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 				{
 					continue;
 				}
-				const FString TagString = Element->AsString();
-				FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagString), false);
+
+				FString TagString;
+				if (Element->Type != EJson::String || !Element->TryGetString(TagString))
+				{
+					AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("String"), Element);
+					bAllTagsValid = false;
+					continue;
+				}
+
+				const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagString), false);
 				if (!Tag.IsValid())
 				{
 					OutWarnings.Add(FString::Printf(
@@ -1607,9 +2195,17 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 					bAllTagsValid = false;
 					continue;
 				}
-				Container->AddTag(Tag);
+
+				BuiltContainer.AddTag(Tag);
 			}
-			return bAllTagsValid;
+
+			if (!bAllTagsValid)
+			{
+				return false;
+			}
+
+			*static_cast<FGameplayTagContainer*>(ValuePtr) = MoveTemp(BuiltContainer);
+			return true;
 		}
 
 		// FInstancedStruct - deserialize with _struct_type discriminator
@@ -1646,8 +2242,15 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		// FSoftObjectPath - deserialize from string path
 		if (StructProp->Struct == TBaseStructure<FSoftObjectPath>::Get())
 		{
+			FString PathString;
+			if (JsonValue->Type != EJson::String || !JsonValue->TryGetString(PathString))
+			{
+				AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("String"), JsonValue);
+				return false;
+			}
+
 			FSoftObjectPath* SoftPath = static_cast<FSoftObjectPath*>(ValuePtr);
-			SoftPath->SetPath(JsonValue->AsString());
+			SoftPath->SetPath(PathString);
 			return true;
 		}
 
@@ -1667,43 +2270,107 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		const TArray<TSharedPtr<FJsonValue>>* JsonArray = nullptr;
 		if (!JsonValue->TryGetArray(JsonArray) || JsonArray == nullptr)
 		{
-			OutWarnings.Add(FString::Printf(TEXT("Expected array for property '%s'"), *Property->GetName()));
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("Array"), JsonValue);
 			return false;
 		}
 
-		FScriptArrayHelper ArrayHelper(ArrayProp, ValuePtr);
+		// Stage with deferred retirement: the staging is seeded from the live value and therefore shares its
+		// sub-objects, so nothing may be marked garbage until the staged value is committed.
+		FTemporaryPropertyValue TempValue(Property);
+		FScriptArrayHelper TempHelper(ArrayProp, TempValue.Get());
 
-		// Clean up existing instanced sub-objects before resize
-		if (ArrayProp->Inner->HasAllPropertyFlags(CPF_InstancedReference))
+		bool bSuccess = true;
+		bool bRootStage = false;
 		{
-			if (const FObjectProperty* InnerObjProp = CastField<FObjectProperty>(ArrayProp->Inner))
+			FDeferredRetireScope DeferredScope;
+			bRootStage = DeferredScope.IsRoot();
+
+			// Seed from the live value so retained elements keep the members the JSON omits.
 			{
-				for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+				FScriptArrayHelper LiveHelper(ArrayProp, ValuePtr);
+				const int32 LiveNum = LiveHelper.Num();
+				TempHelper.AddValues(LiveNum);
+				for (int32 Index = 0; Index < LiveNum; ++Index)
 				{
-					RetireOwnedSubObject(InnerObjProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(i)), Outer);
+					ArrayProp->Inner->CopyCompleteValue(TempHelper.GetRawPtr(Index), LiveHelper.GetRawPtr(Index));
+				}
+			}
+
+			TempHelper.Resize(JsonArray->Num());
+
+			for (int32 Index = 0; Index < JsonArray->Num(); ++Index)
+			{
+				if (!JsonToProperty((*JsonArray)[Index], ArrayProp->Inner, TempHelper.GetRawPtr(Index), Outer, OutWarnings))
+				{
+					OutWarnings.Add(FString::Printf(
+						TEXT("Failed to deserialize element %d of array property '%s'"),
+						Index,
+						*Property->GetName()));
+					bSuccess = false;
 				}
 			}
 		}
 
-		const int32 OriginalNum = ArrayHelper.Num();
-		ArrayHelper.Resize(JsonArray->Num());
-		bool bSuccess = true;
-		for (int32 Index = 0; Index < JsonArray->Num(); ++Index)
-		{
-			if (!JsonToProperty((*JsonArray)[Index], ArrayProp->Inner, ArrayHelper.GetRawPtr(Index), Outer, OutWarnings))
-			{
-				OutWarnings.Add(FString::Printf(
-					TEXT("Failed to deserialize element %d of array property '%s'"),
-					Index,
-					*Property->GetName()));
-				bSuccess = false;
-			}
-		}
 		if (!bSuccess)
 		{
-			ArrayHelper.Resize(OriginalNum);
+			// Nothing the live value references may be retired; only sub-objects this staging created.
+			if (bRootStage)
+			{
+				TSet<const UObject*> LiveReferences;
+				TSet<UObject*> LiveOwnedInstanced;
+				CollectReachableObjectReferences(Property, ValuePtr, LiveReferences, LiveOwnedInstanced, Outer);
+
+				for (UObject* Created : DeferredRetirement.Created)
+				{
+					if (!LiveReferences.Contains(Created))
+					{
+						RetireOwnedSubObject(Created, Outer);
+					}
+				}
+			}
+			return false;
 		}
-		return bSuccess;
+
+		if (bRootStage)
+		{
+			// Commit: retire the direct owned instanced sub-objects the committed value no longer reaches.
+			TSet<const UObject*> CommittedReferences;
+			TSet<UObject*> CommittedOwnedInstanced;
+			CollectReachableObjectReferences(Property, TempValue.Get(), CommittedReferences, CommittedOwnedInstanced, Outer);
+
+			// Candidates are the direct owned instanced objects of the old value; the committed reachable set
+			// above protects everything it still reaches, so a child referenced from elsewhere on the owner
+			// survives even though the container no longer holds it.
+			TSet<const UObject*> LiveReferences;
+			TSet<UObject*> LiveOwnedInstanced;
+			CollectDirectObjectReferences(Property, ValuePtr, LiveReferences, LiveOwnedInstanced, Outer);
+
+			for (UObject* Owned : LiveOwnedInstanced)
+			{
+				if (!CommittedReferences.Contains(Owned))
+				{
+					RetireOwnedSubObject(Owned, Outer);
+				}
+			}
+
+			// Sub-objects this staging created but the committed value does not keep are leftovers.
+			for (UObject* Created : DeferredRetirement.Created)
+			{
+				if (!CommittedReferences.Contains(Created))
+				{
+					RetireOwnedSubObject(Created, Outer);
+				}
+			}
+		}
+
+		FScriptArrayHelper ArrayHelper(ArrayProp, ValuePtr);
+		ArrayHelper.EmptyValues();
+		ArrayHelper.AddValues(TempHelper.Num());
+		for (int32 Index = 0; Index < TempHelper.Num(); ++Index)
+		{
+			ArrayProp->Inner->CopyCompleteValue(ArrayHelper.GetRawPtr(Index), TempHelper.GetRawPtr(Index));
+		}
+		return true;
 	}
 
 	// Map property
@@ -1712,43 +2379,118 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 		const TSharedPtr<FJsonObject>* MapObj = nullptr;
 		if (!JsonValue->TryGetObject(MapObj) || MapObj == nullptr || !(*MapObj).IsValid())
 		{
-			OutWarnings.Add(FString::Printf(TEXT("Expected object for map property '%s'"), *Property->GetName()));
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("Object"), JsonValue);
 			return false;
 		}
 
-		FScriptMapHelper MapHelper(MapProp, ValuePtr);
+		// Stage with deferred retirement: nothing may be marked garbage until the staged map is committed.
+		FTemporaryPropertyValue TempValue(Property);
+		FScriptMapHelper TempHelper(MapProp, TempValue.Get());
 
-		// Clean up existing instanced sub-objects before clearing map
-		if (MapProp->ValueProp->HasAllPropertyFlags(CPF_InstancedReference))
+		bool bSuccess = true;
+		bool bRootStage = false;
 		{
-			if (const FObjectProperty* ValueObjProp = CastField<FObjectProperty>(MapProp->ValueProp))
+			FDeferredRetireScope DeferredScope;
+			bRootStage = DeferredScope.IsRoot();
+
+			for (const auto& MapPair : (*MapObj)->Values)
 			{
-				for (int32 i = 0; i < MapHelper.GetMaxIndex(); ++i)
+				const FString KeyString = CortexEngineCompat::JsonKeyToString(MapPair.Key);
+				const int32 NewIndex = TempHelper.AddDefaultValue_Invalid_NeedsRehash();
+
+				// Import key from string
+				void* KeyPtr = TempHelper.GetKeyPtr(NewIndex);
+				if (MapProp->KeyProp->ImportText_Direct(*KeyString, KeyPtr, nullptr, PPF_None) == nullptr)
 				{
-					if (MapHelper.IsValidIndex(i))
+					OutWarnings.Add(FString::Printf(
+						TEXT("Map property '%s' cannot parse key '%s' as %s"),
+						*Property->GetName(),
+						*KeyString,
+						*MapProp->KeyProp->GetClass()->GetName()));
+					bSuccess = false;
+					continue;
+				}
+
+				// Import value
+				void* MapValuePtr = TempHelper.GetValuePtr(NewIndex);
+				if (!JsonToProperty(MapPair.Value, MapProp->ValueProp, MapValuePtr, Outer, OutWarnings))
+				{
+					OutWarnings.Add(FString::Printf(
+						TEXT("Failed to deserialize value for key '%s' of map property '%s'"),
+						*KeyString,
+						*Property->GetName()));
+					bSuccess = false;
+				}
+			}
+
+			TempHelper.Rehash();
+		}
+
+		if (!bSuccess)
+		{
+			// Nothing the live value references may be retired; only sub-objects this staging created.
+			if (bRootStage)
+			{
+				TSet<const UObject*> LiveReferences;
+				TSet<UObject*> LiveOwnedInstanced;
+				CollectReachableObjectReferences(Property, ValuePtr, LiveReferences, LiveOwnedInstanced, Outer);
+
+				for (UObject* Created : DeferredRetirement.Created)
+				{
+					if (!LiveReferences.Contains(Created))
 					{
-						RetireOwnedSubObject(ValueObjProp->GetObjectPropertyValue(MapHelper.GetValuePtr(i)), Outer);
+						RetireOwnedSubObject(Created, Outer);
 					}
+				}
+			}
+			return false;
+		}
+
+		if (bRootStage)
+		{
+			// Commit: retire the direct owned instanced sub-objects the committed value no longer reaches.
+			TSet<const UObject*> CommittedReferences;
+			TSet<UObject*> CommittedOwnedInstanced;
+			CollectReachableObjectReferences(Property, TempValue.Get(), CommittedReferences, CommittedOwnedInstanced, Outer);
+
+			// Candidates are the direct owned instanced objects of the old value; the committed reachable set
+			// above protects everything it still reaches, so a child referenced from elsewhere on the owner
+			// survives even though the container no longer holds it.
+			TSet<const UObject*> LiveReferences;
+			TSet<UObject*> LiveOwnedInstanced;
+			CollectDirectObjectReferences(Property, ValuePtr, LiveReferences, LiveOwnedInstanced, Outer);
+
+			for (UObject* Owned : LiveOwnedInstanced)
+			{
+				if (!CommittedReferences.Contains(Owned))
+				{
+					RetireOwnedSubObject(Owned, Outer);
+				}
+			}
+
+			// Sub-objects this staging created but the committed value does not keep are leftovers.
+			for (UObject* Created : DeferredRetirement.Created)
+			{
+				if (!CommittedReferences.Contains(Created))
+				{
+					RetireOwnedSubObject(Created, Outer);
 				}
 			}
 		}
 
+		FScriptMapHelper MapHelper(MapProp, ValuePtr);
 		MapHelper.EmptyValues();
-
-		for (const auto& MapPair : (*MapObj)->Values)
+		for (int32 Index = 0; Index < TempHelper.GetMaxIndex(); ++Index)
 		{
-			int32 NewIndex = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
+			if (!TempHelper.IsValidIndex(Index))
+			{
+				continue;
+			}
 
-			// Import key from string
-			void* KeyPtr = MapHelper.GetKeyPtr(NewIndex);
-			const FString KeyString = CortexEngineCompat::JsonKeyToString(MapPair.Key);
-			MapProp->KeyProp->ImportText_Direct(*KeyString, KeyPtr, nullptr, PPF_None);
-
-			// Import value
-			void* MapValuePtr = MapHelper.GetValuePtr(NewIndex);
-			JsonToProperty(MapPair.Value, MapProp->ValueProp, MapValuePtr, Outer, OutWarnings);
+			const int32 NewIndex = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
+			MapProp->KeyProp->CopyCompleteValue(MapHelper.GetKeyPtr(NewIndex), TempHelper.GetKeyPtr(Index));
+			MapProp->ValueProp->CopyCompleteValue(MapHelper.GetValuePtr(NewIndex), TempHelper.GetValuePtr(Index));
 		}
-
 		MapHelper.Rehash();
 		return true;
 	}
@@ -1756,7 +2498,12 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 	// Soft object property
 	if (CastField<FSoftObjectProperty>(Property) != nullptr)
 	{
-		const FString ObjectPath = JsonValue->AsString();
+		FString ObjectPath;
+		if (JsonValue->Type != EJson::String || !JsonValue->TryGetString(ObjectPath))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("String"), JsonValue);
+			return false;
+		}
 
 		if (!ObjectPath.IsEmpty())
 		{
@@ -1788,8 +2535,15 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			return JsonToInstancedSubObject(JsonValue, ObjProp, ValuePtr, Outer, OutWarnings);
 		}
 
-		// Existing asset-reference path (unchanged)
-		const FString ObjectPath = JsonValue->AsString();
+		// Asset-reference path. A string is the non-instanced reference representation; a number, boolean
+		// or object cannot address the property and must not silently clear it.
+		FString ObjectPath;
+		if (JsonValue->Type != EJson::String || !JsonValue->TryGetString(ObjectPath))
+		{
+			AddJsonTypeMismatchWarning(OutWarnings, Property, TEXT("String"), JsonValue);
+			return false;
+		}
+
 		if (ObjectPath.IsEmpty())
 		{
 			ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
@@ -1804,9 +2558,8 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			return true;
 		}
 
-		// Guard against SkipPackage warnings for non-existent or invalid packages.
-		// Check IsValidLongPackageName first to skip DoesPackageExist for non-path values
-		// (e.g., bare numbers like "123" from type-mismatched JSON).
+		// Guard against SkipPackage warnings for non-existent or invalid packages. A string that is not a
+		// valid long package path is refused before DoesPackageExist can warn about it.
 		const FString PkgName = FPackageName::ObjectPathToPackageName(ObjectPath);
 		if (!FPackageName::IsValidLongPackageName(PkgName)
 			|| (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName)))
@@ -1880,18 +2633,31 @@ bool FCortexSerializer::JsonToInstancedSubObject(const TSharedPtr<FJsonValue>& J
 		return false;
 	}
 
-	// Clean up existing sub-object
-	RetireOwnedSubObject(ObjProp->GetObjectPropertyValue(ValuePtr), Outer);
-
-	// Create new sub-object
+	// Convert the new sub-object before touching the live value: a failing property must not retire
+	// the sub-object that is currently installed.
 	UObject* NewSubObj = NewObject<UObject>(Outer, ResolvedClass);
+	if (FDeferredRetireScope::IsDeferring())
+	{
+		DeferredRetirement.Created.Add(NewSubObj);
+	}
 
 	// Deserialize properties if provided
 	const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
 	if ((*JsonObj)->TryGetObjectField(TEXT("properties"), PropertiesObj) && PropertiesObj && (*PropertiesObj).IsValid())
 	{
-		JsonToStruct(*PropertiesObj, ResolvedClass, NewSubObj, Outer, OutWarnings);
+		if (!JsonToStruct(*PropertiesObj, ResolvedClass, NewSubObj, Outer, OutWarnings))
+		{
+			OutWarnings.Add(FString::Printf(
+				TEXT("Failed to deserialize properties of instanced sub-object '%s' for property '%s'"),
+				*ResolvedClass->GetName(),
+				*ObjProp->GetName()));
+			RetireOwnedSubObject(NewSubObj, Outer);
+			return false;
+		}
 	}
+
+	// Clean up existing sub-object
+	RetireOwnedSubObject(ObjProp->GetObjectPropertyValue(ValuePtr), Outer);
 
 	ObjProp->SetObjectPropertyValue(ValuePtr, NewSubObj);
 	return true;
