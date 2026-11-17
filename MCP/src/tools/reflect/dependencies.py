@@ -1,8 +1,10 @@
 """MCP tools for asset dependency queries."""
 
+import json
 import logging
 from cortex_mcp.response import format_native_page
 from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 
 logger = logging.getLogger(__name__)
 
@@ -38,4 +40,4 @@ def register_reflect_dependency_tools(mcp, connection: UEConnection):
             )
             return format_native_page(response.get("data", {}), "reflect.get_dependencies", params)
         except ConnectionError as e:
-            return f"Error: {e}"
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(e)))

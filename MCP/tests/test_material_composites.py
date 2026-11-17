@@ -1033,7 +1033,8 @@ class TestCreateMaterialInstanceTool:
         ))
 
         assert result["success"] is False
-        assert "Invalid spec" in result["error"]
+        assert result["_error"]
+        assert "Invalid spec" in result["_message"]
         mock_conn.send_command.assert_not_called()
 
     def test_batch_failure_cleanup(self):
@@ -1137,7 +1138,8 @@ class TestCreateMaterialInstanceTool:
         ))
 
         assert result["success"] is False
-        assert "Batch command rejected" in result["error"]
+        assert result["_error"]
+        assert "Batch command rejected" in result["_message"]
 
 
 class TestCreateMaterialGraphWithInstances:

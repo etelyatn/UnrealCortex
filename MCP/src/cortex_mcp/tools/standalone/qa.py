@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from cortex_mcp.tool_output import canonical_failure
 from tools.qa.composites import register_qa_composite_tools
 
 _STEP_SHAPE = '{"command": "qa.<command>", "params": {...}}'
@@ -20,13 +21,11 @@ def _step_shape_error(field: str, step) -> str | None:
         and isinstance(step.get("params", {}), dict)
     ):
         return None
-    return json.dumps({
-        "_error": "INVALID_FIELD",
-        "_message": (
-            f"{field} must be {_STEP_SHAPE} with a non-empty qualified command string and an "
-            f"optional params object."
-        ),
-    })
+    return json.dumps(canonical_failure(
+        "INVALID_FIELD",
+        f"{field} must be {_STEP_SHAPE} with a non-empty qualified command string and an "
+        f"optional params object.",
+    ))
 
 
 def register_qa_standalone_tools(mcp, connection) -> None:

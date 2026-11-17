@@ -5,7 +5,8 @@ import logging
 from typing import Any
 from cortex_mcp.verification import VERIFICATION_TIMEOUT
 from cortex_mcp.verification.blueprint import verify_blueprint
-from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tcp_client import UECommandError, UEConnection
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure, failed_step_code
 
 logger = logging.getLogger(__name__)
 
@@ -410,7 +411,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         Returns:
             JSON with asset_path, node_count, variable_count, function_count, timing.
             On failure: summary, asset_path, completed_steps, failed_step, total_steps.
-            Refusing mode='update' returns {"success": False, "error": <migration guidance>}.
+            Refusing mode='update' returns {"success": False, "_error": ..., "_message": ...}.
 
         Example:
             create_blueprint_graph(
@@ -430,15 +431,15 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         # reach the removed path through an older call shape.
         if mode == "update":
             target = f" for '{asset_path}'" if asset_path else ""
-            return json.dumps({
-                "success": False,
-                "error": f"mode='update'{target} is no longer supported. {_UPDATE_ROUTE_GUIDANCE}",
-            }, indent=2)
+            return json.dumps(canonical_failure(
+                "INVALID_OPERATION",
+                f"mode='update'{target} is no longer supported. {_UPDATE_ROUTE_GUIDANCE}",
+            ), indent=2)
         if mode != "create":
-            return json.dumps({
-                "success": False,
-                "error": f"Unsupported mode '{mode}'. {_UPDATE_ROUTE_GUIDANCE}",
-            }, indent=2)
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD",
+                f"Unsupported mode '{mode}'. {_UPDATE_ROUTE_GUIDANCE}",
+            ), indent=2)
 
         variables = variables or []
         functions = functions or []
@@ -447,22 +448,20 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
 
         # Guard: a new Blueprint has no composite subgraph to target yet.
         if subgraph_path:
-            return json.dumps({
-                "success": False,
-                "error": (
-                    "subgraph_path cannot be used when creating a Blueprint: the asset does not "
-                    "exist yet, so composite subgraphs cannot be pre-targeted. Create the "
-                    "Blueprint first, then send a graph.apply_patch envelope that targets the "
-                    "subgraph through target.graph_ref.subgraph_path."
-                ),
-            }, indent=2)
+            return json.dumps(canonical_failure(
+                "INVALID_OPERATION",
+                "subgraph_path cannot be used when creating a Blueprint: the asset does not "
+                "exist yet, so composite subgraphs cannot be pre-targeted. Create the "
+                "Blueprint first, then send a graph.apply_patch envelope that targets the "
+                "subgraph through target.graph_ref.subgraph_path.",
+            ), indent=2)
 
         # 1. Validate spec
         try:
             _validate_spec(name, path, bp_type=type, variables=variables,
                           functions=functions, nodes=nodes, connections=connections)
         except ValueError as e:
-            return json.dumps({"success": False, "error": f"Invalid spec: {e}"})
+            return json.dumps(canonical_failure("INVALID_FIELD", f"Invalid spec: {e}"))
 
         # 2. Build batch commands
         commands = _build_batch_commands(
@@ -479,10 +478,8 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                 "stop_on_error": True,
                 "commands": commands,
             }, timeout=timeout)
-        except RuntimeError as e:
-            return json.dumps({"success": False, "error": str(e)})
         except (ConnectionError, TimeoutError, OSError) as e:
-            return json.dumps({"success": False, "error": f"Connection error: {e}"})
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(e)))
 
         batch_data = batch_result.get("data", {})
         results = batch_data.get("results", [])
@@ -517,20 +514,26 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                         "user_action_required": f"Manually delete partial asset at {asset_path}",
                     }
 
-            response = {
-                "success": False,
-                "summary": f"Step {failed_step['index']} of {total_steps} failed: "
-                           f"{failed_step.get('command', '?')} - "
-                           f"{failed_step.get('error_message', 'Unknown error')}",
-                "asset_path": asset_path,
-                "completed_steps": completed_count,
-                "failed_step": {
-                    "index": failed_step["index"],
-                    "command": failed_step.get("command", ""),
-                    "error": failed_step.get("error_message", ""),
+            summary = (
+                f"Step {failed_step['index']} of {total_steps} failed: "
+                f"{failed_step.get('command', '?')} - "
+                f"{failed_step.get('error_message', 'Unknown error')}"
+            )
+            response = canonical_failure(
+                failed_step_code(failed_step),
+                summary,
+                {
+                    "summary": summary,
+                    "asset_path": asset_path,
+                    "completed_steps": completed_count,
+                    "failed_step": {
+                        "index": failed_step["index"],
+                        "command": failed_step.get("command", ""),
+                        "error": failed_step.get("error_message", ""),
+                    },
+                    "total_steps": total_steps,
                 },
-                "total_steps": total_steps,
-            }
+            )
             if recovery_action:
                 response["recovery_action"] = recovery_action
             return json.dumps(response, indent=2)
@@ -562,14 +565,17 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                     connection.send_command("blueprint.save", {"asset_path": asset_path})
                 except Exception:
                     pass
-                return json.dumps({
-                    "success": False,
-                    "error": f"Blueprint compilation failed: {e}",
-                    "asset_path": asset_path,
-                    "suggestion": "Asset was created but has compile errors. "
-                                  "Open in Unreal Editor to diagnose graph issues, "
-                                  "then fix the spec and recreate.",
-                }, indent=2)
+                code = e.code if isinstance(e, UECommandError) and e.code else "INVALID_OPERATION"
+                return json.dumps(canonical_failure(
+                    code,
+                    f"Blueprint compilation failed: {e}",
+                    {
+                        "asset_path": asset_path,
+                        "suggestion": "Asset was created but has compile errors. "
+                                      "Open in Unreal Editor to diagnose graph issues, "
+                                      "then fix the spec and recreate.",
+                    },
+                ), indent=2)
 
             try:
                 connection.send_command("blueprint.save", {"asset_path": asset_path})

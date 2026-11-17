@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tool_output import canonical_failure
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,13 @@ def _error_message(response: dict[str, Any], fallback: str) -> str:
         or _extract_data(response).get("error")
         or fallback
     )
+
+
+def _failure_code(response: dict[str, Any], fallback: str = "INVALID_OPERATION") -> str:
+    """The native code carried by a failed response, or the compose refusal code."""
+    error = response.get("error")
+    code = error.get("code") if isinstance(error, dict) else response.get("error_code")
+    return code if isinstance(code, str) and code else fallback
 
 
 def _normalize_operation(operation: dict[str, Any]) -> dict[str, Any]:
@@ -363,14 +371,11 @@ def register_statetree_composite_tools(mcp, connection: UEConnection) -> None:
             )
             _validate_supported_operations(planned_operations)
         except (TypeError, ValueError) as exc:
-            return json.dumps(
-                {
-                    "success": False,
-                    "mode": mode,
-                    "asset_path": asset_path,
-                    "error": str(exc),
-                }
-            )
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD",
+                str(exc),
+                {"mode": mode, "asset_path": asset_path},
+            ))
 
         current_fingerprint = dict(expected_fingerprint) if expected_fingerprint is not None else None
         completed_steps = 0
@@ -447,17 +452,17 @@ def register_statetree_composite_tools(mcp, connection: UEConnection) -> None:
                 }
             )
         except ValueError as exc:
-            return json.dumps(
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD",
+                str(exc),
                 {
-                    "success": False,
                     "mode": mode,
                     "asset_path": asset_path,
-                    "error": str(exc),
                     "completed_steps": completed_steps,
                     "total_steps": total_steps,
                     "fingerprint": current_fingerprint,
-                }
-            )
+                },
+            ))
         except _ComposeFailure as exc:
             cleanup: dict[str, Any] | None = None
 
@@ -482,12 +487,12 @@ def register_statetree_composite_tools(mcp, connection: UEConnection) -> None:
                         "error": str(cleanup_exc),
                     }
 
-            return json.dumps(
+            return json.dumps(canonical_failure(
+                _failure_code(exc.response),
+                str(exc),
                 {
-                    "success": False,
                     "mode": mode,
                     "asset_path": asset_path,
-                    "error": str(exc),
                     "summary": f"statetree_compose failed during {exc.command}",
                     "completed_steps": completed_steps,
                     "total_steps": total_steps,
@@ -498,5 +503,5 @@ def register_statetree_composite_tools(mcp, connection: UEConnection) -> None:
                     },
                     "fingerprint": current_fingerprint,
                     "cleanup": cleanup,
-                }
-            )
+                },
+            ))

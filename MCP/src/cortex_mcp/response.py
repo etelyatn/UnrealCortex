@@ -355,6 +355,7 @@ def _refuse_oversized_read(
     mistaken for a complete read, and the selector already exists to make the read affordable.
     """
     payload = {
+        "success": False,
         "_error": "RESPONSE_TOO_LARGE",
         "_message": (
             f"{label} response exceeds {MAX_RESPONSE_CHARS} characters; "
@@ -381,6 +382,7 @@ def format_native_page(data: dict, qualified_command: str, params: dict) -> str:
         return text
 
     payload = {
+        "success": False,
         "_error": "RESPONSE_TOO_LARGE",
         "_message": (
             f"{qualified_command} native page exceeds {MAX_RESPONSE_CHARS} characters; "
@@ -415,6 +417,7 @@ def _bounded_detail_oversize(data: dict) -> str:
             if key in data
         }
     payload = {
+        "success": False,
         "_error": "RESPONSE_TOO_LARGE",
         "_message": (
             "Detailed animation binding content exceeds the response limit. "
@@ -498,6 +501,7 @@ def format_response(
         }
         bounded_state["reader_complete"] = False
         return compact_json({
+            "success": False,
             "_error": "RESPONSE_TOO_LARGE",
             "_message": (
                 "Serialized binding inspection exceeds the response limit. "
@@ -707,7 +711,12 @@ def format_response(
             tool_name, len(compact_json(working_data)),
         )
         return compact_json({
+            "success": False,
             "_error": "RESPONSE_TOO_LARGE",
+            "_message": (
+                f"{tool_name} response exceeds {MAX_RESPONSE_CHARS} characters and has no "
+                "truncatable array; the complete result was refused."
+            ),
             "_size": len(compact_json(working_data)),
             "_suggestion": "Pass 'limit' parameter to paginate through results.",
         })
@@ -751,7 +760,12 @@ def format_response(
             tool_name, array_key, MAX_RESPONSE_CHARS,
         )
         return compact_json({
+            "success": False,
             "_error": "RESPONSE_TOO_LARGE",
+            "_message": (
+                f"{tool_name} response exceeds {MAX_RESPONSE_CHARS} characters and no entry of "
+                f"'{array_key}' fits; the complete result was refused."
+            ),
             "_size": len(compact_json(working_data)),
             "_suggestion": f"Individual entries in '{array_key}' exceed size limit. Reduce nested fields or query with smaller scope.",
         })
