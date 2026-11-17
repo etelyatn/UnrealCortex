@@ -6,20 +6,12 @@ import json
 
 from cortex_mcp.response import format_response
 from cortex_mcp.tcp_client import UECommandError
-
-_UE_ERROR_RESERVED_FIELDS = {"success", "_error", "_message", "_command"}
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 
 
 def _format_ue_command_error(exc: UECommandError) -> str:
-    payload = {
-        "success": False,
-        "_error": exc.code,
-        "_message": exc.message,
-        "_command": exc.command,
-    }
-    for key, value in exc.details.items():
-        if key not in _UE_ERROR_RESERVED_FIELDS:
-            payload[key] = value
+    payload = canonical_failure(exc.code, exc.message, exc.details)
+    payload["_command"] = exc.command
     return format_response(payload, "apply_import_ops_json")
 
 
@@ -54,4 +46,7 @@ def register_import_queue_tools(mcp, connection) -> None:
         except UECommandError as exc:
             return _format_ue_command_error(exc)
         except ConnectionError as exc:
-            return f"Error: {exc}"
+            return format_response(
+                canonical_failure(CONNECTION_ERROR_CODE, str(exc)),
+                "apply_import_ops_json",
+            )

@@ -131,7 +131,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleStartMesh(const TSharedPtr<
     if (!bHasPrompt && !bHasImage)
     {
         return FCortexCommandRouter::Error(
-            CortexErrorCodes::InvalidValue,
+            CortexErrorCodes::InvalidField,
             TEXT("start_mesh requires either 'prompt' or 'source_image_path' (or both)"));
     }
 
@@ -158,7 +158,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleStartImage(const TSharedPtr
     if (!Params.IsValid() || !Params->TryGetStringField(TEXT("prompt"), Prompt) || Prompt.IsEmpty())
     {
         return FCortexCommandRouter::Error(
-            CortexErrorCodes::InvalidValue,
+            CortexErrorCodes::InvalidField,
             TEXT("start_image requires 'prompt'"));
     }
 
@@ -171,7 +171,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleStartTexturing(const TShare
     if (!Params.IsValid() || !Params->TryGetStringField(TEXT("source_model_path"), SourceModelPath) || SourceModelPath.IsEmpty())
     {
         return FCortexCommandRouter::Error(
-            CortexErrorCodes::InvalidValue,
+            CortexErrorCodes::InvalidField,
             TEXT("start_texturing requires 'source_model_path'"));
     }
 
@@ -265,7 +265,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleJobStatus(const TSharedPtr<
     if (!Params.IsValid() || !Params->TryGetStringField(TEXT("job_id"), JobId) || JobId.IsEmpty())
     {
         return FCortexCommandRouter::Error(
-            CortexErrorCodes::InvalidValue,
+            CortexErrorCodes::InvalidField,
             TEXT("job_status requires 'job_id'"));
     }
 
@@ -353,7 +353,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleCancelJob(const TSharedPtr<
     if (!Params.IsValid() || !Params->TryGetStringField(TEXT("job_id"), JobId) || JobId.IsEmpty())
     {
         return FCortexCommandRouter::Error(
-            CortexErrorCodes::InvalidValue,
+            CortexErrorCodes::InvalidField,
             TEXT("cancel_job requires 'job_id'"));
     }
 
@@ -381,7 +381,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleRetryImport(const TSharedPt
     if (!Params.IsValid() || !Params->TryGetStringField(TEXT("job_id"), JobId) || JobId.IsEmpty())
     {
         return FCortexCommandRouter::Error(
-            CortexErrorCodes::InvalidValue,
+            CortexErrorCodes::InvalidField,
             TEXT("retry_import requires 'job_id'"));
     }
 
@@ -451,7 +451,7 @@ FCortexCommandResult FCortexGenCommandHandler::HandleDeleteJob(const TSharedPtr<
     if (!Params.IsValid() || !Params->TryGetStringField(TEXT("job_id"), JobId) || JobId.IsEmpty())
     {
         return FCortexCommandRouter::Error(
-            CortexErrorCodes::InvalidValue,
+            CortexErrorCodes::InvalidField,
             TEXT("delete_job requires 'job_id'"));
     }
 

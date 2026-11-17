@@ -137,7 +137,8 @@ def test_statetree_compose_update_requires_expected_fingerprint():
     )
 
     assert result["success"] is False
-    assert "expected_fingerprint" in result["error"]
+    assert result["_error"]
+    assert "expected_fingerprint" in result["_message"]
     connection.send_command.assert_not_called()
 
 
@@ -175,7 +176,8 @@ def test_statetree_compose_update_preflights_before_mutation():
     )
 
     assert result["success"] is False
-    assert "Root/Missing" in result["error"]
+    assert result["_error"]
+    assert "Root/Missing" in result["_message"]
     calls = connection.send_command.call_args_list
     assert [call.args[0] for call in calls] == ["statetree.dump_tree"]
 
@@ -195,7 +197,8 @@ def test_statetree_compose_rejects_unsupported_operations():
     )
 
     assert result["success"] is False
-    assert "Unsupported StateTree compose command" in result["error"]
+    assert result["_error"]
+    assert "Unsupported StateTree compose command" in result["_message"]
     connection.send_command.assert_not_called()
 
 

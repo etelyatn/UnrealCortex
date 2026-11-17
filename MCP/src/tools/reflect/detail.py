@@ -1,8 +1,10 @@
 """MCP tools for class detail queries."""
 
+import json
 import logging
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +64,10 @@ def register_reflect_detail_tools(mcp, connection: UEConnection):
         value is refused without contacting the editor.
         """
         if detail not in _VALID_DETAILS:
-            return (
-                f"Error: invalid detail '{detail}'; expected one of "
-                f"{', '.join(_VALID_DETAILS)}"
-            )
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD",
+                f"invalid detail '{detail}'; expected one of {', '.join(_VALID_DETAILS)}",
+            ))
         try:
             response = connection.send_command_cached(
                 "reflect.class_detail",
@@ -80,4 +82,4 @@ def register_reflect_detail_tools(mcp, connection: UEConnection):
             pruned = _prune_detail(data, detail)
             return format_response(pruned, "query_class_detail")
         except ConnectionError as e:
-            return f"Error: {e}"
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(e)))

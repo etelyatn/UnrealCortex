@@ -134,6 +134,23 @@ private:
 	/** Create an instanced sub-object from JSON {"_class": "...", "properties": {...}} */
 	static bool JsonToInstancedSubObject(const TSharedPtr<FJsonValue>& JsonValue, const FObjectProperty* ObjProp, void* ValuePtr, UObject* Outer, TArray<FString>& OutWarnings);
 
+	/** StructToJson body that carries the objects already expanded on the current path and the expansion depth. */
+	static TSharedPtr<FJsonObject> StructToJsonInternal(
+		const UStruct* StructType,
+		const void* StructData,
+		const TSet<FString>* FieldFilter,
+		TArray<const UObject*>& ExpandedObjects,
+		int32 Depth,
+		int32 MaxDepth);
+
+	/** PropertyToJson body that carries the objects already expanded on the current path and the expansion depth. */
+	static TSharedPtr<FJsonValue> PropertyToJsonInternal(
+		const FProperty* Property,
+		const void* ValuePtr,
+		TArray<const UObject*>& ExpandedObjects,
+		int32 Depth,
+		int32 MaxDepth);
+
 	/** Build schema for a single property */
 	static TSharedPtr<FJsonObject> GetPropertySchema(const FProperty* Property);
 

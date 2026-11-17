@@ -1203,6 +1203,7 @@ static bool SaveVerifiedTargetPackage(
 
 	FSavePackageArgs Args;
 	Args.TopLevelFlags = RF_Public | RF_Standalone;
+	Args.SaveFlags = SAVE_NoError;
 
 	const bool bSaved = !ShouldInjectFault(TEXT("save"))
 		&& UPackage::SavePackage(Package, Blueprint, *Filename, Args);

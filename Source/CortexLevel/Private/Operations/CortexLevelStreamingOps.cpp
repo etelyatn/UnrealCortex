@@ -140,13 +140,13 @@ FCortexCommandResult FCortexLevelStreamingOps::LoadSublevel(const TSharedPtr<FJs
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString LevelName;
     if (!Params->TryGetStringField(TEXT("sublevel"), LevelName) || LevelName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::SublevelNotFound, TEXT("Missing required parameter: sublevel"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: sublevel"));
     }
 
     FCortexCommandResult Error;
@@ -174,13 +174,13 @@ FCortexCommandResult FCortexLevelStreamingOps::UnloadSublevel(const TSharedPtr<F
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString LevelName;
     if (!Params->TryGetStringField(TEXT("sublevel"), LevelName) || LevelName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::SublevelNotFound, TEXT("Missing required parameter: sublevel"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: sublevel"));
     }
 
     FCortexCommandResult Error;
@@ -208,18 +208,18 @@ FCortexCommandResult FCortexLevelStreamingOps::SetSublevelVisibility(const TShar
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString LevelName;
     bool bVisible = true;
     if (!Params->TryGetStringField(TEXT("sublevel"), LevelName) || LevelName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::SublevelNotFound, TEXT("Missing required parameter: sublevel"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: sublevel"));
     }
     if (!Params->TryGetBoolField(TEXT("visible"), bVisible))
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing required parameter: visible"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: visible"));
     }
 
     FCortexCommandResult Error;
@@ -286,18 +286,18 @@ FCortexCommandResult FCortexLevelStreamingOps::SetDataLayer(const TSharedPtr<FJs
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     const TArray<TSharedPtr<FJsonValue>>* ActorValues = nullptr;
     FString DataLayerName;
     if (!Params->TryGetArrayField(TEXT("actors"), ActorValues) || !ActorValues)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actors"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actors"));
     }
     if (!Params->TryGetStringField(TEXT("data_layer"), DataLayerName) || DataLayerName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::DataLayerNotFound, TEXT("Missing required parameter: data_layer"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: data_layer"));
     }
 
     FCortexCommandResult Error;
@@ -380,7 +380,7 @@ FCortexCommandResult FCortexLevelStreamingOps::SaveLevel(const TSharedPtr<FJsonO
     const bool bSaved = UEditorLoadingAndSavingUtils::SavePackages({Package}, /*bOnlyDirty*/false);
     if (!bSaved)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to save current level"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed, TEXT("Failed to save current level"));
     }
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();

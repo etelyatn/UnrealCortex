@@ -29,7 +29,7 @@ from cortex_mcp.schema_generator import (
 )
 from cortex_mcp.tcp_client import CACHED_READ_COMMANDS, _discover_all_editors, _is_editor_alive
 from cortex_mcp.tcp_client import CALL_TIMEOUT, UECommandError
-from cortex_mcp.tool_output import strip_schema_titles
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure, strip_schema_titles
 
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,6 @@ CACHED_PAGE_ARRAYS = {
 }
 
 _MAX_LIMIT = 200
-_UE_ERROR_RESERVED_FIELDS = {"success", "_error", "_message", "_command"}
 
 
 def _validate_limit(limit) -> tuple[int | None, str | None]:
@@ -155,9 +154,13 @@ def _validate_limit(limit) -> tuple[int | None, str | None]:
     try:
         limit = int(limit)
     except (TypeError, ValueError):
-        return None, json.dumps({"_error": "INVALID_LIMIT", "_message": f"limit must be an integer between 1 and {_MAX_LIMIT}."})
+        return None, json.dumps(canonical_failure(
+            "INVALID_LIMIT", f"limit must be an integer between 1 and {_MAX_LIMIT}.",
+        ))
     if limit < 1 or limit > _MAX_LIMIT:
-        return None, json.dumps({"_error": "INVALID_LIMIT", "_message": f"limit must be between 1 and {_MAX_LIMIT}."})
+        return None, json.dumps(canonical_failure(
+            "INVALID_LIMIT", f"limit must be between 1 and {_MAX_LIMIT}.",
+        ))
     return limit, None
 
 
@@ -174,23 +177,23 @@ def _cursor_expired(qualified: str | None = None) -> str:
         )
     else:
         message = "Cached results have expired. Re-send the original command with 'limit' to start a new pagination sequence."
-    return json.dumps({"_error": "CURSOR_EXPIRED", "_message": message})
+    return json.dumps(canonical_failure("CURSOR_EXPIRED", message))
 
 
 def _invalid_cursor(message: str) -> str:
-    return json.dumps({"_error": "INVALID_CURSOR", "_message": message})
+    return json.dumps(canonical_failure("INVALID_CURSOR", message))
 
 
 def _cached_refusal(array_key: str) -> str:
-    return compact_json({
-        "_error": "RESPONSE_TOO_LARGE",
-        "_message": (
-            f"No entry of '{array_key}' fits the {MAX_RESPONSE_CHARS}-character response budget; "
-            "the page was refused."
-        ),
-        "reader_complete": False,
-        "_suggestion": "Reduce the per-entry fields, or query with a smaller scope.",
-    })
+    return compact_json(canonical_failure(
+        "RESPONSE_TOO_LARGE",
+        f"No entry of '{array_key}' fits the {MAX_RESPONSE_CHARS}-character response budget; "
+        "the page was refused.",
+        {
+            "reader_complete": False,
+            "_suggestion": "Reduce the per-entry fields, or query with a smaller scope.",
+        },
+    ))
 
 
 def _batch_oversized_step_refusal(
@@ -218,30 +221,30 @@ def _batch_oversized_step_refusal(
         if has_more
         else None
     )
-    return compact_json({
-        "_error": "RESPONSE_TOO_LARGE",
-        "_message": (
-            f"Batch step at index {offset} alone exceeds the {MAX_RESPONSE_CHARS}-character "
-            "response budget and was not returned. The batch already executed (its steps may have "
-            "changed state); do not re-run it."
-        ),
-        "reader_complete": False,
-        "snapshot_id": snapshot_id,
-        "oversized_step_index": offset,
-        "_pagination": {
-            "returned": 0,
-            "total": total,
-            "has_more": has_more,
+    return compact_json(canonical_failure(
+        "RESPONSE_TOO_LARGE",
+        f"Batch step at index {offset} alone exceeds the {MAX_RESPONSE_CHARS}-character "
+        "response budget and was not returned. The batch already executed (its steps may have "
+        "changed state); do not re-run it.",
+        {
+            "reader_complete": False,
             "snapshot_id": snapshot_id,
-            "next_cursor": next_cursor,
+            "oversized_step_index": offset,
+            "_pagination": {
+                "returned": 0,
+                "total": total,
+                "has_more": has_more,
+                "snapshot_id": snapshot_id,
+                "next_cursor": next_cursor,
+            },
+            "_suggestion": (
+                "Call core.batch_query with cursor=_pagination.next_cursor to read the remaining step "
+                "results from the stored snapshot; this never re-executes the batch."
+                if has_more
+                else "No further step results remain in the snapshot; do not re-run the batch."
+            ),
         },
-        "_suggestion": (
-            "Call core.batch_query with cursor=_pagination.next_cursor to read the remaining step "
-            "results from the stored snapshot; this never re-executes the batch."
-            if has_more
-            else "No further step results remain in the snapshot; do not re-run the batch."
-        ),
-    })
+    ))
 
 
 def _format_cached_page(
@@ -363,7 +366,7 @@ def _handle_limit_request(qualified: str, params: dict, limit: int, connection) 
     array_key = CACHED_PAGE_ARRAYS[qualified]
 
     response = connection.send_command(qualified, clean_params)
-    data = response.get("data", {})
+    data = _response_data(response)
 
     full_list = data.get(array_key)
     if not isinstance(full_list, list):
@@ -425,7 +428,13 @@ def _batch_query(connection, route_params: dict) -> str:
     if commands is None:
         commands = route_params.get("steps")
     if isinstance(commands, str):
-        commands = json.loads(commands)
+        try:
+            commands = json.loads(commands)
+        except ValueError:
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD",
+                "commands must be a JSON array of step objects.",
+            ))
     batch_params = {"commands": commands}
     for key in ("stop_on_error", "rollback_on_error", "verify_rollback"):
         if key in route_params:
@@ -434,17 +443,15 @@ def _batch_query(connection, route_params: dict) -> str:
         isinstance(step, dict) and step.get("command") == "graph.apply_patch"
         for step in commands
     ):
-        return json.dumps({
-            "_error": "INVALID_OPERATION",
-            "_message": (
-                "graph.apply_patch is a standalone mutation and cannot run inside "
-                "core_cmd(batch_query); call graph_cmd or blueprint_compose so the "
-                "MCP prune response boundary can run before mutation."
-            ),
-        })
+        return json.dumps(canonical_failure(
+            "INVALID_OPERATION",
+            "graph.apply_patch is a standalone mutation and cannot run inside "
+            "core_cmd(batch_query); call graph_cmd or blueprint_compose so the "
+            "MCP prune response boundary can run before mutation.",
+        ))
 
     response = connection.send_command("batch", batch_params)
-    data = response.get("data", {})
+    data = _response_data(response)
     array_key = CACHED_PAGE_ARRAYS[qualified]
     note = None
     if limit is None:
@@ -473,16 +480,27 @@ def _batch_query(connection, route_params: dict) -> str:
 
 def _error_payload(code: str, message: str, details) -> dict:
     """Standard native error payload with non-reserved detail fields preserved."""
-    payload = {
-        "success": False,
-        "_error": code,
-        "_message": message,
-    }
-    if isinstance(details, dict):
-        for key, value in details.items():
-            if key not in _UE_ERROR_RESERVED_FIELDS:
-                payload[key] = value
-    return payload
+    return canonical_failure(code, message, details)
+
+
+def _response_data(response) -> Any:
+    """A native success envelope's data with non-empty envelope warnings forwarded.
+
+    The native router reports recoverable problems beside ``data`` (a property write that could not
+    apply every member, a value that fell back to a default); formatting ``data`` alone would hide
+    them. A data-level ``warnings`` array always wins, and an empty envelope array adds nothing.
+    """
+    data = response.get("data") if isinstance(response, dict) else None
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        return data
+    envelope_warnings = response.get("warnings")
+    if not isinstance(envelope_warnings, list) or not envelope_warnings or "warnings" in data:
+        return data
+    forwarded = dict(data)
+    forwarded["warnings"] = envelope_warnings
+    return forwarded
 
 
 def _native_failure_payload(response) -> dict | None:
@@ -536,11 +554,9 @@ class _StrictRouterArguments(ArgModelBase):
 def _invalid_invocation_shape(
     message: str, *, finalize: Callable[[Any], str] | None = None
 ) -> str:
-    payload = {
-        "_error": "INVALID_INVOCATION_SHAPE",
-        "_message": message,
-        "canonical_shape": _CANONICAL_ROUTER_SHAPE,
-    }
+    payload = canonical_failure(
+        "INVALID_INVOCATION_SHAPE", message, {"canonical_shape": _CANONICAL_ROUTER_SHAPE}
+    )
     if finalize is not None:
         return finalize(payload)
     return json.dumps(payload)
@@ -662,14 +678,12 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                 and command in {"batch", "batch_query"}
                 and _batch_contains_replay_start(route_params)
             ):
-                return json.dumps({
-                    "_error": "INVALID_OPERATION",
-                    "_message": (
-                        "replay.start_replay is a one-shot operation and cannot run inside "
-                        "core_cmd(batch/batch_query); call replay_cmd directly so the MCP "
-                        "one-shot boundary runs before dispatch."
-                    ),
-                })
+                return json.dumps(canonical_failure(
+                    "INVALID_OPERATION",
+                    "replay.start_replay is a one-shot operation and cannot run inside "
+                    "core_cmd(batch/batch_query); call replay_cmd directly so the MCP "
+                    "one-shot boundary runs before dispatch.",
+                ))
 
             # Handle core special commands first (no pagination for these)
             if domain == "core":
@@ -686,7 +700,7 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                         ttl=_TTL_CATALOG,
                     )
                     return format_response(
-                        response.get("data", {}),
+                        _response_data(response),
                         "get_data_catalog",
                         qualified_command="get_data_catalog",
                         request_params=route_params,
@@ -715,56 +729,53 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                 and "include_property_bindings" in route_params
                 and not isinstance(route_params["include_property_bindings"], bool)
             ):
-                return json.dumps({
-                    "_error": "INVALID_FIELD",
-                    "_message": "include_property_bindings must be boolean.",
-                })
+                return json.dumps(canonical_failure(
+                    "INVALID_FIELD", "include_property_bindings must be boolean."
+                ))
             property_binding_read = (
                 property_binding_read_command
                 and route_params.get("include_property_bindings") is True
             )
             if property_binding_write or property_binding_read:
                 if any(key in route_params for key in ("limit", "cursor", "offset")):
-                    return json.dumps({
-                        "_error": "INVALID_FIELD",
-                        "_message": "Pagination fields are unsupported for property binding operations.",
-                    })
+                    return json.dumps(canonical_failure(
+                        "INVALID_FIELD",
+                        "Pagination fields are unsupported for property binding operations.",
+                    ))
                 response = connection.send_command(qualified, route_params)
-                return format_response(response.get("data", {}), f"{domain}_cmd")
+                return format_response(_response_data(response), f"{domain}_cmd")
 
             # Animation authoring writes dispatch directly: any supplied cursor/limit/offset
             # field refuses before generic cached pagination, and native failures are
             # propagated instead of being reported as an empty success.
             if domain == "umg" and command in ANIMATION_AUTHORING_COMMANDS:
                 if any(key in route_params for key in ("limit", "cursor", "offset")):
-                    return json.dumps({
-                        "_error": "INVALID_FIELD",
-                        "_message": "Pagination fields are unsupported for animation authoring.",
-                    })
+                    return json.dumps(canonical_failure(
+                        "INVALID_FIELD", "Pagination fields are unsupported for animation authoring."
+                    ))
                 response = connection.send_command(qualified, route_params)
                 failure = _native_failure_payload(response)
                 if failure is not None:
                     return format_response(failure, "ue_command_error", command=command)
-                return format_response(response.get("data", {}), f"{domain}_cmd", command=command)
+                return format_response(_response_data(response), f"{domain}_cmd", command=command)
 
             # UMG animation binding inspection and guarded removal
             if domain == "umg" and command in {"remove_animation_binding", "list_animation_bindings"}:
                 if command == "remove_animation_binding":
                     if any(route_params.get(k) is not None for k in ("limit", "cursor", "offset")):
-                        return json.dumps({
-                            "_error": "INVALID_FIELD",
-                            "_message": "Pagination parameters (limit, cursor, offset) are not supported on remove_animation_binding.",
-                        })
+                        return json.dumps(canonical_failure(
+                            "INVALID_FIELD",
+                            "Pagination parameters (limit, cursor, offset) are not supported on remove_animation_binding.",
+                        ))
                     detail = False
                 else:
                     if (
                         "include_track_content" in route_params
                         and not isinstance(route_params["include_track_content"], bool)
                     ):
-                        return json.dumps({
-                            "_error": "INVALID_FIELD",
-                            "_message": "include_track_content must be boolean.",
-                        })
+                        return json.dumps(canonical_failure(
+                            "INVALID_FIELD", "include_track_content must be boolean."
+                        ))
                     detail = route_params.get("include_track_content") is True
                     if route_params.get("cursor") is not None:
                         return _invalid_cursor(
@@ -778,9 +789,9 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                 if command == "list_animation_bindings" and not detail:
                     # A summary read is a native-owned page: its continuation was computed for the
                     # whole page, so it is complete-or-refuse rather than shortened here.
-                    return format_native_page(response.get("data", {}), qualified, route_params)
+                    return format_native_page(_response_data(response), qualified, route_params)
                 return format_response(
-                    response.get("data", {}),
+                    _response_data(response),
                     f"{domain}_cmd",
                     command=command,
                     detail=detail,
@@ -805,7 +816,7 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                         qualified_command=qualified,
                         request_params=route_params,
                     )
-                return format_native_page(response.get("data", {}), qualified, route_params)
+                return format_native_page(_response_data(response), qualified, route_params)
 
             # Cache-owned pagination only: a cursor means the read's primary array is explicit, so
             # any other read refuses before dispatch instead of returning an unrelated page.
@@ -834,7 +845,7 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                     ttl=_CACHED_READ_TTL,
                 )
                 return format_response(
-                    response.get("data", {}),
+                    _response_data(response),
                     f"{domain}_cmd",
                     qualified_command=qualified,
                     request_params=route_params,
@@ -846,13 +857,11 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
             else:
                 response = connection.send_command(qualified, route_params, timeout=dispatch_timeout)
             return format_response(
-                response.get("data", {}),
+                _response_data(response),
                 f"{domain}_cmd",
                 qualified_command=qualified,
                 request_params=route_params,
             )
-        except ConnectionError as exc:
-            return f"Error: {exc}"
         except UECommandError as exc:
             return _format_ue_command_error(
                 exc,
@@ -860,8 +869,8 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                 qualified_command=qualified,
                 request_params=route_params,
             )
-        except (RuntimeError, ValueError, KeyError) as exc:
-            return f"Error: {exc}"
+        except ConnectionError as exc:
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(exc)))
 
     router.__name__ = f"{domain}_cmd"
     router.__doc__ = docstring
@@ -965,10 +974,9 @@ def _get_capabilities(connection, params: dict) -> str:
     """
     detail = params.get("detail", "names")
     if detail not in _CAPABILITIES_DETAIL_VALUES:
-        return json.dumps({
-            "_error": "INVALID_FIELD",
-            "_message": "detail must be 'names' (default) or 'full'.",
-        })
+        return json.dumps(canonical_failure(
+            "INVALID_FIELD", "detail must be 'names' (default) or 'full'."
+        ))
 
     native_params = {k: v for k, v in params.items() if k != "detail"}
     response = connection.send_command_cached(
@@ -980,7 +988,7 @@ def _get_capabilities(connection, params: dict) -> str:
     if failure is not None:
         return format_response(failure, "ue_command_error", command="get_capabilities")
 
-    data = response.get("data", {})
+    data = _response_data(response)
     if detail == "full":
         return format_response(
             data,
@@ -999,26 +1007,28 @@ def _get_capabilities(connection, params: dict) -> str:
 def _switch_editor(connection, params: dict) -> str:
     editors = _discover_all_editors()
     if not editors:
-        return json.dumps({"error": "No live editors found"})
+        return json.dumps(canonical_failure("EDITOR_NOT_FOUND", "No live editors found"))
 
     pid = params.get("pid")
     if pid is not None:
-        pid = int(pid)
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD",
+                f"pid must be an integer, got {pid!r}.",
+            ))
         if not _is_editor_alive(pid):
-            return json.dumps(
-                {
-                    "error": "EDITOR_NOT_FOUND",
-                    "message": f"PID {pid} is not a live Unreal Editor",
-                }
-            )
+            return json.dumps(canonical_failure(
+                "EDITOR_NOT_FOUND",
+                f"PID {pid} is not a live Unreal Editor",
+            ))
         target = next((editor for editor in editors if editor.pid == pid), None)
         if target is None:
-            return json.dumps(
-                {
-                    "error": "EDITOR_NOT_FOUND",
-                    "message": f"No port file found for PID {pid}",
-                }
-            )
+            return json.dumps(canonical_failure(
+                "EDITOR_NOT_FOUND",
+                f"No port file found for PID {pid}",
+            ))
     else:
         editors.sort(key=lambda editor: editor.started_at, reverse=True)
         target = editors[0]
@@ -1059,7 +1069,7 @@ def _schema_status() -> str:
     try:
         schema_dir = get_schema_dir()
     except FileNotFoundError:
-        return json.dumps({"error": "Cannot find project root"})
+        return json.dumps(canonical_failure("INVALID_OPERATION", "Cannot find project root"))
 
     if not schema_dir.exists():
         return json.dumps(

@@ -12,6 +12,7 @@ from cortex_mcp.schema_generator import (
 )
 from cortex_mcp.project import resolve_project_dir
 from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +59,13 @@ def register_schema_tools(mcp, connection: UEConnection):
             result["elapsed_seconds"] = round(time.time() - start, 2)
             return json.dumps(result, indent=2)
         except ConnectionError as e:
-            return json.dumps({"error": str(e), "suggestion": "Is the Unreal Editor running?"})
+            return json.dumps(canonical_failure(
+                CONNECTION_ERROR_CODE,
+                str(e),
+                {"suggestion": "Is the Unreal Editor running?"},
+            ))
         except FileNotFoundError as e:
-            return json.dumps({"error": str(e)})
+            return json.dumps(canonical_failure("INVALID_OPERATION", str(e)))
 
     @mcp.tool()
     def schema_status() -> str:
@@ -75,7 +80,7 @@ def register_schema_tools(mcp, connection: UEConnection):
         try:
             schema_dir = get_schema_dir()
         except FileNotFoundError:
-            return json.dumps({"error": "Cannot find project root"})
+            return json.dumps(canonical_failure("INVALID_OPERATION", "Cannot find project root"))
 
         if not schema_dir.exists():
             return json.dumps({

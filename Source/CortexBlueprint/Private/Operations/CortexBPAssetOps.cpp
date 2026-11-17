@@ -162,6 +162,7 @@ bool EnsureRedirectorPackage(const FString& SourcePackagePath, UObject* Destinat
 
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
 	if (!UPackage::SavePackage(RedirectorPackage, Redirector, *RedirectorFilename, SaveArgs))
 	{
 		OutError = FString::Printf(TEXT("Failed to save redirector package: %s"), *SourcePackagePath);
@@ -1018,17 +1019,18 @@ FCortexCommandResult FCortexBPAssetOps::Create(const TSharedPtr<FJsonObject>& Pa
 	if (!CortexBPAssetOpsPrivate::TryResolveBlueprintPackageFilename(PackagePath, PackageFilename))
 	{
 		Result.bSuccess = false;
-		Result.ErrorCode = CortexErrorCodes::SerializationError;
+		Result.ErrorCode = CortexErrorCodes::SaveFailed;
 		Result.ErrorMessage = FString::Printf(TEXT("Failed to resolve Blueprint package filename: %s"), *PackagePath);
 		return Result;
 	}
 
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
 	if (!UPackage::SavePackage(Package, NewBP, *PackageFilename, SaveArgs))
 	{
 		Result.bSuccess = false;
-		Result.ErrorCode = CortexErrorCodes::SerializationError;
+		Result.ErrorCode = CortexErrorCodes::SaveFailed;
 		Result.ErrorMessage = FString::Printf(TEXT("Failed to save Blueprint package: %s"), *PackagePath);
 		return Result;
 	}
@@ -1756,19 +1758,20 @@ FCortexCommandResult FCortexBPAssetOps::Save(const TSharedPtr<FJsonObject>& Para
 	if (!CortexBPAssetOpsPrivate::TryResolveBlueprintPackageFilename(Package->GetName(), PackageFilename))
 	{
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::SerializationError,
+			CortexErrorCodes::SaveFailed,
 			FString::Printf(TEXT("Failed to resolve Blueprint package filename: %s"), *Package->GetName())
 		);
 	}
 
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
 	bool bSaved = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
 
 	if (!bSaved)
 	{
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::SerializationError,
+			CortexErrorCodes::SaveFailed,
 			FString::Printf(TEXT("Failed to save Blueprint: %s"), *AssetPath)
 		);
 	}

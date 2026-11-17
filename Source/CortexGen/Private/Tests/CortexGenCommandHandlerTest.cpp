@@ -216,3 +216,48 @@ bool FCortexGenCommandHandlerErrorCodeJobNotFoundTest::RunTest(const FString& Pa
 
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexGenCommandHandlerErrorCodeMissingFieldTest,
+    "Cortex.Gen.CommandHandler.ErrorCode.MissingField",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGenCommandHandlerErrorCodeMissingFieldTest::RunTest(const FString& Parameters)
+{
+    FGenTestContext Ctx;
+
+    // A required parameter that the caller never supplied is a missing field, not an invalid value.
+    auto ExpectMissingField = [this, &Ctx](const TCHAR* Command, TSharedPtr<FJsonObject> Params)
+    {
+        const FCortexCommandResult Result = Ctx.Router.Execute(Command, Params);
+        TestFalse(*FString::Printf(TEXT("%s without its required parameter is refused"), Command), Result.bSuccess);
+        TestEqual(*FString::Printf(TEXT("%s without its required parameter uses INVALID_FIELD"), Command),
+            Result.ErrorCode, CortexErrorCodes::InvalidField);
+    };
+
+    const TCHAR* const JobCommands[] = { TEXT("gen.job_status"), TEXT("gen.cancel_job"), TEXT("gen.retry_import"), TEXT("gen.delete_job") };
+    for (const TCHAR* Command : JobCommands)
+    {
+        ExpectMissingField(Command, MakeShared<FJsonObject>());
+    }
+
+    ExpectMissingField(TEXT("gen.start_image"), MakeShared<FJsonObject>());
+    ExpectMissingField(TEXT("gen.start_texturing"), MakeShared<FJsonObject>());
+    ExpectMissingField(TEXT("gen.start_mesh"), MakeShared<FJsonObject>());
+
+    // An empty job_id is the same missing field, not a lookup miss.
+    TSharedPtr<FJsonObject> EmptyJobId = MakeShared<FJsonObject>();
+    EmptyJobId->SetStringField(TEXT("job_id"), FString());
+    ExpectMissingField(TEXT("gen.job_status"), EmptyJobId);
+
+    // With the gate satisfied, a well-formed unknown id reaches the job lookup.
+    TSharedPtr<FJsonObject> UnknownJob = MakeShared<FJsonObject>();
+    UnknownJob->SetStringField(TEXT("job_id"), TEXT("nonexistent_job"));
+    const FCortexCommandResult Unknown = Ctx.Router.Execute(TEXT("gen.job_status"), UnknownJob);
+    TestFalse(TEXT("job_status for an unknown job fails"), Unknown.bSuccess);
+    TestEqual(TEXT("job_status for an unknown job uses JOB_NOT_FOUND"),
+        Unknown.ErrorCode, CortexErrorCodes::JobNotFound);
+
+    return true;
+}

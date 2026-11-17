@@ -381,7 +381,10 @@ class TestNativeSummaryBeforeExtraction:
 
         result = tool(class_name="AMyActor", detail="verbose")
 
-        assert result.startswith("Error"), result
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["_error"]
+        assert "invalid detail" in payload["_message"].lower()
         assert connection.requests == []
 
     def test_projection_keeps_coverage_and_error_metadata(self):

@@ -297,3 +297,82 @@ bool FCortexMaterialSetParamsVectorObjectTest::RunTest(const FString& Parameters
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexMaterialSetParameterMissingValueTest,
+	"Cortex.Material.Param.SetParameterMissingValue",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexMaterialSetParameterMissingValueTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString MatName = FString::Printf(TEXT("M_TestMissingValue_%s"), *Suffix);
+	const FString InstName = FString::Printf(TEXT("MI_TestMissingValue_%s"), *Suffix);
+	const FString Dir = FString::Printf(TEXT("/Game/Temp/CortexMatTest_MissingValue_%s"), *Suffix);
+	const FString MatPath = FString::Printf(TEXT("%s/%s"), *Dir, *MatName);
+	const FString InstPath = FString::Printf(TEXT("%s/%s"), *Dir, *InstName);
+
+	FCortexMaterialCommandHandler Handler;
+
+	TSharedPtr<FJsonObject> MatParams = MakeShared<FJsonObject>();
+	MatParams->SetStringField(TEXT("asset_path"), Dir);
+	MatParams->SetStringField(TEXT("name"), MatName);
+	TestTrue(TEXT("create_material succeeds"), Handler.Execute(TEXT("create_material"), MatParams).bSuccess);
+
+	TSharedPtr<FJsonObject> InstParams = MakeShared<FJsonObject>();
+	InstParams->SetStringField(TEXT("asset_path"), Dir);
+	InstParams->SetStringField(TEXT("name"), InstName);
+	InstParams->SetStringField(TEXT("parent_material"), MatPath);
+	TestTrue(TEXT("create_instance succeeds"), Handler.Execute(TEXT("create_instance"), InstParams).bSuccess);
+
+	// 'value' is a required parameter of set_parameter, so never supplying it is a missing field for
+	// every parameter type, not an invalid parameter.
+	const auto ExpectMissingValue = [this, &Handler, &InstPath](const TCHAR* ParameterType, const TCHAR* ParameterName)
+	{
+		TSharedPtr<FJsonObject> SetParams = MakeShared<FJsonObject>();
+		SetParams->SetStringField(TEXT("asset_path"), InstPath);
+		SetParams->SetStringField(TEXT("parameter_name"), ParameterName);
+		SetParams->SetStringField(TEXT("parameter_type"), ParameterType);
+		const FCortexCommandResult Result = Handler.Execute(TEXT("set_parameter"), SetParams);
+		TestFalse(*FString::Printf(TEXT("%s set_parameter without value is refused"), ParameterType), Result.bSuccess);
+		TestEqual(*FString::Printf(TEXT("%s set_parameter without value uses INVALID_FIELD"), ParameterType),
+			Result.ErrorCode, CortexErrorCodes::InvalidField);
+	};
+
+	ExpectMissingValue(TEXT("scalar"), TEXT("TestScalar"));
+	ExpectMissingValue(TEXT("vector"), TEXT("TestColor"));
+	ExpectMissingValue(TEXT("texture"), TEXT("TestTexture"));
+
+	// The refusals changed nothing: the instance recorded no overrides.
+	TSharedPtr<FJsonObject> GetParams = MakeShared<FJsonObject>();
+	GetParams->SetStringField(TEXT("asset_path"), InstPath);
+	const FCortexCommandResult GetResult = Handler.Execute(TEXT("get_instance"), GetParams);
+	const TSharedPtr<FJsonObject>* Overrides = nullptr;
+	if (TestTrue(TEXT("get_instance reports overrides"),
+		GetResult.Data.IsValid() && GetResult.Data->TryGetObjectField(TEXT("overrides"), Overrides)))
+	{
+		const TCHAR* const Categories[] = { TEXT("scalar"), TEXT("vector"), TEXT("texture") };
+		for (const TCHAR* Category : Categories)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+			const int32 Count = ((*Overrides)->TryGetArrayField(Category, Entries) && Entries != nullptr) ? Entries->Num() : 0;
+			TestEqual(*FString::Printf(TEXT("a refused %s write records no override"), Category), Count, 0);
+		}
+	}
+
+	// A supplied value still writes.
+	TSharedPtr<FJsonObject> ValidParams = MakeShared<FJsonObject>();
+	ValidParams->SetStringField(TEXT("asset_path"), InstPath);
+	ValidParams->SetStringField(TEXT("parameter_name"), TEXT("TestScalar"));
+	ValidParams->SetStringField(TEXT("parameter_type"), TEXT("scalar"));
+	ValidParams->SetNumberField(TEXT("value"), 0.25);
+	TestTrue(TEXT("set_parameter with a supplied value succeeds"), Handler.Execute(TEXT("set_parameter"), ValidParams).bSuccess);
+
+	UObject* InstAsset2 = LoadObject<UMaterialInstanceConstant>(nullptr, *InstPath);
+	if (InstAsset2) InstAsset2->MarkAsGarbage();
+	UObject* MatAsset2 = LoadObject<UMaterial>(nullptr, *MatPath);
+	if (MatAsset2) MatAsset2->MarkAsGarbage();
+
+	return true;
+}

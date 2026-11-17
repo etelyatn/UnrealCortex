@@ -73,7 +73,9 @@ class TestSwitchEditorTool:
         ):
             payload = json.loads(router("switch_editor", {"pid": 9999}))
 
-        assert payload["error"] == "EDITOR_NOT_FOUND"
+        assert payload["success"] is False
+        assert payload["_error"] == "EDITOR_NOT_FOUND"
+        assert "9999" in payload["_message"]
         conn.retarget.assert_not_called()
 
     def test_switch_editor_without_pid_selects_most_recent(self):

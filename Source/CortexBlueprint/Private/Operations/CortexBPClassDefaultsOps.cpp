@@ -2574,7 +2574,14 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Standalone;
+		SaveArgs.SaveFlags = SAVE_NoError;
 		bDidSave = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
+		if (!bDidSave)
+		{
+			ResponseWarnings.Add(FString::Printf(
+				TEXT("Failed to save Blueprint package %s: the class default changes were applied in memory and the package stays dirty"),
+				*Package->GetName()));
+		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();

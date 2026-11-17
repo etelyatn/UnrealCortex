@@ -94,8 +94,8 @@ bool FCortexGraphListGraphsTest::RunTest(const FString& Parameters)
 	BadParams->SetStringField(TEXT("asset_path"), TEXT("/Game/NonExistent/Blueprint"));
 	FCortexCommandResult NotFoundResult = Router.Execute(TEXT("graph.list_graphs"), BadParams);
 	TestFalse(TEXT("list_graphs with non-existent asset should fail"), NotFoundResult.bSuccess);
-	TestEqual(TEXT("Error code should be ASSET_NOT_FOUND"),
-		NotFoundResult.ErrorCode, CortexErrorCodes::AssetNotFound);
+	TestEqual(TEXT("Error code should be BLUEPRINT_NOT_FOUND"),
+		NotFoundResult.ErrorCode, CortexErrorCodes::BlueprintNotFound);
 
 	TestBP->MarkAsGarbage();
 

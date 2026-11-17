@@ -83,13 +83,13 @@ FCortexCommandResult FCortexLevelTransformOps::GetActor(const TSharedPtr<FJsonOb
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ActorIdentifier;
     if (!Params->TryGetStringField(TEXT("actor"), ActorIdentifier) || ActorIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actor"));
     }
 
     FCortexCommandResult Error;
@@ -112,13 +112,13 @@ FCortexCommandResult FCortexLevelTransformOps::SetTransform(const TSharedPtr<FJs
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ActorIdentifier;
     if (!Params->TryGetStringField(TEXT("actor"), ActorIdentifier) || ActorIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actor"));
     }
 
     FCortexCommandResult Error;
@@ -134,23 +134,40 @@ FCortexCommandResult FCortexLevelTransformOps::SetTransform(const TSharedPtr<FJs
         return Error;
     }
 
+    // Validate every present vector before the transaction so a malformed request changes nothing.
+    FVector Location = FVector::ZeroVector;
+    FVector Rotation = FVector::ZeroVector;
+    FVector Scale = FVector::OneVector;
+    const bool bHasLocation = Params->HasField(TEXT("location"));
+    const bool bHasRotation = Params->HasField(TEXT("rotation"));
+    const bool bHasScale = Params->HasField(TEXT("scale"));
+    const bool bValidLocation = !bHasLocation || FCortexLevelUtils::ParseVectorField(Params, TEXT("location"), Location);
+    const bool bValidRotation = !bHasRotation || FCortexLevelUtils::ParseVectorField(Params, TEXT("rotation"), Rotation);
+    const bool bValidScale = !bHasScale || FCortexLevelUtils::ParseVectorField(Params, TEXT("scale"), Scale);
+    if (!bValidLocation || !bValidRotation || !bValidScale)
+    {
+        const TCHAR* FieldName = !bValidLocation
+            ? TEXT("location")
+            : (!bValidRotation ? TEXT("rotation") : TEXT("scale"));
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidValue,
+            FString::Printf(TEXT("%s must be a [x,y,z] array of numbers"), FieldName));
+    }
+
     FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Actor Transform")));
     Actor->Modify();
 
-    FVector Location;
-    if (FCortexLevelUtils::ParseVectorField(Params, TEXT("location"), Location))
+    if (bHasLocation)
     {
         Actor->SetActorLocation(Location);
     }
 
-    FVector Rotation;
-    if (FCortexLevelUtils::ParseVectorField(Params, TEXT("rotation"), Rotation))
+    if (bHasRotation)
     {
         Actor->SetActorRotation(FRotator(Rotation.X, Rotation.Y, Rotation.Z));
     }
 
-    FVector Scale;
-    if (FCortexLevelUtils::ParseVectorField(Params, TEXT("scale"), Scale))
+    if (bHasScale)
     {
         Actor->SetActorScale3D(Scale);
     }
@@ -162,18 +179,18 @@ FCortexCommandResult FCortexLevelTransformOps::SetActorProperty(const TSharedPtr
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ActorIdentifier;
     FString PropertyPath;
     if (!Params->TryGetStringField(TEXT("actor"), ActorIdentifier) || ActorIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actor"));
     }
     if (!Params->TryGetStringField(TEXT("property"), PropertyPath) || PropertyPath.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::PropertyNotFound, TEXT("Missing required parameter: property"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: property"));
     }
 
     FCortexCommandResult Error;
@@ -202,7 +219,7 @@ FCortexCommandResult FCortexLevelTransformOps::SetActorProperty(const TSharedPtr
     TSharedPtr<FJsonValue> JsonValue = Params->TryGetField(TEXT("value"));
     if (!JsonValue.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing required parameter: value"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: value"));
     }
 
     FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Actor Property")));
@@ -232,18 +249,18 @@ FCortexCommandResult FCortexLevelTransformOps::GetActorProperty(const TSharedPtr
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ActorIdentifier;
     FString PropertyPath;
     if (!Params->TryGetStringField(TEXT("actor"), ActorIdentifier) || ActorIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actor"));
     }
     if (!Params->TryGetStringField(TEXT("property"), PropertyPath) || PropertyPath.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::PropertyNotFound, TEXT("Missing required parameter: property"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: property"));
     }
 
     FCortexCommandResult Error;

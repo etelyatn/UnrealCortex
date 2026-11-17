@@ -9,6 +9,7 @@ import time
 from typing import Optional
 
 from cortex_mcp.tcp_client import UECommandError, UECommandTimeoutError
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 
 logger = logging.getLogger(__name__)
 
@@ -16,25 +17,20 @@ _TERMINAL_STATUSES = {"imported", "failed", "cancelled", "download_failed", "imp
 
 
 async def _send(connection, command: str, params: dict) -> dict:
-    """Run one blocking editor command off the event loop; failures become result dicts."""
+    """Run one blocking editor command off the event loop; failures become canonical failures."""
     try:
         return await asyncio.to_thread(connection.send_command, command, params)
     except UECommandError as exc:
-        return {
-            "success": False,
-            "error": f"{exc.code}: {exc.message}",
-            "details": exc.details,
-        }
+        return canonical_failure(exc.code, exc.message, exc.details)
     except UECommandTimeoutError as exc:
         # The command reached the editor and may still finish; never resubmit blindly.
-        return {
-            "success": False,
-            "error": str(exc),
-            "recovery_required": True,
-            "data": {"status": "unknown"},
-        }
+        return canonical_failure(
+            CONNECTION_ERROR_CODE,
+            str(exc),
+            {"recovery_required": True, "data": {"status": "unknown"}},
+        )
     except ConnectionError as exc:
-        return {"success": False, "error": str(exc)}
+        return canonical_failure(CONNECTION_ERROR_CODE, str(exc))
 
 
 async def _submit_and_wait(
@@ -49,8 +45,8 @@ async def _submit_and_wait(
     submit_result = await _send(connection, command, params)
     if not submit_result.get("success"):
         if submit_result.get("recovery_required"):
-            submit_result["error"] = (
-                f"{submit_result['error']} The job may have started; "
+            submit_result["_message"] = (
+                f"{submit_result['_message']} The job may have started; "
                 'check gen_cmd(command="list_jobs") before resubmitting.'
             )
         return json.dumps(submit_result)
@@ -69,8 +65,8 @@ async def _submit_and_wait(
             data.setdefault("job_id", job_id)
             data.setdefault("status", "unknown")
             poll_result["data"] = data
-            poll_result["error"] = (
-                f"{poll_result.get('error', 'Polling failed')} Job {job_id} may still be running; "
+            poll_result["_message"] = (
+                f"{poll_result.get('_message', 'Polling failed')} Job {job_id} may still be running; "
                 'check gen_cmd(command="list_jobs") before resubmitting.'
             )
             return json.dumps(poll_result)
@@ -83,11 +79,11 @@ async def _submit_and_wait(
         interval = min(interval * 1.5, 10.0)
 
     # Timeout
-    return json.dumps({
-        "success": False,
-        "error": f"Timeout after {timeout}s waiting for job {job_id}",
-        "data": {"job_id": job_id, "status": "timeout"},
-    })
+    return json.dumps(canonical_failure(
+        CONNECTION_ERROR_CODE,
+        f"Timeout after {timeout}s waiting for job {job_id}",
+        {"data": {"job_id": job_id, "status": "timeout"}},
+    ))
 
 
 def register_gen_compose_tools(mcp, connection) -> None:
@@ -120,10 +116,10 @@ def register_gen_compose_tools(mcp, connection) -> None:
         }
         command = command_map.get(type)
         if not command:
-            return json.dumps({
-                "success": False,
-                "error": f"Unknown gen type: '{type}'. Use 'mesh', 'image', or 'texturing'.",
-            })
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD",
+                f"Unknown gen type: '{type}'. Use 'mesh', 'image', or 'texturing'.",
+            ))
 
         # Build params
         params: dict = {}

@@ -8,6 +8,7 @@ import time
 from cortex_mcp.project import resolve_saved_dir
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
                 "scan_project",
             )
         except ConnectionError as e:
-            return f"Error: {e}"
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(e)))
 
     @mcp.tool()
     def reflect_cache_status() -> str:
@@ -161,7 +162,11 @@ def register_reflect_cache_tools(mcp, connection: UEConnection):
                 indent=2,
             )
         except (json.JSONDecodeError, OSError) as e:
-            return json.dumps({"cached": False, "error": str(e)}, indent=2)
+            return json.dumps(canonical_failure(
+                "SERIALIZATION_ERROR",
+                str(e),
+                {"cached": False},
+            ), indent=2)
 
     @mcp.tool()
     def rebuild_graph_cache() -> str:

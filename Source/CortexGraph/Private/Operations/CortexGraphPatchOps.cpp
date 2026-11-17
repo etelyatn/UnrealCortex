@@ -6106,6 +6106,7 @@ bool SaveVerifiedTargetPackage(
 		Package->GetName(), FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
 	const bool bSaveReported = !ShouldInjectSaveFault()
 		&& UPackage::SavePackage(Package, Blueprint, *Filename, SaveArgs);
 	if (!bSaveReported)

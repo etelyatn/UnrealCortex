@@ -13,6 +13,7 @@ import psutil
 from cortex_mcp.project import resolve_project_dir
 from cortex_mcp.response import format_response
 from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,10 @@ def do_restart_editor(
 
     resolved_dir = resolve_project_dir()
     if resolved_dir is None:
-        return {"error": "Cannot determine project directory. Set CORTEX_PROJECT_DIR or CLAUDE_PROJECT_DIR."}
+        return canonical_failure(
+            "INVALID_OPERATION",
+            "Cannot determine project directory. Set CORTEX_PROJECT_DIR or CLAUDE_PROJECT_DIR.",
+        )
 
     saved_dir = resolved_dir / "Saved"
     lock_file = saved_dir / "CortexRestarting.lock"
@@ -77,10 +81,11 @@ def do_restart_editor(
     port_file_pattern = f"CortexPort-{current_pid}.txt" if current_pid else None
 
     if not project_path:
-        return {
-            "error": "Cannot determine .uproject path. "
+        return canonical_failure(
+            "INVALID_OPERATION",
+            "Cannot determine .uproject path. "
             "Ensure editor was started with enhanced port file.",
-        }
+        )
 
     try:
         lock_file.parent.mkdir(parents=True, exist_ok=True)
@@ -103,11 +108,11 @@ def do_restart_editor(
                 time.sleep(2)
             else:
                 if psutil.pid_exists(current_pid):
-                    return {
-                        "error": "Shutdown timeout",
-                        "pid": current_pid,
-                        "message": "Editor did not exit within 30s. Kill manually if needed.",
-                    }
+                    return canonical_failure(
+                        "INVALID_OPERATION",
+                        "Editor did not exit within 30s. Kill manually if needed.",
+                        {"pid": current_pid, "shutdown": "timeout"},
+                    )
 
         if cancel and cancel.is_set():
             return {"cancelled": True}
@@ -122,7 +127,7 @@ def do_restart_editor(
         # Phase 2: launch editor
         engine_path = os.environ.get("UE_56_PATH", "")
         if not engine_path:
-            return {"error": "UE_56_PATH not set - cannot launch editor"}
+            return canonical_failure("INVALID_OPERATION", "UE_56_PATH not set - cannot launch editor")
 
         editor_exe = (
             pathlib.Path(engine_path)
@@ -176,10 +181,11 @@ def do_restart_editor(
                 break
 
         if new_port is None:
-            return {
-                "error": "Launch timeout",
-                "message": f"Editor did not start within {timeout}s",
-            }
+            return canonical_failure(
+                "INVALID_OPERATION",
+                f"Editor did not start within {timeout}s",
+                {"launch": "timeout"},
+            )
 
         if cancel and cancel.is_set():
             return {"cancelled": True}
@@ -193,11 +199,11 @@ def do_restart_editor(
             status = connection.send_command("get_status")
             domains = status.get("data", {}).get("subsystems", {})
         except (ConnectionError, RuntimeError) as exc:
-            return {
-                "error": f"Verification failed: {exc}",
-                "port": new_port,
-                "pid": new_pid,
-            }
+            return canonical_failure(
+                CONNECTION_ERROR_CODE,
+                f"Verification failed: {exc}",
+                {"port": new_port, "pid": new_pid},
+            )
 
         elapsed = time.monotonic() - start_time
         return {

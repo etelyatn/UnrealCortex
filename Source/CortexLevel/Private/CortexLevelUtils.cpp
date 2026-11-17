@@ -318,31 +318,53 @@ TSharedPtr<FJsonObject> FCortexLevelUtils::CollectComponentSuggestions(AActor* A
     return Details;
 }
 
+namespace
+{
+    /** Vector components must be JSON numbers; a string, null or object element is a refusal. */
+    bool TryReadVectorElements(const TArray<TSharedPtr<FJsonValue>>& Values, FVector& OutVector)
+    {
+        double X = 0.0;
+        double Y = 0.0;
+        double Z = 0.0;
+        if (!Values[0].IsValid() || Values[0]->Type != EJson::Number
+            || !Values[1].IsValid() || Values[1]->Type != EJson::Number
+            || !Values[2].IsValid() || Values[2]->Type != EJson::Number)
+        {
+            return false;
+        }
+
+        Values[0]->TryGetNumber(X);
+        Values[1]->TryGetNumber(Y);
+        Values[2]->TryGetNumber(Z);
+
+        OutVector = FVector(static_cast<float>(X), static_cast<float>(Y), static_cast<float>(Z));
+        return true;
+    }
+}
+
 bool FCortexLevelUtils::TryParseVector(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, const FVector& DefaultValue, FVector& OutVector)
 {
     OutVector = DefaultValue;
 
-    const TArray<TSharedPtr<FJsonValue>>* ArrayValue = nullptr;
-    if (!Params.IsValid() || !Params->TryGetArrayField(FieldName, ArrayValue))
+    // An absent field means "keep the default"; a present field of any other shape is a refusal.
+    if (!Params.IsValid() || !Params->HasField(FieldName))
     {
         return true;
     }
 
-    if (!ArrayValue || ArrayValue->Num() != 3)
+    const TArray<TSharedPtr<FJsonValue>>* ArrayValue = nullptr;
+    if (!Params->TryGetArrayField(FieldName, ArrayValue) || !ArrayValue || ArrayValue->Num() != 3)
     {
         return false;
     }
 
-    OutVector.X = static_cast<float>((*ArrayValue)[0]->AsNumber());
-    OutVector.Y = static_cast<float>((*ArrayValue)[1]->AsNumber());
-    OutVector.Z = static_cast<float>((*ArrayValue)[2]->AsNumber());
-    return true;
+    return TryReadVectorElements(*ArrayValue, OutVector);
 }
 
 bool FCortexLevelUtils::ParseVectorField(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, FVector& OutVector)
 {
     const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-    if (!Params->TryGetArrayField(FieldName, Values))
+    if (!Params.IsValid() || !Params->TryGetArrayField(FieldName, Values))
     {
         return false;
     }
@@ -352,10 +374,7 @@ bool FCortexLevelUtils::ParseVectorField(const TSharedPtr<FJsonObject>& Params, 
         return false;
     }
 
-    OutVector.X = static_cast<float>((*Values)[0]->AsNumber());
-    OutVector.Y = static_cast<float>((*Values)[1]->AsNumber());
-    OutVector.Z = static_cast<float>((*Values)[2]->AsNumber());
-    return true;
+    return TryReadVectorElements(*Values, OutVector);
 }
 
 void FCortexLevelUtils::SetVectorArray(TSharedPtr<FJsonObject> Json, const TCHAR* FieldName, const FVector& Vector)

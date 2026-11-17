@@ -8,7 +8,10 @@ facade owns the public encoding:
 * ``structured``: the same compact text plus the decoded object under ``structuredContent``.
 
 Explicit ``CallToolResult``/image content is passed through untouched, and text that is not
-JSON stays an opaque text block with its original meaning. Response-size telemetry is attributed
+JSON stays an opaque text block with its original meaning. A decoded object that carries a
+non-empty ``_error`` is published with ``isError`` set, and a tool's raised ``UECommandError`` or
+``ConnectionError`` becomes the same canonical failure object instead of escaping as a protocol
+error. Response-size telemetry is attributed
 to the command routed *inside the current invocation* (an invocation-local scope, so concurrent
 async invocations stay isolated and a refusal that routes nothing reports the explicit unknown
 state). This is a registration adapter, not a general plugin framework and not a semantic
@@ -26,11 +29,32 @@ import anyio.to_thread
 from mcp.types import CallToolResult, TextContent
 
 from .response import compact_json
-from .tcp_client import INVOCATION_COMMAND
+from .tcp_client import INVOCATION_COMMAND, UECommandError
 
 _TEXT_MODE = "text"
 _STRUCTURED_MODE = "structured"
 RESPONSE_MODES = (_TEXT_MODE, _STRUCTURED_MODE)
+
+CONNECTION_ERROR_CODE = "CONNECTION_ERROR"
+
+# Envelope keys the failure itself owns: a detail with the same name never overwrites them.
+_RESERVED_ERROR_FIELDS = frozenset({"success", "_error", "_message", "_command"})
+
+
+def canonical_failure(code: str, message: str, details: Any = None) -> dict[str, Any]:
+    """Build the one public failure object: ``success``, ``_error``, ``_message`` and details."""
+    payload: dict[str, Any] = {"success": False, "_error": code, "_message": message}
+    if isinstance(details, dict):
+        for key, value in details.items():
+            if key not in _RESERVED_ERROR_FIELDS:
+                payload[key] = value
+    return payload
+
+
+def failed_step_code(step: Any, fallback: str = "INVALID_OPERATION") -> str:
+    """The native code a failed batch step reported, or the composite's own refusal code."""
+    code = step.get("error_code") if isinstance(step, dict) else None
+    return code if isinstance(code, str) and code else fallback
 
 
 def strip_schema_titles(schema: Any) -> Any:
@@ -112,7 +136,12 @@ class ToolOutputRegistrar:
             async def async_wrapper(*args, **kwargs) -> CallToolResult:
                 token = INVOCATION_COMMAND.set("")
                 try:
-                    value = await fn(*args, **kwargs)
+                    try:
+                        value = await fn(*args, **kwargs)
+                    except UECommandError as exc:
+                        value = canonical_failure(exc.code, exc.message, exc.details)
+                    except ConnectionError as exc:
+                        value = canonical_failure(CONNECTION_ERROR_CODE, str(exc))
                     routed_command = INVOCATION_COMMAND.get()
                 finally:
                     INVOCATION_COMMAND.reset(token)
@@ -123,7 +152,13 @@ class ToolOutputRegistrar:
         def invoke(*args, **kwargs) -> tuple[Any, str]:
             token = INVOCATION_COMMAND.set("")
             try:
-                return fn(*args, **kwargs), INVOCATION_COMMAND.get()
+                try:
+                    value = fn(*args, **kwargs)
+                except UECommandError as exc:
+                    value = canonical_failure(exc.code, exc.message, exc.details)
+                except ConnectionError as exc:
+                    value = canonical_failure(CONNECTION_ERROR_CODE, str(exc))
+                return value, INVOCATION_COMMAND.get()
             finally:
                 INVOCATION_COMMAND.reset(token)
 
@@ -151,6 +186,7 @@ class ToolOutputRegistrar:
         result = CallToolResult(
             content=[TextContent(type="text", text=text)],
             structuredContent=structured,
+            isError=bool(decoded and isinstance(data, dict) and data.get("_error")),
         )
         return self._with_metrics(tool_name, result, text, routed_command)
 

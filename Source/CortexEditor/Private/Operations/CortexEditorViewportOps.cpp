@@ -611,15 +611,15 @@ FCortexCommandResult FCortexEditorViewportOps::FocusNode(const TSharedPtr<FJsonO
 	if (!FindPackage(nullptr, *PkgName) && !FPackageName::DoesPackageExist(PkgName))
 	{
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::AssetNotFound,
-			FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+			CortexErrorCodes::BlueprintNotFound,
+			FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath));
 	}
 
 	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
 	if (Blueprint == nullptr)
 	{
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::AssetNotFound,
+			CortexErrorCodes::BlueprintNotFound,
 			FString::Printf(TEXT("Could not load Blueprint: %s"), *AssetPath));
 	}
 

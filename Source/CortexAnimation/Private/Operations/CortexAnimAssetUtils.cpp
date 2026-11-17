@@ -11,6 +11,7 @@
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Engine/Blueprint.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
@@ -261,6 +262,12 @@ bool FCortexAnimAssetUtils::ResolveRequiredAsset(
 		return false;
 	}
 
+	// A Blueprint asset path that does not resolve is BLUEPRINT_NOT_FOUND; every other asset type keeps
+	// the generic ASSET_NOT_FOUND.
+	const FString NotFoundCode = TIsDerivedFrom<AssetT, UBlueprint>::IsDerived
+		? CortexErrorCodes::BlueprintNotFound
+		: CortexErrorCodes::AssetNotFound;
+
 	const FString PackageName = FPackageName::ObjectPathToPackageName(OutResolved.RequestedPath);
 	if (!FPackageName::IsValidLongPackageName(PackageName))
 	{
@@ -305,7 +312,7 @@ bool FCortexAnimAssetUtils::ResolveRequiredAsset(
 	if (!AssetData.IsValid())
 	{
 		OutError = FCortexCommandRouter::Error(
-			CortexErrorCodes::AssetNotFound,
+			NotFoundCode,
 			FString::Printf(TEXT("Asset not found: %s"), *OutResolved.RequestedPath),
 			MakeErrorDetails(TEXT("asset_path"), OutResolved.RequestedPath, ExpectedType, TEXT("")));
 		return false;
@@ -326,7 +333,7 @@ bool FCortexAnimAssetUtils::ResolveRequiredAsset(
 		if (!FPackageName::DoesPackageExist(PackageName))
 		{
 			OutError = FCortexCommandRouter::Error(
-				CortexErrorCodes::AssetNotFound,
+				NotFoundCode,
 				FString::Printf(TEXT("Asset not found: %s"), *OutResolved.RequestedPath),
 				MakeErrorDetails(TEXT("asset_path"), OutResolved.RequestedPath, ExpectedType, TEXT("")));
 			return false;

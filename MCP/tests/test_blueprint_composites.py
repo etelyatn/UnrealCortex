@@ -590,7 +590,8 @@ class TestCompileFailureHandling:
         result = json.loads(tool(name="BP_Test", path="/Game/"))
 
         assert result["success"] is False
-        assert "compil" in result["error"].lower()
+        assert result["_error"]
+        assert "compil" in result["_message"].lower()
         assert "asset_path" in result
         assert "suggestion" in result
 
@@ -630,10 +631,11 @@ class TestLegacyUpdateRouteRemoved:
         )
 
         assert result["success"] is False
-        assert "mode='update'" in result["error"]
-        assert "graph.apply_patch" in result["error"]
-        assert "blueprint_compose(mode='update'" in result["error"]
-        assert "/Game/Blueprints/BP_Existing" in result["error"]
+        assert result["_error"]
+        assert "mode='update'" in result["_message"]
+        assert "graph.apply_patch" in result["_message"]
+        assert "blueprint_compose(mode='update'" in result["_message"]
+        assert "/Game/Blueprints/BP_Existing" in result["_message"]
         assert mock_connection.send_command.call_args_list == []
 
     def test_update_mode_never_builds_a_batch_or_a_fingerprint_preflight(self):
@@ -661,7 +663,7 @@ class TestLegacyUpdateRouteRemoved:
         result = json.loads(tool(mode="update", asset_path=""))
 
         assert result["success"] is False
-        assert "graph.apply_patch" in result["error"]
+        assert "graph.apply_patch" in result["_message"]
         assert mock_connection.send_command.call_args_list == []
 
     def test_unknown_mode_is_refused(self):
@@ -670,7 +672,7 @@ class TestLegacyUpdateRouteRemoved:
         result = json.loads(tool(mode="append", asset_path="/Game/Blueprints/BP_Existing"))
 
         assert result["success"] is False
-        assert "Unsupported mode 'append'" in result["error"]
+        assert "Unsupported mode 'append'" in result["_message"]
         assert mock_connection.send_command.call_args_list == []
 
     def test_create_mode_refuses_subgraph_path_and_points_at_the_patch_route(self):
@@ -681,8 +683,8 @@ class TestLegacyUpdateRouteRemoved:
         )
 
         assert result["success"] is False
-        assert "subgraph_path" in result["error"]
-        assert "graph.apply_patch" in result["error"]
+        assert "subgraph_path" in result["_message"]
+        assert "graph.apply_patch" in result["_message"]
         assert mock_connection.send_command.call_args_list == []
 
 

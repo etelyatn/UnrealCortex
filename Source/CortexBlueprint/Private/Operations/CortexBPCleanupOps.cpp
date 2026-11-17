@@ -118,6 +118,7 @@ namespace
 
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		SaveArgs.SaveFlags = SAVE_NoError;
 		if (!UPackage::SavePackage(Blueprint->GetPackage(), Blueprint, *PackageFilename, SaveArgs))
 		{
 			OutError = FString::Printf(
@@ -1901,6 +1902,7 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 		{
 			FSavePackageArgs SaveArgs;
 			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
 			const bool bSaved = UPackage::SavePackage(BP->GetPackage(), BP, *PackageFilename, SaveArgs);
 			if (!bSaved)
 			{

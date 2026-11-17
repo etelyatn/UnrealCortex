@@ -4,6 +4,7 @@
 #include "Dom/JsonValue.h"
 #include "InputMappingContext.h"
 #include "EnhancedActionKeyMapping.h"
+#include "InputAction.h"
 #include "InputModifiers.h"
 
 // ============================================================================
@@ -453,6 +454,318 @@ bool FCortexSerializerInstancedSubObjectInvalidClassTest::RunTest(const FString&
 			Warnings[0].Contains(TEXT("NonExistentModifierClass")));
 	}
 
+	IMC->MarkAsGarbage();
+	return true;
+}
+
+// ============================================================================
+// Test: A failing element leaves the previous elements and sub-objects intact
+// ============================================================================
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerInstancedSubObjectArrayFailureTest,
+	"Cortex.Core.Serializer.InstancedSubObject.ArrayFailurePreservesState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerInstancedSubObjectArrayFailureTest::RunTest(const FString& Parameters)
+{
+	UInputMappingContext* IMC = NewObject<UInputMappingContext>(GetTransientPackage(),
+		NAME_None, RF_Transient);
+
+	FEnhancedActionKeyMapping Mapping;
+
+	UInputModifierNegate* ExistingNegate = NewObject<UInputModifierNegate>(IMC);
+	ExistingNegate->bX = true;
+	ExistingNegate->bY = false;
+	ExistingNegate->bZ = true;
+	Mapping.Modifiers.Add(ExistingNegate);
+
+	UInputModifierSwizzleAxis* ExistingSwizzle = NewObject<UInputModifierSwizzleAxis>(IMC);
+	Mapping.Modifiers.Add(ExistingSwizzle);
+
+	const FProperty* ModifiersProp = FEnhancedActionKeyMapping::StaticStruct()->FindPropertyByName(TEXT("Modifiers"));
+	TestNotNull(TEXT("Should find Modifiers property"), ModifiersProp);
+	if (ModifiersProp == nullptr)
+	{
+		IMC->MarkAsGarbage();
+		return true;
+	}
+
+	void* ValuePtr = ModifiersProp->ContainerPtrToValuePtr<void>(&Mapping);
+
+	// First element converts; second names a class that does not exist.
+	TSharedPtr<FJsonObject> ValidJson = MakeShared<FJsonObject>();
+	ValidJson->SetStringField(TEXT("_class"), TEXT("InputModifierNegate"));
+
+	TSharedPtr<FJsonObject> InvalidJson = MakeShared<FJsonObject>();
+	InvalidJson->SetStringField(TEXT("_class"), TEXT("NonExistentModifierClass"));
+
+	TArray<TSharedPtr<FJsonValue>> NewArray;
+	NewArray.Add(MakeShared<FJsonValueObject>(ValidJson));
+	NewArray.Add(MakeShared<FJsonValueObject>(InvalidJson));
+
+	TArray<FString> Warnings;
+	const bool bResult = FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueArray>(NewArray), ModifiersProp, ValuePtr, IMC, Warnings);
+
+	TestFalse(TEXT("Write with one failing element should be refused"), bResult);
+	TestTrue(TEXT("Refusal should report a warning"), Warnings.Num() > 0);
+	TestEqual(TEXT("Array length should be preserved"), Mapping.Modifiers.Num(), 2);
+	if (Mapping.Modifiers.Num() == 2)
+	{
+		TestTrue(TEXT("Element 0 should still be the original sub-object"),
+			Mapping.Modifiers[0].Get() == ExistingNegate);
+		TestTrue(TEXT("Element 1 should still be the original sub-object"),
+			Mapping.Modifiers[1].Get() == ExistingSwizzle);
+	}
+	TestFalse(TEXT("Original sub-object 0 should not be retired"),
+		ExistingNegate->HasAnyInternalFlags(EInternalObjectFlags::Garbage));
+	TestFalse(TEXT("Original sub-object 1 should not be retired"),
+		ExistingSwizzle->HasAnyInternalFlags(EInternalObjectFlags::Garbage));
+	TestTrue(TEXT("Original sub-object values should be intact"),
+		ExistingNegate->bX && !ExistingNegate->bY && ExistingNegate->bZ);
+	TestTrue(TEXT("Original sub-object class should be intact"),
+		ExistingSwizzle->IsA<UInputModifierSwizzleAxis>());
+
+	// The buggy path leaves a substitute sub-object in element 0; retire anything created.
+	for (UInputModifier* Modifier : Mapping.Modifiers)
+	{
+		if (Modifier != nullptr && Modifier != ExistingNegate && Modifier != ExistingSwizzle)
+		{
+			Modifier->MarkAsGarbage();
+		}
+	}
+	ExistingNegate->MarkAsGarbage();
+	ExistingSwizzle->MarkAsGarbage();
+	IMC->MarkAsGarbage();
+	return true;
+}
+
+// ============================================================================
+// Test: A sparse mapping update keeps the fields it does not mention
+// ============================================================================
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexSerializerInstancedSparseMappingTest,
+	"Cortex.Core.Serializer.InstancedSubObject.SparseMappingUpdatePreservesFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexSerializerInstancedSparseMappingTest::RunTest(const FString& Parameters)
+{
+	UInputMappingContext* IMC = NewObject<UInputMappingContext>(GetTransientPackage(), NAME_None, RF_Transient);
+
+	UInputAction* Action = NewObject<UInputAction>(IMC);
+	const UInputAction* ExpectedAction = Action;
+	UInputModifierNegate* OriginalModifier = NewObject<UInputModifierNegate>(IMC);
+
+	FEnhancedActionKeyMapping Mapping;
+	Mapping.Action = Action;
+	Mapping.Key = EKeys::A;
+	Mapping.Modifiers.Add(OriginalModifier);
+
+	// The mapping array is private: UE 5.7 moved it into the DefaultKeyMappings struct, so locate it
+	// through reflection and address it with script containers.
+	FArrayProperty* MappingsProperty = nullptr;
+	void* MappingsValuePtr = nullptr;
+
+	if (FStructProperty* DefaultKeyMappings = CastField<FStructProperty>(
+		UInputMappingContext::StaticClass()->FindPropertyByName(TEXT("DefaultKeyMappings"))))
+	{
+		MappingsProperty = CastField<FArrayProperty>(
+			DefaultKeyMappings->Struct->FindPropertyByName(TEXT("Mappings")));
+		if (MappingsProperty != nullptr)
+		{
+			void* MappingData = DefaultKeyMappings->ContainerPtrToValuePtr<void>(IMC);
+			MappingsValuePtr = MappingsProperty->ContainerPtrToValuePtr<void>(MappingData);
+		}
+	}
+
+	if (MappingsProperty == nullptr)
+	{
+		MappingsProperty = CastField<FArrayProperty>(
+			UInputMappingContext::StaticClass()->FindPropertyByName(TEXT("Mappings")));
+		if (MappingsProperty != nullptr)
+		{
+			MappingsValuePtr = MappingsProperty->ContainerPtrToValuePtr<void>(IMC);
+		}
+	}
+
+	TestNotNull(TEXT("Mappings property should exist"), MappingsProperty);
+	if (MappingsProperty == nullptr || MappingsValuePtr == nullptr)
+	{
+		OriginalModifier->MarkAsGarbage();
+		Action->MarkAsGarbage();
+		IMC->MarkAsGarbage();
+		return true;
+	}
+
+	{
+		FScriptArrayHelper SeedHelper(MappingsProperty, MappingsValuePtr);
+		const int32 SeedIndex = SeedHelper.AddValue();
+		*reinterpret_cast<FEnhancedActionKeyMapping*>(SeedHelper.GetRawPtr(SeedIndex)) = Mapping;
+	}
+
+	// 1. Sparse update: only the key is provided, so the action and the modifier must survive.
+	TSharedPtr<FJsonObject> KeyJson = MakeShared<FJsonObject>();
+	KeyJson->SetStringField(TEXT("KeyName"), TEXT("B"));
+	TSharedPtr<FJsonObject> SparseMapping = MakeShared<FJsonObject>();
+	SparseMapping->SetObjectField(TEXT("Key"), KeyJson);
+
+	TArray<TSharedPtr<FJsonValue>> SparseArray;
+	SparseArray.Add(MakeShared<FJsonValueObject>(SparseMapping));
+
+	TArray<FString> Warnings;
+	const bool bSparseWritten = FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueArray>(SparseArray), MappingsProperty, MappingsValuePtr, IMC, Warnings);
+
+	TestTrue(TEXT("Sparse mapping write should succeed"), bSparseWritten);
+	{
+		FScriptArrayHelper LiveHelper(MappingsProperty, MappingsValuePtr);
+		TestEqual(TEXT("Sparse write keeps one mapping"), LiveHelper.Num(), 1);
+		if (LiveHelper.Num() == 1)
+		{
+			const FEnhancedActionKeyMapping& LiveMapping =
+				*reinterpret_cast<FEnhancedActionKeyMapping*>(LiveHelper.GetRawPtr(0));
+			TestTrue(TEXT("Sparse write applies the provided key"), LiveMapping.Key == EKeys::B);
+			TestTrue(TEXT("Sparse write keeps the action"), LiveMapping.Action.Get() == ExpectedAction);
+			TestEqual(TEXT("Sparse write keeps the modifier count"), LiveMapping.Modifiers.Num(), 1);
+			if (LiveMapping.Modifiers.Num() == 1)
+			{
+				TestTrue(
+					TEXT("Sparse write keeps the same modifier object"),
+					LiveMapping.Modifiers[0].Get() == OriginalModifier);
+				TestFalse(
+					TEXT("Sparse write must not retire the retained modifier"),
+					OriginalModifier->HasAnyInternalFlags(EInternalObjectFlags::Garbage));
+			}
+		}
+	}
+
+	// 2. Replacing Modifiers retires the previous owned modifier at commit and keeps the rest.
+	TSharedPtr<FJsonObject> NewModifierJson = MakeShared<FJsonObject>();
+	NewModifierJson->SetStringField(TEXT("_class"), TEXT("InputModifierNegate"));
+	TArray<TSharedPtr<FJsonValue>> ReplacementModifiers;
+	ReplacementModifiers.Add(MakeShared<FJsonValueObject>(NewModifierJson));
+
+	TSharedPtr<FJsonObject> ReplacementMapping = MakeShared<FJsonObject>();
+	ReplacementMapping->SetArrayField(TEXT("Modifiers"), ReplacementModifiers);
+
+	TArray<TSharedPtr<FJsonValue>> ReplacementArray;
+	ReplacementArray.Add(MakeShared<FJsonValueObject>(ReplacementMapping));
+
+	Warnings.Empty();
+	const bool bReplaced = FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueArray>(ReplacementArray), MappingsProperty, MappingsValuePtr, IMC, Warnings);
+
+	TestTrue(TEXT("Modifier replacement write should succeed"), bReplaced);
+	UInputModifier* ReplacementModifier = nullptr;
+	{
+		FScriptArrayHelper LiveHelper(MappingsProperty, MappingsValuePtr);
+		TestEqual(TEXT("Replacement write keeps one mapping"), LiveHelper.Num(), 1);
+		if (LiveHelper.Num() == 1)
+		{
+			const FEnhancedActionKeyMapping& LiveMapping =
+				*reinterpret_cast<FEnhancedActionKeyMapping*>(LiveHelper.GetRawPtr(0));
+			TestTrue(TEXT("Replacement write keeps the action"), LiveMapping.Action.Get() == ExpectedAction);
+			TestTrue(TEXT("Replacement write keeps the provided key"), LiveMapping.Key == EKeys::B);
+			TestEqual(TEXT("Replacement write installs one modifier"), LiveMapping.Modifiers.Num(), 1);
+			if (LiveMapping.Modifiers.Num() == 1)
+			{
+				ReplacementModifier = LiveMapping.Modifiers[0];
+				TestTrue(
+					TEXT("Replacement modifier is a new Negate"),
+					ReplacementModifier != nullptr && ReplacementModifier->IsA<UInputModifierNegate>());
+				TestTrue(TEXT("Replacement modifier is not the original"), ReplacementModifier != OriginalModifier);
+			}
+		}
+	}
+	TestTrue(
+		TEXT("Replacing the modifier retires the previous owned modifier"),
+		OriginalModifier->HasAnyInternalFlags(EInternalObjectFlags::Garbage));
+
+	// 3. A failing element leaves the mapping untouched and retires nothing it still references.
+	const UInputAction* ActionBeforeFailure = nullptr;
+	FKey KeyBeforeFailure;
+	UInputModifier* ModifierBeforeFailure = nullptr;
+	{
+		FScriptArrayHelper LiveHelper(MappingsProperty, MappingsValuePtr);
+		if (LiveHelper.Num() == 1)
+		{
+			const FEnhancedActionKeyMapping& LiveMapping =
+				*reinterpret_cast<FEnhancedActionKeyMapping*>(LiveHelper.GetRawPtr(0));
+			ActionBeforeFailure = LiveMapping.Action.Get();
+			KeyBeforeFailure = LiveMapping.Key;
+			if (LiveMapping.Modifiers.Num() == 1)
+			{
+				ModifierBeforeFailure = LiveMapping.Modifiers[0];
+			}
+		}
+	}
+
+	TSharedPtr<FJsonObject> KeyUpdateJson = MakeShared<FJsonObject>();
+	KeyUpdateJson->SetStringField(TEXT("KeyName"), TEXT("C"));
+	TSharedPtr<FJsonObject> FirstMapping = MakeShared<FJsonObject>();
+	FirstMapping->SetObjectField(TEXT("Key"), KeyUpdateJson);
+
+	TSharedPtr<FJsonObject> InvalidModifierJson = MakeShared<FJsonObject>();
+	InvalidModifierJson->SetStringField(TEXT("_class"), TEXT("NonExistentModifierClass"));
+	TArray<TSharedPtr<FJsonValue>> InvalidModifiers;
+	InvalidModifiers.Add(MakeShared<FJsonValueObject>(InvalidModifierJson));
+	TSharedPtr<FJsonObject> SecondMapping = MakeShared<FJsonObject>();
+	SecondMapping->SetArrayField(TEXT("Modifiers"), InvalidModifiers);
+
+	TArray<TSharedPtr<FJsonValue>> FailingArray;
+	FailingArray.Add(MakeShared<FJsonValueObject>(FirstMapping));
+	FailingArray.Add(MakeShared<FJsonValueObject>(SecondMapping));
+
+	Warnings.Empty();
+	const bool bFailingWritten = FCortexSerializer::JsonToProperty(
+		MakeShared<FJsonValueArray>(FailingArray), MappingsProperty, MappingsValuePtr, IMC, Warnings);
+
+	TestFalse(TEXT("A write with a failing element should be refused"), bFailingWritten);
+	TestTrue(TEXT("The refusal should report a warning"), Warnings.Num() > 0);
+	{
+		FScriptArrayHelper LiveHelper(MappingsProperty, MappingsValuePtr);
+		TestEqual(TEXT("The refusal keeps one mapping"), LiveHelper.Num(), 1);
+		if (LiveHelper.Num() == 1)
+		{
+			const FEnhancedActionKeyMapping& LiveMapping =
+				*reinterpret_cast<FEnhancedActionKeyMapping*>(LiveHelper.GetRawPtr(0));
+			TestTrue(TEXT("The refusal keeps the action"), LiveMapping.Action.Get() == ActionBeforeFailure);
+			TestTrue(TEXT("The refusal keeps the key"), LiveMapping.Key == KeyBeforeFailure);
+			TestEqual(TEXT("The refusal keeps the modifier count"), LiveMapping.Modifiers.Num(), 1);
+			if (LiveMapping.Modifiers.Num() == 1)
+			{
+				TestTrue(
+					TEXT("The refusal keeps the same modifier object"),
+					LiveMapping.Modifiers[0].Get() == ModifierBeforeFailure);
+			}
+		}
+	}
+	if (ModifierBeforeFailure != nullptr)
+	{
+		TestFalse(
+			TEXT("The refusal must not retire the modifier the live mapping references"),
+			ModifierBeforeFailure->HasAnyInternalFlags(EInternalObjectFlags::Garbage));
+	}
+
+	{
+		FScriptArrayHelper LiveHelper(MappingsProperty, MappingsValuePtr);
+		for (int32 Index = 0; Index < LiveHelper.Num(); ++Index)
+		{
+			FEnhancedActionKeyMapping& LiveMapping =
+				*reinterpret_cast<FEnhancedActionKeyMapping*>(LiveHelper.GetRawPtr(Index));
+			for (UInputModifier* Modifier : LiveMapping.Modifiers)
+			{
+				if (Modifier != nullptr)
+				{
+					Modifier->MarkAsGarbage();
+				}
+			}
+		}
+	}
+	OriginalModifier->MarkAsGarbage();
+	Action->MarkAsGarbage();
 	IMC->MarkAsGarbage();
 	return true;
 }

@@ -426,7 +426,8 @@ class TestCompileFailureHandling:
         ))
 
         assert result["success"] is False
-        assert "compil" in result["error"].lower()
+        assert result["_error"]
+        assert "compil" in result["_message"].lower()
         assert "asset_path" in result
         assert "suggestion" in result
 

@@ -1,8 +1,10 @@
 """MCP tools for composite class context queries."""
 
+import json
 import logging
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 from .detail import _NATIVE_DETAIL, _VALID_DETAILS, _prune_detail
 
 logger = logging.getLogger(__name__)
@@ -31,10 +33,10 @@ def register_reflect_context_tools(mcp, connection: UEConnection):
         complete inventory.
         """
         if detail not in _VALID_DETAILS:
-            return (
-                f"Error: invalid detail '{detail}'; expected one of "
-                f"{', '.join(_VALID_DETAILS)}"
-            )
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD",
+                f"invalid detail '{detail}'; expected one of {', '.join(_VALID_DETAILS)}",
+            ))
         try:
             # Self at the requested view: only 'summary' takes the reduced native read.
             self_response = connection.send_command_cached(
@@ -100,4 +102,4 @@ def register_reflect_context_tools(mcp, connection: UEConnection):
 
             return format_response(result, "query_class_context")
         except ConnectionError as e:
-            return f"Error: {e}"
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(e)))

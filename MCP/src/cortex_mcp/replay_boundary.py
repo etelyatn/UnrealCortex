@@ -20,10 +20,10 @@ from mcp.types import CallToolResult, TextContent
 # Native compact response budget (UTF-8 bytes) for one Replay reply.
 MAX_REPLAY_RESPONSE_BYTES = 39000
 
-# The single overflow contract error.  These four fields describe the overflow
+# The single overflow contract error.  These fields describe the overflow
 # itself, so preserved overflow context can never override them.
 _LIMIT_RESERVED_FIELDS = frozenset(
-    {"_error", "_message", "max_response_bytes", "response_bytes"}
+    {"success", "_error", "_message", "max_response_bytes", "response_bytes"}
 )
 
 # One-shot start machine context must survive every overflow.
@@ -73,6 +73,7 @@ def _limit_exceeded_response(
     ``overflow_fields`` is preserved but can never override the budget contract fields themselves.
     """
     payload: dict[str, Any] = {
+        "success": False,
         "_error": "LIMIT_EXCEEDED",
         "_message": (
             f"Replay reply of {response_bytes} bytes exceeds the "
@@ -132,7 +133,7 @@ def _error_envelope(
     overflow_fields: dict[str, Any] | None = None,
     **extra: Any,
 ) -> str:
-    payload: dict[str, Any] = {"_error": code, "_message": message}
+    payload: dict[str, Any] = {"success": False, "_error": code, "_message": message}
     payload.update(extra)
     return _finalize(payload, overflow_fields)
 

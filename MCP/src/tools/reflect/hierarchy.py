@@ -1,8 +1,10 @@
 """MCP tools for class hierarchy queries."""
 
+import json
 import logging
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 
 logger = logging.getLogger(__name__)
 
@@ -82,4 +84,4 @@ def register_reflect_hierarchy_tools(mcp, connection: UEConnection):
             flat = _flatten_hierarchy(data)
             return format_response(flat, "query_class_hierarchy")
         except ConnectionError as e:
-            return f"Error: {e}"
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(e)))
