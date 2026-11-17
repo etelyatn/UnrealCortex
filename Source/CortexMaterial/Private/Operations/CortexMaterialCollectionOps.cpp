@@ -8,7 +8,7 @@
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
-#include "UObject/SavePackage.h"
+#include "Operations/CortexMaterialAssetOps.h"
 
 namespace
 {
@@ -219,9 +219,11 @@ FCortexCommandResult FCortexMaterialCollectionOps::CreateCollection(const TShare
 	}
 
 	// Save to disk
-	FSavePackageArgs SaveArgs;
-	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-	UPackage::SavePackage(Package, Collection, *PackageFilename, SaveArgs);
+	FCortexCommandResult SaveError;
+	if (!FCortexMaterialAssetOps::SaveNewAsset(Collection, PackageFilename, SaveError))
+	{
+		return SaveError;
+	}
 
 	FCortexEditorUtils::NotifyAssetModified(Collection);
 

@@ -5,6 +5,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "ScopedTransaction.h"
 
 FCortexCommandResult FCortexMaterialParamOps::ListParameters(const TSharedPtr<FJsonObject>& Params)
 {
@@ -357,6 +358,11 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 		}
 	}
 
+	// Refusals below leave the transaction empty, so it records nothing. Instances saved by create_instance
+	// are not transactional, and Modify() records nothing without the flag.
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Material Parameter")), !FCortexCommandRouter::IsInBatch());
+	Instance->SetFlags(RF_Transactional);
+
 	if (ParameterType == TEXT("scalar"))
 	{
 		double Value = 0.0;
@@ -366,6 +372,7 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 				CortexErrorCodes::InvalidParameter, TEXT("Missing or invalid scalar value"));
 		}
 
+		Instance->Modify();
 		Instance->SetScalarParameterValueEditorOnly(ParamName, static_cast<float>(Value));
 		Instance->PostEditChange();
 		Instance->MarkPackageDirty();
@@ -408,6 +415,7 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 				TEXT("Missing or invalid vector value (expects [R, G, B, A] or {R,G,B,A})"));
 		}
 
+		Instance->Modify();
 		Instance->SetVectorParameterValueEditorOnly(ParamName, Color);
 		Instance->PostEditChange();
 		Instance->MarkPackageDirty();
@@ -442,6 +450,7 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 			}
 		}
 
+		Instance->Modify();
 		Instance->SetTextureParameterValueEditorOnly(ParamName, Texture);
 		Instance->PostEditChange();
 		Instance->MarkPackageDirty();
@@ -482,8 +491,19 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameters(const TSharedPtr<FJs
 		return LoadError;
 	}
 
+	if (ParametersArray->IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("parameters must contain at least one entry"));
+	}
+
+	// One undo step for every parameter this call sets.
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Material Parameters")), !FCortexCommandRouter::IsInBatch());
+
 	int32 SuccessCount = 0;
 	TArray<FString> Errors;
+	FString FirstErrorCode;
 
 	for (const TSharedPtr<FJsonValue>& ParamValue : *ParametersArray)
 	{
@@ -491,6 +511,10 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameters(const TSharedPtr<FJs
 		if (!ParamValue->TryGetObject(ParamObj))
 		{
 			Errors.Add(TEXT("Invalid parameter object in array"));
+			if (FirstErrorCode.IsEmpty())
+			{
+				FirstErrorCode = CortexErrorCodes::InvalidField;
+			}
 			continue;
 		}
 
@@ -513,6 +537,10 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameters(const TSharedPtr<FJs
 		{
 			Errors.Add(FString::Printf(TEXT("%s: %s"),
 				*Result.ErrorCode, *Result.ErrorMessage));
+			if (FirstErrorCode.IsEmpty())
+			{
+				FirstErrorCode = Result.ErrorCode;
+			}
 		}
 	}
 
@@ -528,6 +556,14 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameters(const TSharedPtr<FJs
 			ErrorsArray.Add(MakeShared<FJsonValueString>(Error));
 		}
 		Data->SetArrayField(TEXT("errors"), ErrorsArray);
+	}
+
+	if (SuccessCount == 0)
+	{
+		return FCortexCommandRouter::Error(
+			FirstErrorCode,
+			FString::Printf(TEXT("No parameters were set (%d failed)"), Errors.Num()),
+			Data);
 	}
 
 	return FCortexCommandRouter::Success(Data);
@@ -557,11 +593,16 @@ FCortexCommandResult FCortexMaterialParamOps::ResetParameter(const TSharedPtr<FJ
 	FName ParamName(*ParameterName);
 	bool bFound = false;
 
+	// Refusals below leave the transaction empty, so it records nothing.
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Reset Material Parameter")), !FCortexCommandRouter::IsInBatch());
+	Instance->SetFlags(RF_Transactional);
+
 	// Try removing from scalar parameters
 	for (int32 i = Instance->ScalarParameterValues.Num() - 1; i >= 0; --i)
 	{
 		if (Instance->ScalarParameterValues[i].ParameterInfo.Name == ParamName)
 		{
+			Instance->Modify();
 			Instance->ScalarParameterValues.RemoveAt(i);
 			bFound = true;
 			break;
@@ -575,6 +616,7 @@ FCortexCommandResult FCortexMaterialParamOps::ResetParameter(const TSharedPtr<FJ
 		{
 			if (Instance->VectorParameterValues[i].ParameterInfo.Name == ParamName)
 			{
+				Instance->Modify();
 				Instance->VectorParameterValues.RemoveAt(i);
 				bFound = true;
 				break;
@@ -589,6 +631,7 @@ FCortexCommandResult FCortexMaterialParamOps::ResetParameter(const TSharedPtr<FJ
 		{
 			if (Instance->TextureParameterValues[i].ParameterInfo.Name == ParamName)
 			{
+				Instance->Modify();
 				Instance->TextureParameterValues.RemoveAt(i);
 				bFound = true;
 				break;
