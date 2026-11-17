@@ -530,7 +530,7 @@ void FMyDomainModule::StartupModule()
 }
 ```
 
-`GetSupportedCommands()` feeds the `get_capabilities` built-in command — the AI can discover what your domain exposes automatically. Drop Python tools into `MCP/tools/mydomain/` and they are discovered at server start with no registration boilerplate.
+`GetSupportedCommands()` feeds the `get_capabilities` built-in command — the AI can discover what your domain exposes automatically. The MCP server registers its tools explicitly: add the domain to `CORE_DOMAINS` or `_OPTIONAL_DOMAINS` in `MCP/src/cortex_mcp/capabilities.py` to get a `mydomain_cmd` router, and wire any composite or standalone tool into `_register_explicit_tools` in `MCP/src/cortex_mcp/server.py` (see `MCP/README.md`).
 
 ### Module Dependencies
 
