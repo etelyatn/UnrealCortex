@@ -375,6 +375,7 @@ FCortexNodeConstructionContract FCortexGraphNodeContract::Describe(const FString
 		Contract.RequiredParams.Add({ TEXT("variable_name"), TEXT("string"), true, TEXT("Property or Blueprint variable name to reference") });
 		Contract.OptionalParams.Add({ TEXT("variable_class"), TEXT("string"), false, TEXT("Owner class for external class properties, e.g. Actor for bHidden") });
 		Contract.OptionalParams.Add({ TEXT("owner_class"), TEXT("string"), false, TEXT("Canonical owner class path, e.g. /Script/Engine.Actor") });
+		Contract.OptionalParams.Add({ TEXT("context"), TEXT("string"), false, TEXT("Reference form: self (hidden self pin) or external (visible Target pin for another instance). Omitted: self when the member resolves on the Blueprint's own class hierarchy, as the editor does; external otherwise. self is refused for an unrelated owner") });
 		Contract.Prerequisites = VarGetPrerequisite;
 		Contract.NonRetryableErrors = VarGetNonRetryable;
 	}
@@ -732,11 +733,15 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 		{
 			if (Symbol.Property)
 			{
-				VarNode->SetFromProperty(Symbol.Property, false, Symbol.ContextClass);
+				VarNode->SetFromProperty(Symbol.Property, Symbol.bSelfContext, Symbol.ContextClass);
+			}
+			else if (Symbol.bSelfContext)
+			{
+				VarNode->VariableReference.SetSelfMember(Symbol.MemberName);
 			}
 			else
 			{
-				VarNode->VariableReference.SetSelfMember(Symbol.MemberName);
+				VarNode->VariableReference.SetExternalMember(Symbol.MemberName, Symbol.ContextClass->GetAuthoritativeClass());
 			}
 		}
 		else

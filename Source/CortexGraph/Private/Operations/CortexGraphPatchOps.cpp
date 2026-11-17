@@ -3762,12 +3762,16 @@ bool CompareNodeSymbol(
 		const FString NativeOwner = Variable->VariableReference.IsSelfContext()
 			? FString(TEXT("self"))
 			: DeclaredOwnerPath(Variable->VariableReference.GetMemberParentClass());
+		// A member on the Blueprint's own hierarchy is planned as a self reference, which records no owner.
+		// Without a declared owner the reference form is still part of the identity: a self getter must not
+		// satisfy a request for an external one, or the reverse.
+		const bool bNativeSelf = Variable->VariableReference.IsSelfContext();
 		OutExpected = bOwnerDeclared
-			? FString::Printf(TEXT("%s|%s"), *Symbol.MemberName.ToString(), *Symbol.ContextClassPath)
-			: Symbol.MemberName.ToString();
+			? FString::Printf(TEXT("%s|%s"), *Symbol.MemberName.ToString(), Symbol.bSelfContext ? TEXT("self") : *Symbol.ContextClassPath)
+			: (Symbol.bSelfContext ? Symbol.MemberName.ToString() : FString::Printf(TEXT("%s|external"), *Symbol.MemberName.ToString()));
 		OutActual = bOwnerDeclared
 			? FString::Printf(TEXT("%s|%s"), *NativeName, *NativeOwner)
-			: NativeName;
+			: (bNativeSelf ? NativeName : FString::Printf(TEXT("%s|external"), *NativeName));
 		return true;
 	}
 
