@@ -115,7 +115,7 @@ struct FIssue218Fixture
 	{
 		Root = FString::Printf(
 			TEXT("/Game/Temp/CortexIssue218_%s"),
-			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8));
 	}
 
 	~FIssue218Fixture()

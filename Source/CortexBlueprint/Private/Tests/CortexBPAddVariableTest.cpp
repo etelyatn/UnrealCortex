@@ -222,18 +222,22 @@ bool FCortexBPAddVariableTest::RunTest(const FString& Parameters)
 bool FCortexBPAddVariableInheritedPropertyCollisionTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
+	const FString FixtureName = TEXT("BP_AddVarComponentTest_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString TestDirectory = TEXT("/Game/Temp/CortexBPTest_AddVarComponent_") + FixtureName;
+	const FString TestBPPath = TestDirectory / FixtureName;
 
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-		Params->SetStringField(TEXT("name"), TEXT("BP_AddVarComponentTest"));
-		Params->SetStringField(TEXT("path"), TEXT("/Game/Temp/CortexBPTest_AddVarComponent"));
+		Params->SetStringField(TEXT("name"), FixtureName);
+		Params->SetStringField(TEXT("path"), TestDirectory);
 		Params->SetStringField(TEXT("type"), TEXT("Component"));
 
 		const FCortexCommandResult CreateResult = Handler.Execute(TEXT("create"), Params);
-		TestTrue(TEXT("Component Blueprint create should succeed"), CreateResult.bSuccess);
+		if (!TestTrue(TEXT("Component Blueprint create should succeed"), CreateResult.bSuccess))
+		{
+			return false;
+		}
 	}
-
-	const FString TestBPPath = TEXT("/Game/Temp/CortexBPTest_AddVarComponent/BP_AddVarComponentTest");
 
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -259,11 +263,10 @@ bool FCortexBPAddVariableInheritedPropertyCollisionTest::RunTest(const FString& 
 			Result.ErrorMessage.Contains(TEXT("inherited UPROPERTY")));
 	}
 
-	UObject* CreatedBP = LoadObject<UBlueprint>(nullptr, *TestBPPath);
-	if (CreatedBP)
-	{
-		CreatedBP->GetOutermost()->MarkAsGarbage();
-	}
+	TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+	DeleteParams->SetStringField(TEXT("asset_path"), TestBPPath);
+	DeleteParams->SetBoolField(TEXT("force"), true);
+	TestTrue(TEXT("Cleanup: delete owned Blueprint"), Handler.Execute(TEXT("delete"), DeleteParams).bSuccess);
 
 	return true;
 }

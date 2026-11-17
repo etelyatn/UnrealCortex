@@ -86,7 +86,7 @@ struct FIssue218BlueprintFixture
 	{
 		Root = FString::Printf(
 			TEXT("/Game/Temp/CortexIssue218_%s"),
-			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8));
 
 		const FString PackageName = FString::Printf(TEXT("%s/%s"), *Root, *AssetName);
 		ObjectPath = FString::Printf(

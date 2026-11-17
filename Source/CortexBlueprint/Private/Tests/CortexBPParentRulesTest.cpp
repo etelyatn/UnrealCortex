@@ -140,7 +140,7 @@ bool FCortexBPParentRulesResolveTest::RunTest(const FString& Parameters)
 	}
 
 	// A Blueprint asset whose own name ends in _C is still an asset path, not a generated class path (M5).
-	const FString SuffixedName = FString::Printf(TEXT("BP_ParentRulesSuffixed%s_C"), *FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(6));
+	const FString SuffixedName = FString::Printf(TEXT("BP_ParentRulesSuffixed%s_C"), *FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(6));
 	UBlueprint* Suffixed = FKismetEditorUtilities::CreateBlueprint(
 		AActor::StaticClass(), CreatePackage(*(FString(TEXT("/Game/Temp/")) + SuffixedName)), FName(*SuffixedName), BPTYPE_Normal,
 		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
