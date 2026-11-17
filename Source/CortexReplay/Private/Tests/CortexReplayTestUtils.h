@@ -4,6 +4,8 @@
 #include "CortexReplayScheduler.h"
 #include "CortexReplayTypes.h"
 
+class FAutomationTestBase;
+
 /** Test-only: an event plus the capture time the fixture uses to place it on the 60 Hz cadence. */
 struct FCortexReplayTimedEvent
 {
@@ -73,3 +75,10 @@ FCortexCommandResult PrepareAndCommit(FCortexReplayScheduler& Scheduler,
 	TFunctionRef<double()> ReadElapsedSeconds,
 	TFunctionRef<FCortexReplayGuardDecision(const FCortexReplayEvent&)> EvaluateGuard,
 	TFunctionRef<FCortexCommandResult(const FCortexReplayEvent&)> Dispatch);
+
+/**
+ * Live capture and live replay need the physical keyboard/mouse snapshot, which the editor resolves
+ * only on Windows (CanResolvePhysicalKeyState). Elsewhere records the skip on Test and returns true;
+ * the caller returns immediately.
+ */
+bool CortexReplaySkipWithoutPhysicalKeyState(FAutomationTestBase& Test);

@@ -684,6 +684,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexReflectNameLookupUnreadableTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if constexpr (!PLATFORM_WINDOWS)
+	{
+		AddInfo(TEXT("An open writer only makes a file unreadable under Windows share modes; skipped on this platform"));
+		return true;
+	}
 	using namespace CortexReflectNameLookupTestSupport;
 
 	FTempSource Source(TEXT("Locked.cpp"), TEXT("void A(UObject* O) { O->FindFunction(TEXT(\"Hidden\")); }\n"));

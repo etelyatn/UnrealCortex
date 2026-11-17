@@ -315,7 +315,7 @@ bool FCortexUMGRenameWidgetDependentsTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	FRenameFixtureScope Scope;
 	const FString OwnerPackage = Scope.Add(Suffix, TEXT("Owner"));
 	const FString ChildPackage = Scope.Add(Suffix, TEXT("Child"));
@@ -489,7 +489,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexUMGRenameWidgetDependentsRefusalsTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	FRenameFixtureScope Scope;
 	const FString OwnerPackage = Scope.Add(Suffix, TEXT("Owner"));
 	const FString ChildPackage = Scope.Add(Suffix, TEXT("Child"));
@@ -602,7 +602,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexUMGRenameWidgetOntoBindWidgetTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	// The fixture is deliberately missing the required native bindings it does not exercise.
 	AddExpectedMessagePlain(TEXT("A required widget binding"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 0);
 	UWidgetBlueprint* Raw = NewFixtureWidgetBlueprint(UCortexUMGRenameBindWidgetBase::StaticClass(),
@@ -672,7 +672,7 @@ namespace
 
 		bool Build(FAutomationTestBase& Test)
 		{
-			const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+			const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 			Owner.Reset(NewFixtureWidgetBlueprint(UUserWidget::StaticClass(), Scope.Add(Suffix, TEXT("Owner"))));
 			if (!Test.TestNotNull(TEXT("owner created"), Owner.Get())) return false;
 			AddButton(Owner.Get(), TEXT("SharedButton"));
@@ -849,7 +849,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexUMGRenameWidgetDependentsChildConflictsTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	FRenameFixtureScope Scope;
 	TStrongObjectPtr<UWidgetBlueprint> Owner(NewFixtureWidgetBlueprint(UUserWidget::StaticClass(), Scope.Add(Suffix, TEXT("Owner"))));
 	if (!TestNotNull(TEXT("owner created"), Owner.Get())) return false;
@@ -904,7 +904,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexUMGRenameWidgetDependentsSameNamedMemberTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	FRenameFixtureScope Scope;
 	TStrongObjectPtr<UWidgetBlueprint> Owner(NewFixtureWidgetBlueprint(UUserWidget::StaticClass(), Scope.Add(Suffix, TEXT("Owner"))));
 	if (!TestNotNull(TEXT("owner created"), Owner.Get())) return false;
@@ -987,7 +987,7 @@ namespace
 	bool RunUnmodifiedDependentFault(FAutomationTestBase& Test, const TCHAR* Fault, bool bExpectSuccess)
 	{
 		if (!Test.TestTrue(TEXT("editor transaction buffer available"), GEditor != nullptr && GEditor->Trans != nullptr)) return false;
-		const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+		const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 		FRenameFixtureScope Scope;
 		TStrongObjectPtr<UWidgetBlueprint> Owner(NewFixtureWidgetBlueprint(UUserWidget::StaticClass(), Scope.Add(Suffix, TEXT("Owner"))));
 		if (!Test.TestNotNull(TEXT("owner created"), Owner.Get())) return false;
@@ -1119,7 +1119,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FCortexUMGRenameWidgetAwayFromBindWidgetTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
-	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 	AddExpectedMessagePlain(TEXT("A required widget binding"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 0);
 	FRenameFixtureScope Scope;
 	TStrongObjectPtr<UWidgetBlueprint> Required(NewFixtureWidgetBlueprint(UCortexUMGRenameBindWidgetBase::StaticClass(),

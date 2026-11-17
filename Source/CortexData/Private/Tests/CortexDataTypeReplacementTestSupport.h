@@ -257,7 +257,7 @@ namespace CortexIssue122DataTest
 	/** Saved assets under /Game/Temp/Issue122_<8 hex>; everything is retired when the fixture goes out of scope. */
 	struct FFixture
 	{
-		FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8);
+		FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
 		FString Dir = FString::Printf(TEXT("/Game/Temp/Issue122_%s"), *Suffix);
 		TArray<FString> SavedFiles;
 		TArray<FString> ScratchPaths;
