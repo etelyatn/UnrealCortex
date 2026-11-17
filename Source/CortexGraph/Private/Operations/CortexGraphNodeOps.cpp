@@ -6,10 +6,12 @@
 #include "CortexBatchMutation.h"
 #include "CortexGraphModule.h"
 #include "CortexSerializer.h"
+#include "CortexGraphBindingStorage.h"
 #include "CortexEditorUtils.h"
 #include "CortexGraphLayoutOps.h"
 #include "CortexBatchScope.h"
 #include "Engine/Blueprint.h"
+#include "Animation/AnimBlueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
@@ -906,6 +908,14 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 	return FCortexCommandRouter::Success(Data);
 }
 
+void FCortexGraphNodeOps::PlaceNewAnimNode(UEdGraphNode* Node)
+{
+	if (FCortexGraphBindingStorage::IsAnimNode(Node) && Node->GetTypedOuter<UAnimBlueprint>() != nullptr)
+	{
+		Node->PostPlacedNewNode();
+	}
+}
+
 FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
@@ -1037,6 +1047,8 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 		Graph->RemoveNode(NewNode);
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ApplyError);
 	}
+
+	FCortexGraphNodeOps::PlaceNewAnimNode(NewNode);
 
 	if (NewNode->Pins.Num() == 0)
 	{

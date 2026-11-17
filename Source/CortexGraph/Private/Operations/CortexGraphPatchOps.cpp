@@ -9,6 +9,7 @@
 #include "Operations/CortexGraphPatchState.h"
 #include "Operations/CortexGraphPinDefaults.h"
 #include "Operations/CortexGraphSymbolResolver.h"
+#include "Animation/AnimBlueprint.h"
 #include "CortexEngineCompat.h"
 #include "IO/IoHash.h"
 #include "UObject/Class.h"
@@ -2089,7 +2090,10 @@ bool FCortexGraphPatchOps::Preflight(
 	TArray<FString> CreatedClientIds;
 	TMap<FString, UEdGraphNode*> PlannedNodes;
 	TMap<FString, TSet<FString>> DefaultPins;
-	UBlueprint* PlanningBlueprint = NewObject<UBlueprint>(GetTransientPackage(), NAME_None, RF_Transient);
+	// The planning owner has the target's Blueprint class so an anim node's planned placement (pins it adds, extensions it
+	// requests) runs exactly as on apply, against this transient owner instead of the real asset.
+	UBlueprint* PlanningBlueprint = NewObject<UBlueprint>(GetTransientPackage(),
+		Blueprint->IsA<UAnimBlueprint>() ? UAnimBlueprint::StaticClass() : UBlueprint::StaticClass(), NAME_None, RF_Transient);
 	PlanningBlueprint->ParentClass = Blueprint->ParentClass;
 	PlanningBlueprint->GeneratedClass = Blueprint->GeneratedClass;
 	PlanningBlueprint->SkeletonGeneratedClass = Blueprint->SkeletonGeneratedClass;
@@ -2227,6 +2231,7 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ApplyError);
 			return false;
 		}
+		FCortexGraphNodeOps::PlaceNewAnimNode(PlannedNode);
 		if (PlannedNode->Pins.Num() == 0) PlannedNode->AllocateDefaultPins();
 		if (UK2Node_Composite* Composite = Cast<UK2Node_Composite>(PlannedNode))
 		{
@@ -5925,6 +5930,7 @@ bool ApplyPrepared(
 		{
 			return Fail(ApplyError);
 		}
+		FCortexGraphNodeOps::PlaceNewAnimNode(Node);
 		if (Node->Pins.Num() == 0)
 		{
 			Node->AllocateDefaultPins();
