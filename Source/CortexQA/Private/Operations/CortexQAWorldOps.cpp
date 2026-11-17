@@ -124,6 +124,36 @@ namespace
 
 FCortexCommandResult FCortexQAWorldOps::ObserveState(const TSharedPtr<FJsonObject>& Params)
 {
+    // Validate params before PIE state so a bad request is refused the same way in every editor state.
+    constexpr int32 MaxObservedActors = 200;
+    double Radius = 5000.0;
+    double MaxActorsDouble = 20.0;
+    double InteractionRange = 200.0;
+    bool bIncludeLOS = false;
+    if (Params.IsValid())
+    {
+        Params->TryGetNumberField(TEXT("radius"), Radius);
+        Params->TryGetNumberField(TEXT("max_actors"), MaxActorsDouble);
+        Params->TryGetNumberField(TEXT("interaction_range"), InteractionRange);
+        Params->TryGetBoolField(TEXT("include_los"), bIncludeLOS);
+    }
+    const TPair<const TCHAR*, double> NonNegativeParams[] = {
+        { TEXT("radius"), Radius },
+        { TEXT("max_actors"), MaxActorsDouble },
+        { TEXT("interaction_range"), InteractionRange },
+    };
+    for (const TPair<const TCHAR*, double>& Param : NonNegativeParams)
+    {
+        if (!FMath::IsFinite(Param.Value) || Param.Value < 0.0)
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::InvalidValue,
+                FString::Printf(TEXT("%s must be a finite number >= 0"), Param.Key));
+        }
+    }
+    // Values above the cap are clamped, keeping the response bounded.
+    const int32 MaxActors = static_cast<int32>(FMath::Min(MaxActorsDouble, static_cast<double>(MaxObservedActors)));
+
     UWorld* PIEWorld = FCortexQAUtils::GetPIEWorld();
     if (PIEWorld == nullptr)
     {
@@ -136,23 +166,6 @@ FCortexCommandResult FCortexQAWorldOps::ObserveState(const TSharedPtr<FJsonObjec
         return FCortexCommandRouter::Error(
             CortexErrorCodes::ActorNotFound,
             TEXT("No player pawn found in PIE world"));
-    }
-
-    // Parse params
-    double Radius = 5000.0;
-    int32 MaxActors = 20;
-    double InteractionRange = 200.0;
-    bool bIncludeLOS = false;
-    if (Params.IsValid())
-    {
-        Params->TryGetNumberField(TEXT("radius"), Radius);
-        double MaxActorsDouble = MaxActors;
-        if (Params->TryGetNumberField(TEXT("max_actors"), MaxActorsDouble))
-        {
-            MaxActors = static_cast<int32>(MaxActorsDouble);
-        }
-        Params->TryGetNumberField(TEXT("interaction_range"), InteractionRange);
-        Params->TryGetBoolField(TEXT("include_los"), bIncludeLOS);
     }
 
     const FVector PlayerLocation = PlayerPawn->GetActorLocation();

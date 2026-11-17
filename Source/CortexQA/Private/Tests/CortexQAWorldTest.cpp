@@ -31,6 +31,37 @@ bool FCortexQAObserveStateNoPIETest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQAObserveStateInvalidLimitsTest,
+    "Cortex.QA.World.ObserveState.InvalidLimits",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQAObserveStateInvalidLimitsTest::RunTest(const FString& Parameters)
+{
+    FCortexCommandRouter Router = CreateQARouterWorld();
+
+    const TArray<TPair<FString, double>> InvalidCases = {
+        { TEXT("max_actors"), -1.0 },
+        { TEXT("max_actors"), -0.5 },
+        { TEXT("radius"), -10.0 },
+        { TEXT("interaction_range"), -1.0 },
+    };
+
+    for (const TPair<FString, double>& Case : InvalidCases)
+    {
+        TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+        Params->SetNumberField(Case.Key, Case.Value);
+        const FCortexCommandResult Result = Router.Execute(TEXT("qa.observe_state"), Params);
+
+        const FString Label = FString::Printf(TEXT("observe_state %s=%f"), *Case.Key, Case.Value);
+        TestFalse(*FString::Printf(TEXT("%s should be rejected"), *Label), Result.bSuccess);
+        TestEqual(*FString::Printf(TEXT("%s should return INVALID_VALUE"), *Label),
+            Result.ErrorCode, FString(CortexErrorCodes::InvalidValue));
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FCortexQAGetActorStateNoPIETest,
     "Cortex.QA.World.GetActorState.NoPIE",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
