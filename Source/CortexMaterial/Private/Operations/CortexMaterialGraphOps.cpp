@@ -7,6 +7,9 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
 #include "MaterialDomain.h"
+#include "Misc/MemStack.h"
+#include "Misc/ScopeExit.h"
+#include "UObject/UObjectHash.h"
 
 // UE 5.4 compatibility: FExpressionInputIterator was added in UE 5.5
 #if UE_VERSION_OLDER_THAN(5, 5, 0)
@@ -316,15 +319,10 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 			FString::Printf(TEXT("Invalid expression class: %s"), *ExpressionClass));
 	}
 
-	if (!FCortexCommandRouter::IsInBatch())
-	{
-		FScopedTransaction Transaction(FText::FromString(
-			FString::Printf(TEXT("Cortex: Add Material Expression Node"))
-		));
-		Material->PreEditChange(nullptr);
-	}
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Add Material Expression Node")), !FCortexCommandRouter::IsInBatch());
+	CortexMaterialInputUtils::BeginEdit(Material);
 
-	UMaterialExpression* NewExpression = NewObject<UMaterialExpression>(Material, ExpClass);
+	UMaterialExpression* NewExpression = NewObject<UMaterialExpression>(Material, ExpClass, NAME_None, RF_Transactional);
 	NewExpression->bCollapsed = false;
 
 	// Set position if provided
@@ -339,16 +337,7 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 	}
 
 	Material->GetEditorOnlyData()->ExpressionCollection.Expressions.Add(NewExpression);
-
-	if (!FCortexCommandRouter::IsInBatch())
-	{
-		Material->PostEditChange();
-	}
-	else
-	{
-		FCortexBatchScope::MarkMaterialDirty(Material);
-	}
-	Material->MarkPackageDirty();
+	CortexMaterialInputUtils::EndEdit(Material);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("node_id"), NewExpression->GetName());
@@ -393,25 +382,45 @@ FCortexCommandResult FCortexMaterialGraphOps::RemoveNode(const TSharedPtr<FJsonO
 		);
 	}
 
-	if (!FCortexCommandRouter::IsInBatch())
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Remove Material Expression Node %s"), *NodeId)
+	), !FCortexCommandRouter::IsInBatch());
+	CortexMaterialInputUtils::BeginEdit(Material);
+
+	// Break every link that points at the removed expression, as the material editor does on delete.
+	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
+	for (UMaterialExpression* Other : EditorData->ExpressionCollection.Expressions)
 	{
-		FScopedTransaction Transaction(FText::FromString(
-			FString::Printf(TEXT("Cortex: Remove Material Expression Node %s"), *NodeId)
-		));
-		Material->PreEditChange(nullptr);
+		if (Other == nullptr || Other == Expression)
+		{
+			continue;
+		}
+		for (FExpressionInputIterator It(Other); It; ++It)
+		{
+			if (It->Expression == Expression)
+			{
+				CortexMaterialInputUtils::ModifyExpression(Other);
+				It->Expression = nullptr;
+				It->OutputIndex = 0;
+			}
+		}
+	}
+	for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
+	{
+		const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
+		FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
+		if (Input && Input->Expression == Expression)
+		{
+			Input->Expression = nullptr;
+			Input->OutputIndex = 0;
+			CortexMaterialInputUtils::UpdateUseConstant(Material, Property, true);
+		}
 	}
 
-	Material->GetEditorOnlyData()->ExpressionCollection.Expressions.Remove(Expression);
-
-	if (!FCortexCommandRouter::IsInBatch())
-	{
-		Material->PostEditChange();
-	}
-	else
-	{
-		FCortexBatchScope::MarkMaterialDirty(Material);
-	}
-	Material->MarkPackageDirty();
+	CortexMaterialInputUtils::ModifyExpression(Expression);
+	Material->RemoveExpressionParameter(Expression);
+	EditorData->ExpressionCollection.Expressions.Remove(Expression);
+	CortexMaterialInputUtils::EndEdit(Material);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("node_id"), NodeId);
@@ -595,7 +604,7 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 	CortexMaterialInputUtils::BeginEdit(Material);
 	if (Target)
 	{
-		Target->Modify();
+		CortexMaterialInputUtils::ModifyExpression(Target);
 	}
 	Input->Connect(OutputIndex, Source);
 	if (bRoot)
@@ -831,13 +840,8 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 	}
 
 	// Apply positions back to Material expressions
-	TUniquePtr<FScopedTransaction> Transaction;
-	if (!FCortexCommandRouter::IsInBatch())
-	{
-		Transaction = MakeUnique<FScopedTransaction>(
-			FText::FromString(TEXT("Cortex: Auto-Layout Material Graph")));
-		Material->PreEditChange(nullptr);
-	}
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Auto-Layout Material Graph")), !FCortexCommandRouter::IsInBatch());
+	CortexMaterialInputUtils::BeginEdit(Material);
 
 	TMap<FString, UMaterialExpression*> IdToExpr;
 	for (UMaterialExpression* Expr : Expressions)
@@ -850,20 +854,12 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 		UMaterialExpression** ExprPtr = IdToExpr.Find(Pair.Key);
 		if (ExprPtr && *ExprPtr)
 		{
+			CortexMaterialInputUtils::ModifyExpression(*ExprPtr);
 			(*ExprPtr)->MaterialExpressionEditorX = Pair.Value.X;
 			(*ExprPtr)->MaterialExpressionEditorY = Pair.Value.Y;
 		}
 	}
-
-	if (!FCortexCommandRouter::IsInBatch())
-	{
-		Material->PostEditChange();
-	}
-	else
-	{
-		FCortexBatchScope::MarkMaterialDirty(Material);
-	}
-	Material->MarkPackageDirty();
+	CortexMaterialInputUtils::EndEdit(Material);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
@@ -935,18 +931,40 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 			TEXT("Missing required param: value"));
 	}
 
-	if (!FCortexCommandRouter::IsInBatch())
-	{
-		FScopedTransaction Transaction(FText::FromString(
-			FString::Printf(TEXT("Cortex: Set Node Property %s"), *PropertyName)
-		));
-		Material->PreEditChange(nullptr);
-	}
-
+	// Stage the value first so a refused value never leaves the expression half-edited.
 	void* PropertyAddress = Property->ContainerPtrToValuePtr<void>(Expression);
+	FMemMark Mark(FMemStack::Get());
+	void* Staged = FMemStack::Get().Alloc(Property->GetSize(), Property->GetMinAlignment());
+	Property->InitializeValue(Staged);
+	ON_SCOPE_EXIT
+	{
+		Property->DestroyValue(Staged);
+	};
+	Property->CopyCompleteValue(Staged, PropertyAddress);
+
+	// Staging retires the instanced sub-objects it replaces (marks them as garbage) outside any transaction. Revive
+	// them so a refusal changes nothing; on success they are retired again below, where Undo can bring them back.
+	TArray<UObject*> SubObjects;
+	ForEachObjectWithOuter(Expression, [&SubObjects](UObject* SubObject)
+	{
+		if (IsValid(SubObject))
+		{
+			SubObjects.Add(SubObject);
+		}
+	});
 
 	TArray<FString> Warnings;
-	if (!FCortexSerializer::JsonToProperty(Value, Property, PropertyAddress, Expression, Warnings))
+	const bool bStaged = FCortexSerializer::JsonToProperty(Value, Property, Staged, Expression, Warnings);
+	TArray<UObject*> Retired;
+	for (UObject* SubObject : SubObjects)
+	{
+		if (!IsValid(SubObject))
+		{
+			SubObject->ClearGarbage();
+			Retired.Add(SubObject);
+		}
+	}
+	if (!bStaged)
 	{
 		FString WarningStr = Warnings.Num() > 0
 			? FString::Join(Warnings, TEXT("; "))
@@ -956,15 +974,28 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 			FString::Printf(TEXT("Failed to set property '%s': %s"), *PropertyName, *WarningStr));
 	}
 
+	FScopedTransaction Transaction(FText::FromString(
+		FString::Printf(TEXT("Cortex: Set Node Property %s"), *PropertyName)
+	), !FCortexCommandRouter::IsInBatch());
+	CortexMaterialInputUtils::BeginEdit(Material);
+	CortexMaterialInputUtils::ModifyExpression(Expression);
+	for (UObject* SubObject : Retired)
+	{
+		SubObject->SetFlags(RF_Transactional);
+		SubObject->Modify();
+		SubObject->MarkAsGarbage();
+	}
 	if (!FCortexCommandRouter::IsInBatch())
 	{
-		Material->PostEditChange();
+		Expression->PreEditChange(Property);
 	}
-	else
+	Property->CopyCompleteValue(PropertyAddress, Staged);
+	if (!FCortexCommandRouter::IsInBatch())
 	{
-		FCortexBatchScope::MarkMaterialDirty(Material);
+		FPropertyChangedEvent Event(Property);
+		Expression->PostEditChangeProperty(Event);
 	}
-	Material->MarkPackageDirty();
+	CortexMaterialInputUtils::EndEdit(Material);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("node_id"), NodeId);

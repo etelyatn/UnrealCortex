@@ -320,6 +320,26 @@ UMaterialInstanceConstant* FCortexMaterialAssetOps::LoadInstance(const FString& 
 	return Instance;
 }
 
+bool FCortexMaterialAssetOps::SaveNewAsset(UObject* Asset, const FString& PackageFilename, FCortexCommandResult& OutError)
+{
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	if (UPackage::SavePackage(Asset->GetPackage(), Asset, *PackageFilename, SaveArgs))
+	{
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+	Details->SetStringField(TEXT("asset_path"), Asset->GetPathName());
+	Details->SetStringField(TEXT("filename"), PackageFilename);
+	OutError = FCortexCommandRouter::Error(
+		CortexErrorCodes::SaveFailed,
+		FString::Printf(TEXT("Created %s in memory but failed to save it to %s"), *Asset->GetPathName(), *PackageFilename),
+		Details);
+	return false;
+}
+
 FCortexCommandResult FCortexMaterialAssetOps::ListMaterials(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Path = TEXT("/Game/");
@@ -574,12 +594,13 @@ FCortexCommandResult FCortexMaterialAssetOps::CreateMaterial(const TSharedPtr<FJ
 	}
 
 	// Save to disk
-	UPackage* Package = NewAsset->GetOutermost();
 	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
-		Package->GetName(), FPackageName::GetAssetPackageExtension());
-	FSavePackageArgs SaveArgs;
-	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-	UPackage::SavePackage(Package, NewAsset, *PackageFilename, SaveArgs);
+		NewAsset->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+	FCortexCommandResult SaveError;
+	if (!SaveNewAsset(NewAsset, PackageFilename, SaveError))
+	{
+		return SaveError;
+	}
 
 	FCortexEditorUtils::NotifyAssetModified(NewAsset);
 
@@ -855,9 +876,11 @@ FCortexCommandResult FCortexMaterialAssetOps::CreateInstance(const TSharedPtr<FJ
 	Instance->MarkPackageDirty();
 
 	// Save to disk
-	FSavePackageArgs SaveArgs;
-	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-	UPackage::SavePackage(Package, Instance, *PackageFilename, SaveArgs);
+	FCortexCommandResult SaveError;
+	if (!SaveNewAsset(Instance, PackageFilename, SaveError))
+	{
+		return SaveError;
+	}
 
 	FCortexEditorUtils::NotifyAssetModified(Instance);
 

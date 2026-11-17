@@ -334,6 +334,12 @@ void EndEdit(UMaterial* Material)
 	Material->MarkPackageDirty();
 }
 
+void ModifyExpression(UMaterialExpression* Expression)
+{
+	Expression->SetFlags(RF_Transactional);
+	Expression->Modify();
+}
+
 FCortexCommandResult ApplyPatch(UMaterial* Material, EMaterialProperty Property, const TSharedPtr<FJsonObject>& Params)
 {
 	FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);

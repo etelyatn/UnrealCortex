@@ -5,6 +5,7 @@
 #include "MaterialShared.h"
 
 class UMaterial;
+class UMaterialExpression;
 struct FExpressionInput;
 class FJsonObject;
 class FJsonValue;
@@ -20,5 +21,7 @@ namespace CortexMaterialInputUtils
 	FCortexCommandResult ApplyPatch(UMaterial* Material, EMaterialProperty Property, const TSharedPtr<FJsonObject>& Params);
 	void BeginEdit(UMaterial* Material);
 	void EndEdit(UMaterial* Material);
+	/** Records an expression in the open transaction. Expressions created by earlier Cortex versions lack RF_Transactional. */
+	void ModifyExpression(UMaterialExpression* Expression);
 	FString BlendModeName(EBlendMode Mode);
 }

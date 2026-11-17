@@ -22,4 +22,6 @@ public:
 	// Helper methods (public for use by other operations)
 	static UMaterial* LoadMaterial(const FString& AssetPath, FCortexCommandResult& OutError);
 	static UMaterialInstanceConstant* LoadInstance(const FString& AssetPath, FCortexCommandResult& OutError);
+	/** Saves a newly created asset's package; on failure fills OutError with SAVE_FAILED. The asset stays in memory. */
+	static bool SaveNewAsset(UObject* Asset, const FString& PackageFilename, FCortexCommandResult& OutError);
 };
