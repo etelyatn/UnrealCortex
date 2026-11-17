@@ -63,6 +63,18 @@ INVOCATION_COMMAND: contextvars.ContextVar[str] = contextvars.ContextVar(
     "cortex_invocation_command", default=""
 )
 
+# Invocation-local receive window chosen by the caller (a router's `timeout_s`). When set, it
+# replaces the per-command window for every editor round trip routed inside that invocation;
+# connection handshakes keep their own window.
+CALL_TIMEOUT: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "cortex_call_timeout", default=None
+)
+
+
+def _effective_timeout(timeout: float | None) -> float | None:
+    override = CALL_TIMEOUT.get()
+    return override if override is not None else timeout
+
 
 class UECommandError(RuntimeError):
     """Structured Unreal command failure with preserved error details."""
@@ -85,6 +97,10 @@ class UECommandTimeoutError(ConnectionError):
     The editor may still execute the command once its game thread unblocks,
     so the command must not be replayed automatically.
     """
+
+
+class _ProjectMismatchError(ConnectionError):
+    """The connected editor serves a different project than the one this server targets."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -323,6 +339,8 @@ class UEConnection:
         self._cache = ResponseCache()
         self._recv_buffer = b""
         self._socket_lock = threading.Lock()
+        # Bumped by every deliberate retarget; a retry never crosses it.
+        self._target_generation = 0
         self._loaded_file_cache = False
         self._telemetry = {
             "logical_tool_calls": 0,
@@ -367,12 +385,16 @@ class UEConnection:
             sock.connect((self.host, self.port))
             sock.settimeout(_RECV_TIMEOUT)
             self._socket = sock
-            self._validate_project()
             try:
+                self._validate_project()
                 self._send_and_receive("get_capabilities", {})
+            except _ProjectMismatchError:
+                raise
             except ConnectionError as e:
                 # Socket connected but no response — game thread is likely stalled
                 # (e.g., modal dialog, shader compilation). Distinguish from hard fail.
+                # Plain ConnectionError on purpose: no user command was sent yet, so the
+                # caller may retry (a UECommandTimeoutError would forbid that).
                 raise ConnectionError(
                     f"Connected to Unreal Editor at {self.host}:{self.port} but it is not "
                     f"responding (game thread may be stalled by a modal dialog or heavy "
@@ -380,7 +402,7 @@ class UEConnection:
                     f"Dismiss any dialogs and retry."
                 ) from e
             except Exception as e:
-                logger.warning("Failed to fetch capabilities during handshake: %s", e)
+                logger.warning("Handshake request failed: %s", e)
             if not self._loaded_file_cache:
                 self.load_file_caches()
                 self._loaded_file_cache = True
@@ -416,6 +438,26 @@ class UEConnection:
             self._socket = None
         self._recv_buffer = b""
 
+    def retarget(self, port: int, pid: int, project: str) -> None:
+        """Pin the connection to another editor once any round trip in flight has finished.
+
+        Closing the socket under a request that is still being read would make it retry, and
+        the retry would run the command again on the new editor.
+        """
+        with self._socket_lock:
+            self.disconnect()
+            self.port = port
+            self._pid = pid
+            self._project_path = None
+            # Adopt the chosen target's project so validation checks it, not the previous editor.
+            # A legacy port file without a project keeps the existing key instead of disabling
+            # the guard.
+            if project:
+                self._expected_project = project
+            # A deliberate switch is a pin: reconnects must not rediscover another editor.
+            self._explicit_port = True
+            self._target_generation += 1
+
     def _invalidate_cached_reads(self) -> None:
         """Drop cached reads that a write may have made stale."""
         for prefix in _INVALIDATE_ON_WRITE_PREFIXES:
@@ -443,24 +485,36 @@ class UEConnection:
             timeout: Optional timeout in seconds for this command (overrides default)
         """
         last_error: Exception | None = None
+        timeout = _effective_timeout(timeout)
+        target_generation: int | None = None
 
         try:
             for attempt in range(2):
-                try:
-                    with self._socket_lock:
+                # Every socket mutation, including the cleanup after a failure, happens under the
+                # lock: closing "the" socket after releasing it would close a request another
+                # thread has since sent on a fresh connection.
+                with self._socket_lock:
+                    if target_generation is None:
+                        target_generation = self._target_generation
+                    elif target_generation != self._target_generation:
+                        # A deliberate switch happened during the reconnect delay: the retry
+                        # would run this command on another editor.
+                        break
+                    try:
                         self.connect()
                         self._telemetry["tcp_calls"] += 1
                         self._record_metric("tcp_call", {"command": command, "attempt": attempt + 1})
                         return self._send_and_receive(command, params, timeout=timeout)
-                except UECommandTimeoutError:
-                    # The request reached the editor and may still run when the game
-                    # thread unblocks. Replaying it would execute the command twice.
-                    self.disconnect()
-                    raise
-                except ConnectionError as e:
-                    last_error = e
-                    self.disconnect()
-                    if attempt == 0:
+                    except UECommandTimeoutError:
+                        # The request reached the editor and may still run when the game
+                        # thread unblocks. Replaying it would execute the command twice.
+                        self.disconnect()
+                        raise
+                    except ConnectionError as e:
+                        last_error = e
+                        self.disconnect()
+                        if attempt == 1:
+                            break
                         logger.debug(
                             "Connection lost during '%s', reconnecting in %.1fs",
                             command,
@@ -486,7 +540,7 @@ class UEConnection:
                             self._pid = new_pid
                             self._project_path = new_project_path
                             self._expected_project = new_project
-                        time.sleep(_RECONNECT_DELAY)
+                time.sleep(_RECONNECT_DELAY)
 
             raise last_error
         finally:
@@ -510,10 +564,11 @@ class UEConnection:
                     raise UECommandNotDispatchedError(str(exc)) from exc
                 self._telemetry["tcp_calls"] += 1
                 self._record_metric("tcp_call", {"command": command, "attempt": 1})
-                return self._send_and_receive(command, params, timeout=timeout)
-        except ConnectionError:
-            self.disconnect()
-            raise
+                try:
+                    return self._send_and_receive(command, params, timeout=_effective_timeout(timeout))
+                except ConnectionError:
+                    self.disconnect()
+                    raise
         finally:
             if not _is_read_command(command):
                 self._invalidate_cached_reads()
@@ -833,46 +888,19 @@ class UEConnection:
     def _validate_project(self) -> None:
         """Verify connected editor matches expected project.
 
-        Raises ConnectionError on project mismatch to prevent operating
-        on the wrong editor instance.
+        Uses the identified request path, so a reply that arrives late cannot be taken as the
+        answer to a later request, and a silent editor fails the connect instead of skipping
+        the check. Raises _ProjectMismatchError to prevent operating on the wrong editor.
         """
         if self._socket is None or not self._expected_project:
             return
 
-        mismatch_error: str | None = None
-        try:
-            request = json.dumps({"command": "get_status", "params": {}}) + "\n"
-            self._socket.sendall(request.encode("utf-8"))
-
-            self._socket.settimeout(5.0)
-            data = b""
-            while b"\n" not in data:
-                chunk = self._socket.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-
-            if data:
-                first_line, remainder = data.split(b"\n", 1)
-                if remainder:
-                    self._recv_buffer = remainder + self._recv_buffer
-                response = json.loads(first_line.decode("utf-8"))
-                actual_project = response.get("data", {}).get("project_name", "")
-                if actual_project and actual_project != self._expected_project:
-                    mismatch_error = (
-                        f"Connected to editor for '{actual_project}' but expected "
-                        f"'{self._expected_project}' on port {self.port}. "
-                        f"Wrong editor instance — check for stale port files in Saved/."
-                    )
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
-            logger.debug("Project validation skipped: %s", e)
-        finally:
-            try:
-                if self._socket:
-                    self._socket.settimeout(_RECV_TIMEOUT)
-            except OSError:
-                pass
-
-        if mismatch_error:
+        response = self._send_and_receive("get_status", {})
+        actual_project = response.get("data", {}).get("project_name", "")
+        if actual_project and actual_project != self._expected_project:
             self.disconnect()
-            raise ConnectionError(mismatch_error)
+            raise _ProjectMismatchError(
+                f"Connected to editor for '{actual_project}' but expected "
+                f"'{self._expected_project}' on port {self.port}. "
+                f"Wrong editor instance — check for stale port files in Saved/."
+            )

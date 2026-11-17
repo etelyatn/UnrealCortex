@@ -155,7 +155,7 @@ def test_default_text_mode_emits_one_compact_json_block(tmp_path):
 
             # Wrapping must not replace the published input contracts with a generic wrapper.
             core_schema = tools["core_cmd"].inputSchema
-            assert set(core_schema["properties"]) == {"command", "params"}
+            assert set(core_schema["properties"]) == {"command", "params", "timeout_s"}
             assert core_schema["required"] == ["command"]
             assert core_schema.get("additionalProperties") is True
             profile_schema = tools["profile_operation_schema"].inputSchema
