@@ -3,13 +3,7 @@
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 from typing import Optional
-
-_MCP_ROOT = Path(__file__).resolve().parents[4]
-if str(_MCP_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MCP_ROOT))
 
 from cortex_mcp.graph_patch_boundary import dispatch_graph_apply_patch
 from tools.blueprint.composites import register_blueprint_composite_tools
