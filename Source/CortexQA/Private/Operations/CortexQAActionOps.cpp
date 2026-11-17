@@ -6,7 +6,7 @@
 #include "CortexTypes.h"
 #include "Blueprint/AIBlueprintHelperLibrary.h"
 #include "Dom/JsonValue.h"
-#include "Editor.h"
+#include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/EngineVersionComparison.h"
@@ -140,48 +140,31 @@ FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>&
 
     TWeakObjectPtr<APlayerController> WeakPC = PC;
     const double StartGameTime = PIEWorld->GetTimeSeconds();
-    TSharedPtr<FTimerHandle> HoldHandle = MakeShared<FTimerHandle>();
-    PIEWorld->GetTimerManager().SetTimer(
-        *HoldHandle,
-        [HoldHandle, WeakPC, InteractionKey, KeyName, DurationSeconds, StartGameTime, DeferredCallback = MoveTemp(DeferredCallback)]() mutable
+    return FCortexQAUtils::StartDeferredPIEPoll(
+        PIEWorld, 0.05f, DurationSeconds, TEXT("interact hold"), MoveTemp(DeferredCallback),
+        [WeakPC, InteractionKey, KeyName, DurationSeconds, StartGameTime](UWorld& World) -> TOptional<FCortexCommandResult>
         {
-            if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
+            const double Elapsed = World.GetTimeSeconds() - StartGameTime;
+            if (Elapsed < DurationSeconds)
             {
-                FCortexCommandResult Final = FCortexCommandRouter::Error(
-                    CortexErrorCodes::PIETerminated, TEXT("PIE terminated during interact hold"));
-                DeferredCallback(MoveTemp(Final));
-                return;
+                return NullOpt;
             }
 
-            UWorld* CurrentPIEWorld = GEditor->PlayWorld;
-            const double Elapsed = CurrentPIEWorld->GetTimeSeconds() - StartGameTime;
-
-            if (Elapsed >= DurationSeconds)
+            if (APlayerController* ReleasedPC = WeakPC.Get())
             {
-                if (APlayerController* ReleasedPC = WeakPC.Get())
-                {
 #if UE_VERSION_OLDER_THAN(5, 5, 0)
-                    ReleasedPC->InputKey(FInputKeyParams(InteractionKey, EInputEvent::IE_Released, 0.0));
+                ReleasedPC->InputKey(FInputKeyParams(InteractionKey, EInputEvent::IE_Released, 0.0));
 #else
-                    ReleasedPC->InputKey(FInputKeyEventArgs::CreateSimulated(InteractionKey, EInputEvent::IE_Released, 0.0f));
+                ReleasedPC->InputKey(FInputKeyEventArgs::CreateSimulated(InteractionKey, EInputEvent::IE_Released, 0.0f));
 #endif
-                }
-
-                TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-                Data->SetBoolField(TEXT("success"), true);
-                Data->SetStringField(TEXT("key"), KeyName);
-                Data->SetNumberField(TEXT("duration"), Elapsed);
-                FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
-                DeferredCallback(MoveTemp(Final));
-                CurrentPIEWorld->GetTimerManager().ClearTimer(*HoldHandle);
             }
-        },
-        0.05f,
-        true);
 
-    FCortexCommandResult Deferred;
-    Deferred.bIsDeferred = true;
-    return Deferred;
+            TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+            Data->SetBoolField(TEXT("success"), true);
+            Data->SetStringField(TEXT("key"), KeyName);
+            Data->SetNumberField(TEXT("duration"), Elapsed);
+            return FCortexCommandRouter::Success(Data);
+        });
 }
 
 FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
@@ -228,78 +211,53 @@ FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& P
     }
 
     TWeakObjectPtr<APawn> WeakPawn = Pawn;
-    TSharedPtr<FTimerHandle> TimerHandle = MakeShared<FTimerHandle>();
-    PIEWorld->GetTimerManager().SetTimer(
-        *TimerHandle,
-        [TimerHandle, DeferredCallback = MoveTemp(DeferredCallback), TargetLocation, AcceptanceRadius, TimeoutSeconds, StartGameTime, WeakPawn, MovementMethod, bUseNavigation]() mutable
+    double LastPollGameTime = StartGameTime;
+    return FCortexQAUtils::StartDeferredPIEPoll(
+        PIEWorld, 0.1f, TimeoutSeconds, TEXT("move_to"), MoveTemp(DeferredCallback),
+        [TargetLocation, AcceptanceRadius, TimeoutSeconds, StartGameTime, LastPollGameTime, WeakPawn, MovementMethod, bUseNavigation](UWorld& World) mutable -> TOptional<FCortexCommandResult>
         {
-            if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
-            {
-                FCortexCommandResult Final = FCortexCommandRouter::Error(CortexErrorCodes::PIETerminated, TEXT("PIE terminated during move_to"));
-                DeferredCallback(MoveTemp(Final));
-                return;
-            }
-
-            UWorld* CurrentPIEWorld = GEditor->PlayWorld;
             APawn* CurrentPawn = WeakPawn.Get();
             if (CurrentPawn == nullptr)
             {
-                FCortexCommandResult Final = FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Player pawn no longer valid"));
-                DeferredCallback(MoveTemp(Final));
-                CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
-                return;
+                return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Player pawn no longer valid"));
             }
 
+            const double Now = World.GetTimeSeconds();
             if (!bUseNavigation)
             {
-                const float MoveSpeedUnitsPerSec = 600.0f;
-                const float Step = MoveSpeedUnitsPerSec * 0.1f;
+                // Advance by the PIE game time since the last poll, so speed does not depend on the ticker's
+                // real-time, once-per-frame cadence (the previous fixed 0.1 s steps moved 60 units per game second).
+                constexpr float DirectMoveUnitsPerGameSecond = 60.0f;
                 const FVector NewLocation = FMath::VInterpConstantTo(
                     CurrentPawn->GetActorLocation(),
                     TargetLocation,
-                    0.1f,
-                    Step);
+                    static_cast<float>(Now - LastPollGameTime),
+                    DirectMoveUnitsPerGameSecond);
                 CurrentPawn->SetActorLocation(NewLocation, false, nullptr, ETeleportType::None);
             }
+            LastPollGameTime = Now;
 
             const FVector Current = CurrentPawn->GetActorLocation();
             const double Distance = FVector::Dist(Current, TargetLocation);
-            const double Elapsed = CurrentPIEWorld->GetTimeSeconds() - StartGameTime;
-
-            if (Distance <= AcceptanceRadius)
+            const double Elapsed = World.GetTimeSeconds() - StartGameTime;
+            const bool bArrived = Distance <= AcceptanceRadius;
+            if (!bArrived && Elapsed < TimeoutSeconds)
             {
-                TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-                Data->SetBoolField(TEXT("arrived"), true);
-                FCortexQAUtils::SetVectorArray(Data, TEXT("final_location"), Current);
-                Data->SetNumberField(TEXT("distance_to_target"), Distance);
-                Data->SetNumberField(TEXT("duration_seconds"), Elapsed);
-                Data->SetStringField(TEXT("movement_method"), MovementMethod);
-                FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
-                DeferredCallback(MoveTemp(Final));
-                CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
-                return;
+                return NullOpt;
             }
 
-            if (Elapsed >= TimeoutSeconds)
+            TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+            Data->SetBoolField(TEXT("arrived"), bArrived);
+            FCortexQAUtils::SetVectorArray(Data, TEXT("final_location"), Current);
+            Data->SetNumberField(TEXT("distance_to_target"), Distance);
+            Data->SetNumberField(TEXT("duration_seconds"), Elapsed);
+            if (!bArrived)
             {
-                TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-                Data->SetBoolField(TEXT("arrived"), false);
-                FCortexQAUtils::SetVectorArray(Data, TEXT("final_location"), Current);
-                Data->SetNumberField(TEXT("distance_to_target"), Distance);
-                Data->SetNumberField(TEXT("duration_seconds"), Elapsed);
                 Data->SetStringField(TEXT("reason"), TEXT("timeout"));
-                Data->SetStringField(TEXT("movement_method"), MovementMethod);
-                FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
-                DeferredCallback(MoveTemp(Final));
-                CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
             }
-        },
-        0.1f,
-        true);
-
-    FCortexCommandResult Deferred;
-    Deferred.bIsDeferred = true;
-    return Deferred;
+            Data->SetStringField(TEXT("movement_method"), MovementMethod);
+            return FCortexCommandRouter::Success(Data);
+        });
 }
 
 FCortexCommandResult FCortexQAActionOps::WaitFor(const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback)
@@ -331,64 +289,32 @@ FCortexCommandResult FCortexQAActionOps::WaitFor(const TSharedPtr<FJsonObject>& 
     {
         const double StartRealTime = FPlatformTime::Seconds();
         const double ClampedTimeoutSeconds = FMath::Max(0.0, TimeoutSeconds);
-        TSharedPtr<FTimerHandle> DelayHandle = MakeShared<FTimerHandle>();
-        PIEWorld->GetTimerManager().SetTimer(
-            *DelayHandle,
-            [PIEWorld, DelayHandle, DeferredCallback = MoveTemp(DeferredCallback), ClampedTimeoutSeconds, StartRealTime]() mutable
+        return FCortexQAUtils::StartDeferredPIEPoll(
+            PIEWorld, 0.1f, ClampedTimeoutSeconds, TEXT("wait_for delay"), MoveTemp(DeferredCallback),
+            [ClampedTimeoutSeconds, StartRealTime](UWorld& World) -> TOptional<FCortexCommandResult>
             {
-                if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
+                (void)World;
+                if (FPlatformTime::Seconds() - StartRealTime < ClampedTimeoutSeconds)
                 {
-                    FCortexCommandResult Final = FCortexCommandRouter::Error(
-                        CortexErrorCodes::PIETerminated,
-                        TEXT("PIE terminated during wait_for delay"));
-                    DeferredCallback(MoveTemp(Final));
-                    if (PIEWorld != nullptr)
-                    {
-                        PIEWorld->GetTimerManager().ClearTimer(*DelayHandle);
-                    }
-                    return;
+                    return NullOpt;
                 }
 
-                const double Elapsed = FPlatformTime::Seconds() - StartRealTime;
-                if (Elapsed >= ClampedTimeoutSeconds)
-                {
-                    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-                    Data->SetBoolField(TEXT("condition_met"), true);
-                    FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
-                    DeferredCallback(MoveTemp(Final));
-                    PIEWorld->GetTimerManager().ClearTimer(*DelayHandle);
-                }
-            },
-            0.1f,
-            true);
-
-        FCortexCommandResult Deferred;
-        Deferred.bIsDeferred = true;
-        return Deferred;
+                TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+                Data->SetBoolField(TEXT("condition_met"), true);
+                return FCortexCommandRouter::Success(Data);
+            });
     }
 
     const double StartGameTime = PIEWorld->GetTimeSeconds();
     TSharedPtr<FJsonValue> LastActualValue;
-    TSharedPtr<FTimerHandle> TimerHandle = MakeShared<FTimerHandle>();
-    PIEWorld->GetTimerManager().SetTimer(
-        *TimerHandle,
-        [TimerHandle, DeferredCallback = MoveTemp(DeferredCallback), Params, TimeoutSeconds, StartGameTime, Type, LastActualValue]() mutable
+    return FCortexQAUtils::StartDeferredPIEPoll(
+        PIEWorld, 0.1f, TimeoutSeconds, TEXT("wait_for"), MoveTemp(DeferredCallback),
+        [Params, TimeoutSeconds, StartGameTime, Type, LastActualValue](UWorld& World) mutable -> TOptional<FCortexCommandResult>
         {
-            if (GEditor == nullptr || GEditor->PlayWorld == nullptr)
-            {
-                FCortexCommandResult Final = FCortexCommandRouter::Error(CortexErrorCodes::PIETerminated, TEXT("PIE terminated during wait_for"));
-                DeferredCallback(MoveTemp(Final));
-                return;
-            }
-
-            UWorld* CurrentPIEWorld = GEditor->PlayWorld;
-            const FCortexQAConditionEvalResult Eval = FCortexQAConditionUtils::Evaluate(CurrentPIEWorld, Params);
+            const FCortexQAConditionEvalResult Eval = FCortexQAConditionUtils::Evaluate(&World, Params);
             if (!Eval.bValid)
             {
-                FCortexCommandResult Final = FCortexCommandRouter::Error(Eval.ErrorCode, Eval.ErrorMessage);
-                DeferredCallback(MoveTemp(Final));
-                CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
-                return;
+                return FCortexCommandRouter::Error(Eval.ErrorCode, Eval.ErrorMessage);
             }
 
             if (Eval.ActualValue.IsValid())
@@ -404,33 +330,24 @@ FCortexCommandResult FCortexQAActionOps::WaitFor(const TSharedPtr<FJsonObject>& 
                 {
                     Data->SetField(TEXT("actual_value"), Eval.ActualValue);
                 }
-                FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
-                DeferredCallback(MoveTemp(Final));
-                CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
-                return;
+                return FCortexCommandRouter::Success(Data);
             }
 
-            const double Elapsed = CurrentPIEWorld->GetTimeSeconds() - StartGameTime;
-            if (Elapsed >= TimeoutSeconds)
+            const double Elapsed = World.GetTimeSeconds() - StartGameTime;
+            if (Elapsed < TimeoutSeconds)
             {
-                TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
-                Data->SetBoolField(TEXT("condition_met"), false);
-                Data->SetStringField(TEXT("type"), Type);
-                Data->SetBoolField(TEXT("timed_out"), true);
-                Data->SetNumberField(TEXT("duration_seconds"), Elapsed);
-                if (LastActualValue.IsValid())
-                {
-                    Data->SetField(TEXT("actual_value"), LastActualValue);
-                }
-                FCortexCommandResult Final = FCortexCommandRouter::Success(Data);
-                DeferredCallback(MoveTemp(Final));
-                CurrentPIEWorld->GetTimerManager().ClearTimer(*TimerHandle);
+                return NullOpt;
             }
-        },
-        0.1f,
-        true);
 
-    FCortexCommandResult Deferred;
-    Deferred.bIsDeferred = true;
-    return Deferred;
+            TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+            Data->SetBoolField(TEXT("condition_met"), false);
+            Data->SetStringField(TEXT("type"), Type);
+            Data->SetBoolField(TEXT("timed_out"), true);
+            Data->SetNumberField(TEXT("duration_seconds"), Elapsed);
+            if (LastActualValue.IsValid())
+            {
+                Data->SetField(TEXT("actual_value"), LastActualValue);
+            }
+            return FCortexCommandRouter::Success(Data);
+        });
 }

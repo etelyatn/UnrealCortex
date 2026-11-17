@@ -1,6 +1,8 @@
 #include "CortexQAUtils.h"
 
+#include "Containers/Ticker.h"
 #include "CortexPIEUtils.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameStateBase.h"
@@ -39,6 +41,53 @@ AActor* FCortexQAUtils::FindActorByName(UWorld* World, const FString& ActorIdent
 FCortexCommandResult FCortexQAUtils::PIENotActiveError()
 {
     return FCortexPIEUtils::PIENotActiveError();
+}
+
+FCortexCommandResult FCortexQAUtils::StartDeferredPIEPoll(
+    UWorld* World,
+    const float IntervalSeconds,
+    const double OperationSeconds,
+    const FString& OperationLabel,
+    FDeferredResponseCallback DeferredCallback,
+    FPIEPoll Poll)
+{
+    // The core ticker keeps running after PIE teardown destroys the world and its timer manager.
+    constexpr double TransportGraceSeconds = 5.0;
+
+    FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateLambda(
+            [WeakWorld = TWeakObjectPtr<UWorld>(World), OperationLabel, Callback = MoveTemp(DeferredCallback), Poll = MoveTemp(Poll)](float DeltaTime) mutable
+            {
+                (void)DeltaTime;
+                UWorld* PollWorld = WeakWorld.Get();
+                if (PollWorld == nullptr || PollWorld != GetPIEWorld())
+                {
+                    Callback(FCortexCommandRouter::Error(
+                        CortexErrorCodes::PIETerminated,
+                        FString::Printf(TEXT("PIE terminated during %s"), *OperationLabel)));
+                    return false;
+                }
+
+                if (PollWorld->IsPaused())
+                {
+                    return true;
+                }
+
+                TOptional<FCortexCommandResult> Final = Poll(*PollWorld);
+                if (!Final.IsSet())
+                {
+                    return true;
+                }
+
+                Callback(MoveTemp(Final.GetValue()));
+                return false;
+            }),
+        IntervalSeconds);
+
+    FCortexCommandResult Deferred;
+    Deferred.bIsDeferred = true;
+    Deferred.DeferredTimeoutSeconds = FMath::Max(OperationSeconds, 0.0) + TransportGraceSeconds;
+    return Deferred;
 }
 
 bool FCortexQAUtils::IsEngineInternalActor(const AActor* Actor)
