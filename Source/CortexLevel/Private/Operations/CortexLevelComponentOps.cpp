@@ -253,14 +253,14 @@ namespace
             || PropertyName.IsEmpty())
         {
             return FCortexBatchPreflightResult::Error(
-                CortexErrorCodes::InvalidValue,
+                CortexErrorCodes::InvalidField,
                 TEXT("Missing required parameter: component or property"));
         }
 
         if (!Item.Params->HasField(TEXT("value")))
         {
             return FCortexBatchPreflightResult::Error(
-                CortexErrorCodes::InvalidValue,
+                CortexErrorCodes::InvalidField,
                 TEXT("Missing required parameter: value"));
         }
 
@@ -296,13 +296,13 @@ FCortexCommandResult FCortexLevelComponentOps::ListComponents(const TSharedPtr<F
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ActorIdentifier;
     if (!Params->TryGetStringField(TEXT("actor"), ActorIdentifier) || ActorIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actor"));
     }
 
     FCortexCommandResult Error;
@@ -348,18 +348,18 @@ FCortexCommandResult FCortexLevelComponentOps::AddComponent(const TSharedPtr<FJs
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ActorIdentifier;
     FString ClassName;
     if (!Params->TryGetStringField(TEXT("actor"), ActorIdentifier) || ActorIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actor"));
     }
     if (!Params->TryGetStringField(TEXT("class"), ClassName) || ClassName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ClassNotFound, TEXT("Missing required parameter: class"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: class"));
     }
 
     FCortexCommandResult Error;
@@ -443,18 +443,18 @@ FCortexCommandResult FCortexLevelComponentOps::RemoveComponent(const TSharedPtr<
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ActorIdentifier;
     FString ComponentName;
     if (!Params->TryGetStringField(TEXT("actor"), ActorIdentifier) || ActorIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actor"));
     }
     if (!Params->TryGetStringField(TEXT("component"), ComponentName) || ComponentName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ComponentNotFound, TEXT("Missing required parameter: component"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: component"));
     }
 
     FCortexCommandResult Error;
@@ -508,7 +508,7 @@ FCortexCommandResult FCortexLevelComponentOps::GetComponentProperty(const TShare
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ActorIdentifier;
@@ -516,15 +516,15 @@ FCortexCommandResult FCortexLevelComponentOps::GetComponentProperty(const TShare
     FString PropertyName;
     if (!Params->TryGetStringField(TEXT("actor"), ActorIdentifier) || ActorIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actor"));
     }
     if (!Params->TryGetStringField(TEXT("component"), ComponentName) || ComponentName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ComponentNotFound, TEXT("Missing required parameter: component"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: component"));
     }
     if (!Params->TryGetStringField(TEXT("property"), PropertyName) || PropertyName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::PropertyNotFound, TEXT("Missing required parameter: property"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: property"));
     }
 
     FCortexCommandResult Error;
@@ -584,7 +584,7 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
 
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ActorIdentifier;
@@ -592,21 +592,21 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
     FString PropertyName;
     if (!Params->TryGetStringField(TEXT("actor"), ActorIdentifier) || ActorIdentifier.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("Missing required parameter: actor"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actor"));
     }
     if (!Params->TryGetStringField(TEXT("component"), ComponentName) || ComponentName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ComponentNotFound, TEXT("Missing required parameter: component"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: component"));
     }
     if (!Params->TryGetStringField(TEXT("property"), PropertyName) || PropertyName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::PropertyNotFound, TEXT("Missing required parameter: property"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: property"));
     }
 
     TSharedPtr<FJsonValue> JsonValue = Params->TryGetField(TEXT("value"));
     if (!JsonValue.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing required parameter: value"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: value"));
     }
 
     FCortexCommandResult Error;

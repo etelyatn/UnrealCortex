@@ -154,13 +154,13 @@ FCortexCommandResult FCortexLevelDiscoveryOps::DescribeClass(const TSharedPtr<FJ
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ClassNotFound, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString ClassName;
     if (!Params->TryGetStringField(TEXT("class"), ClassName) || ClassName.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::ClassNotFound, TEXT("Missing required parameter: class"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: class"));
     }
 
     UClass* Class = ResolveClassByName(ClassName);

@@ -4,10 +4,15 @@
 #include "CortexStateTreeTestSchema.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/OutputDevice.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "StateTree.h"
 #include "UObject/Class.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
@@ -369,5 +374,61 @@ bool FCortexStateTreeAssetCrudTest::RunTest(const FString& Parameters)
 	CortexStateTreeTest::DeleteIfLoaded(OutsideAssetPath);
 	GLog->RemoveOutputDevice(&TransactionCapture);
 	TestEqual(TEXT("delete should not emit transaction reset warnings"), TransactionCapture.TransactionWarnings, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexStateTreeCreateSaveFailureTest,
+	"Cortex.StateTree.Asset.CreateSaveFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexStateTreeCreateSaveFailureTest::RunTest(const FString& Parameters)
+{
+	FCortexStateTreeCommandHandler Handler;
+	const FString AssetPath = CortexStateTreeTest::MakeAssetPath(TEXT("ST_SaveFailure"));
+	const FString PackageName = FPackageName::ObjectPathToPackageName(AssetPath);
+	const FString PackageFilename = GetAssetPackageFilename(AssetPath);
+	IFileManager& FileManager = IFileManager::Get();
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+	// A read-only directory at the package filename is not a package, so the name stays free, but
+	// SavePackage refuses to replace it. The engine logs one error and one warning for the refusal.
+	TestTrue(TEXT("Blocking directory created"), FileManager.MakeDirectory(*PackageFilename, true));
+	TestTrue(TEXT("Blocking directory made read-only"), PlatformFile.SetReadOnly(*PackageFilename, true));
+	AddExpectedError(TEXT("as it is read only"), EAutomationExpectedErrorFlags::Contains, 1);
+	AddExpectedMessage(TEXT("Error saving"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1);
+
+	// A refused package save is a save failure, not a serialization error.
+	TSharedPtr<FJsonObject> CreateParams = CortexStateTreeTest::Params();
+	CreateParams->SetStringField(TEXT("asset_path"), AssetPath);
+	CreateParams->SetStringField(TEXT("schema_class"), CortexStateTreeTest::GetTestSchemaClassPath());
+	CreateParams->SetBoolField(TEXT("save"), true);
+	const FCortexCommandResult Result = Handler.Execute(TEXT("create_asset"), CreateParams);
+	TestFalse(TEXT("create_asset reports the refused save"), Result.bSuccess);
+	TestEqual(TEXT("create_asset uses SAVE_FAILED"), Result.ErrorCode, CortexErrorCodes::SaveFailed);
+	TestFalse(TEXT("create_asset leaves no package on disk"), FPackageName::DoesPackageExist(PackageName));
+
+	// Cleanup: the refused create leaves its transient objects and a temp file in Saved/.
+	if (UObject* Asset = FindObject<UObject>(nullptr,
+		*FString::Printf(TEXT("%s.%s"), *PackageName, *FPackageName::GetShortName(PackageName))))
+	{
+		UPackage* Package = Asset->GetPackage();
+		Asset->ClearFlags(RF_Public | RF_Standalone);
+		Asset->MarkAsGarbage();
+		Package->SetDirtyFlag(false);
+		Package->MarkAsGarbage();
+	}
+	PlatformFile.SetReadOnly(*PackageFilename, false);
+	FileManager.DeleteDirectory(*PackageFilename, false, true);
+	TArray<FString> TempFiles;
+	FileManager.FindFiles(TempFiles, *(FPaths::ProjectSavedDir() / TEXT("*.tmp")), true, false);
+	for (const FString& TempFile : TempFiles)
+	{
+		if (TempFile.Contains(TEXT("SaveFailure")))
+		{
+			FileManager.Delete(*(FPaths::ProjectSavedDir() / TempFile));
+		}
+	}
 	return true;
 }

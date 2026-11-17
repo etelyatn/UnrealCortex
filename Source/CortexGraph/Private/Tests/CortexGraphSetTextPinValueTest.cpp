@@ -11,6 +11,8 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/Guid.h"
 #include "ObjectTools.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
@@ -138,5 +140,70 @@ bool FCortexGraphSetTextPinValueStringTableTest::RunTest(const FString& Paramete
 
 	TablePackage->MarkAsGarbage();
 	DeleteTestBlueprintAsset(AssetPath);
+	return true;
+}
+
+// A text pin mutation persists the package; when the engine refuses that save the command must
+// report the save failure (rule 3) instead of a verification result.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSetPinValueTextSaveFailureTest,
+	"Cortex.Graph.SetPinValue.Text.SaveFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSetPinValueTextSaveFailureTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString PackageName = FString::Printf(TEXT("/Game/Temp/CortexGraphTextSaveFailure_%s"), *Suffix);
+	const FString BlueprintName = FString::Printf(TEXT("BP_TextSaveFailure_%s"), *Suffix);
+	UBlueprint* Blueprint = CreateTextPinBlueprint(*PackageName, *BlueprintName);
+	TestNotNull(TEXT("Blueprint created"), Blueprint);
+	if (Blueprint == nullptr)
+	{
+		return false;
+	}
+
+	const FString AssetPath = Blueprint->GetPathName();
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"),
+		MakeShared<FCortexGraphCommandHandler>());
+
+	const FString NodeId = AddPrintTextNode(Router, AssetPath);
+	TestFalse(TEXT("PrintText node created"), NodeId.IsEmpty());
+	if (NodeId.IsEmpty())
+	{
+		Blueprint->MarkAsGarbage();
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Text = MakeShared<FJsonObject>();
+	Text->SetStringField(TEXT("type"), TEXT("FText"));
+	Text->SetStringField(TEXT("source_kind"), TEXT("literal"));
+	Text->SetStringField(TEXT("value"), TEXT("SaveFailureProbe"));
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), AssetPath);
+	Params->SetStringField(TEXT("node_id"), NodeId);
+	Params->SetStringField(TEXT("pin_name"), TEXT("InText"));
+	Params->SetObjectField(TEXT("text"), Text);
+
+	// The editor's save hook refuses exactly this package. The command saves with SAVE_NoError, so
+	// the engine reports the refusal as a return value instead of logging an error.
+	const FString RefusedPackageName = Blueprint->GetOutermost()->GetName();
+	FCoreUObjectDelegates::IsPackageOKToSaveDelegate.BindLambda(
+		[RefusedPackageName](UPackage* Package, const FString& Filename, FOutputDevice* ErrorText)
+		{
+			(void)Filename;
+			(void)ErrorText;
+			return Package == nullptr || Package->GetName() != RefusedPackageName;
+		});
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("graph.set_pin_value"), Params);
+	FCoreUObjectDelegates::IsPackageOKToSaveDelegate.Unbind();
+
+	TestFalse(TEXT("a refused package save fails the text mutation"), Result.bSuccess);
+	TestEqual(TEXT("refused save uses SAVE_FAILED"), Result.ErrorCode, CortexErrorCodes::SaveFailed);
+
+	Blueprint->MarkAsGarbage();
 	return true;
 }

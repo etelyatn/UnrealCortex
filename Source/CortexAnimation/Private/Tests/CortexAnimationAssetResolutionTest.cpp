@@ -166,3 +166,35 @@ bool FCortexAnimationWrongObjectNameTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("error details should be present"), Result.ErrorDetails.IsValid());
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAnimationMissingAnimBlueprintCodeTest,
+	"Cortex.Animation.Resolve.MissingAnimBlueprintIsBlueprintNotFound",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAnimationMissingAnimBlueprintCodeTest::RunTest(const FString& Parameters)
+{
+	FCortexCommandRouter Router = CreateAnimRouter();
+
+	// An AnimBlueprint is a Blueprint asset, so an AnimBlueprint path that does not resolve is
+	// BLUEPRINT_NOT_FOUND, not the generic ASSET_NOT_FOUND.
+	const FCortexCommandResult BlueprintResult = Router.Execute(
+		TEXT("anim.get_animbp_info"),
+		ParamsWithAssetPath(TEXT("/Game/Characters/Mannequins/Anims/NoSuchAnimBlueprint"))
+	);
+	TestFalse(TEXT("missing anim blueprint should fail"), BlueprintResult.bSuccess);
+	TestEqual(TEXT("missing anim blueprint uses BLUEPRINT_NOT_FOUND"),
+		BlueprintResult.ErrorCode, FString(CortexErrorCodes::BlueprintNotFound));
+
+	// A non-Blueprint animation asset keeps the generic code.
+	const FCortexCommandResult SequenceResult = Router.Execute(
+		TEXT("anim.get_sequence_info"),
+		ParamsWithAssetPath(TEXT("/Game/Characters/Mannequins/Anims/Pistol/NoSuchSequence"))
+	);
+	TestFalse(TEXT("missing anim sequence should fail"), SequenceResult.bSuccess);
+	TestEqual(TEXT("missing anim sequence keeps ASSET_NOT_FOUND"),
+		SequenceResult.ErrorCode, FString(CortexErrorCodes::AssetNotFound));
+
+	return true;
+}

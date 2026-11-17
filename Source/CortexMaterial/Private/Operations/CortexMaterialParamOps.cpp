@@ -365,11 +365,17 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 
 	if (ParameterType == TEXT("scalar"))
 	{
+		if (!Params->HasField(TEXT("value")))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField, TEXT("Missing required param: value"));
+		}
+
 		double Value = 0.0;
 		if (!Params->TryGetNumberField(TEXT("value"), Value))
 		{
 			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidParameter, TEXT("Missing or invalid scalar value"));
+				CortexErrorCodes::InvalidParameter, TEXT("Scalar value must be a number"));
 		}
 
 		Instance->Modify();
@@ -379,6 +385,12 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 	}
 	else if (ParameterType == TEXT("vector"))
 	{
+		if (!Params->HasField(TEXT("value")))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField, TEXT("Missing required param: value"));
+		}
+
 		FLinearColor Color = FLinearColor::Transparent;
 		bool bParsedColor = false;
 
@@ -412,7 +424,7 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidParameter,
-				TEXT("Missing or invalid vector value (expects [R, G, B, A] or {R,G,B,A})"));
+				TEXT("Vector value must be [R, G, B, A] or {R,G,B,A}"));
 		}
 
 		Instance->Modify();
@@ -422,11 +434,17 @@ FCortexCommandResult FCortexMaterialParamOps::SetParameter(const TSharedPtr<FJso
 	}
 	else if (ParameterType == TEXT("texture"))
 	{
+		if (!Params->HasField(TEXT("value")))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField, TEXT("Missing required param: value"));
+		}
+
 		FString TexturePath;
 		if (!Params->TryGetStringField(TEXT("value"), TexturePath))
 		{
 			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidParameter, TEXT("Missing texture path"));
+				CortexErrorCodes::InvalidParameter, TEXT("Texture value must be an asset path string"));
 		}
 
 		UTexture* Texture = nullptr;

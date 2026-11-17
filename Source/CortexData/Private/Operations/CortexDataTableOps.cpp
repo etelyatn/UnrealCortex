@@ -1078,7 +1078,7 @@ FCortexCommandResult FCortexDataTableOps::SearchDatatableContent(const TSharedPt
 		if (!Params->TryGetStringField(TEXT("query"), SearchText) || SearchText.IsEmpty())
 		{
 			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidValue,
+				CortexErrorCodes::InvalidField,
 				TEXT("Missing or empty required param: search_text (or query)")
 			);
 		}
@@ -1922,13 +1922,16 @@ FCortexCommandResult FCortexDataTableOps::CreateDataTable(const TSharedPtr<FJson
 
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	// A refused save is the caller's error to report; without SAVE_NoError the engine logs the refusal
+	// through the save context, which asserts in a headless automation run.
+	SaveArgs.SaveFlags = SAVE_NoError;
 	const bool bSaved = UPackage::SavePackage(Package, NewTable, *PackageFilename, SaveArgs);
 	if (!bSaved)
 	{
 		NewTable->MarkAsGarbage();
 		Package->MarkAsGarbage();
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::SerializationError,
+			CortexErrorCodes::SaveFailed,
 			FString::Printf(TEXT("Failed to save DataTable to disk: %s"), *TablePath)
 		);
 	}

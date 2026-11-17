@@ -980,6 +980,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr
 		}
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Standalone;
+		SaveArgs.SaveFlags = SAVE_NoError;
 		bDidSave = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
 	}
 
@@ -992,7 +993,14 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr
 	Data->SetBoolField(TEXT("saved"), bSave && bDidSave);
 
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Set tick settings on %s"), *AssetPath);
-	return FCortexCommandRouter::Success(Data);
+	FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
+	if (bSave && !bDidSave)
+	{
+		Result.Warnings.Add(FString::Printf(
+			TEXT("Failed to save Blueprint package %s: the tick settings were applied in memory and the package stays dirty"),
+			*Blueprint->GetOutermost()->GetName()));
+	}
+	return Result;
 }
 
 FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSharedPtr<FJsonObject>& Params)
@@ -1117,6 +1125,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSh
 		}
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Standalone;
+		SaveArgs.SaveFlags = SAVE_NoError;
 		bDidSave = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
 	}
 
@@ -1143,5 +1152,12 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSh
 	Data->SetBoolField(TEXT("saved"), bSave && bDidSave);
 
 	UE_LOG(LogCortexBlueprint, Log, TEXT("Set replication settings on %s"), *AssetPath);
-	return FCortexCommandRouter::Success(Data);
+	FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
+	if (bSave && !bDidSave)
+	{
+		Result.Warnings.Add(FString::Printf(
+			TEXT("Failed to save Blueprint package %s: the replication settings were applied in memory and the package stays dirty"),
+			*Blueprint->GetOutermost()->GetName()));
+	}
+	return Result;
 }

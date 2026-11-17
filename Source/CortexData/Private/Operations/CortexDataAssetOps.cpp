@@ -469,13 +469,16 @@ FCortexCommandResult FCortexDataAssetOps::CreateDataAsset(const TSharedPtr<FJson
 
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	// A refused save is the caller's error to report; without SAVE_NoError the engine logs the refusal
+	// through the save context, which asserts in a headless automation run.
+	SaveArgs.SaveFlags = SAVE_NoError;
 	const bool bSaved = UPackage::SavePackage(Package, NewAsset, *PackageFilename, SaveArgs);
 	if (!bSaved)
 	{
 		NewAsset->MarkAsGarbage();
 		Package->MarkAsGarbage();
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::SerializationError,
+			CortexErrorCodes::SaveFailed,
 			FString::Printf(TEXT("Failed to save DataAsset to disk: %s"), *AssetPath)
 		);
 	}
