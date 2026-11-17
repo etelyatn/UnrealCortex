@@ -695,6 +695,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayRoundTripCapturedWalkAndLookTest,
 bool FCortexReplayRoundTripCapturedWalkAndLookTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FRoundTripState> State = MakeShared<FRoundTripState>();
 
@@ -926,6 +930,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayRoundTripEscapeEndedCaptureTest,
 bool FCortexReplayRoundTripEscapeEndedCaptureTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FRoundTripState> State = MakeShared<FRoundTripState>();
 

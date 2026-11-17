@@ -1118,6 +1118,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowActiveRunLifecycleTest,
 bool FCortexReplayWindowActiveRunLifecycleTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -1249,6 +1253,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowOwnedRecordTest,
 bool FCortexReplayWindowOwnedRecordTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor)
 	{
 		AddError(TEXT("GEditor missing"));
@@ -1323,6 +1331,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowExternalSessionEndRecordTest
 bool FCortexReplayWindowExternalSessionEndRecordTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor)
 	{
 		AddError(TEXT("GEditor missing"));
@@ -1377,6 +1389,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowExternalSessionEndIncomplete
 bool FCortexReplayWindowExternalSessionEndIncompleteTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor)
 	{
 		AddError(TEXT("GEditor missing"));
@@ -1601,6 +1617,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowCaptureStopDiscardTest,
 bool FCortexReplayWindowCaptureStopDiscardTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeWindowService(*Fixture);
@@ -1847,6 +1867,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayWindowRowActionsDisabledDuringOper
 bool FCortexReplayWindowRowActionsDisabledDuringOperationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;

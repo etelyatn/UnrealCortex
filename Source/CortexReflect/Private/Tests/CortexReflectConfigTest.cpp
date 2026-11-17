@@ -340,6 +340,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexReflectConfigUnreadableTest::RunTest(const FString& Parameters)
 {
+	if constexpr (!PLATFORM_WINDOWS)
+	{
+		AddInfo(TEXT("An open writer only makes a file unreadable under Windows share modes; skipped on this platform"));
+		return true;
+	}
 	FTempConfigFixture Fixture(TEXT("[/Script/Test.Settings]\nGood=/Game/Blueprints/BP_SimpleActor.BP_SimpleActor_C\n"));
 	if (!TestTrue(TEXT("fixture ini written"), Fixture.bWritten))
 	{
