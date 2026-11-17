@@ -34,6 +34,11 @@ struct FCortexResolvedSymbol
 	bool bIsProtected = false;
 	bool bIsPrivate = false;
 	bool bIsStatic = false;
+	/**
+	 * Property only: the member is read on the Blueprint itself (hidden self pin), as the editor's
+	 * My Blueprint getter does, rather than through an explicit target instance.
+	 */
+	bool bSelfContext = false;
 
 	// Request-local pointers valid ONLY during the request validity window
 	UClass* DeclaringClass = nullptr;
@@ -69,7 +74,11 @@ public:
 		FCortexResolvedSymbol& OutSymbol,
 		FCortexCommandResult& OutError);
 
-	/** Resolve a property symbol on the given Blueprint or owner class. */
+	/**
+	 * Resolve a property symbol on the given Blueprint or owner class. A member found on the
+	 * Blueprint's own class hierarchy is self context unless params.context is "external";
+	 * params.context "self" is refused for an owner outside that hierarchy.
+	 */
 	static bool ResolveProperty(
 		UBlueprint* Blueprint,
 		const TSharedPtr<FJsonObject>& Params,

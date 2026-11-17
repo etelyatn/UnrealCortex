@@ -498,6 +498,19 @@ bool FCortexGraphSymbolResolver::ResolveProperty(
 		return false;
 	}
 
+	// Optional explicit reference form. Omitted follows the editor: self context whenever the
+	// member resolves on the Blueprint's own class hierarchy.
+	FString RequestedContext;
+	if (Params.IsValid() && Params->TryGetStringField(TEXT("context"), RequestedContext)
+		&& RequestedContext != TEXT("self") && RequestedContext != TEXT("external"))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Unknown variable context '%s'; expected 'self' or 'external'"), *RequestedContext));
+		return false;
+	}
+	const bool bExternalRequested = (RequestedContext == TEXT("external"));
+
 	UClass* ContextClass = nullptr;
 
 	if (OwnerClassStr.IsEmpty())
@@ -534,6 +547,7 @@ bool FCortexGraphSymbolResolver::ResolveProperty(
 				OutSymbol.bIsProperty = true;
 				OutSymbol.bIsBlueprintVisible = true;
 				OutSymbol.ContextClass = SelfClass;
+				OutSymbol.bSelfContext = !bExternalRequested;
 				return true;
 			}
 		}
@@ -558,6 +572,7 @@ bool FCortexGraphSymbolResolver::ResolveProperty(
 			OutSymbol.bIsBlueprintVisible = true;
 			OutSymbol.bIsBlueprintReadOnly = (VarDesc.PropertyFlags & CPF_BlueprintReadOnly) != 0;
 			OutSymbol.ContextClass = SelfClass;
+			OutSymbol.bSelfContext = !bExternalRequested;
 			return true;
 		}
 
@@ -584,6 +599,7 @@ bool FCortexGraphSymbolResolver::ResolveProperty(
 				OutSymbol.DeclaringClass = Prop->GetOwnerClass();
 				OutSymbol.ContextClass = SelfClass;
 				OutSymbol.Property = Prop;
+				OutSymbol.bSelfContext = !bExternalRequested;
 				return true;
 			}
 		}
@@ -617,6 +633,20 @@ bool FCortexGraphSymbolResolver::ResolveProperty(
 		return false;
 	}
 
+	// Same rule as the editor's member-variable spawner: an owner the Blueprint derives from is self.
+	const UClass* const SelfClass = Blueprint
+		? (Blueprint->SkeletonGeneratedClass ? Blueprint->SkeletonGeneratedClass : Blueprint->GeneratedClass)
+		: nullptr;
+	const bool bOwnerInHierarchy = SelfClass
+		&& (SelfClass->GetAuthoritativeClass() == ContextClass || SelfClass->IsChildOf(ContextClass));
+	if (RequestedContext == TEXT("self") && !bOwnerInHierarchy)
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("Variable context 'self' requires an owner the Blueprint derives from; '%s' is not"), *ContextClass->GetName()));
+		return false;
+	}
+
 	OutSymbol.DeclaringClassPath = Prop->GetOwnerClass()->GetPathName();
 	OutSymbol.ContextClassPath = ContextClass->GetPathName();
 	OutSymbol.MemberName = FName(*MemberNameStr);
@@ -626,6 +656,7 @@ bool FCortexGraphSymbolResolver::ResolveProperty(
 	OutSymbol.DeclaringClass = Prop->GetOwnerClass();
 	OutSymbol.ContextClass = ContextClass;
 	OutSymbol.Property = Prop;
+	OutSymbol.bSelfContext = bOwnerInHierarchy && !bExternalRequested;
 
 	return true;
 }
