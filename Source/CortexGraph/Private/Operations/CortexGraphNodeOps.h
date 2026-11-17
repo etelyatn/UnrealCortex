@@ -77,6 +77,14 @@ public:
 	 */
 	static UEdGraph* ResolveSubgraph(UEdGraph* RootGraph, const FString& SubgraphPath, FCortexCommandResult& OutError);
 
+	/**
+	 * Runs the editor placement hook (PostPlacedNewNode) on a new anim graph node inside an Anim Blueprint, before its pins
+	 * are allocated, as FGraphNodeCreator does. It creates the node's Binding (without it the anim compiler ignores linked
+	 * pins), registers Anim Blueprint extensions and applies subclass placement (e.g. BlendListByInt's second pose).
+	 * Anything else is left alone: the hook's extension request asserts on an anim node outside an Anim Blueprint.
+	 */
+	static void PlaceNewAnimNode(UEdGraphNode* Node);
+
 private:
 	static constexpr int32 MaxSubgraphDepth = 5;
 	static FCortexCommandResult ApplyTextPinValue(
