@@ -7,6 +7,7 @@
 #include "Containers/Ticker.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Blueprint.h"
+#include "Engine/World.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "EdGraph/EdGraph.h"
 #include "K2Node_CallFunction.h"
@@ -35,7 +36,13 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 {
 	FCortexBPCommandHandler Handler;
 
-	// Test: compile pre-built BP_SimpleActor (already clean, should succeed)
+	// Test: compile pre-built BP_SimpleActor (already clean, should succeed).
+	// Cortex.Blueprint.ContentSetup creates it but sorts after this test, so a host without it skips this block.
+	if (!FPackageName::DoesPackageExist(TEXT("/Game/Blueprints/BP_SimpleActor")))
+	{
+		AddInfo(TEXT("BP_SimpleActor not available in this project (run Cortex.Blueprint.ContentSetup) - skipping the pre-built compile block"));
+	}
+	else
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"),
@@ -43,26 +50,31 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 
 		FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
 		TestTrue(TEXT("compile should succeed"), Result.bSuccess);
-		TestTrue(TEXT("data should exist"), Result.Data.IsValid());
+		if (TestTrue(TEXT("data should exist"), Result.Data.IsValid()))
+		{
+			FString CompileStatus;
+			double ErrorCount = -1;
+			double WarningCount = -1;
+			const TArray<TSharedPtr<FJsonValue>>* Diagnostics = nullptr;
 
-		FString CompileStatus;
-		double ErrorCount = -1;
-		double WarningCount = -1;
-		const TArray<TSharedPtr<FJsonValue>>* Diagnostics = nullptr;
-
-		TestTrue(TEXT("compile_status exists"),
-			Result.Data->TryGetStringField(TEXT("compile_status"), CompileStatus));
-		TestEqual(TEXT("compile_status should be success"), CompileStatus, TEXT("success"));
-		TestTrue(TEXT("error_count exists"),
-			Result.Data->TryGetNumberField(TEXT("error_count"), ErrorCount));
-		TestTrue(TEXT("warning_count exists"),
-			Result.Data->TryGetNumberField(TEXT("warning_count"), WarningCount));
-		TestEqual(TEXT("error_count should be 0"), ErrorCount, 0.0);
-		TestEqual(TEXT("warning_count should be 0"), WarningCount, 0.0);
-		TestTrue(TEXT("diagnostics array exists"),
-			Result.Data->TryGetArrayField(TEXT("diagnostics"), Diagnostics));
-		TestEqual(TEXT("diagnostics should be empty"), Diagnostics ? Diagnostics->Num() : -1, 0);
+			TestTrue(TEXT("compile_status exists"),
+				Result.Data->TryGetStringField(TEXT("compile_status"), CompileStatus));
+			TestEqual(TEXT("compile_status should be success"), CompileStatus, TEXT("success"));
+			TestTrue(TEXT("error_count exists"),
+				Result.Data->TryGetNumberField(TEXT("error_count"), ErrorCount));
+			TestTrue(TEXT("warning_count exists"),
+				Result.Data->TryGetNumberField(TEXT("warning_count"), WarningCount));
+			TestEqual(TEXT("error_count should be 0"), ErrorCount, 0.0);
+			TestEqual(TEXT("warning_count should be 0"), WarningCount, 0.0);
+			TestTrue(TEXT("diagnostics array exists"),
+				Result.Data->TryGetArrayField(TEXT("diagnostics"), Diagnostics));
+			TestEqual(TEXT("diagnostics should be empty"), Diagnostics ? Diagnostics->Num() : -1, 0);
+		}
 	}
+
+	// The Level Script cases load /Game/Maps/TestMap when it is not the editor world; the editor initializes
+	// that inactive world on load and the test cleans it up below.
+	const bool bTestMapWasLoaded = FindPackage(nullptr, TEXT("/Game/Maps/TestMap")) != nullptr;
 
 	// Test: compile with missing asset_path
 	{
@@ -181,6 +193,19 @@ bool FCortexBPCompileTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("batch compile read-only mounted root should fail"), Result.bSuccess);
 		TestEqual(TEXT("Batch error should be INVALID_FIELD"),
 			Result.ErrorCode, CortexErrorCodes::InvalidField);
+	}
+
+	// A loaded inactive world left initialized makes a later GC destroy its LandscapeSubsystem first and fire
+	// "destroyed while still initialized" (WorldSubsystem.cpp). Clean it up the way UEditorEngine::PreExit does.
+	if (!bTestMapWasLoaded)
+	{
+		UPackage* MapPackage = FindPackage(nullptr, TEXT("/Game/Maps/TestMap"));
+		UWorld* World = MapPackage ? UWorld::FindWorldInPackage(MapPackage) : nullptr;
+		if (World && World->WorldType == EWorldType::Inactive && World->IsInitialized())
+		{
+			World->ClearWorldComponents();
+			World->CleanupWorld();
+		}
 	}
 
 	return true;
