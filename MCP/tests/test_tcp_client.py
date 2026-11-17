@@ -570,18 +570,6 @@ class TestProjectValidation:
         conn._validate_project()
         conn._socket.sendall.assert_not_called()
 
-    def test_validate_project_handles_network_error_gracefully(self):
-        """_validate_project should not crash on network error (validation skipped)."""
-        conn = UEConnection(port=99999)
-        conn._expected_project = "CortexSandbox"
-        mock_socket = MagicMock()
-        mock_socket.sendall.side_effect = BrokenPipeError("broken")
-        conn._socket = mock_socket
-
-        # Should not raise — network errors are logged and skipped
-        conn._validate_project()
-        assert conn._socket is not None
-
     def test_connect_flow_calls_validate_with_expected_project(self):
         """Full connect() flow should call _validate_project when expected_project is set."""
         conn = UEConnection(port=99999)

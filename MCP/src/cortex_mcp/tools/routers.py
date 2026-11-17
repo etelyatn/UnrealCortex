@@ -28,7 +28,7 @@ from cortex_mcp.schema_generator import (
     read_schema_metadata,
 )
 from cortex_mcp.tcp_client import CACHED_READ_COMMANDS, _discover_all_editors, _is_editor_alive
-from cortex_mcp.tcp_client import UECommandError
+from cortex_mcp.tcp_client import CALL_TIMEOUT, UECommandError
 from cortex_mcp.tool_output import strip_schema_titles
 
 
@@ -582,7 +582,17 @@ def _batch_contains_replay_start(route_params: dict) -> bool:
     )
 
 
-def strict_router_tool(router, domain: str) -> Callable[[str, dict | None], str]:
+_TIMEOUT_S_RANGE = (1.0, 3600.0)
+_TIMEOUT_S_SCHEMA = {
+    "type": "number",
+    "description": (
+        "Optional seconds to wait for the editor on this call, clamped to 1-3600. "
+        "Replaces the default window (60 s; longer for known long commands)."
+    ),
+}
+
+
+def strict_router_tool(router, domain: str) -> Callable[..., str]:
     """Wrap a domain router with the strict {command, params} envelope contract."""
 
     # Replay owns a 39,000-byte encoded-UTF-8 budget for every reply path, including
@@ -592,7 +602,7 @@ def strict_router_tool(router, domain: str) -> Callable[[str, dict | None], str]
     def reject(message: str) -> str:
         return _invalid_invocation_shape(message, finalize=envelope_finalize)
 
-    def wrapped(command: str, params: dict | None = None, **_extra) -> str:
+    def wrapped(command: str, params: dict | None = None, timeout_s: Any = None, **_extra) -> str:
         if _extra:
             return reject(
                 f"Malformed {domain}_cmd envelope: unexpected top-level operation fields "
@@ -602,11 +612,29 @@ def strict_router_tool(router, domain: str) -> Callable[[str, dict | None], str]
             return reject(
                 f"Malformed {domain}_cmd envelope: params must be an object, got {type(params).__name__}."
             )
+        if timeout_s is not None and (
+            isinstance(timeout_s, bool)
+            or not isinstance(timeout_s, (int, float))
+            or (isinstance(timeout_s, float) and not math.isfinite(timeout_s))
+            or timeout_s <= 0
+        ):
+            return reject(
+                f"Malformed {domain}_cmd envelope: timeout_s must be a positive number of seconds, "
+                f"got {timeout_s!r}."
+            )
         if domain == "core" and command in {"batch_query", "batch"} and _batch_has_zero_commands(params):
             return reject(
                 "batch_query requires at least one command; zero-command batches are never successful."
             )
-        return router(command, params)
+        if timeout_s is None:
+            return router(command, params)
+        low, high = _TIMEOUT_S_RANGE
+        # Clamp before converting: a huge JSON integer does not fit a float.
+        token = CALL_TIMEOUT.set(float(min(max(timeout_s, low), high)))
+        try:
+            return router(command, params)
+        finally:
+            CALL_TIMEOUT.reset(token)
 
     wrapped.__name__ = f"{domain}_cmd"
     wrapped.__doc__ = router.__doc__
@@ -856,8 +884,8 @@ def _register_strict_router(mcp, domain: str, strict_router) -> None:
     """
     docstring = strict_router.__doc__ or ""
 
-    def registered(command: str, params: dict | None = None, **extra) -> str:
-        return strict_router(command, params, **extra)
+    def registered(command: str, params: dict | None = None, timeout_s: Any = None, **extra) -> str:
+        return strict_router(command, params, timeout_s, **extra)
 
     registered.__name__ = f"{domain}_cmd"
     registered.__doc__ = docstring
@@ -879,6 +907,7 @@ def _register_strict_router(mcp, domain: str, strict_router) -> None:
             __base__=_StrictRouterArguments,
             command=(str, ...),
             params=(Annotated[Any, WithJsonSchema({"type": "object"})], None),
+            timeout_s=(Annotated[Any, WithJsonSchema(_TIMEOUT_S_SCHEMA)], None),
         )
         tool.fn_metadata.arg_model = argument_model
         tool.parameters = strip_schema_titles(argument_model.model_json_schema(by_alias=True))
@@ -994,16 +1023,7 @@ def _switch_editor(connection, params: dict) -> str:
         editors.sort(key=lambda editor: editor.started_at, reverse=True)
         target = editors[0]
 
-    connection.disconnect()
-    connection.port = target.port
-    connection._pid = target.pid
-    connection._project_path = None
-    # Adopt the chosen target's project so validation checks it, not the previous editor.
-    # A legacy port file without a project keeps the existing key instead of disabling the guard.
-    if target.project:
-        connection._expected_project = target.project
-    # A deliberate switch is a pin: reconnects must not rediscover another editor.
-    connection._explicit_port = True
+    connection.retarget(target.port, target.pid, target.project)
     logger.info("Switched to editor PID %d on port %d", target.pid, target.port)
 
     return json.dumps(

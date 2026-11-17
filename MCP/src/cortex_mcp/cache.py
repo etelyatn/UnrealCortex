@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -12,10 +13,12 @@ class ResponseCache:
 
     Uses time.monotonic() for TTL (immune to clock changes).
     Cache key: f"{command}:{json.dumps(params, sort_keys=True)}"
+    Tool calls run on worker threads, so every store access holds one lock.
     """
 
     def __init__(self):
         self._store: dict[str, tuple[float, dict]] = {}  # key -> (expires_at, value)
+        self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
         # Bumped by every invalidation. A read captures it before dispatching so a write that
@@ -47,22 +50,23 @@ class ResponseCache:
 
     def get(self, key: str) -> dict | None:
         """Get a cached value if it exists and hasn't expired."""
-        entry = self._store.get(key)
-        if entry is None:
-            self._misses += 1
-            logger.debug("Cache MISS: %s", key)
-            return None
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                self._misses += 1
+                logger.debug("Cache MISS: %s", key)
+                return None
 
-        expires_at, value = entry
-        if time.monotonic() > expires_at:
-            del self._store[key]
-            self._misses += 1
-            logger.debug("Cache EXPIRED: %s", key)
-            return None
+            expires_at, value = entry
+            if time.monotonic() > expires_at:
+                del self._store[key]
+                self._misses += 1
+                logger.debug("Cache EXPIRED: %s", key)
+                return None
 
-        self._hits += 1
-        logger.debug("Cache HIT: %s", key)
-        return value
+            self._hits += 1
+            logger.debug("Cache HIT: %s", key)
+            return value
 
     def set(
         self,
@@ -78,30 +82,32 @@ class ResponseCache:
         caller started its fetch: that response predates the write and must not be served.
         Returns whether the value was stored.
         """
-        if expected_generation is not None and expected_generation != self._generation:
-            logger.debug("Cache SKIP: %s (invalidated during fetch)", key)
-            return False
-        self._store[key] = (time.monotonic() + ttl, value)
-        logger.debug("Cache SET: %s (ttl=%.0fs)", key, ttl)
-        return True
+        with self._lock:
+            if expected_generation is not None and expected_generation != self._generation:
+                logger.debug("Cache SKIP: %s (invalidated during fetch)", key)
+                return False
+            self._store[key] = (time.monotonic() + ttl, value)
+            logger.debug("Cache SET: %s (ttl=%.0fs)", key, ttl)
+            return True
 
     def invalidate(self, pattern: str | None) -> int:
         """Invalidate cache entries matching a pattern prefix, or all if pattern is None.
 
         Returns the number of entries removed.
         """
-        self._generation += 1
-        if pattern is None:
-            count = len(self._store)
-            self._store.clear()
-            logger.debug("Cache CLEAR ALL: removed %d entries", count)
-            return count
+        with self._lock:
+            self._generation += 1
+            if pattern is None:
+                count = len(self._store)
+                self._store.clear()
+                logger.debug("Cache CLEAR ALL: removed %d entries", count)
+                return count
 
-        to_remove = [k for k in self._store if k.startswith(pattern)]
-        for k in to_remove:
-            del self._store[k]
-        logger.debug("Cache INVALIDATE '%s': removed %d entries", pattern, len(to_remove))
-        return len(to_remove)
+            to_remove = [k for k in self._store if k.startswith(pattern)]
+            for k in to_remove:
+                del self._store[k]
+            logger.debug("Cache INVALIDATE '%s': removed %d entries", pattern, len(to_remove))
+            return len(to_remove)
 
     def reset_stats(self) -> None:
         """Reset hit/miss counters."""

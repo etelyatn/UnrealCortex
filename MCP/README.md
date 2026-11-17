@@ -15,67 +15,40 @@ Port is auto-discovered from `Saved/CortexPort-{PID}.txt` (written by CortexCore
 
 ```
 MCP/
-├── src/cortex_mcp/         # MCP server core
-│   ├── server.py           # FastMCP server + tool discovery
+├── src/cortex_mcp/         # MCP server core (wheel package `cortex_mcp`)
+│   ├── server.py           # FastMCP server + explicit tool registration
+│   ├── tool_output.py      # Single result-representation adapter for every public tool
 │   ├── tcp_client.py       # TCP connection to CortexCore
 │   ├── cache.py            # Response caching
-│   └── response.py         # JSON formatting helpers
-├── tools/                  # Domain tool modules (auto-discovered)
-│   ├── blueprint/
-│   ├── core/
-│   ├── data/
-│   ├── editor/
-│   ├── graph/
-│   ├── level/
-│   ├── material/
-│   ├── qa/
-│   ├── reflect/
-│   └── umg/
+│   ├── response.py         # JSON formatting helpers
+│   └── tools/              # Routers (`{domain}_cmd`), composites, standalone tools
+├── src/tools/              # Composite and Reflect implementations (wheel package `tools`)
 └── tests/                  # Unit + E2E tests
 ```
 
-## Tool Discovery
+Both `cortex_mcp` and `tools` ship in the wheel, so a non-editable install works.
 
-`server.py` auto-discovers tools on startup. Rules:
+## Tool Registration
 
-1. **Scan:** Recursively scans `tools/` for `*.py` files.
-2. **Skip:** Files whose name starts with `_` are skipped (`__init__.py`, `_helpers.py`, etc.).
-3. **Register:** For each file, every function matching `register_*_tools` is called with `(mcp, connection)`.
+There is no auto-discovery. `server._register_explicit_tools` registers the public surface through one `ToolOutputRegistrar`:
 
-### Example
+- one router per registered domain (`cortex_mcp/tools/routers.py`);
+- composites (`cortex_mcp/tools/composites/`), which wrap the implementations in `src/tools/{domain}/composites.py`;
+- standalone tools (`cortex_mcp/tools/standalone/`, `src/tools/reflect/`, `src/tools/data/import_queues.py`).
 
-`tools/blueprint/assets.py` defines:
+A new public tool must be wired into `_register_explicit_tools`; a `register_*` function that nothing calls is dead code.
 
-```python
-def register_blueprint_asset_tools(mcp, connection):
-    @mcp.tool()
-    def list_blueprints(...) -> str: ...
+### Execution Model
 
-    @mcp.tool()
-    def create_blueprint(...) -> str: ...
+The registrar runs every synchronous tool in a worker thread (`anyio.to_thread.run_sync`), so a long editor round trip never blocks the event loop: pings and other requests keep being served. One socket serves all calls; `UEConnection` serializes round trips and every socket mutation under its lock. Shared caches (`ResponseCache`, `PaginationCache`) are thread-safe.
+
+### Per-Call Timeout
+
+Every `{domain}_cmd` router accepts an optional top-level `timeout_s` (seconds, clamped to 1–3600). It replaces the receive window for every editor round trip of that call, including the built-in long windows (for example `blueprint.compile_all`). Without it each command keeps its default window (60 s; longer for known long commands). A timed-out command is never resent.
+
+```json
+{"command": "compile", "params": {"asset_path": "/Game/BP_Large"}, "timeout_s": 300}
 ```
-
-The server calls `register_blueprint_asset_tools(mcp, connection)` automatically.
-
-### Adding a New Tool File
-
-1. Create `tools/{domain}/my_feature.py` (no leading `_`).
-2. Define `register_{name}_tools(mcp, connection)` — any name matching `register_*_tools`.
-3. Decorate each tool with `@mcp.tool()`.
-4. Restart the MCP server — tools are discovered on startup.
-
-```python
-# tools/mymodule/my_feature.py
-
-def register_mymodule_feature_tools(mcp, connection):
-    @mcp.tool()
-    def my_tool(param: str) -> str:
-        """Short description shown to LLM."""
-        response = connection.send_command("mymodule.my_command", {"param": param})
-        return format_response(response.get("data", {}), "my_tool")
-```
-
-> **Silent failure:** If the file is named `_my_feature.py` or the function is not named `register_*_tools`, it will never be discovered. No error is raised.
 
 ### Command Surface Discipline
 
@@ -91,7 +64,7 @@ Domain commands should do domain work, and composite tools should exist only whe
 Commands are line-delimited JSON sent to `127.0.0.1:{port}`:
 
 ```json
-{"command": "data.list_datatables", "params": {}}
+{"id": "a1b2c3d4", "command": "data.list_datatables", "params": {}}
 ```
 
 Response:
@@ -100,7 +73,7 @@ Response:
 {"success": true, "data": {...}}
 ```
 
-Namespace prefix routes to the registered domain handler in C++. Built-in commands (`get_status`, `get_capabilities`) have no prefix.
+Namespace prefix routes to the registered domain handler in C++. Built-in commands (`get_status`, `get_capabilities`) have no prefix. Every request carries an `id`, including the connect handshake (`get_status` project check, then `get_capabilities`), so a late reply cannot be taken as the answer to a later request. An editor that does not answer the handshake fails the connect; no command was sent, so the call retries once.
 
 ## Testing
 

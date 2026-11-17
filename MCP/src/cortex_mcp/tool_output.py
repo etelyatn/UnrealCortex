@@ -22,6 +22,7 @@ import inspect
 import json
 from typing import Any, Callable
 
+import anyio.to_thread
 from mcp.types import CallToolResult, TextContent
 
 from .response import compact_json
@@ -119,14 +120,22 @@ class ToolOutputRegistrar:
 
             return async_wrapper
 
-        @functools.wraps(fn)
-        def sync_wrapper(*args, **kwargs) -> CallToolResult:
+        def invoke(*args, **kwargs) -> tuple[Any, str]:
             token = INVOCATION_COMMAND.set("")
             try:
-                value = fn(*args, **kwargs)
-                routed_command = INVOCATION_COMMAND.get()
+                return fn(*args, **kwargs), INVOCATION_COMMAND.get()
             finally:
                 INVOCATION_COMMAND.reset(token)
+
+        # FastMCP calls a plain function inline on the event loop, so a blocking editor round
+        # trip (up to the 1800 s long-command window) would stop pings and cancellation. The
+        # worker thread runs in a copy of the caller's context; the attribution scope is opened
+        # and read inside it.
+        @functools.wraps(fn)
+        async def sync_wrapper(*args, **kwargs) -> CallToolResult:
+            value, routed_command = await anyio.to_thread.run_sync(
+                functools.partial(invoke, *args, **kwargs)
+            )
             return self._build_result(tool_name, value, routed_command)
 
         return sync_wrapper

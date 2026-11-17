@@ -2,13 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-_MCP_ROOT = Path(__file__).resolve().parents[4]
-if str(_MCP_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MCP_ROOT))
-
 from tools.qa.composites import register_qa_composite_tools
 
 

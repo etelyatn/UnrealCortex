@@ -12,7 +12,7 @@
 
 Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, analyzing Blueprints for bugs and performance issues, generating 3D assets, playing and testing your game autonomously, and replaying gameplay you recorded by hand, frame for frame. No copy-pasting, no file exports. Changes appear live with full undo support.
 
-> **Status:** v0.4.14 Beta — All 15 modules shipped and tested.
+> **Status:** v0.4.15 Beta — All 15 modules shipped and tested.
 
 ---
 
@@ -530,7 +530,7 @@ void FMyDomainModule::StartupModule()
 }
 ```
 
-`GetSupportedCommands()` feeds the `get_capabilities` built-in command — the AI can discover what your domain exposes automatically. Drop Python tools into `MCP/tools/mydomain/` and they are discovered at server start with no registration boilerplate.
+`GetSupportedCommands()` feeds the `get_capabilities` built-in command — the AI can discover what your domain exposes automatically. The MCP server registers its tools explicitly: add the domain to `CORE_DOMAINS` or `_OPTIONAL_DOMAINS` in `MCP/src/cortex_mcp/capabilities.py` to get a `mydomain_cmd` router, and wire any composite or standalone tool into `_register_explicit_tools` in `MCP/src/cortex_mcp/server.py` (see `MCP/README.md`).
 
 ### Module Dependencies
 

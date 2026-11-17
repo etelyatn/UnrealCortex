@@ -435,10 +435,9 @@ def test_core_router_handles_switch_editor_locally():
     ):
         payload = json.loads(router("switch_editor", {"pid": 2000}))
 
-    connection.disconnect.assert_called_once()
+    connection.retarget.assert_called_once_with(8743, 2000, "")
     connection.send_command.assert_not_called()
     assert payload["pid"] == 2000
-    assert connection.port == 8743
 
 
 def test_core_router_handles_schema_status_locally(tmp_path):

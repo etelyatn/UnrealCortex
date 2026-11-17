@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-_MCP_ROOT = Path(__file__).resolve().parents[4]
-if str(_MCP_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MCP_ROOT))
+import json
 
 from tools.qa.composites import register_qa_composite_tools
+
+_STEP_SHAPE = '{"command": "qa.<command>", "params": {...}}'
+
+
+def _step_shape_error(field: str, step) -> str | None:
+    """Refuse a malformed step before anything is sent to the editor."""
+    if step is None and field != "action":
+        return None
+    if (
+        isinstance(step, dict)
+        and isinstance(step.get("command"), str)
+        and step["command"]
+        and isinstance(step.get("params", {}), dict)
+    ):
+        return None
+    return json.dumps({
+        "_error": "INVALID_FIELD",
+        "_message": (
+            f"{field} must be {_STEP_SHAPE} with a non-empty qualified command string and an "
+            f"optional params object."
+        ),
+    })
 
 
 def register_qa_standalone_tools(mcp, connection) -> None:
@@ -32,7 +49,8 @@ def register_qa_standalone_tools(mcp, connection) -> None:
         description=(
             "Run one QA step in a single call: send the action, apply an optional wait, observe state, "
             "collect recent logs, run the optional assertion, and capture a screenshot. Returns "
-            "action/wait/assert success, the finding count and the screenshot payload.\n"
+            "action/wait/assert success, the finding count and the screenshot payload. `action`, "
+            f"`wait` and `assertion` are each {_STEP_SHAPE}.\n"
         ),
     )
     def qa_test_step(
@@ -41,6 +59,10 @@ def register_qa_standalone_tools(mcp, connection) -> None:
         assertion: dict | None = None,
         screenshot_name: str = "qa_step.png",
     ) -> str:
+        for field, step in (("action", action), ("wait", wait), ("assertion", assertion)):
+            error = _step_shape_error(field, step)
+            if error is not None:
+                return error
         return captured["test_step"](
             action=action,
             wait=wait,

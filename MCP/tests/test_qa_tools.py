@@ -3,18 +3,13 @@
 import json
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 # Add tools/ to path for imports (matching existing tests)
 tools_dir = Path(__file__).parent.parent / "tools"
 sys.path.insert(0, str(tools_dir))
 
-from qa.actions import register_qa_action_tools
-from qa.assertions import register_qa_assertion_tools
 from qa.composites import register_qa_composite_tools
-from qa.detector import detect_structural_issues as tools_detect_structural_issues
-from qa.setup import register_qa_setup_tools
-from qa.world import register_qa_world_tools
 import qa.composites as qa_composites
 from cortex_mcp.qa.detector import detect_structural_issues
 from cortex_mcp.qa.reporter import write_report_bundle
@@ -218,149 +213,6 @@ def _register_composites(connection):
     return mcp
 
 
-def test_world_tools_registration_and_wiring():
-    mcp = MockMCP()
-    connection = MagicMock()
-    connection.send_command.return_value = {"data": {"nearby_actor_count": 1}}
-
-    register_qa_world_tools(mcp, connection)
-
-    assert "observe_game_state" in mcp.tools
-    assert "get_actor_details" in mcp.tools
-    assert "get_player_details" in mcp.tools
-
-    result = mcp.tools["observe_game_state"](include_los=True)
-    parsed = json.loads(result)
-    assert parsed["nearby_actor_count"] == 1
-    connection.send_command.assert_called_with(
-        "qa.observe_state", {
-            "radius": 5000.0,
-            "max_actors": 20,
-            "include_los": True,
-            "interaction_range": 200.0,
-        }
-    )
-
-
-def test_action_tools_send_deferred_timeouts():
-    mcp = MockMCP()
-    connection = MagicMock()
-    connection.send_command.return_value = {"data": {"arrived": True}}
-
-    register_qa_action_tools(mcp, connection)
-    result = mcp.tools["move_player_to"](
-        target=[100.0, 0.0, 0.0], timeout=7.0, acceptance_radius=50.0
-    )
-
-    parsed = json.loads(result)
-    assert parsed["arrived"] is True
-    connection.send_command.assert_called_with(
-        "qa.move_to",
-        {"target": [100.0, 0.0, 0.0], "timeout": 7.0, "acceptance_radius": 50.0},
-        timeout=12.0,
-    )
-
-
-def test_interact_default_duration_sends_tap():
-    """interact_with with no duration sends default 0.1s tap."""
-    mcp = MockMCP()
-    connection = MagicMock()
-    connection.send_command.return_value = {"data": {"success": True, "key": "E", "duration": 0.1}}
-
-    register_qa_action_tools(mcp, connection)
-    result = mcp.tools["interact_with"](key="E")
-
-    parsed = json.loads(result)
-    assert parsed["success"] is True
-    connection.send_command.assert_called_with(
-        "qa.interact",
-        {"key": "E", "duration": 0.1},
-        timeout=5.1,
-    )
-
-
-def test_interact_hold_duration_sends_timeout():
-    """interact_with with duration=2.0 sends hold and sets TCP timeout."""
-    mcp = MockMCP()
-    connection = MagicMock()
-    connection.send_command.return_value = {"data": {"success": True, "key": "LeftMouseButton", "duration": 2.0}}
-
-    register_qa_action_tools(mcp, connection)
-    result = mcp.tools["interact_with"](key="LeftMouseButton", duration=2.0)
-
-    parsed = json.loads(result)
-    assert parsed["success"] is True
-    connection.send_command.assert_called_with(
-        "qa.interact",
-        {"key": "LeftMouseButton", "duration": 2.0},
-        timeout=7.0,
-    )
-
-
-def test_interact_with_target_and_duration():
-    """interact_with sends both target and duration when specified."""
-    mcp = MockMCP()
-    connection = MagicMock()
-    connection.send_command.return_value = {"data": {"success": True, "key": "LeftMouseButton", "duration": 2.0}}
-
-    register_qa_action_tools(mcp, connection)
-    mcp.tools["interact_with"](target="SolderPoint_01", key="LeftMouseButton", duration=2.0)
-
-    connection.send_command.assert_called_with(
-        "qa.interact",
-        {"key": "LeftMouseButton", "duration": 2.0, "target": "SolderPoint_01"},
-        timeout=7.0,
-    )
-
-
-def test_wait_for_condition_timeout_forwarding():
-    mcp = MockMCP()
-    connection = MagicMock()
-    connection.send_command.return_value = {"data": {"condition_met": True}}
-
-    register_qa_action_tools(mcp, connection)
-    result = mcp.tools["wait_for_condition"](
-        type="actor_visible",
-        timeout=9.0,
-        actor="Door_01",
-    )
-
-    parsed = json.loads(result)
-    assert parsed["condition_met"] is True
-    connection.send_command.assert_called_with(
-        "qa.wait_for",
-        {"type": "actor_visible", "timeout": 9.0, "actor": "Door_01"},
-        timeout=14.0,
-    )
-
-
-def test_setup_tools_wiring():
-    mcp = MockMCP()
-    connection = MagicMock()
-    connection.send_command.return_value = {"data": {"ok": True}}
-
-    register_qa_setup_tools(mcp, connection)
-    mcp.tools["set_random_seed"](123)
-    connection.send_command.assert_called_with("qa.set_random_seed", {"seed": 123})
-
-
-def test_assertion_tool_captures_screenshot_on_failure():
-    mcp = MockMCP()
-    connection = MagicMock()
-    connection.send_command.side_effect = [
-        {"data": {"passed": False, "message": "failed"}},
-        {"data": {"path": "Saved/Screenshots/qa_assertion_failed.png"}},
-    ]
-
-    register_qa_assertion_tools(mcp, connection)
-    result = mcp.tools["assert_game_state"](type="actor_visible", actor="Door_01")
-    parsed = json.loads(result)
-    assert parsed["passed"] is False
-
-    assert connection.send_command.call_count == 2
-    assert connection.send_command.call_args_list[1].args[0] == "editor.capture_screenshot"
-
-
 def test_composite_test_step_aggregates_summary():
     connection = FakeLogWindowConnection([])
     mcp = _register_composites(connection)
@@ -479,30 +331,6 @@ def test_detector_finds_multiple_issue_types():
     assert "timeout" in categories
     assert "performance" in categories
     assert "logs" in categories
-
-
-def test_detector_copies_consume_entries_severity_not_logs_level():
-    """Both detector copies read the canonical entries/severity shape and drop the stale one."""
-    canonical = {"entries": [{"severity": "error", "message": "no textual prefix here"}]}
-    stale = {"logs": [{"level": "Error", "message": "Error: legacy shape"}]}
-
-    for label, detect in (
-        ("cortex_mcp", detect_structural_issues),
-        ("tools", tools_detect_structural_issues),
-    ):
-        canonical_findings = [
-            finding
-            for finding in detect(observed_state={}, recent_logs=canonical)
-            if finding["category"] == "logs"
-        ]
-        assert len(canonical_findings) == 1, f"{label} detector missed the canonical severity error"
-
-        stale_findings = [
-            finding
-            for finding in detect(observed_state={}, recent_logs=stale)
-            if finding["category"] == "logs"
-        ]
-        assert stale_findings == [], f"{label} detector still consumes the stale logs/level shape"
 
 
 def test_run_scenario_inline_reports_only_error_on_final_page_once():

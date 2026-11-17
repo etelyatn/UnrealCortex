@@ -39,10 +39,11 @@ def _editor(port: int, pid: int, started_at: str) -> EditorConnection:
 
 class TestSwitchEditorTool:
     def test_switch_editor_by_pid_updates_connection(self):
-        conn = MagicMock(spec=UEConnection)
-        conn.port = 8742
+        conn = UEConnection(port=8742)
         conn._pid = 1000
         conn._project_path = "C:/Project/Test.uproject"
+        old_socket = MagicMock()
+        conn._socket = old_socket
         router = make_router("core", conn, "core docs")
 
         editors = [
@@ -55,9 +56,11 @@ class TestSwitchEditorTool:
             payload = json.loads(router("switch_editor", {"pid": 2000}))
 
         is_alive.assert_called_once_with(2000)
-        conn.disconnect.assert_called_once()
+        old_socket.close.assert_called_once()
+        assert not conn.connected
         assert conn.port == 8743
         assert conn._pid == 2000
+        assert conn._project_path is None
         assert payload["pid"] == 2000
         assert payload["port"] == 8743
 
@@ -71,10 +74,10 @@ class TestSwitchEditorTool:
             payload = json.loads(router("switch_editor", {"pid": 9999}))
 
         assert payload["error"] == "EDITOR_NOT_FOUND"
-        conn.disconnect.assert_not_called()
+        conn.retarget.assert_not_called()
 
     def test_switch_editor_without_pid_selects_most_recent(self):
-        conn = MagicMock(spec=UEConnection)
+        conn = UEConnection(port=8742)
         router = make_router("core", conn, "core docs")
 
         editors = [
@@ -85,7 +88,7 @@ class TestSwitchEditorTool:
         with patch("cortex_mcp.tools.routers._discover_all_editors", return_value=editors):
             payload = json.loads(router("switch_editor"))
 
-        conn.disconnect.assert_called_once()
+        assert conn.port == 8744
         assert payload["pid"] == 3000
         assert payload["port"] == 8744
 

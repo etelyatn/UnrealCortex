@@ -24,9 +24,8 @@ _MCP_ROOT = _TESTS_DIR.parent
 _PROJECT_ROOT = _MCP_ROOT.parent.parent.parent
 _SRC_DIR = _MCP_ROOT / "src"
 _TOOLS_DIR = _SRC_DIR / "tools"
-_EDITOR_TOOLS_DIR = _TOOLS_DIR / "editor"
 
-for path in (_SRC_DIR, _TOOLS_DIR, _EDITOR_TOOLS_DIR):
+for path in (_SRC_DIR, _TOOLS_DIR):
     path_str = str(path)
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
