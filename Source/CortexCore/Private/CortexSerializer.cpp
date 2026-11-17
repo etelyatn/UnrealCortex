@@ -28,6 +28,16 @@ namespace
 	constexpr const TCHAR* CortexTextSourceLiteral = TEXT("literal");
 	constexpr const TCHAR* CortexTextSourceStringTable = TEXT("string_table");
 
+	/** Retires a replaced instanced sub-object. An instanced property can also reference an independent asset by
+	 *  path; that object is not owned by Outer and must never be marked as garbage. */
+	void RetireOwnedSubObject(UObject* Existing, const UObject* Outer)
+	{
+		if (Existing != nullptr && Outer != nullptr && Existing->IsIn(Outer))
+		{
+			Existing->MarkAsGarbage();
+		}
+	}
+
 	void AppendSerializationIssues(FCortexPropertySerializationResult& Target, const FCortexPropertySerializationResult& Source)
 	{
 		Target.Issues.Append(Source.Issues);
@@ -1356,11 +1366,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			// Clean up existing instanced sub-object before nulling
 			if (Property->HasAllPropertyFlags(CPF_InstancedReference))
 			{
-				UObject* Existing = ObjProp->GetObjectPropertyValue(ValuePtr);
-				if (Existing)
-				{
-					Existing->MarkAsGarbage();
-				}
+				RetireOwnedSubObject(ObjProp->GetObjectPropertyValue(ValuePtr), Outer);
 			}
 			ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
 			return true;
@@ -1674,11 +1680,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 			{
 				for (int32 i = 0; i < ArrayHelper.Num(); ++i)
 				{
-					UObject* Existing = InnerObjProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(i));
-					if (Existing)
-					{
-						Existing->MarkAsGarbage();
-					}
+					RetireOwnedSubObject(InnerObjProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(i)), Outer);
 				}
 			}
 		}
@@ -1725,11 +1727,7 @@ bool FCortexSerializer::JsonToProperty(const TSharedPtr<FJsonValue>& JsonValue, 
 				{
 					if (MapHelper.IsValidIndex(i))
 					{
-						UObject* Existing = ValueObjProp->GetObjectPropertyValue(MapHelper.GetValuePtr(i));
-						if (Existing)
-						{
-							Existing->MarkAsGarbage();
-						}
+						RetireOwnedSubObject(ValueObjProp->GetObjectPropertyValue(MapHelper.GetValuePtr(i)), Outer);
 					}
 				}
 			}
@@ -1883,11 +1881,7 @@ bool FCortexSerializer::JsonToInstancedSubObject(const TSharedPtr<FJsonValue>& J
 	}
 
 	// Clean up existing sub-object
-	UObject* Existing = ObjProp->GetObjectPropertyValue(ValuePtr);
-	if (Existing)
-	{
-		Existing->MarkAsGarbage();
-	}
+	RetireOwnedSubObject(ObjProp->GetObjectPropertyValue(ValuePtr), Outer);
 
 	// Create new sub-object
 	UObject* NewSubObj = NewObject<UObject>(Outer, ResolvedClass);

@@ -9,6 +9,7 @@
 #include "MaterialDomain.h"
 #include "Misc/MemStack.h"
 #include "Misc/ScopeExit.h"
+#include "UObject/UObjectHash.h"
 
 // UE 5.4 compatibility: FExpressionInputIterator was added in UE 5.5
 #if UE_VERSION_OLDER_THAN(5, 5, 0)
@@ -941,8 +942,29 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 	};
 	Property->CopyCompleteValue(Staged, PropertyAddress);
 
+	// Staging retires the instanced sub-objects it replaces (marks them as garbage) outside any transaction. Revive
+	// them so a refusal changes nothing; on success they are retired again below, where Undo can bring them back.
+	TArray<UObject*> SubObjects;
+	ForEachObjectWithOuter(Expression, [&SubObjects](UObject* SubObject)
+	{
+		if (IsValid(SubObject))
+		{
+			SubObjects.Add(SubObject);
+		}
+	});
+
 	TArray<FString> Warnings;
-	if (!FCortexSerializer::JsonToProperty(Value, Property, Staged, Expression, Warnings))
+	const bool bStaged = FCortexSerializer::JsonToProperty(Value, Property, Staged, Expression, Warnings);
+	TArray<UObject*> Retired;
+	for (UObject* SubObject : SubObjects)
+	{
+		if (!IsValid(SubObject))
+		{
+			SubObject->ClearGarbage();
+			Retired.Add(SubObject);
+		}
+	}
+	if (!bStaged)
 	{
 		FString WarningStr = Warnings.Num() > 0
 			? FString::Join(Warnings, TEXT("; "))
@@ -957,6 +979,12 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 	), !FCortexCommandRouter::IsInBatch());
 	CortexMaterialInputUtils::BeginEdit(Material);
 	CortexMaterialInputUtils::ModifyExpression(Expression);
+	for (UObject* SubObject : Retired)
+	{
+		SubObject->SetFlags(RF_Transactional);
+		SubObject->Modify();
+		SubObject->MarkAsGarbage();
+	}
 	if (!FCortexCommandRouter::IsInBatch())
 	{
 		Expression->PreEditChange(Property);

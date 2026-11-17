@@ -4,6 +4,9 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionColorRamp.h"
+#include "Curves/CurveLinearColor.h"
+#include "Misc/ScopeExit.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "UObject/Package.h"
 #include "HAL/FileManager.h"
@@ -180,6 +183,75 @@ bool FCortexMaterialUndoSetNodePropertyTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Undo restores the value"), Fixture.Constant->R, 0.25f);
 	TestTrue(TEXT("Redo set_node_property"), GEditor->RedoTransaction());
 	TestEqual(TEXT("Redo reapplies the value"), Fixture.Constant->R, 0.5f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexMaterialUndoSetNodePropertyInstancedTest, "Cortex.Material.Undo.SetNodePropertyInstanced", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexMaterialUndoSetNodePropertyInstancedTest::RunTest(const FString& Parameters)
+{
+	FUndoFixture Fixture;
+	UMaterialExpressionColorRamp* Ramp = NewObject<UMaterialExpressionColorRamp>(Fixture.Material);
+	if (Ramp->ColorCurve == nullptr)
+	{
+		Ramp->ColorCurve = NewObject<UCurveLinearColor>(Ramp);
+	}
+	UCurveLinearColor* Original = Ramp->ColorCurve;
+	Fixture.Expressions().Add(Ramp);
+	ON_SCOPE_EXIT
+	{
+		Fixture.Expressions().Remove(Ramp);
+		Ramp->MarkAsGarbage();
+	};
+
+	auto Request = Fixture.MaterialParams();
+	Request->SetStringField(TEXT("node_id"), Ramp->GetName());
+	Request->SetStringField(TEXT("property_name"), TEXT("ColorCurve"));
+	auto Replacement = MakeShared<FJsonObject>();
+	Replacement->SetStringField(TEXT("_class"), TEXT("CurveLinearColor"));
+	Request->SetObjectField(TEXT("value"), Replacement);
+
+	// Replacing an instanced sub-object retires the old one; Undo must bring it back alive.
+	TestTrue(TEXT("Replacing the instanced curve succeeds"), Fixture.Handler.Execute(TEXT("set_node_property"), Request).bSuccess);
+	UCurveLinearColor* Replaced = Ramp->ColorCurve;
+	TestTrue(TEXT("A new curve replaced the original"), Replaced != nullptr && Replaced != Original);
+	if (!TestTrue(TEXT("Replacement is the next undo step"), IsNextUndo(TEXT("Cortex: Set Node Property"))))
+	{
+		return false;
+	}
+	TestTrue(TEXT("Undo replacement"), GEditor->UndoTransaction());
+	TestTrue(TEXT("Undo restores the original curve"), Ramp->ColorCurve == Original);
+	TestTrue(TEXT("Undo revives the original curve"), IsValid(Original));
+	TestTrue(TEXT("Redo replacement"), GEditor->RedoTransaction());
+	TestTrue(TEXT("Redo restores the replacement"), Ramp->ColorCurve == Replaced && IsValid(Replaced));
+	TestFalse(TEXT("Redo retires the original curve again"), IsValid(Original));
+
+	// Clearing the instanced sub-object is undoable the same way.
+	TestTrue(TEXT("Undo replacement again"), GEditor->UndoTransaction());
+	Request->SetField(TEXT("value"), MakeShared<FJsonValueNull>());
+	TestTrue(TEXT("Clearing the instanced curve succeeds"), Fixture.Handler.Execute(TEXT("set_node_property"), Request).bSuccess);
+	TestNull(TEXT("Curve cleared"), Ramp->ColorCurve.Get());
+	TestTrue(TEXT("Undo clear"), GEditor->UndoTransaction());
+	TestTrue(TEXT("Undo restores the cleared curve"), Ramp->ColorCurve == Original && IsValid(Original));
+
+	// An independent curve asset assigned by path is referenced, not owned: clearing must never retire it.
+	const FString ExternalName = TEXT("Curve_Undo_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	UPackage* ExternalPackage = CreatePackage(*(TEXT("/Game/Temp/CortexMaterialUndo/") + ExternalName));
+	UCurveLinearColor* External = NewObject<UCurveLinearColor>(ExternalPackage, *ExternalName, RF_Public | RF_Standalone);
+	ON_SCOPE_EXIT
+	{
+		External->ClearFlags(RF_Public | RF_Standalone);
+		External->MarkAsGarbage();
+		ExternalPackage->SetDirtyFlag(false);
+		ExternalPackage->MarkAsGarbage();
+	};
+	Request->SetStringField(TEXT("value"), External->GetPathName());
+	TestTrue(TEXT("Assigning the external curve succeeds"), Fixture.Handler.Execute(TEXT("set_node_property"), Request).bSuccess);
+	TestTrue(TEXT("External curve assigned"), Ramp->ColorCurve == External);
+	Request->SetField(TEXT("value"), MakeShared<FJsonValueNull>());
+	TestTrue(TEXT("Clearing the external curve succeeds"), Fixture.Handler.Execute(TEXT("set_node_property"), Request).bSuccess);
+	TestTrue(TEXT("Clearing keeps the external curve alive"), IsValid(External));
+	TestTrue(TEXT("Undo clear of the external curve"), GEditor->UndoTransaction());
+	TestTrue(TEXT("Undo restores the external curve"), Ramp->ColorCurve == External && IsValid(External));
 	return true;
 }
 
