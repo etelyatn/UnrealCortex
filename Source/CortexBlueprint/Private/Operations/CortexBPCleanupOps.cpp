@@ -1343,7 +1343,7 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 		}
 
 		FBlueprintEditorUtils::RefreshAllNodes(DependentBlueprint);
-		FKismetEditorUtilities::CompileBlueprint(DependentBlueprint);
+		FKismetEditorUtilities::CompileBlueprint(DependentBlueprint, EBlueprintCompileOptions::SkipSave);
 
 		const bool bCompiled =
 			DependentBlueprint->Status == BS_UpToDate ||
@@ -1576,7 +1576,7 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 	TArray<TSharedPtr<FJsonValue>> DependentBlueprintEntries;
 	if (bCompile)
 	{
-		FKismetEditorUtilities::CompileBlueprint(BP);
+		FKismetEditorUtilities::CompileBlueprint(BP, EBlueprintCompileOptions::SkipSave);
 #if WITH_DEV_AUTOMATION_TESTS
 		if (GRenameSCSComponentPostCompileTestHook)
 		{
@@ -1611,7 +1611,7 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 			}
 
 			DependentBP->Modify();
-			FKismetEditorUtilities::CompileBlueprint(DependentBP);
+			FKismetEditorUtilities::CompileBlueprint(DependentBP, EBlueprintCompileOptions::SkipSave);
 #if WITH_DEV_AUTOMATION_TESTS
 			if (GRenameSCSComponentPostCompileTestHook)
 			{
@@ -1863,7 +1863,7 @@ FCortexCommandResult FCortexBPCleanupOps::RemoveSCSComponent(const TSharedPtr<FJ
 
 	if (bCompile)
 	{
-		FKismetEditorUtilities::CompileBlueprint(BP);
+		FKismetEditorUtilities::CompileBlueprint(BP, EBlueprintCompileOptions::SkipSave);
 #if WITH_DEV_AUTOMATION_TESTS
 		if (GRemoveSCSComponentPostCompileTestHook)
 		{

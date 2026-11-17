@@ -22,6 +22,7 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "BlueprintEditorSettings.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "HAL/FileManager.h"
@@ -631,6 +632,62 @@ bool FCortexGraphPatchPersistenceSaveFalseKeepsBytesTest::RunTest(const FString&
 	TestEqual(TEXT("save=false reports the live post-apply fingerprint"),
 		FingerprintHash(Outcome.FingerprintAfter), LiveGraphHash(Fixture.Blueprint));
 	TestTrue(TEXT("save=false keeps the file bytes identical"),
+		SameBytes(ReadFileBytes(Fixture.Filename), BaselineBytes));
+
+	DeleteFixtureFile(Fixture.Filename);
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 1b. save=false stays off disk even when the editor's Save on Compile setting is Always
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphPatchPersistenceSaveFalseIgnoresSaveOnCompileTest,
+	"Cortex.Graph.Authoring.Persistence.SaveFalseIgnoresSaveOnCompile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphPatchPersistenceSaveFalseIgnoresSaveOnCompileTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	CortexGraphPatchPersistenceTest::ClearFaults();
+	using namespace CortexGraphPatchPersistenceTest;
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_PatchPersistSaveOnCompile_T230")));
+	if (!Fixture.Blueprint)
+	{
+		Fixture.Cleanup();
+		return false;
+	}
+	TestTrue(TEXT("baseline fixture saved to disk"), Fixture.SaveToDisk());
+	const TArray<uint8> BaselineBytes = ReadFileBytes(Fixture.Filename);
+	TestTrue(TEXT("baseline file really exists with content"), BaselineBytes.Num() > 0);
+
+	// The engine's Blueprint compile honours the user's Save on Compile preference unless the
+	// caller opts out; Cortex owns persistence through its explicit save flag. The automation
+	// runner is unattended, where the engine save prompt cancels, so take the scripted save route
+	// an interactive editor reaches.
+	UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
+	TGuardValue<TEnumAsByte<ESaveOnCompile>> SaveOnCompileGuard(Settings->SaveOnCompile, SoC_Always);
+	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+
+	TSharedPtr<FJsonObject> Request = IntentRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-0000000e2301"));
+	FOperations Operations;
+	Operations.Begin();
+	FCortexGraphPreparedPatch Prepared;
+	FCortexCommandResult Error;
+	TestTrue(FString::Printf(TEXT("preview succeeds: %s"), *Error.ErrorMessage),
+		PreviewForApply(Fixture.Blueprint, Request, Prepared, Error));
+	FCortexGraphPatchOutcome Outcome;
+	TestTrue(FString::Printf(TEXT("patch applies: %s"), *Error.ErrorMessage),
+		FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+	Operations.End();
+
+	TestEqual(TEXT("save=false compiles once"), Operations.TargetCompiles, 1);
+	TestEqual(TEXT("save=false under Save on Compile performs zero engine save events"), Operations.Saves, 0);
+	TestTrue(TEXT("save=false under Save on Compile leaves the package dirty"), Fixture.Package->IsDirty());
+	TestTrue(TEXT("save=false under Save on Compile keeps the file bytes identical"),
 		SameBytes(ReadFileBytes(Fixture.Filename), BaselineBytes));
 
 	DeleteFixtureFile(Fixture.Filename);

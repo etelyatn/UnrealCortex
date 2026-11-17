@@ -872,7 +872,7 @@ FCortexCommandResult FCortexDataTypeVerificationOps::VerifyTypeReplacement(const
 				{
 					// Compile only when the pins are sound; a compile success is required before the explicit save.
 					FCompilerResultsLog Log;
-					FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Log);
+					FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave, &Log);
 					Entry->SetStringField(TEXT("compile_status"), StatusName(Blueprint->Status));
 					TArray<FString> Diagnostics;
 					for (const TSharedRef<FTokenizedMessage>& Message : Log.Messages)

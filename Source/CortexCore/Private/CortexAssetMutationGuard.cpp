@@ -61,3 +61,18 @@ bool FCortexAssetMutationGuard::IsPathBlocked(const FString& AssetPath, FString&
 	}
 	return false;
 }
+
+bool FCortexAssetMutationGuard::ClearPackage(const FString& PackageName)
+{
+	if (PackageName.IsEmpty()) return false;
+	FScopeLock Lock(&GuardLock);
+	const int32 CountBefore = BlockedAssets.Num();
+	for (auto It = BlockedAssets.CreateIterator(); It; ++It)
+	{
+		if (FPackageName::ObjectPathToPackageName(It.Key()) == PackageName)
+		{
+			It.RemoveCurrent();
+		}
+	}
+	return BlockedAssets.Num() != CountBefore;
+}

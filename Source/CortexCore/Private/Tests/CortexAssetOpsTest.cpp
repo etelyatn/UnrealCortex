@@ -9,6 +9,12 @@
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UObject/Package.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Engine/CurveTable.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "UObject/SavePackage.h"
+#include "UObject/UObjectHash.h"
 
 namespace
 {
@@ -849,6 +855,152 @@ bool FCortexCoreBlockedSaveDispatchTest::RunTest(const FString& Parameters)
 	}
 	TestTrue(TEXT("core fingerprint read remains available"),
 		ExecuteSingleFingerprintRequest(Router, AssetPath).IsValid());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCoreBlockedReloadClearsBlockTest,
+	"Cortex.Core.ZBlockedReloadClearsBlock",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCoreBlockedReloadClearsBlockTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString AssetPath = TEXT("/Game/Data/DT_TestSimple");
+	UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+	TestNotNull(TEXT("persisted fixture asset resolves"), Asset);
+	if (!Asset) return false;
+	FCortexAssetMutationGuard::Block(Asset, TEXT("forced recovery verification failure"));
+	FCortexCommandRouter& Router =
+		FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore")).GetCommandRouter();
+	FString Reason;
+
+	TSharedPtr<FJsonObject> DryRunParams = MakeShared<FJsonObject>();
+	DryRunParams->SetStringField(TEXT("asset_path"), AssetPath);
+	DryRunParams->SetBoolField(TEXT("dry_run"), true);
+	TestTrue(TEXT("dry-run reload succeeds"), Router.Execute(TEXT("core.reload_asset"), DryRunParams).bSuccess);
+	TestTrue(TEXT("dry-run reload keeps the block"), FCortexAssetMutationGuard::IsPathBlocked(AssetPath, Reason));
+
+	TSharedPtr<FJsonObject> ReloadParams = MakeShared<FJsonObject>();
+	ReloadParams->SetStringField(TEXT("asset_path"), AssetPath);
+	const FCortexCommandResult Result = Router.Execute(TEXT("core.reload_asset"), ReloadParams);
+	TestTrue(TEXT("reload succeeds"), Result.bSuccess);
+	bool bReloaded = false;
+	bool bBlockCleared = false;
+	TestTrue(TEXT("reload reports reloaded"), Result.Data.IsValid() && Result.Data->TryGetBoolField(TEXT("reloaded"), bReloaded) && bReloaded);
+	TestTrue(TEXT("reload reports the cleared block"),
+		Result.Data.IsValid() && Result.Data->TryGetBoolField(TEXT("block_cleared"), bBlockCleared) && bBlockCleared);
+	TestFalse(TEXT("reload from disk clears the block"), FCortexAssetMutationGuard::IsPathBlocked(AssetPath, Reason));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCoreBlockedPartialReloadKeepsBlockTest,
+	"Cortex.Core.ZBlockedPartialReloadKeepsBlock",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCoreBlockedPartialReloadKeepsBlockTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString ReloadablePath = TEXT("/Game/Data/DT_TestSimple");
+	const FString SkippedPath = TEXT("/Game/Data/CT_TestCurve");
+	UObject* Reloadable = StaticLoadObject(UObject::StaticClass(), nullptr, *ReloadablePath);
+	UObject* Skipped = StaticLoadObject(UObject::StaticClass(), nullptr, *SkippedPath);
+	TestNotNull(TEXT("reloadable fixture resolves"), Reloadable);
+	TestNotNull(TEXT("skipped fixture resolves"), Skipped);
+	if (!Reloadable || !Skipped) return false;
+	FCortexAssetMutationGuard::Block(Reloadable, TEXT("forced recovery verification failure"));
+	FCortexAssetMutationGuard::Block(Skipped, TEXT("forced recovery verification failure"));
+
+	// The engine refuses to reload an in-memory-only package even though its file exists, so one
+	// batch member stays unreloaded while the other succeeds.
+	UPackage* SkippedPackage = Skipped->GetOutermost();
+	const bool bHadInMemoryOnly = SkippedPackage->HasAnyPackageFlags(PKG_InMemoryOnly);
+	SkippedPackage->SetPackageFlags(PKG_InMemoryOnly);
+	AddExpectedMessage(TEXT("cannot reload '/Game/Data/CT_TestCurve' as it is marked PKG_InMemoryOnly"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1, false);
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("asset_path"),
+		{ MakeShared<FJsonValueString>(ReloadablePath), MakeShared<FJsonValueString>(SkippedPath) });
+	const FCortexCommandResult Result = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"))
+		.GetCommandRouter().Execute(TEXT("core.reload_asset"), Params);
+	if (!bHadInMemoryOnly)
+	{
+		SkippedPackage->ClearPackageFlags(PKG_InMemoryOnly);
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+	TestTrue(TEXT("batch reload returns two entries"), Result.Data.IsValid()
+		&& Result.Data->TryGetArrayField(TEXT("results"), Results) && Results && Results->Num() == 2);
+	if (Results && Results->Num() == 2)
+	{
+		bool bReloaded = true;
+		(*Results)[1]->AsObject()->TryGetBoolField(TEXT("reloaded"), bReloaded);
+		TestFalse(TEXT("the unreloaded package is reported as not reloaded"), bReloaded);
+	}
+	FString Reason;
+	TestFalse(TEXT("the reloaded package is unblocked"), FCortexAssetMutationGuard::IsPathBlocked(ReloadablePath, Reason));
+	TestTrue(TEXT("the unreloaded package stays blocked"), FCortexAssetMutationGuard::IsPathBlocked(SkippedPath, Reason));
+	FCortexAssetMutationGuard::ClearPackage(FPackageName::ObjectPathToPackageName(SkippedPath));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexCoreBlockedCorruptReloadKeepsBlockTest,
+	"Cortex.Core.ZBlockedCorruptReloadKeepsBlock",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexCoreBlockedCorruptReloadKeepsBlockTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString PackageName = TEXT("/Game/Temp/CortexCoreTest_CorruptReload/CT_CorruptReload");
+	const FString AssetPath = PackageName + TEXT(".CT_CorruptReload");
+	const FString Filename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	UPackage* Package = CreatePackage(*PackageName);
+	UCurveTable* Asset = NewObject<UCurveTable>(Package, TEXT("CT_CorruptReload"), RF_Public | RF_Standalone);
+	FAssetRegistryModule::AssetCreated(Asset);
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
+	TestTrue(TEXT("fixture saved to disk"), UPackage::SavePackage(Package, Asset, *Filename, SaveArgs));
+	FCortexAssetMutationGuard::Block(Asset, TEXT("forced recovery verification failure"));
+
+	// Expected engine diagnostics for the corrupted file (asset registry rescans may repeat them).
+	AddExpectedMessage(TEXT("Package is unloadable: .*CT_CorruptReload\\.uasset"), ELogVerbosity::Error,
+		EAutomationExpectedMessageFlags::Contains, 0, true);
+	AddExpectedMessage(TEXT("The summary for the package '/Game/Temp/CortexCoreTest_CorruptReload/CT_CorruptReload' is invalid"),
+		ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 0, false);
+	AddExpectedMessage(TEXT("ReloadPackage failed to find a replacement object for 'CT_CorruptReload'"),
+		ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 0, false);
+	// The file on disk can no longer produce the asset, so a reload must not count as a recovery.
+	TArray<uint8> Garbage;
+	Garbage.Init(0xAB, 64);
+	TestTrue(TEXT("fixture file corrupted"), FFileHelper::SaveArrayToFile(Garbage, *Filename));
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), AssetPath);
+	const FCortexCommandResult Result = FModuleManager::GetModuleChecked<FCortexCoreModule>(TEXT("CortexCore"))
+		.GetCommandRouter().Execute(TEXT("core.reload_asset"), Params);
+
+	bool bReloaded = true;
+	TestTrue(TEXT("reload reports an entry"), Result.Data.IsValid() && Result.Data->TryGetBoolField(TEXT("reloaded"), bReloaded));
+	TestFalse(TEXT("a corrupt package is not reported as reloaded"), bReloaded);
+	FString Reason;
+	TestTrue(TEXT("a corrupt package stays blocked"), FCortexAssetMutationGuard::IsPathBlocked(AssetPath, Reason));
+
+	FCortexAssetMutationGuard::ClearPackage(PackageName);
+	if (UPackage* Remaining = FindPackage(nullptr, *PackageName))
+	{
+		ForEachObjectWithOuter(Remaining, [](UObject* Object)
+		{
+			Object->ClearFlags(RF_Public | RF_Standalone);
+			Object->MarkAsGarbage();
+		});
+		Remaining->ClearFlags(RF_Standalone);
+		Remaining->MarkAsGarbage();
+	}
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	IAssetRegistry::GetChecked().ScanPathsSynchronous({ TEXT("/Game/Temp/CortexCoreTest_CorruptReload") }, true);
 	return true;
 }
 

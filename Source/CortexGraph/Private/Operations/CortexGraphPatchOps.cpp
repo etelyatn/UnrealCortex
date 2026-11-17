@@ -3641,7 +3641,8 @@ bool CompileTargetBlueprint(UBlueprint* Blueprint, const FName Operation, TArray
 #endif
 	FCompilerResultsLog Log;
 	Log.bAnnotateMentionedNodes = false;
-	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Log);
+	// SkipSave: persistence is owned by the request's explicit save flag, never by the editor's Save on Compile preference.
+	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave, &Log);
 	FCortexGraphPatchOps::CollectCompilerDiagnostics(Log, OutDiagnostics);
 	return Log.NumErrors == 0 && Blueprint->Status != BS_Error;
 }
@@ -4771,7 +4772,7 @@ bool HandleApplyFailure(
 			FCortexGraphPatchOps::TrimDiagnostics(OutOutcome->Diagnostics);
 		}
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
-			TEXT("Graph patch recovery verification failed; asset is blocked from mutation"));
+			TEXT("Graph patch recovery verification failed; asset is blocked from mutation. The unverified state stays dirty in memory and was not saved; discard it with core.reload_asset to restore the saved package and clear the block"));
 		return false;
 	}
 

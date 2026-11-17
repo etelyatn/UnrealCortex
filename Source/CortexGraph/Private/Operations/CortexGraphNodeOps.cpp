@@ -1231,7 +1231,7 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 			UBlueprint* ProbeOwner = NewObject<UBlueprint>(GetTransientPackage(), UBlueprint::StaticClass());
 			ProbeOwner->AddToRoot();
 			ProbeOwner->ParentClass = AActor::StaticClass();
-			FKismetEditorUtilities::CompileBlueprint(ProbeOwner);
+			FKismetEditorUtilities::CompileBlueprint(ProbeOwner, EBlueprintCompileOptions::SkipSave);
 			if (TSharedPtr<FJsonObject> Pins = AllocateProbePins(ProbeOwner, NodeClassName, NodeParams, NodeClass))
 			{
 				const TArray<TSharedPtr<FJsonValue>>* PinArray = nullptr;

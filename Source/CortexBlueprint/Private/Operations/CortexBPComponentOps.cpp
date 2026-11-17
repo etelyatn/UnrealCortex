@@ -1075,7 +1075,7 @@ FCortexCommandResult FCortexBPComponentOps::SetComponentDefaults(const TSharedPt
 
 		if (bCompile)
 		{
-			FKismetEditorUtilities::CompileBlueprint(Blueprint);
+			FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 			bDidCompile = CortexBPComponentOpsPrivate::IsBlueprintCompiled(Blueprint);
 			if (!bDidCompile)
 			{
@@ -1245,7 +1245,7 @@ FCortexCommandResult FCortexBPComponentOps::AddSCSComponent(const TSharedPtr<FJs
 
 	if (bCompile)
 	{
-		FKismetEditorUtilities::CompileBlueprint(BP);
+		FKismetEditorUtilities::CompileBlueprint(BP, EBlueprintCompileOptions::SkipSave);
 		ResponseData->SetBoolField(TEXT("compiled"), true);
 		ResponseData->SetStringField(TEXT("compile_status"),
 			(BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings)

@@ -1606,7 +1606,7 @@ UObject* FCortexBPClassDefaultsOps::GetBlueprintCDO(UBlueprint* Blueprint, FStri
 	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
 	if (!GeneratedClass)
 	{
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 		GeneratedClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
 		if (!GeneratedClass)
 		{
@@ -2537,7 +2537,7 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 
 	if (bCompile)
 	{
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 		bDidCompile = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
 
 		if (!bDidCompile)

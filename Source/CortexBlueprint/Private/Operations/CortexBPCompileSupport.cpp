@@ -161,6 +161,8 @@ void FCortexBPCompileSupport::Compile(UBlueprint* Blueprint, EBlueprintCompileOp
 		Options |= EBlueprintCompileOptions::UseDeltaSerializationDuringReinstancing
 			| EBlueprintCompileOptions::SkipNewVariableDefaultsDetection;
 	}
+	// Persistence is owned by each command's explicit save flag, never by the editor's Save on Compile preference.
+	Options |= EBlueprintCompileOptions::SkipSave;
 	OutOutcome.EffectiveOptions = Options;
 
 #if WITH_DEV_AUTOMATION_TESTS

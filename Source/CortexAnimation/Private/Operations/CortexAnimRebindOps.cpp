@@ -678,7 +678,7 @@ FCortexCommandResult FCortexAnimRebindOps::RebindFunction(const TSharedPtr<FJson
 		}
 		Transaction->Cancel();
 		Transaction.Reset();
-		FKismetEditorUtilities::CompileBlueprint(AnimBlueprint);
+		FKismetEditorUtilities::CompileBlueprint(AnimBlueprint, EBlueprintCompileOptions::SkipSave);
 
 		TArray<FString> Differences;
 		const bool bVerified = JournalMatches(Journal, Differences);
@@ -740,7 +740,7 @@ FCortexCommandResult FCortexAnimRebindOps::RebindFunction(const TSharedPtr<FJson
 		{
 			return Recover(TEXT("compile"), TEXT("injected compile failure"), CortexErrorCodes::CompileFailed);
 		}
-		FKismetEditorUtilities::CompileBlueprint(AnimBlueprint);
+		FKismetEditorUtilities::CompileBlueprint(AnimBlueprint, EBlueprintCompileOptions::SkipSave);
 		if (AnimBlueprint->Status == BS_Error)
 		{
 			return Recover(TEXT("compile"), TEXT("compile error after the retarget"), CortexErrorCodes::CompileFailed);

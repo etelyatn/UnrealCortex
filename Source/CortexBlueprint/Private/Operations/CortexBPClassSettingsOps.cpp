@@ -188,7 +188,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::AddInterface(const TSharedPtr<FJ
 	bool bDidCompile = false;
 	if (bCompile)
 	{
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 		bDidCompile = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
 	}
 
@@ -893,7 +893,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr
 
 	if (!Blueprint->GeneratedClass)
 	{
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 	}
 	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
 	if (!GeneratedClass)
@@ -947,7 +947,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetTickSettings(const TSharedPtr
 	bool bDidCompile = false;
 	if (bCompile)
 	{
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 		bDidCompile = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
 
 		// Re-apply tick values to the new CDO created by compilation
@@ -1049,7 +1049,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSh
 
 	if (!Blueprint->GeneratedClass)
 	{
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 	}
 	UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
 	if (!GeneratedClass)
@@ -1097,7 +1097,7 @@ FCortexCommandResult FCortexBPClassSettingsOps::SetReplicationSettings(const TSh
 	bool bDidCompile = false;
 	if (bCompile)
 	{
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 		bDidCompile = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings);
 	}
 
