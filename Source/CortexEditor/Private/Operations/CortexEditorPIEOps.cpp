@@ -7,6 +7,17 @@
 #include "LevelEditor.h"
 #include "Containers/Ticker.h"
 
+namespace
+{
+/** PIE transitions report their result only through the deferred callback; without one the caller could never learn it. */
+FCortexCommandResult MissingCallbackError(const TCHAR* Command)
+{
+	return FCortexCommandRouter::Error(
+		CortexErrorCodes::InvalidOperation,
+		FString::Printf(TEXT("%s requires a deferred response callback and cannot run inside core.batch"), Command));
+}
+}
+
 FCortexCommandResult FCortexEditorPIEOps::GetPIEState(const FCortexEditorPIEState& PIEState)
 {
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -56,12 +67,13 @@ FCortexCommandResult FCortexEditorPIEOps::StartPIE(
 			Data);
 	}
 
-	if (DeferredCallback)
+	if (!DeferredCallback)
 	{
-		// ID unused: PIE lifecycle completes all general callbacks via broadcast
-		const uint32 CallbackId = PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
-		(void)CallbackId;
+		return MissingCallbackError(TEXT("start_pie"));
 	}
+	// ID unused: PIE lifecycle completes all general callbacks via broadcast
+	const uint32 CallbackId = PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
+	(void)CallbackId;
 
 	FRequestPlaySessionParams RequestParams;
 	FString Mode = TEXT("selected_viewport");
@@ -107,12 +119,13 @@ FCortexCommandResult FCortexEditorPIEOps::StopPIE(
 			TEXT("PIE is not running. Call start_pie first."));
 	}
 
-	if (DeferredCallback)
+	if (!DeferredCallback)
 	{
-		// ID unused: PIE lifecycle completes all general callbacks via broadcast
-		const uint32 CallbackId = PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
-		(void)CallbackId;
+		return MissingCallbackError(TEXT("stop_pie"));
 	}
+	// ID unused: PIE lifecycle completes all general callbacks via broadcast
+	const uint32 CallbackId = PIEState.RegisterPendingCallback(MoveTemp(DeferredCallback));
+	(void)CallbackId;
 
 	PIEState.SetState(ECortexPIEState::Stopping);
 	GEditor->RequestEndPlayMap();
@@ -199,6 +212,10 @@ FCortexCommandResult FCortexEditorPIEOps::RestartPIE(
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::PIENotActive,
 			TEXT("PIE is not running. Call start_pie first."));
+	}
+	if (!DeferredCallback)
+	{
+		return MissingCallbackError(TEXT("restart_pie"));
 	}
 
 	PIEState.SetState(ECortexPIEState::Stopping);

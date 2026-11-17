@@ -635,7 +635,7 @@ bool FCortexDeferredPerCommandTimeoutTest::RunTest(const FString& Parameters)
 			(*ErrorObj)->TryGetStringField(TEXT("code"), Code);
 		}
 		TestEqual(TEXT("Timed-out response id"), Id, TEXT("short"));
-		TestEqual(TEXT("Timed-out response code"), Code, CortexErrorCodes::InvalidOperation);
+		TestEqual(TEXT("Timed-out response code"), Code, CortexErrorCodes::Timeout);
 	}
 	TestFalse(TEXT("The long and default ops are still pending, not timed out"), ReadLine(0.2).IsValid());
 

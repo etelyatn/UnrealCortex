@@ -95,6 +95,7 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 		if (Listener->IsActive())
 		{
 			bRunning = true;
+			AliveToken = MakeShared<bool>(true);
 			BoundPort = Port;
 			if (FSocket* ListenSocket = Listener->GetSocket())
 			{
@@ -154,7 +155,7 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 							bool bHasQueuedWork = bHasPendingSocket || !PendingDeferred.IsEmpty();
 							if (!bHasQueuedWork)
 							{
-								for (const TPair<FSocket*, FString>& Buffer : ReceiveBuffers)
+								for (const TPair<FSocket*, TArray<uint8>>& Buffer : ReceiveBuffers)
 								{
 									uint32 PendingDataSize = 0;
 									if (!Buffer.Value.IsEmpty()
@@ -180,7 +181,7 @@ bool FCortexTcpServer::Start(int32 StartPort, FCommandDispatcher InDispatcher)
 							for (FSocket* PendingSocket : PendingClientSockets)
 							{
 								ClientSockets.Add(PendingSocket);
-								ReceiveBuffers.Add(PendingSocket, FString());
+								ReceiveBuffers.Add(PendingSocket);
 							}
 							PendingClientSockets.Empty();
 						}
@@ -213,6 +214,8 @@ void FCortexTcpServer::Stop()
 	}
 
 	bRunning = false;
+	// Invalidates every deferred callback this run handed out; handlers may still hold them.
+	AliveToken.Reset();
 	BoundPort = 0;
 
 	if (!PortFilePath.IsEmpty())
@@ -257,7 +260,6 @@ void FCortexTcpServer::Stop()
 	ReceiveBuffers.Empty();
 	PendingResponses.Empty();
 	PendingDeferred.Empty();
-	NextDeferredId = 1;
 	UE_LOG(LogCortex, Log, TEXT("TCP server stopped"));
 }
 
@@ -355,53 +357,56 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 		return false;
 	}
 
-	FString* ExistingBuffer = ReceiveBuffers.Find(InClientSocket);
-	int32 NewlineIndex = INDEX_NONE;
-	const bool bHasBufferedCompleteLine =
-		ExistingBuffer != nullptr && ExistingBuffer->FindChar(TEXT('\n'), NewlineIndex);
-	uint32 PendingDataSize = 0;
-	if (!bHasBufferedCompleteLine
-		&& (!InClientSocket->HasPendingData(PendingDataSize) || PendingDataSize == 0))
+	TArray<uint8>& ClientBuffer = ReceiveBuffers.FindOrAdd(InClientSocket);
+	bool bPeerClosed = false;
+	if (ClientBuffer.Find(static_cast<uint8>('\n')) == INDEX_NONE)
 	{
-		return true;
-	}
-
-	FString& ClientBuffer = ReceiveBuffers.FindOrAdd(InClientSocket);
-	if (!bHasBufferedCompleteLine)
-	{
+		// Read until the socket would block, bounded per tick. Recv reports a closed or failed peer as
+		// false; HasPendingData cannot, because a gracefully closed socket is readable with 0 bytes.
 		int32 TotalBytesRead = 0;
-
-		// Loop until all pending data is read or 2MB limit is reached
-		do
+		while (TotalBytesRead < MaxMessageSize)
 		{
-			TArray<uint8> TempBuffer;
-			TempBuffer.SetNumUninitialized(ReceiveBufferSize);
+			const int32 PreviousNum = ClientBuffer.Num();
+			ClientBuffer.AddUninitialized(ReceiveBufferSize);
 			int32 BytesRead = 0;
-
-			if (!InClientSocket->Recv(TempBuffer.GetData(), ReceiveBufferSize - 1, BytesRead) || BytesRead <= 0)
+			const bool bReceived = InClientSocket->Recv(ClientBuffer.GetData() + PreviousNum, ReceiveBufferSize, BytesRead);
+			ClientBuffer.SetNum(PreviousNum + FMath::Max(BytesRead, 0), EAllowShrinking::No);
+			if (!bReceived)
+			{
+				UE_LOG(LogCortex, Log, TEXT("Client disconnected"));
+				bPeerClosed = true;
+				break;
+			}
+			if (BytesRead <= 0)
 			{
 				break;
 			}
-
-			FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(TempBuffer.GetData()), BytesRead);
-			ClientBuffer.Append(Converter.Get(), Converter.Length());
 			TotalBytesRead += BytesRead;
-
-			if (TotalBytesRead >= MaxMessageSize)
-			{
-				UE_LOG(LogCortex, Warning, TEXT("Client message exceeds MaxMessageSize (%d bytes), truncating"), MaxMessageSize);
-				break;
-			}
-
-			PendingDataSize = 0;
-		} while (InClientSocket->HasPendingData(PendingDataSize) && PendingDataSize > 0);
+		}
 	}
+
+	const auto RejectOversizedRequest = [this, InClientSocket]()
+	{
+		UE_LOG(LogCortex, Log, TEXT("Client request exceeds MaxMessageSize (%d bytes); closing the connection"), MaxMessageSize);
+		const FCortexCommandResult LimitError = FCortexCommandRouter::Error(
+			CortexErrorCodes::LimitExceeded,
+			FString::Printf(TEXT("Request exceeds the %d-byte message limit"), MaxMessageSize));
+		SendResponse(InClientSocket, FCortexCommandRouter::ResultToJson(LimitError, 0.0));
+		return false;
+	};
 
 	// Process complete lines (delimited by \n)
-	NewlineIndex = INDEX_NONE;
-	while (ClientBuffer.FindChar(TEXT('\n'), NewlineIndex))
+	int32 NewlineIndex = INDEX_NONE;
+	while ((NewlineIndex = ClientBuffer.Find(static_cast<uint8>('\n'))) != INDEX_NONE)
 	{
-		FString Line = ClientBuffer.Left(NewlineIndex);
+		if (NewlineIndex > MaxMessageSize)
+		{
+			return RejectOversizedRequest();
+		}
+
+		// Decode whole lines only: a multi-byte UTF-8 character may span two reads.
+		const FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(ClientBuffer.GetData()), NewlineIndex);
+		FString Line(Converter.Length(), Converter.Get());
 		ClientBuffer.RemoveAt(0, NewlineIndex + 1);
 
 		Line.TrimStartAndEndInline();
@@ -490,9 +495,13 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 		FCortexCommandResult Result = CommandDispatcher(
 			Command,
 			Params,
-			[this, DeferredId](FCortexCommandResult DeferredResult)
+			[this, WeakAliveToken = TWeakPtr<bool>(AliveToken), DeferredId](FCortexCommandResult DeferredResult)
 			{
-				SendDeferredResponse(DeferredId, DeferredResult);
+				// Handlers keep this callback in tickers, timers and PIE state that outlive Stop().
+				if (WeakAliveToken.IsValid())
+				{
+					SendDeferredResponse(DeferredId, DeferredResult);
+				}
 			});
 		const double EndTime = FPlatformTime::Seconds();
 		const double TimingMs = (EndTime - StartTime) * 1000.0;
@@ -584,7 +593,12 @@ bool FCortexTcpServer::ProcessSingleClient(FSocket* InClientSocket)
 		}
 	}
 
-	return true;
+	if (ClientBuffer.Num() > MaxMessageSize)
+	{
+		return RejectOversizedRequest();
+	}
+
+	return !bPeerClosed;
 }
 
 bool FCortexTcpServer::SendResponse(FSocket* InClientSocket, const FString& ResponseString)
@@ -799,7 +813,7 @@ void FCortexTcpServer::CheckDeferredTimeouts()
 	for (const int32 DeferredId : TimedOutDeferred)
 	{
 		FCortexCommandResult TimeoutResult = FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidOperation,
+			CortexErrorCodes::Timeout,
 			TEXT("Deferred command timed out"));
 		SendDeferredResponse(DeferredId, TimeoutResult);
 	}

@@ -1228,3 +1228,91 @@ bool FCortexBatchQueryRecursionGuardTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+namespace
+{
+/** Returns a stale-precondition failure with details and a success with warnings, as real handlers do. */
+class FCortexBatchEnvelopeProbeHandler : public ICortexDomainHandler
+{
+public:
+	virtual FCortexCommandResult Execute(
+		const FString& Command,
+		const TSharedPtr<FJsonObject>& Params,
+		FDeferredResponseCallback DeferredCallback = nullptr) override
+	{
+		(void)Params;
+		(void)DeferredCallback;
+		if (Command == TEXT("stale_write"))
+		{
+			TSharedPtr<FJsonObject> Fingerprint = MakeShared<FJsonObject>();
+			Fingerprint->SetStringField(TEXT("package_saved_hash"), TEXT("current-hash"));
+			TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+			Details->SetObjectField(TEXT("current_fingerprint"), Fingerprint);
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::StalePrecondition, TEXT("asset changed"), Details);
+		}
+		if (Command == TEXT("warned_write"))
+		{
+			FCortexCommandResult Result = FCortexCommandRouter::Success(MakeShared<FJsonObject>());
+			Result.Warnings.Add(TEXT("probe warning"));
+			return Result;
+		}
+		return FCortexCommandRouter::Error(CortexErrorCodes::UnknownCommand, Command);
+	}
+
+	virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override
+	{
+		return { { TEXT("stale_write"), TEXT("stale") }, { TEXT("warned_write"), TEXT("warned") } };
+	}
+};
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBatchEntryCarriesDetailsAndWarningsTest,
+	"Cortex.Core.Batch.EntryCarriesDetailsAndWarnings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBatchEntryCarriesDetailsAndWarningsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("probe"), TEXT("Probe"), TEXT("1.0.0"), MakeShared<FCortexBatchEnvelopeProbeHandler>());
+
+	TArray<TSharedPtr<FJsonValue>> Commands;
+	for (const TCHAR* Command : { TEXT("probe.stale_write"), TEXT("probe.warned_write") })
+	{
+		TSharedPtr<FJsonObject> Step = MakeShared<FJsonObject>();
+		Step->SetStringField(TEXT("command"), Command);
+		Commands.Add(MakeShared<FJsonValueObject>(Step));
+	}
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetArrayField(TEXT("commands"), Commands);
+	Params->SetBoolField(TEXT("stop_on_error"), false);
+
+	const FCortexCommandResult Result = Router.Execute(TEXT("batch"), Params);
+	const TArray<TSharedPtr<FJsonValue>>* Results = nullptr;
+	if (!TestTrue(TEXT("Batch returns per-step results"),
+		Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("results"), Results) && Results->Num() == 2))
+	{
+		return true;
+	}
+
+	const TSharedPtr<FJsonObject> FailedEntry = (*Results)[0]->AsObject();
+	const TSharedPtr<FJsonObject>* Details = nullptr;
+	TestTrue(TEXT("A failed step keeps its error details"),
+		FailedEntry->TryGetObjectField(TEXT("details"), Details));
+	TestTrue(TEXT("A stale-precondition step keeps current_fingerprint"),
+		Details != nullptr && (*Details)->HasField(TEXT("current_fingerprint")));
+
+	const TSharedPtr<FJsonObject> WarnedEntry = (*Results)[1]->AsObject();
+	const TArray<TSharedPtr<FJsonValue>>* Warnings = nullptr;
+	TestTrue(TEXT("A successful step keeps its warnings"),
+		WarnedEntry->TryGetArrayField(TEXT("warnings"), Warnings));
+	if (Warnings != nullptr && TestEqual(TEXT("One warning is reported"), Warnings->Num(), 1))
+	{
+		TestEqual(TEXT("The warning text is preserved"), (*Warnings)[0]->AsString(), FString(TEXT("probe warning")));
+	}
+
+	return true;
+}
