@@ -146,7 +146,7 @@ FCortexCommandResult FCortexBPGraphCleanupOps::DeleteOrphanedNodes(const TShared
 
 	if (bCompile)
 	{
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 	}
 
 	TSharedPtr<FJsonObject> ResponseData = MakeShared<FJsonObject>();

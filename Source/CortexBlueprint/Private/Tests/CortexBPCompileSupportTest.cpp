@@ -218,7 +218,7 @@ bool FCortexBPCompileSupportTest::RunTest(const FString& Parameters)
 			ACortexBPAdoptParent::StaticClass()->GetDefaultObject<AActor>()->InitialLifeSpan);
 	}
 
-	// Delta options are forwarded to the engine call untouched.
+	// Requested options reach the engine call.
 	UBlueprint* Delta = MakeBlueprint(TEXT("BP_CompileSupportDelta"), AActor::StaticClass());
 	if (TestNotNull(TEXT("Delta Blueprint"), Delta))
 	{
@@ -232,7 +232,7 @@ bool FCortexBPCompileSupportTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("One compile observed"), Seen.Num(), 1);
 		if (Seen.Num() == 1)
 		{
-			TestTrue(TEXT("Options forwarded verbatim"), Seen[0] == Requested);
+			TestTrue(TEXT("Requested options forwarded"), EnumHasAllFlags(Seen[0], Requested));
 		}
 		TestEqual(TEXT("Delta compile is clean"), Outcome.Status, FString(TEXT("success")));
 	}

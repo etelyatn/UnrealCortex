@@ -17,6 +17,13 @@
 #include "UObject/UObjectIterator.h"
 #include "Editor.h"
 #include "Editor/Transactor.h"
+#include "BlueprintEditorSettings.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "UObject/ObjectSaveContext.h"
+#include "UObject/SavePackage.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPCompileTest,
@@ -232,6 +239,69 @@ bool FCortexBPBlockedMutationDispatchTest::RunTest(const FString& Parameters)
 	}
 	Package->ClearFlags(RF_Standalone);
 	Package->MarkAsGarbage();
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPCompileIgnoresSaveOnCompileTest,
+	"Cortex.Blueprint.CompileIgnoresSaveOnCompile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPCompileIgnoresSaveOnCompileTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const FString PackageName = TEXT("/Game/Temp/CortexBPTest_SaveOnCompile/BP_CompileSaveOnCompile_T230");
+	const FString Filename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+	IFileManager::Get().Delete(*Filename, false, true, true);
+	UPackage* Package = CreatePackage(*PackageName);
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(), Package, FName(TEXT("BP_CompileSaveOnCompile_T230")), BPTYPE_Normal,
+		UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("fixture Blueprint created"), Blueprint);
+	if (!Blueprint) return false;
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
+	TestTrue(TEXT("baseline fixture saved to disk"), UPackage::SavePackage(Package, Blueprint, *Filename, SaveArgs));
+	TArray<uint8> BaselineBytes;
+	FFileHelper::LoadFileToArray(BaselineBytes, *Filename);
+	TestTrue(TEXT("baseline file exists"), BaselineBytes.Num() > 0);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	TestTrue(TEXT("fixture package is dirty before compile"), Package->IsDirty());
+
+	int32 SaveEvents = 0;
+	const FDelegateHandle SaveHandle = UPackage::PackageSavedWithContextEvent.AddLambda(
+		[&SaveEvents](const FString&, UPackage*, FObjectPostSaveContext) { ++SaveEvents; });
+	{
+		UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
+		TGuardValue<TEnumAsByte<ESaveOnCompile>> SaveOnCompileGuard(Settings->SaveOnCompile, SoC_Always);
+		// Unattended runs cancel the engine's save prompt; the scripted route saves like an interactive editor.
+		TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), PackageName);
+		FCortexBPCommandHandler Handler;
+		const FCortexCommandResult Result = Handler.Execute(TEXT("compile"), Params);
+		TestTrue(FString::Printf(TEXT("compile succeeds: %s"), *Result.ErrorMessage), Result.bSuccess);
+	}
+	UPackage::PackageSavedWithContextEvent.Remove(SaveHandle);
+
+	TestEqual(TEXT("compile under Save on Compile performs zero engine save events"), SaveEvents, 0);
+	TestTrue(TEXT("compile under Save on Compile leaves the package dirty"), Package->IsDirty());
+	TArray<uint8> AfterBytes;
+	FFileHelper::LoadFileToArray(AfterBytes, *Filename);
+	TestTrue(TEXT("compile under Save on Compile keeps the file bytes identical"),
+		AfterBytes.Num() == BaselineBytes.Num()
+		&& FMemory::Memcmp(AfterBytes.GetData(), BaselineBytes.GetData(), BaselineBytes.Num()) == 0);
+
+	if (GEditor && GEditor->Trans)
+	{
+		GEditor->Trans->Reset(FText::FromString(TEXT("CortexBPCompileSaveOnCompileCleanup")));
+	}
+	Blueprint->ClearFlags(RF_Public | RF_Standalone);
+	Blueprint->MarkAsGarbage();
+	Package->ClearFlags(RF_Standalone);
+	Package->MarkAsGarbage();
+	IFileManager::Get().Delete(*Filename, false, true, true);
 	return true;
 }
 

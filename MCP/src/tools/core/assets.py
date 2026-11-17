@@ -125,7 +125,8 @@ def register_core_asset_tools(mcp, connection: UEConnection):
 
         Reverts in-memory state to match the on-disk .uasset file. Closes any open
         editor tabs before reloading, then reopens them if they were open. Assets
-        without a saved package on disk will report an error.
+        without a saved package on disk will report an error. A successful reload
+        also clears a failed-recovery mutation block on the package.
 
         Args:
             asset_path: Asset path or list of paths to reload. Supports glob patterns.
@@ -138,6 +139,7 @@ def register_core_asset_tools(mcp, connection: UEConnection):
             - was_dirty: Whether the asset had unsaved changes
             - reloaded: Whether the asset was successfully reloaded from disk
             - discarded_changes: Whether unsaved changes were discarded
+            - block_cleared: Whether a failed-recovery mutation block was cleared
             - has_disk_file: (dry_run only) Whether the asset has a saved package on disk
         """
         try:

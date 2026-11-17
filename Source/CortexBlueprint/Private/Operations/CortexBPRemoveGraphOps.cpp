@@ -1465,7 +1465,7 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 		{
 			FCompilerResultsLog Log;
 			Log.bAnnotateMentionedNodes = false;
-			FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Log);
+			FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave, &Log);
 			Outcome.CompileStatus = (Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings)
 				? TEXT("compiled") : TEXT("failed");
 #if WITH_AUTOMATION_TESTS
@@ -1532,7 +1532,7 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 			{
 				FCompilerResultsLog RecoveryLog;
 				RecoveryLog.bAnnotateMentionedNodes = false;
-				FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &RecoveryLog);
+				FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave, &RecoveryLog);
 				CollectCompilerDiagnostics(RecoveryLog, Outcome.Diagnostics);
 				bRecoveryCompile = Blueprint->Status == BS_UpToDate || Blueprint->Status == BS_UpToDateWithWarnings;
 			}

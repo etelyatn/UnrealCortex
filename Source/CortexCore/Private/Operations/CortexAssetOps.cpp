@@ -777,7 +777,24 @@ FCortexCommandResult FCortexAssetOps::ReloadAsset(const TSharedPtr<FJsonObject>&
 		bool bWasDirty = false;
 		bool bWasOpen = false;
 		bool bHasDiskFile = false;
-		UPackage* Package = nullptr;
+		TWeakObjectPtr<UPackage> Package;
+		FString PackageName;
+
+		/**
+		 * A successful reload replaces the package object with one that finished loading and holds the asset.
+		 * A skipped reload keeps the original; a failed load can leave a different, incompletely loaded package.
+		 */
+		bool WasReplacedFromDisk() const
+		{
+			const UPackage* Current = FindPackage(nullptr, *PackageName);
+			if (Current == nullptr || Current == Package.Get()
+				|| !Current->HasAnyFlags(RF_WasLoaded) || !Current->IsFullyLoaded())
+			{
+				return false;
+			}
+			const UObject* ReloadedAsset = StaticFindObject(UObject::StaticClass(), nullptr, *AssetPath);
+			return ReloadedAsset != nullptr && ReloadedAsset->GetPackage() == Current;
+		}
 	};
 
 	TArray<FReloadInfo> ReloadInfos;
@@ -805,31 +822,31 @@ FCortexCommandResult FCortexAssetOps::ReloadAsset(const TSharedPtr<FJsonObject>&
 		}
 
 		Info.AssetType = GetAssetTypeName(Asset);
-		Info.Package = Asset->GetOutermost();
-		Info.bWasDirty = Info.Package != nullptr && Info.Package->IsDirty();
+		UPackage* Package = Asset->GetOutermost();
+		Info.Package = Package;
+		Info.PackageName = Package != nullptr ? Package->GetName() : FString();
+		Info.bWasDirty = Package != nullptr && Package->IsDirty();
 		Info.bWasOpen = AssetEditorSubsystem->FindEditorsForAsset(Asset).Num() > 0;
-		Info.bHasDiskFile = Info.Package != nullptr && FPackageName::DoesPackageExist(Info.Package->GetName());
+		Info.bHasDiskFile = Package != nullptr && FPackageName::DoesPackageExist(Package->GetName());
 
-		if (Info.bHasDiskFile && !bDryRun && Info.Package != nullptr)
+		if (Info.bHasDiskFile && !bDryRun)
 		{
 			if (Info.bWasOpen)
 			{
 				AssetEditorSubsystem->CloseAllEditorsForAsset(Asset);
 			}
-			PackagesToReload.AddUnique(Info.Package);
+			PackagesToReload.AddUnique(Package);
 		}
 
 		ReloadInfos.Add(Info);
 	}
 
-	// ReloadPackages returns a single bool for the entire batch — if one package
-	// fails, all are reported as failed. Individual failure tracking would require
-	// reloading packages one at a time.
-	bool bReloadSucceeded = true;
+	// UPackageTools::ReloadPackages reports success when any package reloaded, so each entry's
+	// outcome is read back per package afterwards.
 	if (!bDryRun && PackagesToReload.Num() > 0)
 	{
 		FText ReloadError;
-		bReloadSucceeded = UPackageTools::ReloadPackages(
+		UPackageTools::ReloadPackages(
 			PackagesToReload,
 			ReloadError,
 			EReloadPackagesInteractionMode::AssumePositive
@@ -871,9 +888,14 @@ FCortexCommandResult FCortexAssetOps::ReloadAsset(const TSharedPtr<FJsonObject>&
 			continue;
 		}
 
-		const bool bFailed = Info.Package == nullptr || !bReloadSucceeded;
+		const bool bFailed = !Info.WasReplacedFromDisk();
 		Entry->SetBoolField(TEXT("reloaded"), !bFailed);
 		Entry->SetBoolField(TEXT("discarded_changes"), Info.bWasDirty && !bFailed);
+		if (!bFailed)
+		{
+			// The in-memory state now comes from disk, so a failed-recovery block no longer applies.
+			Entry->SetBoolField(TEXT("block_cleared"), FCortexAssetMutationGuard::ClearPackage(Info.PackageName));
+		}
 
 		if (!bFailed && Info.bWasOpen)
 		{

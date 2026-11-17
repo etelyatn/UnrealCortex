@@ -328,7 +328,7 @@ FCortexCommandResult FCortexBPTimelineOps::ConfigureTimeline(const TSharedPtr<FJ
 	}
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
-	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::SkipSave);
 	if (!CortexBPTimelineOpsPrivate::IsBlueprintCompiled(Blueprint))
 	{
 		return FCortexCommandRouter::Error(
