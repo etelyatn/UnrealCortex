@@ -195,7 +195,8 @@ TSharedPtr<FJsonObject> MontageCurrentFingerprint(const FCortexCommandResult& Re
 	return Result.Data->GetObjectField(TEXT("current_fingerprint"));
 }
 
-TSharedPtr<FJsonObject> SectionSelector(int32 Index, const FString& Name, double StartTime)
+// JSON numbers are doubles; a double index lets negative tests send values outside int32 without a UB conversion.
+TSharedPtr<FJsonObject> SectionSelector(double Index, const FString& Name, double StartTime)
 {
 	TSharedPtr<FJsonObject> Selector = MakeShared<FJsonObject>();
 	Selector->SetNumberField(TEXT("index"), Index);
