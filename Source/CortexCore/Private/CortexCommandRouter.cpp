@@ -391,6 +391,18 @@ FCortexCommandResult FCortexCommandRouter::Execute(
 	return Error(CortexErrorCodes::UnknownCommand, FString::Printf(TEXT("Unknown command: %s"), *Command));
 }
 
+/** Serializes result warnings the same way for top-level responses and batch entries. */
+static TArray<TSharedPtr<FJsonValue>> WarningsToJson(const TArray<FString>& Warnings)
+{
+	TArray<TSharedPtr<FJsonValue>> WarningsArray;
+	WarningsArray.Reserve(Warnings.Num());
+	for (const FString& Warning : Warnings)
+	{
+		WarningsArray.Add(MakeShared<FJsonValueString>(Warning));
+	}
+	return WarningsArray;
+}
+
 FString FCortexCommandRouter::ResultToJson(const FCortexCommandResult& Result, double TimingMs, const FString& RequestId)
 {
 	TSharedRef<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
@@ -411,12 +423,7 @@ FString FCortexCommandRouter::ResultToJson(const FCortexCommandResult& Result, d
 
 		if (Result.Warnings.Num() > 0)
 		{
-			TArray<TSharedPtr<FJsonValue>> WarningsArray;
-			for (const FString& Warning : Result.Warnings)
-			{
-				WarningsArray.Add(MakeShared<FJsonValueString>(Warning));
-			}
-			ResponseJson->SetArrayField(TEXT("warnings"), WarningsArray);
+			ResponseJson->SetArrayField(TEXT("warnings"), WarningsToJson(Result.Warnings));
 		}
 	}
 	else
@@ -1031,11 +1038,19 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 			{
 				EntryResult->SetObjectField(TEXT("data"), SubResult.Data);
 			}
+			if (SubResult.Warnings.Num() > 0)
+			{
+				EntryResult->SetArrayField(TEXT("warnings"), WarningsToJson(SubResult.Warnings));
+			}
 		}
 		else
 		{
 			EntryResult->SetStringField(TEXT("error_code"), SubResult.ErrorCode);
 			EntryResult->SetStringField(TEXT("error_message"), SubResult.ErrorMessage);
+			if (SubResult.ErrorDetails.IsValid())
+			{
+				EntryResult->SetObjectField(TEXT("details"), SubResult.ErrorDetails);
+			}
 			bSawFailure = true;
 		}
 

@@ -76,6 +76,30 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerReapsGracefullyClosedClientTest,
+	"Cortex.Core.TcpServer.ReapsGracefullyClosedClient",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerRejectsOversizedRequestTest,
+	"Cortex.Core.TcpServer.RejectsOversizedRequest",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerAcceptsRequestAtMaxMessageSizeTest,
+	"Cortex.Core.TcpServer.AcceptsRequestAtMaxMessageSize",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexTcpServerStaleDeferredCallbackIgnoredTest,
+	"Cortex.Core.TcpServer.StaleDeferredCallbackAfterRestartIsIgnored",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
 #if WITH_DEV_AUTOMATION_TESTS
 /**
  * Test double for FSocket that limits partial writes and can inject one send failure.
@@ -194,6 +218,68 @@ public:
 private:
 	bool& bClosedObserved;
 	bool& bDestroyedObserved;
+};
+
+/** Test double that delivers scripted bytes through Recv() and can report a closed peer once drained. */
+class FCortexScriptedRecvSocket final : public FCortexPartialSendSocket
+{
+public:
+	FCortexScriptedRecvSocket()
+		: FCortexPartialSendSocket(FCortexTcpServer::MaxMessageSize * 4)
+	{
+	}
+
+	void Feed(const FString& Text)
+	{
+		const FTCHARToUTF8 Utf8(*Text);
+		Incoming.Append(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
+	}
+
+	void FeedRepeated(uint8 Byte, int32 Count)
+	{
+		Incoming.Reserve(Incoming.Num() + Count);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			Incoming.Add(Byte);
+		}
+	}
+
+	FString SentText() const
+	{
+		const FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(SentBytes.GetData()), SentBytes.Num());
+		return FString(Converter.Length(), Converter.Get());
+	}
+
+	virtual bool HasPendingData(uint32& PendingDataSize) override
+	{
+		PendingDataSize = static_cast<uint32>(Incoming.Num() - ReadOffset);
+		return PendingDataSize > 0;
+	}
+
+	/** Mirrors FSocketBSD: true with 0 bytes when nothing is queued, false once the peer has closed. */
+	virtual bool Recv(uint8* Data, int32 BufferSize, int32& BytesRead, ESocketReceiveFlags::Type Flags) override
+	{
+		const int32 Available = Incoming.Num() - ReadOffset;
+		if (Available == 0)
+		{
+			BytesRead = 0;
+			return !bPeerClosed;
+		}
+
+		BytesRead = FMath::Min(BufferSize, Available);
+		FMemory::Memcpy(Data, Incoming.GetData() + ReadOffset, BytesRead);
+		if (Flags != ESocketReceiveFlags::Peek)
+		{
+			ReadOffset += BytesRead;
+		}
+		return true;
+	}
+
+	bool bPeerClosed = false;
+
+private:
+	TArray<uint8> Incoming;
+	int32 ReadOffset = 0;
 };
 /** Formats raw bytes for failure diagnostics. */
 static FString CortexBytesToHex(const TArray<uint8>& Bytes)
@@ -779,10 +865,12 @@ bool FCortexTcpServerProcessesBufferedRequestsWithoutNewDataTest::RunTest(const 
 		};
 
 	Server.ClientSockets.Add(&FakeSocket);
-	Server.ReceiveBuffers.Add(
-		&FakeSocket,
+	const FTCHARToUTF8 Pipelined(
 		TEXT("{\"command\":\"core.first\",\"id\":\"first\"}\n")
 		TEXT("{\"command\":\"core.second\",\"id\":\"second\"}\n"));
+	Server.ReceiveBuffers.Add(
+		&FakeSocket,
+		TArray<uint8>(reinterpret_cast<const uint8*>(Pipelined.Get()), Pipelined.Length()));
 	Server.ProcessClientData();
 
 	TestEqual(TEXT("Buffered pipelined commands run without new socket data"), ProcessedCommands.Num(), 2);
@@ -887,6 +975,205 @@ bool FCortexTcpServerPendingSocketsStopTest::RunTest(const FString& Parameters)
 	{
 		ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(PendingSocket);
 	}
+#endif
+	return true;
+}
+
+bool FCortexTcpServerReapsGracefullyClosedClientTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	FCortexTcpServer Server;
+	int32 DisconnectCount = 0;
+	Server.SetClientDisconnectCallback([&DisconnectCount]()
+	{
+		++DisconnectCount;
+	});
+	if (!TestTrue(TEXT("TCP server starts"), Server.Start(0, FCortexTcpServer::FCommandDispatcher())))
+	{
+		return true;
+	}
+
+	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	FSocket* Client = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("CortexGracefulCloseClient"), false);
+	const FIPv4Endpoint Endpoint(FIPv4Address::InternalLoopback, Server.GetBoundPort());
+	if (Client == nullptr || !Client->Connect(*Endpoint.ToInternetAddr()))
+	{
+		AddError(TEXT("Could not connect a client to the test server"));
+		if (Client != nullptr)
+		{
+			SocketSubsystem->DestroySocket(Client);
+		}
+		Server.Stop();
+		return true;
+	}
+
+	// Tick until the accept thread's socket is promoted to an active client.
+	const auto TickUntil = [&Server](TFunctionRef<bool()> Condition)
+	{
+		const double Deadline = FPlatformTime::Seconds() + 3.0;
+		while (!Condition() && FPlatformTime::Seconds() < Deadline)
+		{
+			FTSTicker::GetCoreTicker().Tick(0.016f);
+			FPlatformProcess::Sleep(0.02f);
+		}
+	};
+	TickUntil([&Server]() { return Server.GetClientCount() == 1; });
+	TestEqual(TEXT("The connected client becomes active"), Server.GetClientCount(), 1);
+
+	// A graceful close sends FIN: the server socket becomes readable with no pending bytes.
+	Client->Close();
+	SocketSubsystem->DestroySocket(Client);
+	TickUntil([&Server]() { return Server.GetClientCount() == 0; });
+
+	TestEqual(TEXT("A gracefully closed client is reaped"), Server.GetClientCount(), 0);
+	TestEqual(TEXT("Reaping a closed client notifies the disconnect callback once"), DisconnectCount, 1);
+
+	Server.Stop();
+	return true;
+}
+
+bool FCortexTcpServerRejectsOversizedRequestTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+#if WITH_DEV_AUTOMATION_TESTS
+	int32 DispatchCount = 0;
+	const FCortexTcpServer::FCommandDispatcher CountingDispatcher =
+		[&DispatchCount](const FString& /*Command*/, const TSharedPtr<FJsonObject>& /*Params*/, FDeferredResponseCallback /*Callback*/)
+		{
+			++DispatchCount;
+			return FCortexCommandRouter::Success(MakeShared<FJsonObject>());
+		};
+
+	// Feeds the socket to the server for a bounded number of ticks; false once the server retires the client.
+	const auto ProcessUntilRetired = [](FCortexTcpServer& Server, FCortexScriptedRecvSocket& Socket)
+	{
+		for (int32 Pass = 0; Pass < 4; ++Pass)
+		{
+			if (!Server.ProcessSingleClient(&Socket))
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+
+	FCortexScriptedRecvSocket UnterminatedSocket;
+	UnterminatedSocket.FeedRepeated('x', FCortexTcpServer::MaxMessageSize + 1);
+	FCortexTcpServer UnterminatedServer;
+	UnterminatedServer.CommandDispatcher = CountingDispatcher;
+	TestFalse(
+		TEXT("An unterminated request larger than MaxMessageSize retires the client"),
+		ProcessUntilRetired(UnterminatedServer, UnterminatedSocket));
+	TestTrue(
+		TEXT("The oversized unterminated request is answered with LIMIT_EXCEEDED"),
+		UnterminatedSocket.SentText().Contains(CortexErrorCodes::LimitExceeded));
+
+	FCortexScriptedRecvSocket TerminatedSocket;
+	TerminatedSocket.FeedRepeated('x', FCortexTcpServer::MaxMessageSize + 1);
+	TerminatedSocket.Feed(TEXT("\n"));
+	FCortexTcpServer TerminatedServer;
+	TerminatedServer.CommandDispatcher = CountingDispatcher;
+	TestFalse(
+		TEXT("A newline-terminated request one byte over MaxMessageSize retires the client"),
+		ProcessUntilRetired(TerminatedServer, TerminatedSocket));
+	TestTrue(
+		TEXT("The oversized terminated request is answered with LIMIT_EXCEEDED"),
+		TerminatedSocket.SentText().Contains(CortexErrorCodes::LimitExceeded));
+
+	TestEqual(TEXT("Oversized requests are never dispatched"), DispatchCount, 0);
+#endif
+	return true;
+}
+
+bool FCortexTcpServerAcceptsRequestAtMaxMessageSizeTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+#if WITH_DEV_AUTOMATION_TESTS
+	const FString Prefix = TEXT("{\"command\":\"core.big\",\"id\":\"big\",\"params\":{\"pad\":\"");
+	const FString Suffix = TEXT("\"}}");
+	FCortexScriptedRecvSocket Socket;
+	Socket.Feed(Prefix);
+	Socket.FeedRepeated('x', FCortexTcpServer::MaxMessageSize - Prefix.Len() - Suffix.Len());
+	Socket.Feed(Suffix + TEXT("\n"));
+
+	TArray<FString> DispatchedCommands;
+	FCortexTcpServer Server;
+	Server.CommandDispatcher =
+		[&DispatchedCommands](const FString& Command, const TSharedPtr<FJsonObject>& /*Params*/, FDeferredResponseCallback /*Callback*/)
+		{
+			DispatchedCommands.Add(Command);
+			return FCortexCommandRouter::Success(MakeShared<FJsonObject>());
+		};
+
+	bool bClientKept = true;
+	for (int32 Pass = 0; Pass < 4 && bClientKept && DispatchedCommands.IsEmpty(); ++Pass)
+	{
+		bClientKept = Server.ProcessSingleClient(&Socket);
+	}
+
+	TestTrue(TEXT("A request of exactly MaxMessageSize bytes keeps the client"), bClientKept);
+	TestFalse(TEXT("A request of exactly MaxMessageSize bytes does not close the socket"), Socket.bClosed);
+	TestEqual(TEXT("A request of exactly MaxMessageSize bytes is dispatched once"), DispatchedCommands.Num(), 1);
+	if (DispatchedCommands.Num() == 1)
+	{
+		TestEqual(TEXT("The maximum-size request keeps its command"), DispatchedCommands[0], FString(TEXT("core.big")));
+	}
+#endif
+	return true;
+}
+
+bool FCortexTcpServerStaleDeferredCallbackIgnoredTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+#if WITH_DEV_AUTOMATION_TESTS
+	TArray<FDeferredResponseCallback> Callbacks;
+	const FCortexTcpServer::FCommandDispatcher DeferringDispatcher =
+		[&Callbacks](const FString& /*Command*/, const TSharedPtr<FJsonObject>& /*Params*/, FDeferredResponseCallback Callback)
+		{
+			Callbacks.Add(MoveTemp(Callback));
+			FCortexCommandResult Deferred;
+			Deferred.bIsDeferred = true;
+			return Deferred;
+		};
+
+	FCortexTcpServer Server;
+	if (!TestTrue(TEXT("TCP server starts"), Server.Start(0, DeferringDispatcher)))
+	{
+		return true;
+	}
+	// Server.Stop() closes and destroys every active client socket, including these test doubles.
+	FCortexScriptedRecvSocket* FirstClient = new FCortexScriptedRecvSocket();
+	FirstClient->Feed(TEXT("{\"command\":\"test.wait\",\"id\":\"first\"}\n"));
+	Server.ClientSockets.Add(FirstClient);
+	Server.ProcessClientData();
+	Server.Stop();
+
+	if (!TestTrue(TEXT("TCP server restarts"), Server.Start(0, DeferringDispatcher)))
+	{
+		return true;
+	}
+	FCortexScriptedRecvSocket* SecondClient = new FCortexScriptedRecvSocket();
+	SecondClient->Feed(TEXT("{\"command\":\"test.wait\",\"id\":\"second\"}\n"));
+	Server.ClientSockets.Add(SecondClient);
+	Server.ProcessClientData();
+
+	TestEqual(TEXT("Both requests were deferred"), Callbacks.Num(), 2);
+	const int32 AckBytes = SecondClient->SentBytes.Num();
+	if (Callbacks.Num() == 2)
+	{
+		Callbacks[0](FCortexCommandRouter::Success(MakeShared<FJsonObject>()));
+	}
+
+	TestEqual(
+		TEXT("A callback issued before Stop() sends nothing to a client of the restarted server"),
+		SecondClient->SentBytes.Num(),
+		AckBytes);
+	TestEqual(
+		TEXT("The restarted server's deferred request stays pending"),
+		Server.PendingDeferred.Num(),
+		1);
+
+	Server.Stop();
 #endif
 	return true;
 }

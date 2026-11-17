@@ -69,6 +69,9 @@ private:
 	friend class FCortexTcpServerDeferredSendFailureRetiresClientTest;
 	friend class FCortexTcpServerProcessesBufferedRequestsWithoutNewDataTest;
 	friend class FCortexTcpServerPendingSocketsStopTest;
+	friend class FCortexTcpServerRejectsOversizedRequestTest;
+	friend class FCortexTcpServerAcceptsRequestAtMaxMessageSizeTest;
+	friend class FCortexTcpServerStaleDeferredCallbackIgnoredTest;
 #endif
 
 	/** Close and destroy a client socket */
@@ -100,14 +103,18 @@ private:
 	TSet<FSocket*> PendingClientDisconnects;
 	TArray<FSocket*> PendingClientSockets;
 	FCriticalSection PendingSocketsCS;
-	TMap<FSocket*, FString> ReceiveBuffers;
+	/** Raw UTF-8 bytes per client; lines are decoded whole and bounded by MaxMessageSize. */
+	TMap<FSocket*, TArray<uint8>> ReceiveBuffers;
 	void CheckDeferredTimeouts();
 	/** Thread-safe flag for running state. Overall server state queries (GetBoundPort, GetClientCount) remain game-thread-only. */
 	FThreadSafeBool bRunning = false;
 	FTSTicker::FDelegateHandle TickDelegateHandle;
 	FCommandDispatcher CommandDispatcher;
 	TMap<int32, FCortexPendingDeferred> PendingDeferred;
+	/** Never reset: a callback from an earlier run must not match a later request's id. */
 	int32 NextDeferredId = 1;
+	/** Valid while running; deferred callbacks hold a weak reference so they cannot reach a stopped or destroyed server. */
+	TSharedPtr<bool> AliveToken;
 
 	FClientDisconnectCallback ClientDisconnectCallback;
 
