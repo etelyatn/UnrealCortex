@@ -64,10 +64,10 @@
 
 ## Task 4 — Gates, docs, release
 
-- [ ] `rtk proxy python cli/clang/clang-syntax-check.py` (changed files vs origin/main)
+- [x] `rtk proxy python cli/clang/clang-syntax-check.py` — 142 passed, 0 failed, 0 errors (log `Saved/Issue224/clang-gate.log`)
 - [x] Verification report `docs/verification/2026-11-18-issue224.md` (plugin repo) with RED/GREEN log paths
 - [x] Tech-debt note for deferred item 13 (design doc carries the deferral decision; verification report and issue comment repeat it)
-- [ ] Bump `UnrealCortex.uplugin` `VersionName` 0.4.18 → 0.4.19 in a dedicated `chore(release)` commit
+- [x] Bump `UnrealCortex.uplugin` `VersionName` 0.4.18 → 0.4.19 in a dedicated `chore(release)` commit
 - [x] Independent review over the diff (reviewer agent had no model; controller review found and fixed the empty-referencer `instance_count` bug; tradeoffs documented in the verification report)
 - [ ] Push branch, PR, issue #224 comment; user approves merge
 
