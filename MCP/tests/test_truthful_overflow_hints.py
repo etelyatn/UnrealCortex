@@ -100,14 +100,36 @@ class TestSelectorPolicyEntries:
         assert result["_error"] == "RESPONSE_TOO_LARGE"
         assert "max_depth" in result["_suggestion"]
 
-    def test_flat_hierarchy_oversize_refuses_naming_max_results(self):
+    def test_hierarchy_oversize_refuses_naming_max_results(self):
         data = {
-            "classes": [{"name": f"C{i}", "payload": "x" * 300} for i in range(400)],
+            "name": "AActor",
+            "children": [{"name": f"C{i}", "payload": "x" * 300} for i in range(400)],
             "total_classes": 400,
         }
 
-        result = json.loads(format_response(data, "query_class_hierarchy"))
+        # The routed form: reflect_cmd passes qualified_command="reflect.class_hierarchy".
+        result = json.loads(
+            format_response(data, "reflect_cmd", qualified_command="reflect.class_hierarchy")
+        )
 
         assert result["_error"] == "RESPONSE_TOO_LARGE"
         assert result["reader_complete"] is False
         assert "max_results" in result["_suggestion"]
+
+    def test_routed_hierarchy_overflow_refuses_through_the_router(self):
+        from unittest.mock import MagicMock
+        from cortex_mcp.tools.routers import make_router
+
+        data = {
+            "name": "AActor",
+            "children": [{"name": f"C{i}", "payload": "x" * 300} for i in range(400)],
+            "total_classes": 400,
+        }
+        connection = MagicMock()
+        connection.send_command.return_value = {"success": True, "data": data}
+        router = make_router("reflect", connection, "reflect docs")
+
+        payload = json.loads(router("class_hierarchy", {"root": "AActor"}))
+
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert "max_results" in payload["_suggestion"]

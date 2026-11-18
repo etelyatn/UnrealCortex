@@ -412,9 +412,35 @@ def _serve_cached_first_page(qualified: str, data: dict, params: dict) -> str:
     limit = min(len(full_list), _MAX_LIMIT)
     try:
         page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
-        return _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
+        text = _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
     except KeyError:
         return _cursor_expired(qualified)
+    if not _is_too_large_refusal(text):
+        return text
+    # The first row fits only without the continuation envelope: fall back to the generic
+    # truncation, which returns the row with `_truncated` progress instead of stranding the
+    # whole read behind a refusal. Reads whose single row exceeds every envelope still refuse.
+    return format_response(
+        data,
+        f"{qualified.partition('.')[0]}_cmd",
+        qualified_command=qualified,
+        request_params=params,
+        pages=True,
+    )
+
+
+# Fields of the routed `detail="properties"` class view. Coverage/error metadata is not a
+# presentation level: an unreadable CDO or a partial result must survive the projection.
+_CLASS_DETAIL_PROPERTIES_FIELDS = frozenset({
+    "name", "type", "parent", "module", "asset_path", "source_path",
+    "blueprint_children_count", "interfaces", "properties", "components",
+    "cdo_unavailable", "_message", "error", "error_code",
+})
+
+
+def _project_class_detail_properties(data: dict) -> dict:
+    """Project a native full class_detail read down to the properties view (no functions)."""
+    return {k: v for k, v in data.items() if k in _CLASS_DETAIL_PROPERTIES_FIELDS}
 
 
 _EXECUTED_BATCH_NOTE = (
@@ -877,19 +903,30 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                     request_params=route_params,
                     pages=pages,
                 )
+            # The routed class-detail read keeps the former wrapper's `properties` view: the
+            # native owner implements summary/full only, so `properties` is a native full read
+            # with function signatures projected out before response budgeting.
+            project_class_detail = False
+            caller_params = route_params
+            if (domain, command) == ("reflect", "class_detail") and route_params.get("detail") == "properties":
+                route_params = {**route_params, "detail": "full"}
+                project_class_detail = True
+
             dispatch_timeout = _dispatch_timeout(qualified, route_params)
             if dispatch_timeout is None:
                 response = connection.send_command(qualified, route_params)
             else:
                 response = connection.send_command(qualified, route_params, timeout=dispatch_timeout)
             data = response.get("data", {})
+            if project_class_detail:
+                data = _project_class_detail_properties(data)
             if pages and len(compact_json(data)) > MAX_RESPONSE_CHARS:
                 return _serve_cached_first_page(qualified, data, route_params)
             return format_response(
                 data,
                 f"{domain}_cmd",
                 qualified_command=qualified,
-                request_params=route_params,
+                request_params=caller_params,
                 pages=pages,
             )
         except ConnectionError as exc:

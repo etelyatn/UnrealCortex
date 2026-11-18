@@ -463,6 +463,28 @@ bool FCortexBPListParentClassBlueprintTest::RunTest(const FString& Parameters)
 // Issue #225: include_inherited defaults to false; source distinguishes entries
 // whenever inherited functions are listed.
 // ---------------------------------------------------------------------------
+namespace
+{
+    TSet<FString> FunctionNames(const FCortexCommandResult& Result)
+    {
+        TSet<FString> Names;
+        const TArray<TSharedPtr<FJsonValue>>* Functions = nullptr;
+        if (Result.Data.IsValid() && Result.Data->TryGetArrayField(TEXT("functions"), Functions) && Functions)
+        {
+            for (const TSharedPtr<FJsonValue>& Value : *Functions)
+            {
+                const TSharedPtr<FJsonObject> Obj = Value->AsObject();
+                FString Name;
+                if (Obj.IsValid() && Obj->TryGetStringField(TEXT("name"), Name))
+                {
+                    Names.Add(Name);
+                }
+            }
+        }
+        return Names;
+    }
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPGetInfoInheritedDefaultTest,
 	"Cortex.Blueprint.GetInfo.InheritedDefaultFalse",
@@ -479,33 +501,73 @@ bool FCortexBPGetInfoInheritedDefaultTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
+	const FString AssetPath = Dir + TEXT("/BP_GID_Actor");
 
-	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("asset_path"), Dir + TEXT("/BP_GID_Actor"));
-	FCortexCommandResult Result = Handler.Execute(TEXT("get_info"), Params);
-	if (!TestTrue(TEXT("get_info should succeed"), Result.bSuccess) || !Result.Data.IsValid())
+	auto Read = [&Handler](const FString& Path, const TSharedPtr<FJsonObject>& Extra)
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), Path);
+		if (Extra.IsValid())
+		{
+			for (const auto& Pair : Extra->Values)
+			{
+				Params->SetField(Pair.Key, Pair.Value);
+			}
+		}
+		return Handler.Execute(TEXT("get_info"), Params);
+	};
+
+	FCortexCommandResult Default = Read(AssetPath, nullptr);
+	FCortexCommandResult ExplicitOwn = Read(AssetPath, [&]
+	{
+		TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+		P->SetBoolField(TEXT("include_inherited"), false);
+		return P;
+	}());
+	FCortexCommandResult Inherited = Read(AssetPath, [&]
+	{
+		TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+		P->SetBoolField(TEXT("include_inherited"), true);
+		return P;
+	}());
+
+	if (!TestTrue(TEXT("default read succeeds"), Default.bSuccess)
+		|| !TestTrue(TEXT("explicit own read succeeds"), ExplicitOwn.bSuccess)
+		|| !TestTrue(TEXT("inherited read succeeds"), Inherited.bSuccess))
 	{
 		DeleteBlueprint(Handler, Dir, TEXT("BP_GID_Actor"));
 		RemoveTestDirectory(Dir);
 		return false;
 	}
 
-	const TArray<TSharedPtr<FJsonValue>>* FunctionsArray = nullptr;
-	if (TestTrue(TEXT("functions array should exist"), Result.Data->TryGetArrayField(TEXT("functions"), FunctionsArray)))
+	const TSet<FString> DefaultNames = FunctionNames(Default);
+	const TSet<FString> ExplicitOwnNames = FunctionNames(ExplicitOwn);
+	const TSet<FString> InheritedNames = FunctionNames(Inherited);
+
+	// The default must equal the explicit own-only read; the old serializer omitted `source`
+	// even for inherited entries, so an "absence of source" check alone would pass on it.
+	TestTrue(TEXT("default function set equals explicit include_inherited=false"),
+		DefaultNames.Num() == ExplicitOwnNames.Num() && DefaultNames.Includes(ExplicitOwnNames));
+
+	// Positive control: requesting inherited functions returns strictly more, including a
+	// known AActor BlueprintEvent that the default must not contain.
+	TestTrue(TEXT("include_inherited=true returns strictly more functions"),
+		InheritedNames.Num() > DefaultNames.Num());
+	TestTrue(TEXT("inherited listing contains AActor::ReceiveTick"), InheritedNames.Contains(TEXT("ReceiveTick")));
+	TestFalse(TEXT("default listing omits AActor::ReceiveTick"), DefaultNames.Contains(TEXT("ReceiveTick")));
+
+	// Every entry is labelled when inherited functions are listed, so own/inherited stay
+	// distinguishable in the default compact mode.
+	const TArray<TSharedPtr<FJsonValue>>* InheritedFunctions = nullptr;
+	if (TestTrue(TEXT("inherited read has functions"),
+		Inherited.Data->TryGetArrayField(TEXT("functions"), InheritedFunctions)) && InheritedFunctions)
 	{
-		for (const TSharedPtr<FJsonValue>& FuncVal : *FunctionsArray)
+		for (const TSharedPtr<FJsonValue>& Value : *InheritedFunctions)
 		{
-			const TSharedPtr<FJsonObject>& FuncObj = FuncVal->AsObject();
-			if (!FuncObj.IsValid())
-			{
-				continue;
-			}
+			const TSharedPtr<FJsonObject> Obj = Value->AsObject();
 			FString Source;
-			if (FuncObj->TryGetStringField(TEXT("source"), Source) && Source == TEXT("inherited"))
-			{
-				AddError(TEXT("Default read must not include inherited functions (issue #225)"));
-				break;
-			}
+			TestTrue(TEXT("every entry carries source when inherited functions are listed"),
+				Obj.IsValid() && Obj->TryGetStringField(TEXT("source"), Source) && !Source.IsEmpty());
 		}
 	}
 
@@ -513,6 +575,7 @@ bool FCortexBPGetInfoInheritedDefaultTest::RunTest(const FString& Parameters)
 	RemoveTestDirectory(Dir);
 	return true;
 }
+
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexBPGetInfoCompactSourceTest,

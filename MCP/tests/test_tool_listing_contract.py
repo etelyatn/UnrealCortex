@@ -31,6 +31,11 @@ LEGACY_TOOL_NAMES = (
     "compile_blueprint",
     "delete_blueprint",
     "duplicate_blueprint",
+    # Reflect wrappers deleted in 0.4.17 (their names are not reflect_cmd commands either).
+    "query_class_detail",
+    "query_class_hierarchy",
+    "query_overrides",
+    "query_usages",
 )
 
 

@@ -83,3 +83,24 @@ def test_batch_query_overflow_path_still_pages_after_change():
     assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
     assert payload["_pagination"]["next_cursor"] is not None
     assert connection.send_command.call_count == 1
+
+
+def test_boundary_row_still_returns_rows_instead_of_stranding_the_read():
+    # A first row that fits only without the continuation envelope: the generic truncation
+    # (row + `_truncated`) must be used instead of a refusal that strands every row.
+    # Measured band: with this payload shape the page envelope refuses at blob ~39,620-39,740
+    # while the generic envelope still returns the first row.
+    blob = MAX_RESPONSE_CHARS - 300
+    router, connection = _router(
+        "level", {"matches": _actors(12, blob=blob), "count": 12, "pattern": "Actor"}
+    )
+
+    payload = json.loads(router("find_actors", {"pattern": "Actor"}))
+
+    assert "matches" in payload, payload
+    assert len(payload["matches"]) >= 1
+    assert (
+        payload.get("_pagination", {}).get("next_cursor") is not None
+        or payload.get("_truncated", {}).get("returned_count", 0) >= 1
+    )
+    assert connection.send_command.call_count == 1

@@ -130,9 +130,9 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
         "Re-run with a smaller 'max_depth', or start the trace closer to the nodes you need; "
         "the traversal nodes/edges are never paged."
     ),
-    "query_class_hierarchy": (
-        "Re-run with a smaller 'max_results' or a narrower 'root'; the flat class list is "
-        "never paged."
+    # Routed form: `reflect_cmd` passes qualified_command="reflect.class_hierarchy".
+    "reflect.class_hierarchy": (
+        "Re-run with a smaller 'max_results' or a narrower 'root'; the hierarchy is never paged."
     ),
 }
 

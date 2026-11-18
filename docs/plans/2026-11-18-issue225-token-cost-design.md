@@ -22,6 +22,9 @@ Baseline: plugin `f305ab82` (0.4.16). Offline tool-listing measurement (fallback
    - A registration test asserts no advertised description names a tool that is not registered (the stale-name regression class).
 
 2. **Six duplicate reflect wrappers deleted** (`get_dependencies`, `get_referencers`, `query_class_detail`, `query_class_hierarchy`, `query_overrides`, `query_usages`): they wrap commands `reflect_cmd` already lists, at 5,687 characters of default listing. `reflect_cmd` forwards the same params (native windows are bounded; `class_detail`/`class_hierarchy` accept `detail`/`include_flat_classes`), so the capability is fully preserved through the router. Clean cutover per repo rules: modules, registration, `_BLUEPRINT_TOOLSET` membership (the five non-duplicate standalones remain) and tests are removed, not disabled; no compatibility aliases. The five non-duplicates stay: they wrap commands the router does not list (`scan_project`, `reflect_cache_status`, `rebuild_graph_cache`, `query_class_context`, `impact_analysis`) or add projection the router cannot.
+   - The routed `reflect.class_detail` keeps the former wrapper's `detail="properties"` view: the
+     router maps it to a native full read and projects function signatures out before response
+     budgeting (native implements `summary`/`full` only; `include_inherited` is forwarded).
    - Supersedes #180 design §2.2's "all 11 Reflect standalone tools" for the blueprint preset.
    - Toolkit: surface fixture regeneration, `cortex-bp-migrate` skill references migrate to `reflect_cmd` forms (some already are).
 
@@ -33,7 +36,7 @@ Baseline: plugin `f305ab82` (0.4.16). Offline tool-listing measurement (fallback
 
 6. **Truncation hints**: the generic array truncator in `response.py` always suggests `limit`; for reads that do not page, that parameter is refused natively and the model burns a repeat call. `format_response` gains `pages: bool = False`; the suggestion is the pagination text only when the caller pages, otherwise "this read does not page; narrow the request and re-run". Router fallback paths for `CACHED_PAGE_ARRAYS` commands pass `pages=True`. `query_class_hierarchy`-style flat reads and traces get complete-or-refuse policy entries naming their real selectors (`max_results`; `max_depth`).
 
-7. **`CACHED_PAGE_ARRAYS` called without `limit`**: an oversized response is snapshotted into the pagination cache and page 1 (largest page that fits) is returned with `next_cursor`, instead of a binary-search truncation with a `limit` hint — the pattern `core.batch_query` already implements (`routers.py` `_batch_query`). Responses that fit are still returned whole.
+7. **`CACHED_PAGE_ARRAYS` called without `limit`**: an oversized response is snapshotted into the pagination cache and page 1 (largest page that fits) is returned with `next_cursor`, instead of a binary-search truncation with a `limit` hint — the pattern `core.batch_query` already implements (`routers.py` `_batch_query`). Responses that fit are still returned whole. When the first row fits only without the continuation envelope, the generic truncation is used instead of a refusal, so a boundary-sized row never strands the rows behind it.
 
 ## Non-goals
 

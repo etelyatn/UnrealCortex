@@ -100,96 +100,98 @@ namespace
             FMath::Abs(Delta.Z) <= Region.Extent.Z;
     }
 
-    TArray<AActor*> CollectFilteredActors(
-        UWorld* World,
-        const TSharedPtr<FJsonObject>& Params,
-        FCortexCommandResult& OutError,
-        int32 MaxScanCount = 10000,
-        bool* bOutScanTruncated = nullptr)
-    {
-        FString ClassFilter;
-        Params->TryGetStringField(TEXT("class"), ClassFilter);
-
-        UClass* FilterClass = nullptr;
-        if (!ClassFilter.IsEmpty())
-        {
-            FilterClass = FCortexLevelUtils::ResolveActorClass(ClassFilter, OutError);
-            if (!FilterClass)
-            {
-                return {};
-            }
-        }
-
-        TArray<FString> RequiredTags;
-        const TArray<TSharedPtr<FJsonValue>>* TagArray = nullptr;
-        if (Params->TryGetArrayField(TEXT("tags"), TagArray) && TagArray)
-        {
-            for (const TSharedPtr<FJsonValue>& Tag : *TagArray)
-            {
-                RequiredTags.Add(Tag->AsString());
-            }
-        }
-
-        FString FolderFilter;
-        Params->TryGetStringField(TEXT("folder"), FolderFilter);
-
-        FRegionFilter Region;
-        if (!ParseRegionFilter(Params, Region))
-        {
-            OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Invalid region filter"));
-            return {};
-        }
-
-        TArray<AActor*> Actors;
-        int32 ScannedCount = 0;
-
-        for (TActorIterator<AActor> It(World, FilterClass ? FilterClass : AActor::StaticClass()); It; ++It)
-        {
-            if (++ScannedCount > MaxScanCount)
-            {
-                if (bOutScanTruncated != nullptr)
-                {
-                    *bOutScanTruncated = true;
-                }
-                break;
-            }
-
-            AActor* Actor = *It;
-            if (!IsValid(Actor))
-            {
-                continue;
-            }
-
-            if (!RequiredTags.IsEmpty() && !PassesTagsFilter(Actor, RequiredTags))
-            {
-                continue;
-            }
-
-            if (!FolderFilter.IsEmpty() && Actor->GetFolderPath().ToString() != FolderFilter)
-            {
-                continue;
-            }
-
-            if (!PassesRegionFilter(Actor, Region))
-            {
-                continue;
-            }
-
-            Actors.Add(Actor);
-        }
-
-        Actors.Sort([](const AActor& A, const AActor& B)
-        {
-            return A.GetActorLabel() < B.GetActorLabel();
-        });
-
-        return Actors;
-    }
 
     TSharedPtr<FJsonObject> ToSummary(AActor* Actor)
     {
         return FCortexLevelUtils::SerializeActorSummary(Actor);
     }
+}
+
+
+TArray<AActor*> FCortexLevelQueryOps::CollectFilteredActors(
+    UWorld* World,
+    const TSharedPtr<FJsonObject>& Params,
+    FCortexCommandResult& OutError,
+    int32 MaxScanCount,
+    bool* bOutScanTruncated)
+{
+    FString ClassFilter;
+    Params->TryGetStringField(TEXT("class"), ClassFilter);
+
+    UClass* FilterClass = nullptr;
+    if (!ClassFilter.IsEmpty())
+    {
+        FilterClass = FCortexLevelUtils::ResolveActorClass(ClassFilter, OutError);
+        if (!FilterClass)
+        {
+            return {};
+        }
+    }
+
+    TArray<FString> RequiredTags;
+    const TArray<TSharedPtr<FJsonValue>>* TagArray = nullptr;
+    if (Params->TryGetArrayField(TEXT("tags"), TagArray) && TagArray)
+    {
+        for (const TSharedPtr<FJsonValue>& Tag : *TagArray)
+        {
+            RequiredTags.Add(Tag->AsString());
+        }
+    }
+
+    FString FolderFilter;
+    Params->TryGetStringField(TEXT("folder"), FolderFilter);
+
+    FRegionFilter Region;
+    if (!ParseRegionFilter(Params, Region))
+    {
+        OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Invalid region filter"));
+        return {};
+    }
+
+    TArray<AActor*> Actors;
+    int32 ScannedCount = 0;
+
+    for (TActorIterator<AActor> It(World, FilterClass ? FilterClass : AActor::StaticClass()); It; ++It)
+    {
+        if (++ScannedCount > MaxScanCount)
+        {
+            if (bOutScanTruncated != nullptr)
+            {
+                *bOutScanTruncated = true;
+            }
+            break;
+        }
+
+        AActor* Actor = *It;
+        if (!IsValid(Actor))
+        {
+            continue;
+        }
+
+        if (!RequiredTags.IsEmpty() && !PassesTagsFilter(Actor, RequiredTags))
+        {
+            continue;
+        }
+
+        if (!FolderFilter.IsEmpty() && Actor->GetFolderPath().ToString() != FolderFilter)
+        {
+            continue;
+        }
+
+        if (!PassesRegionFilter(Actor, Region))
+        {
+            continue;
+        }
+
+        Actors.Add(Actor);
+    }
+
+    Actors.Sort([](const AActor& A, const AActor& B)
+    {
+        return A.GetActorLabel() < B.GetActorLabel();
+    });
+
+    return Actors;
 }
 
 FCortexCommandResult FCortexLevelQueryOps::ListActors(const TSharedPtr<FJsonObject>& Params)
@@ -314,6 +316,18 @@ FCortexCommandResult FCortexLevelQueryOps::GetBounds(const TSharedPtr<FJsonObjec
 
     if (Actors.Num() == 0)
     {
+        // A cut scan is not a definitive "no actors": matches may exist beyond the cap.
+        if (bScanTruncated)
+        {
+            TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+            Details->SetBoolField(TEXT("scan_truncated"), true);
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::ActorNotFound,
+                FString::Printf(
+                    TEXT("No actors matched the filters within the first %d scanned actors; the scan was truncated, so matches may exist beyond the cap"),
+                    10000),
+                Details);
+        }
         return FCortexCommandRouter::Error(CortexErrorCodes::ActorNotFound, TEXT("No actors matched filters"));
     }
 
