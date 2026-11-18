@@ -586,6 +586,28 @@ def test_core_router_uses_cached_send_for_get_data_catalog():
     connection.send_command.assert_not_called()
 
 
+def test_core_router_uses_cached_send_for_get_operation_schema():
+    """Router descriptions tell the model to fetch core.get_operation_schema before unfamiliar
+    commands, so the response is a cached read (issue #224 item 11): identical consecutive calls
+    are one round trip, invalidated on the next write like every other cached read."""
+    connection = MagicMock()
+    connection.send_command_cached.return_value = {
+        "success": True,
+        "data": {"domain": "core", "command": "get_operation_schema", "params": []},
+    }
+
+    router = make_router("core", connection, "core docs")
+    payload = json.loads(router("get_operation_schema", {"domain": "core", "command": "save_asset"}))
+
+    assert payload["command"] == "get_operation_schema"
+    connection.send_command_cached.assert_called_once_with(
+        "core.get_operation_schema",
+        {"domain": "core", "command": "save_asset"},
+        ttl=300,
+    )
+    connection.send_command.assert_not_called()
+
+
 # --- agent-facing capability inventory and catalog selections (Task 8) ---
 
 CAPABILITIES_FIXTURE = Path(__file__).parent / "fixtures" / "capabilities_cache_full.json"
