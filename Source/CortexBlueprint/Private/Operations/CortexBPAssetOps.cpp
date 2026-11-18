@@ -1155,7 +1155,9 @@ FCortexCommandResult FCortexBPAssetOps::List(const TSharedPtr<FJsonObject>& Para
 
 		TArray<FString> PathsToScan;
 		PathsToScan.Add(PathFilter);
-		AssetRegistry.ScanPathsSynchronous(PathsToScan, true);
+		// No forced rescan: saved assets are already registered; only not-yet-scanned paths
+		// need discovery (issue #224).
+		AssetRegistry.ScanPathsSynchronous(PathsToScan, false);
 	}
 
 	AssetRegistry.GetAssets(Filter, BlueprintAssets);

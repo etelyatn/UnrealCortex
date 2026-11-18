@@ -33,6 +33,8 @@
 #include "UObject/UnrealType.h"
 #include "Misc/PackageName.h"
 #include "ScopedTransaction.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "UObject/GarbageCollection.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 namespace
@@ -40,6 +42,7 @@ namespace
 	TFunction<void(USCS_Node*, UBlueprint*)> GRemoveSCSComponentMidflightTestHook;
 	TFunction<void(UBlueprint*)> GRemoveSCSComponentPostCompileTestHook;
 	TFunction<void(UBlueprint*)> GRenameSCSComponentPostCompileTestHook;
+	TFunction<void(UBlueprint*)> GRecompileDependentsPostCompileTestHook;
 	TFunction<void(UBlueprint*)> GCleanupCdoDivergenceTestHook;
 }
 #endif
@@ -281,6 +284,64 @@ namespace
 		}
 
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	}
+}
+// Registry-referencer union for recompile_dependents: hard-referencer packages of the target
+// Blueprint that are not in memory may hold unloaded class children. Loads each candidate once
+// and keeps only true class children (issue #224: dependents survive an editor restart).
+static void AppendRegistryDependentBlueprints(UBlueprint* TargetBlueprint, TArray<UBlueprint*>& InOutDependents)
+{
+	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
+	if (AssetRegistry == nullptr || TargetBlueprint == nullptr || TargetBlueprint->GeneratedClass == nullptr)
+	{
+		return;
+	}
+
+	const UE::AssetRegistry::FDependencyQuery Query(UE::AssetRegistry::EDependencyQuery::Hard);
+
+	TArray<FName> ReferencerNames;
+	if (!AssetRegistry->GetReferencers(
+		TargetBlueprint->GetOutermost()->GetFName(), ReferencerNames,
+		UE::AssetRegistry::EDependencyCategory::Package, Query))
+	{
+		return;
+	}
+
+	TSet<UBlueprint*> Known;
+	for (UBlueprint* Dependent : InOutDependents)
+	{
+		Known.Add(Dependent);
+	}
+
+	for (const FName ReferencerName : ReferencerNames)
+	{
+		// In-memory referencers were already collected by GetDependentBlueprints.
+		if (FindPackage(nullptr, *ReferencerName.ToString()) != nullptr)
+		{
+			continue;
+		}
+
+		FARFilter ReferencerFilter;
+		ReferencerFilter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+		ReferencerFilter.bRecursiveClasses = true;
+		// PackageNames, not PackagePaths: a referencer package name is not a directory path.
+		ReferencerFilter.PackageNames.Add(ReferencerName);
+
+		TArray<FAssetData> ReferencerAssets;
+		AssetRegistry->GetAssets(ReferencerFilter, ReferencerAssets);
+		for (const FAssetData& AssetData : ReferencerAssets)
+		{
+			UBlueprint* Candidate = Cast<UBlueprint>(AssetData.GetAsset());
+			if (Candidate == nullptr || Known.Contains(Candidate))
+			{
+				continue;
+			}
+			if (Candidate->ParentClass != nullptr && Candidate->ParentClass->IsChildOf(TargetBlueprint->GeneratedClass))
+			{
+				Known.Add(Candidate);
+				InOutDependents.Add(Candidate);
+			}
+		}
 	}
 }
 
@@ -1309,6 +1370,10 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 	TArray<UBlueprint*> DependentBlueprints;
 	FBlueprintEditorUtils::GetDependentBlueprints(TargetBlueprint, DependentBlueprints);
 
+	// GetDependentBlueprints only sees loaded Blueprints. Union with registry referencers so
+	// dependents saved on disk but unloaded (post-restart state) are still recompiled (issue #224).
+	AppendRegistryDependentBlueprints(TargetBlueprint, DependentBlueprints);
+
 	for (UBlueprint* DependentBlueprint : DependentBlueprints)
 	{
 		if (!IsValid(DependentBlueprint))
@@ -1344,7 +1409,16 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 		}
 
 		FBlueprintEditorUtils::RefreshAllNodes(DependentBlueprint);
-		FKismetEditorUtilities::CompileBlueprint(DependentBlueprint, EBlueprintCompileOptions::SkipSave);
+		// SkipGarbageCollection per dependent; one pass after the loop (issue #224), matching
+		// compile_all's pattern.
+		FKismetEditorUtilities::CompileBlueprint(
+			DependentBlueprint, EBlueprintCompileOptions::SkipSave | EBlueprintCompileOptions::SkipGarbageCollection);
+#if WITH_DEV_AUTOMATION_TESTS
+		if (GRecompileDependentsPostCompileTestHook)
+		{
+			GRecompileDependentsPostCompileTestHook(DependentBlueprint);
+		}
+#endif
 
 		const bool bCompiled =
 			DependentBlueprint->Status == BS_UpToDate ||
@@ -1363,12 +1437,33 @@ FCortexCommandResult FCortexBPCleanupOps::RecompileDependents(const TSharedPtr<F
 		Entry->SetArrayField(TEXT("errors"), Errors);
 		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
+	if (DependentBlueprints.Num() > 0)
+	{
+		// One garbage collection pass for the whole run (issue #224).
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
 	Data->SetNumberField(TEXT("dependent_count"), DependentBlueprints.Num());
 	Data->SetNumberField(TEXT("recompiled_count"), SuccessCount);
 	Data->SetArrayField(TEXT("results"), ResultsArray);
+
+	// Honest failure: a dependent that did not compile fails the command instead of a
+	// success envelope with an all-error results array (issue #224).
+	if (SuccessCount != DependentBlueprints.Num())
+	{
+		TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+		Details->SetNumberField(TEXT("dependent_count"), DependentBlueprints.Num());
+		Details->SetNumberField(TEXT("recompiled_count"), SuccessCount);
+		Details->SetArrayField(TEXT("results"), ResultsArray);
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::CompileFailed,
+			FString::Printf(
+				TEXT("Recompile dependents of %s: %d of %d dependents failed to compile"),
+				*AssetPath, DependentBlueprints.Num() - SuccessCount, DependentBlueprints.Num()),
+			Details);
+	}
 
 	return FCortexCommandRouter::Success(Data);
 }
@@ -1612,7 +1707,9 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 			}
 
 			DependentBP->Modify();
-			FKismetEditorUtilities::CompileBlueprint(DependentBP, EBlueprintCompileOptions::SkipSave);
+			// Deferred garbage collection; one pass after the dependent loop (issue #224).
+			FKismetEditorUtilities::CompileBlueprint(
+				DependentBP, EBlueprintCompileOptions::SkipSave | EBlueprintCompileOptions::SkipGarbageCollection);
 #if WITH_DEV_AUTOMATION_TESTS
 			if (GRenameSCSComponentPostCompileTestHook)
 			{
@@ -1635,6 +1732,11 @@ FCortexCommandResult FCortexBPCleanupOps::RenameSCSComponent(const TSharedPtr<FJ
 						TEXT("Dependent Blueprint compile failed after SCS rename: %s"),
 						*DependentBP->GetPathName()));
 			}
+		}
+		if (DependentBlueprints.Num() > 0)
+		{
+			// One garbage collection pass after the dependent compiles (issue #224).
+			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 		}
 	}
 
@@ -1950,6 +2052,10 @@ void FCortexBPCleanupOps::SetRenameSCSComponentPostCompileTestHook(TFunction<voi
 void FCortexBPCleanupOps::SetCdoDivergenceTestHook(TFunction<void(UBlueprint*)> InHook)
 {
 	GCleanupCdoDivergenceTestHook = MoveTemp(InHook);
+}
+void FCortexBPCleanupOps::SetRecompileDependentsPostCompileTestHook(TFunction<void(UBlueprint*)> InHook)
+{
+	GRecompileDependentsPostCompileTestHook = MoveTemp(InHook);
 }
 
 #endif
