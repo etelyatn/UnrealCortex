@@ -67,7 +67,7 @@ bool FCortexListDatatablesTest::RunTest(const FString& Parameters)
 	FPlatformProcess::Sleep(0.1f);
 
 	// Act: Send a list_datatables command
-	FString ListCommand = TEXT("{\"command\":\"data.list_datatables\",\"params\":{}}\n");
+	FString ListCommand = TEXT("{\"command\":\"data.list_datatables\",\"params\":{\"include_row_count\":true}}\n");
 	FTCHARToUTF8 Utf8Converter(*ListCommand);
 	int32 BytesSent = 0;
 	const bool bSent = ClientSocket->Send(
