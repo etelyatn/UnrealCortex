@@ -88,9 +88,9 @@ def test_batch_query_overflow_path_still_pages_after_change():
 def test_boundary_row_still_returns_rows_instead_of_stranding_the_read():
     # A first row that fits only without the continuation envelope: the generic truncation
     # (row + `_truncated`) must be used instead of a refusal that strands every row.
-    # Measured band: with this payload shape the page envelope refuses at blob ~39,620-39,740
+    # Measured band for this payload shape: page envelope refuses at blob 39,620-39,670
     # while the generic envelope still returns the first row.
-    blob = MAX_RESPONSE_CHARS - 300
+    blob = MAX_RESPONSE_CHARS - 380
     router, connection = _router(
         "level", {"matches": _actors(12, blob=blob), "count": 12, "pattern": "Actor"}
     )
@@ -104,3 +104,35 @@ def test_boundary_row_still_returns_rows_instead_of_stranding_the_read():
         or payload.get("_truncated", {}).get("returned_count", 0) >= 1
     )
     assert connection.send_command.call_count == 1
+
+
+def test_boundary_row_never_suggests_a_limit_retry():
+    # Every `limit` page carries the same continuation envelope, so a limit retry cannot
+    # return the boundary row; the truncation hint must name narrowing instead.
+    blob = MAX_RESPONSE_CHARS - 380
+    router, _ = _router(
+        "level", {"matches": _actors(12, blob=blob), "count": 12, "pattern": "Actor"}
+    )
+
+    payload = json.loads(router("find_actors", {"pattern": "Actor"}))
+
+    suggestion = payload.get("_truncated", {}).get("suggestion", payload.get("_suggestion", ""))
+    assert suggestion
+    # "size limit" is the budget's name; the retry advice must not be `limit`.
+    assert "pass 'limit'" not in suggestion.lower()
+
+
+def test_few_oversized_rows_refuse_with_narrowing_not_limit():
+    # Fewer than the truncator's minimum list size: no page can be returned, and the refusal
+    # must not advise a limit retry that would hit the same envelope.
+    blob = MAX_RESPONSE_CHARS - 100
+    router, _ = _router(
+        "level", {"matches": _actors(3, blob=blob), "count": 3, "pattern": "Actor"}
+    )
+
+    payload = json.loads(router("find_actors", {"pattern": "Actor"}))
+
+    assert payload["_error"] == "RESPONSE_TOO_LARGE"
+    suggestion = payload["_suggestion"].lower()
+    assert "pass 'limit'" not in suggestion
+    assert "narrow" in suggestion or "fewer" in suggestion or "scope" in suggestion

@@ -417,15 +417,15 @@ def _serve_cached_first_page(qualified: str, data: dict, params: dict) -> str:
         return _cursor_expired(qualified)
     if not _is_too_large_refusal(text):
         return text
-    # The first row fits only without the continuation envelope: fall back to the generic
-    # truncation, which returns the row with `_truncated` progress instead of stranding the
-    # whole read behind a refusal. Reads whose single row exceeds every envelope still refuse.
+    # The first row fits only without the continuation envelope. The generic truncation
+    # returns the row with `_truncated` progress; a `limit` retry cannot help here because
+    # every page carries the same envelope, so the hint names narrowing instead.
     return format_response(
         data,
         f"{qualified.partition('.')[0]}_cmd",
         qualified_command=qualified,
         request_params=params,
-        pages=True,
+        pages=False,
     )
 
 

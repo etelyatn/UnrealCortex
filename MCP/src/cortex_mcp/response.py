@@ -142,8 +142,8 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
 # validator refuses an undeclared `limit` and a wrong suggestion costs a repeat call.
 _TRUNCATION_HINT = "Pass 'limit' parameter to paginate through results."
 _NARROWING_HINT = (
-    "This read does not page; narrow the request (filter, narrower scope, or fewer "
-    "requested items) and re-run."
+    "The response exceeds the size budget; narrow the request (filter, narrower scope, or "
+    "fewer requested items) and re-run."
 )
 
 

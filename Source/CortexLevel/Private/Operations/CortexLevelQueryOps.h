@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
 
+class AActor;
+
 class FCortexLevelQueryOps
 {
 public:
