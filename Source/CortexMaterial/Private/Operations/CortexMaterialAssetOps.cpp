@@ -29,6 +29,26 @@ namespace
 {
 static constexpr int32 SM6_MAX_COLLECTION_REFERENCES = 2;
 
+// Packages that hard-reference the given package, from registry data only (no synchronous loads).
+// A UMaterialInstanceConstant's only hard reference to its parent material is the Parent pointer,
+// so the MIC-class assets in this set are exactly the material's direct instances (issue #224).
+static TSet<FName> GetHardReferencerPackages(IAssetRegistry& AssetRegistry, const FName PackageName)
+{
+	const UE::AssetRegistry::FDependencyQuery Query(UE::AssetRegistry::EDependencyQuery::Hard);
+
+	TArray<FName> ReferencerNames;
+	TSet<FName> Referencers;
+	if (AssetRegistry.GetReferencers(
+		PackageName, ReferencerNames, UE::AssetRegistry::EDependencyCategory::Package, Query))
+	{
+		for (const FName ReferencerName : ReferencerNames)
+		{
+			Referencers.Add(ReferencerName);
+		}
+	}
+	return Referencers;
+}
+
 // Collect distinct MPC references from top-level material expressions.
 static void CollectReferencedCollections(
 	const UMaterial* Material,
@@ -491,25 +511,24 @@ FCortexCommandResult FCortexMaterialAssetOps::GetMaterial(const TSharedPtr<FJson
 	ParamCount->SetNumberField(TEXT("vector"), VectorParams.Num());
 	ParamCount->SetNumberField(TEXT("texture"), TextureParams.Num());
 
-	// Count material instances
+	// Count material instances from registry referencer data; no synchronous loads (issue #224).
 	IAssetRegistry* AssetRegistry = IAssetRegistry::Get();
 	int32 InstanceCount = 0;
 	if (AssetRegistry)
 	{
-		FARFilter InstanceFilter;
-		InstanceFilter.ClassPaths.Add(UMaterialInstanceConstant::StaticClass()->GetClassPathName());
-		InstanceFilter.bRecursiveClasses = true;
-
-		TArray<FAssetData> AllInstances;
-		AssetRegistry->GetAssets(InstanceFilter, AllInstances);
-
-		for (const FAssetData& InstanceData : AllInstances)
+		const TSet<FName> ReferencerPackages = GetHardReferencerPackages(*AssetRegistry, Material->GetOutermost()->GetFName());
+		if (!ReferencerPackages.IsEmpty())
 		{
-			UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(InstanceData.GetAsset());
-			if (Instance && Instance->Parent == Material)
-			{
-				InstanceCount++;
-			}
+			// PackageNames filters by exact package; an empty list would mean "no constraint"
+			// and count every instance in the project.
+			FARFilter InstanceFilter;
+			InstanceFilter.ClassPaths.Add(UMaterialInstanceConstant::StaticClass()->GetClassPathName());
+			InstanceFilter.bRecursiveClasses = true;
+			InstanceFilter.PackageNames = ReferencerPackages.Array();
+
+			TArray<FAssetData> InstanceAssets;
+			AssetRegistry->GetAssets(InstanceFilter, InstanceAssets);
+			InstanceCount = InstanceAssets.Num();
 		}
 	}
 
@@ -694,24 +713,21 @@ FCortexCommandResult FCortexMaterialAssetOps::ListInstances(const TSharedPtr<FJs
 	TArray<FAssetData> AssetDataList;
 	AssetRegistry->GetAssets(Filter, AssetDataList);
 
+	TSet<FName> ParentReferencerPackages;
+	if (!ParentMaterialPath.IsEmpty())
+	{
+		ParentReferencerPackages = GetHardReferencerPackages(
+			*AssetRegistry, FName(*FPackageName::ObjectPathToPackageName(ParentMaterialPath)));
+	}
+
 	TArray<TSharedPtr<FJsonValue>> InstancesArray;
 	for (const FAssetData& AssetData : AssetDataList)
 	{
-		// Optional parent filter
-		if (!ParentMaterialPath.IsEmpty())
+		// Optional parent filter: packages that hard-reference the parent material's package are
+		// exactly its direct instances; no synchronous loads (issue #224).
+		if (!ParentMaterialPath.IsEmpty() && !ParentReferencerPackages.Contains(AssetData.PackageName))
 		{
-			UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(AssetData.GetAsset());
-			if (Instance && Instance->Parent)
-			{
-				if (Instance->Parent->GetPathName() != ParentMaterialPath)
-				{
-					continue;
-				}
-			}
-			else
-			{
-				continue;
-			}
+			continue;
 		}
 
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
