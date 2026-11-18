@@ -1,6 +1,7 @@
 #include "Misc/AutomationTest.h"
 #include "Operations/CortexBPCleanupOps.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "HAL/FileManager.h"
 #include "Modules/ModuleManager.h"
 #include "PackageTools.h"
