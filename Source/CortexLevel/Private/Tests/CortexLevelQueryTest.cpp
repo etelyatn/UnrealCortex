@@ -4,6 +4,8 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Editor.h"
+#include "Operations/CortexLevelQueryOps.h"
+#include "CortexLevelUtils.h"
 
 namespace
 {
@@ -499,6 +501,76 @@ bool FCortexLevelGetSelectionTest::RunTest(const FString& Parameters)
         int32 Count = 0;
         Result.Data->TryGetNumberField(TEXT("count"), Count);
         TestTrue(TEXT("Selection count should be >=1"), Count >= 1);
+    }
+
+    DeleteActorsQuery(Router, Spawned);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #225: the bounded actor scan reports whether the cap cut it.
+// Registered as a sibling of Cortex.Level.Query.GetBounds: a child path would hide the
+// parent test, because only leaves are scheduled.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelGetBoundsScanTruncatedTest,
+    "Cortex.Level.Query.GetBoundsScanTruncated",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelGetBoundsScanTruncatedTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterQuery();
+    TArray<FString> Spawned = {
+        SpawnPointLightQuery(Router, TEXT("TruncA"), FVector(10, 20, 30)),
+        SpawnPointLightQuery(Router, TEXT("TruncB"), FVector(40, 50, 60)),
+        SpawnPointLightQuery(Router, TEXT("TruncC"), FVector(70, 80, 90))
+    };
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("class"), TEXT("PointLight"));
+
+    // Command path: an exhausted scan reports scan_truncated=false.
+    FCortexCommandResult Result = Router.Execute(TEXT("level.get_bounds"), Params);
+    TestTrue(TEXT("get_bounds should succeed"), Result.bSuccess);
+    if (Result.bSuccess && Result.Data.IsValid())
+    {
+        TestTrue(TEXT("scan_truncated field must be present"), Result.Data->HasField(TEXT("scan_truncated")));
+        bool bScanTruncated = true;
+        if (Result.Data->TryGetBoolField(TEXT("scan_truncated"), bScanTruncated))
+        {
+            TestFalse(TEXT("scan_truncated must be false for an exhausted scan"), bScanTruncated);
+        }
+    }
+
+    // Helper path: a cap smaller than the candidate count sets the flag. This is the same
+    // utility GetBounds uses at the 10,000 cap; driving the command path to the cap would
+    // require more than 10,000 actors.
+    FCortexCommandResult WorldError;
+    UWorld* World = FCortexLevelUtils::GetEditorWorld(WorldError);
+    if (TestNotNull(TEXT("editor world"), World))
+    {
+        FCortexCommandResult HelperError;
+        bool bCapped = false;
+        TArray<AActor*> Capped = FCortexLevelQueryOps::CollectFilteredActors(
+            World, Params, HelperError, /*MaxScanCount=*/2, &bCapped);
+        TestTrue(TEXT("cap smaller than the candidate count sets scan_truncated"), bCapped);
+        TestFalse(TEXT("helper scan returns no error"), !HelperError.ErrorCode.IsEmpty());
+
+        // The test level may hold more PointLights than the 10,000 cap, so use a budget that
+        // definitively exhausts any realistic level for the "complete scan" control.
+        bool bExhausted = false;
+        TArray<AActor*> Exhausted = FCortexLevelQueryOps::CollectFilteredActors(
+            World, Params, HelperError, /*MaxScanCount=*/2000000, &bExhausted);
+        TestFalse(TEXT("an effectively unlimited budget does not set scan_truncated"), bExhausted);
+        TestTrue(TEXT("exhausted scan finds the spawned lights"), Exhausted.Num() >= 3);
+        TestTrue(TEXT("capped scan finds no more than the cap"), Capped.Num() <= 2);
     }
 
     DeleteActorsQuery(Router, Spawned);

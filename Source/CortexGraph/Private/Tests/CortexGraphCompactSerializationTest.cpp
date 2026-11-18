@@ -395,6 +395,47 @@ bool FCortexGraphGetNodeCompactTest::RunTest(const FString& Parameters)
 							(*PinObj)->HasField(TEXT("default_value"))
 						);
 					}
+
+					// Issue #225: default-valued pin fields are omitted in compact mode.
+					TestFalse(
+						FString::Printf(TEXT("Compact: pin[%d] 'category' duplicates 'type' and must be omitted"), i),
+						(*PinObj)->HasField(TEXT("category"))
+					);
+					FString SubCategory;
+					if (!(*PinObj)->TryGetStringField(TEXT("subcategory"), SubCategory) || SubCategory.IsEmpty())
+					{
+						TestFalse(
+							FString::Printf(TEXT("Compact: pin[%d] 'subcategory' should be omitted when empty"), i),
+							(*PinObj)->HasField(TEXT("subcategory"))
+						);
+					}
+					FString SubCategoryObject;
+					if (!(*PinObj)->TryGetStringField(TEXT("sub_category_object"), SubCategoryObject) || SubCategoryObject.IsEmpty())
+					{
+						TestFalse(
+							FString::Printf(TEXT("Compact: pin[%d] 'sub_category_object' should be omitted when empty"), i),
+							(*PinObj)->HasField(TEXT("sub_category_object"))
+						);
+					}
+					FString ContainerType;
+					if (!(*PinObj)->TryGetStringField(TEXT("container_type"), ContainerType) || ContainerType == TEXT("none"))
+					{
+						TestFalse(
+							FString::Printf(TEXT("Compact: pin[%d] 'container_type' should be omitted when 'none'"), i),
+							(*PinObj)->HasField(TEXT("container_type"))
+						);
+					}
+					for (const TCHAR* BoolField : {TEXT("is_reference"), TEXT("is_const"), TEXT("is_advanced"), TEXT("is_hidden")})
+					{
+						bool bFlag = false;
+						if (!(*PinObj)->TryGetBoolField(BoolField, bFlag) || !bFlag)
+						{
+							TestFalse(
+								FString::Printf(TEXT("Compact: pin[%d] '%s' should be omitted when false"), i, BoolField),
+								(*PinObj)->HasField(BoolField)
+							);
+						}
+					}
 				}
 			}
 		}
@@ -436,6 +477,18 @@ bool FCortexGraphGetNodeCompactTest::RunTest(const FString& Parameters)
 					TestTrue(
 						FString::Printf(TEXT("Verbose: pin[%d] 'default_value' field present"), i),
 						(*PinObj)->HasField(TEXT("default_value"))
+					);
+					TestTrue(
+						FString::Printf(TEXT("Verbose: pin[%d] 'category' field present"), i),
+						(*PinObj)->HasField(TEXT("category"))
+					);
+					TestTrue(
+						FString::Printf(TEXT("Verbose: pin[%d] 'container_type' field present"), i),
+						(*PinObj)->HasField(TEXT("container_type"))
+					);
+					TestTrue(
+						FString::Printf(TEXT("Verbose: pin[%d] 'is_hidden' field present"), i),
+						(*PinObj)->HasField(TEXT("is_hidden"))
 					);
 				}
 			}

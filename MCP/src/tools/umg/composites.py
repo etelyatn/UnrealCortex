@@ -235,8 +235,8 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
         styling (text, colors, fonts, brushes, anchors, etc.), and adds animations.
         All operations execute atomically via batch.
 
-        Use this instead of calling create_blueprint + add_widget + set_text + set_color
-        individually when building a complete UI screen from scratch.
+        Use this instead of chaining umg_cmd calls when building a complete UI
+        screen from scratch.
 
         Args:
             name: Widget Blueprint name (e.g., "WBP_MainMenu")
@@ -266,7 +266,7 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
             JSON with asset_path, widget_count, styling_count, animation_count, timing.
 
         Example:
-            create_widget_screen(
+            widget_compose(
                 name="WBP_MainMenu", path="/Game/UI/",
                 widgets=[{
                     "class": "CanvasPanel", "name": "Root",

@@ -538,8 +538,8 @@ def register_material_composite_tools(mcp, connection: UEConnection):
         properties, and wires connections between them. All operations execute atomically
         via batch - if any step fails, execution stops and returns what completed.
 
-        Use this instead of calling create_material + add_material_node + connect_material_nodes
-        individually when building a material graph from scratch.
+        Use this instead of chaining material_cmd calls when building a material graph
+        from scratch.
 
         Args:
             name: Material name (should start with M_)
@@ -555,23 +555,14 @@ def register_material_composite_tools(mcp, connection: UEConnection):
             connections: Array of connection specs using "NodeName.PinName" format:
                 - from: Source "NodeName.OutputPin" (e.g., "MyParam.0", "Diffuse.RGBA")
                 - to: Target "NodeName.InputPin" or "Material.InputName"
-
-                Output pin conventions (source_output):
-                    Most nodes have a single output — use "0" (e.g., "Time.0", "Multiply.0")
-                    Texture nodes have named outputs: "RGBA", "RGB", "R", "G", "B", "A"
-
-                Input pin conventions (target_input):
-                    Math ops (Multiply, Add, Subtract, Divide): "A", "B"
-                    Single-input ops (Sine, Cosine, Abs, OneMinus, Floor, Ceil, Frac): "Input"
-                    Lerp/LinearInterpolate: "A", "B", "Alpha"
-                    Clamp: "Input", "Min", "Max"
-                    Power: "Base", "Exp"
-                    TextureSample: "UVs", "Tex"
-                    Panner: "Coordinate", "Time", "Speed"
-                    Fresnel: "ExponentIn", "BaseReflectFractionIn", "Normal"
-
-                Material result inputs: BaseColor, Normal, Metallic, Roughness,
-                    Specular, EmissiveColor, Opacity, OpacityMask, WorldPositionOffset
+                Most nodes have a single output — use "0" (e.g., "Time.0", "Multiply.0");
+                texture nodes have named outputs "RGBA", "RGB", "R", "G", "B", "A".
+                Inputs: math ops "A"/"B"; single-input ops "Input"; Lerp "A"/"B"/"Alpha";
+                Clamp "Input"/"Min"/"Max"; Power "Base"/"Exp"; TextureSample "UVs"/"Tex";
+                Panner "Coordinate"/"Time"/"Speed"; Fresnel "ExponentIn"/
+                "BaseReflectFractionIn"/"Normal".
+                Material result inputs: BaseColor, Normal, Metallic, Roughness, Specular,
+                EmissiveColor, Opacity, OpacityMask, WorldPositionOffset.
             material_properties: Optional dict of material-level properties to set.
                 Keys are property names, values are the property values.
                 Applied after material creation, before adding nodes.
@@ -588,7 +579,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
             On failure: summary, asset_path, completed_steps, failed_step, total_steps.
 
         Example:
-            create_material_graph(
+            material_compose(
                 name="M_WoodFloor",
                 path="/Game/Materials/",
                 nodes=[

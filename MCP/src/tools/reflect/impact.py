@@ -88,11 +88,11 @@ def register_reflect_impact_tools(mcp, connection: UEConnection):
     ) -> str:
         """Use when you need a complete risk assessment before a breaking change.
 
-        Prefer this over manually calling get_referencers + query_usages: it orchestrates discovery
+        Prefer this over manually calling reflect_cmd(command="get_referencers", ...) + reflect_cmd(command="find_usages", ...): it orchestrates discovery
         and applies risk scoring. `change_type` is 'removed_function', 'removed_class',
         'changed_property', 'removed_interface' or 'changed_hierarchy'; `deep_scan=true` loads
         unloaded Blueprints for fuller coverage; `path_filter` scopes the analysis. For simple asset
-        dependency checks use `get_referencers` instead.
+        dependency checks use `reflect_cmd(command="get_referencers", params={"asset_path": ...})`.
 
         Returns a summary plus affected Blueprints grouped by risk with usage details, and
         not_scanned metadata when coverage is partial.

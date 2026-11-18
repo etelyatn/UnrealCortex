@@ -5,7 +5,6 @@ import logging
 from cortex_mcp.tcp_client import UEConnection
 from cortex_mcp.response import format_response
 from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
-from .detail import _NATIVE_DETAIL, _VALID_DETAILS, _prune_detail
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +13,39 @@ _TTL_CONTEXT = 1800  # 30 min
 # The child page is requested at one bounded size; the native response's own traversal-exhaustion
 # signal (`truncated`) is the authoritative completeness proof for that page.
 _CHILDREN_MAX_RESULTS = 20
+
+# Detail levels of the self view, and the native extraction mode each one forwards.
+# summary: enough to understand relationships. properties: + structural data. full: + functions.
+_SUMMARY_FIELDS = {
+    "name", "type", "parent", "module", "asset_path",
+    "source_path", "blueprint_children_count",
+}
+_PROPERTIES_FIELDS = _SUMMARY_FIELDS | {"properties", "interfaces", "components"}
+_FULL_FIELDS = _PROPERTIES_FIELDS | {"functions"}
+
+# Coverage/error metadata is not a presentation level: a native reason why a read is incomplete
+# (an unreadable CDO, a partial result, an error envelope) must survive every projection, or the
+# caller cannot tell a genuinely empty result from an unreadable one.
+_COVERAGE_FIELDS = {"cdo_unavailable", "_message", "error", "error_code"}
+
+_VALID_DETAILS = ("summary", "properties", "full")
+# Native implements summary and full only; the properties view is the native full extraction
+# followed by the existing Python allowlist, so only 'summary' requests the reduced native read.
+_NATIVE_DETAIL = {"summary": "summary", "properties": "full", "full": "full"}
+
+
+def _prune_detail(data: dict, detail: str) -> dict:
+    """Prune response fields based on detail level, always keeping coverage/error metadata."""
+    if detail == "full":
+        allowed = _FULL_FIELDS
+    elif detail == "properties":
+        allowed = _PROPERTIES_FIELDS
+    else:
+        allowed = _SUMMARY_FIELDS
+
+    allowed = allowed | _COVERAGE_FIELDS
+    return {k: v for k, v in data.items() if k in allowed}
+
 
 
 def register_reflect_context_tools(mcp, connection: UEConnection):

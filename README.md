@@ -12,7 +12,7 @@
 
 Your AI assistant can already write code. UnrealCortex lets it work *inside* the editor — querying DataTables, editing Blueprint graphs, building UMG hierarchies, placing actors, converting Blueprints to C++, analyzing Blueprints for bugs and performance issues, generating 3D assets, playing and testing your game autonomously, and replaying gameplay you recorded by hand, frame for frame. No copy-pasting, no file exports. Changes appear live with full undo support.
 
-> **Status:** v0.4.19 Beta — All 15 modules shipped and tested.
+> **Status:** v0.4.20 Beta — All 15 modules shipped and tested.
 
 ---
 
@@ -579,7 +579,7 @@ These are the current boundaries of the beta. They're on the roadmap but not yet
 - **Widget animation track scope:** Guarded authoring supports ordinary named Designer widgets with float/linear-color/Slate-color tracks and linear/constant keys. Root user-widget, slot/dynamic bindings, object/bool/custom tracks, double and cubic interpolation remain unsupported.
 - **Blueprint compile diagnostics:** `bp.compile` returns success/failure with structured diagnostics, but error-to-node mapping depends on compiler message format consistency
 - **Concurrent input sequences:** `run_input_sequence` works correctly for single-agent use; concurrent sequences from multiple agents may route callbacks incorrectly
-- **Reflect coverage:** `query_class_hierarchy` and `find_usages` only see Blueprint classes loaded in memory; unloaded Blueprints are silently skipped
+- **Reflect coverage:** `reflect_cmd` hierarchy and usage reads only see Blueprint classes loaded in memory; unloaded Blueprints are silently skipped
 - **Batch pipeline:** No transactional rollback; if a batch step fails, completed steps are not undone
 
 ---

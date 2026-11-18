@@ -10,11 +10,47 @@ from tools.blueprint.composites import register_blueprint_composite_tools
 
 _BP_DISAMBIG = (
     "COMPOSITE tool — use for creating or updating a Blueprint with variables, "
-    "functions, and graph logic. For individual Blueprint commands use blueprint_cmd.\n\n"
+    "functions, and graph logic. For individual Blueprint commands use blueprint_cmd.\n"
+)
+
+_CREATE_DOC = (
+    "\nmode='create' (default) creates a new Blueprint in one stop-on-error batch: variables,\n"
+    "functions, graph nodes, pin values and connections. A partial asset is deleted when a step\n"
+    "fails; this is recovery, not an atomic transaction. Fields: name, path, type (Actor,\n"
+    "Component, Interface, FunctionLibrary — Widget Blueprints use widget_compose), parent_class\n"
+    "(optional C++ class path, e.g. \"/Script/Engine.Character\"), graph_name (default\n"
+    "\"EventGraph\"), variables ([{name, type, default_value?, is_exposed?, category?}]),\n"
+    "functions ([{name, is_pure?, access?}]), nodes, connections.\n"
+    "\n"
+    "nodes: [{name, class, params?, pin_values?, pin_text_values?}]. Common classes: Event,\n"
+    "CustomEvent, CallFunction, Branch, Sequence, VariableGet, VariableSet, SpawnActor, CastTo,\n"
+    "Timeline (params.timeline_name), MacroInstance (params.macro_path), AddDelegate/BindEvent\n"
+    "(params.delegate_name + optional params.delegate_class; RemoveDelegate/UnbindEvent and\n"
+    "ClearDelegate/UnbindAllEvents take the same params), CreateDelegate/CreateEvent\n"
+    "(params.function_name — bare name, not Class.Function). ForEach loops are CallFunction with\n"
+    "function_name \"KismetArrayLibrary.Array_ForEach\". pin_text_values is a map keyed by pin\n"
+    "name: {\"InText\": {\"type\": \"FText\", \"source_kind\": \"string_table\", \"value\": \"Pay\",\n"
+    "\"string_table\": {\"table_id\": \"/Game/UI/ST_UI.ST_UI\", \"key\": \"Mail.Button.Pay\"}}}.\n"
+    "\n"
+    "connections: [{from: \"NodeName.PinName\", to: \"NodeName.PinName\"}] (e.g. \"BeginPlay.then\" ->\n"
+    "\"PrintString.execute\"). Common pin names: Event outputs \"then\"; CallFunction inputs\n"
+    "\"execute\", outputs \"then\"; Branch \"Condition\"/\"True\"/\"False\"; Sequence \"then 0\",\n"
+    "\"then 1\", ...; VariableGet output is the variable name; VariableSet inputs \"execute\" +\n"
+    "variable name, outputs \"then\"; AddDelegate/RemoveDelegate inputs \"self\" (Target) and\n"
+    "\"Delegate\" (Event); CreateDelegate inputs \"self\" (Object), outputs \"OutputDelegate\".\n"
+    "Self-context delegates (no delegate_class) require a pre-compiled Blueprint.\n"
+    "\n"
+    "Example:\n"
+    "  blueprint_compose(name=\"BP_HealthActor\", path=\"/Game/Blueprints/\",\n"
+    "    variables=[{\"name\": \"Health\", \"type\": \"float\", \"default_value\": \"100.0\", \"is_exposed\": True}],\n"
+    "    nodes=[{\"name\": \"BeginPlay\", \"class\": \"Event\", \"params\": {\"function_name\": \"Actor.ReceiveBeginPlay\"}},\n"
+    "           {\"name\": \"PrintHealth\", \"class\": \"CallFunction\", \"params\": {\"function_name\": \"KismetSystemLibrary.PrintString\"},\n"
+    "            \"pin_values\": {\"InString\": \"Actor spawned!\"}}],\n"
+    "    connections=[{\"from\": \"BeginPlay.then\", \"to\": \"PrintHealth.execute\"}])\n"
 )
 
 _SAFE_UPDATE_DOC = (
-    "\n\nSafe update mode:\n"
+    "\nSafe update mode:\n"
     "  blueprint_compose(mode='update', asset_path='/Game/BP_X.BP_X', patch={...})\n"
     "Updates other than `prune_island` and `retire_entries` use the normal reviewed patch flow. "
     "`prune_island` and `retire_entries` are complete-approval migrations: their previews must be "
@@ -149,7 +185,7 @@ def register_blueprint_compose_tools(mcp, connection) -> None:
     register_blueprint_composite_tools(_CaptureMCP(), connection)
 
     # Build description BEFORE decoration — FastMCP reads description= at decoration time
-    _bp_doc = _BP_DISAMBIG + _SAFE_UPDATE_DOC + (captured.get("create_blueprint_graph").__doc__ or "")
+    _bp_doc = _BP_DISAMBIG + _CREATE_DOC + _SAFE_UPDATE_DOC
 
     @mcp.tool(name="blueprint_compose", description=_bp_doc)
     def blueprint_compose(

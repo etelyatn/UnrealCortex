@@ -327,8 +327,8 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 			TEXT("Optional array of Blueprint types to omit (same vocabulary as type); combines with type")));
 	Commands.Add(FCortexCommandInfo{TEXT("get_info"), TEXT("Get Blueprint info")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
-		.Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited C++ functions (default: true)"))
-		.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit empty inputs/outputs arrays and source field (default: true)")));
+		.Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited C++ functions (default: false)"))
+		.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit empty inputs/outputs arrays (default: true); source is emitted when inherited functions are listed")));
 	Commands.Add(FCortexCommandInfo{TEXT("delete"), TEXT("Delete a Blueprint asset")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("force"), TEXT("boolean"), TEXT("Delete without additional confirmation")));

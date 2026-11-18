@@ -1541,8 +1541,17 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(
 	PinEntry->SetStringField(TEXT("name"), Pin->PinName.ToString());
 	PinEntry->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("input") : TEXT("output"));
 	PinEntry->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
-	PinEntry->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
-	PinEntry->SetStringField(TEXT("subcategory"), Pin->PinType.PinSubCategory.ToString());
+	// Compact mode omits default-valued fields (issue #225): category duplicates type, and an
+	// empty subcategory carries no information. Verbose mode keeps every field.
+	if (!bCompact)
+	{
+		PinEntry->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
+		PinEntry->SetStringField(TEXT("subcategory"), Pin->PinType.PinSubCategory.ToString());
+	}
+	else if (!Pin->PinType.PinSubCategory.IsNone())
+	{
+		PinEntry->SetStringField(TEXT("subcategory"), Pin->PinType.PinSubCategory.ToString());
+	}
 
 	FString SubCategoryObjectPath;
 	if (Pin->PinType.PinSubCategoryObject.IsValid())
@@ -1565,7 +1574,10 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(
 			}
 		}
 	}
-	PinEntry->SetStringField(TEXT("sub_category_object"), SubCategoryObjectPath);
+	if (!bCompact || !SubCategoryObjectPath.IsEmpty())
+	{
+		PinEntry->SetStringField(TEXT("sub_category_object"), SubCategoryObjectPath);
+	}
 
 	FString ContainerTypeStr = TEXT("none");
 	switch (Pin->PinType.ContainerType)
@@ -1582,7 +1594,10 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(
 	default:
 		break;
 	}
-	PinEntry->SetStringField(TEXT("container_type"), ContainerTypeStr);
+	if (!bCompact || ContainerTypeStr != TEXT("none"))
+	{
+		PinEntry->SetStringField(TEXT("container_type"), ContainerTypeStr);
+	}
 
 	if (Pin->PinType.ContainerType == EPinContainerType::Map || !Pin->PinType.PinValueType.TerminalCategory.IsNone())
 	{
@@ -1595,10 +1610,22 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializePin(
 		PinEntry->SetObjectField(TEXT("map_terminal_type"), TermObj);
 	}
 
-	PinEntry->SetBoolField(TEXT("is_reference"), (bool)Pin->PinType.bIsReference);
-	PinEntry->SetBoolField(TEXT("is_const"), (bool)Pin->PinType.bIsConst);
-	PinEntry->SetBoolField(TEXT("is_advanced"), (bool)Pin->bAdvancedView);
-	PinEntry->SetBoolField(TEXT("is_hidden"), (bool)Pin->bHidden);
+	if (!bCompact || Pin->PinType.bIsReference)
+	{
+		PinEntry->SetBoolField(TEXT("is_reference"), (bool)Pin->PinType.bIsReference);
+	}
+	if (!bCompact || Pin->PinType.bIsConst)
+	{
+		PinEntry->SetBoolField(TEXT("is_const"), (bool)Pin->PinType.bIsConst);
+	}
+	if (!bCompact || Pin->bAdvancedView)
+	{
+		PinEntry->SetBoolField(TEXT("is_advanced"), (bool)Pin->bAdvancedView);
+	}
+	if (!bCompact || Pin->bHidden)
+	{
+		PinEntry->SetBoolField(TEXT("is_hidden"), (bool)Pin->bHidden);
+	}
 
 	if (Pin->Direction == EGPD_Input)
 	{

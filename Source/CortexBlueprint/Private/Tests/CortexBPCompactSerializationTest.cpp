@@ -50,7 +50,7 @@ bool FCortexBPGetInfoCompactTest::RunTest(const FString& Parameters)
 	}
 
 	// -----------------------------------------------------------------------
-	// Test 1: compact=true (default) — source absent, empty arrays stripped
+	// Test 1: compact=true (default) — source present when inherited listed, empty arrays stripped
 	// -----------------------------------------------------------------------
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -124,7 +124,9 @@ bool FCortexBPGetInfoCompactTest::RunTest(const FString& Parameters)
 				}
 			}
 
-			TestFalse(TEXT("[Compact] source field should be absent on all functions"), bFoundAnySource);
+			// Issue #225: when inherited functions are listed (include_inherited=true), compact
+			// mode emits source on every entry so own and inherited stay distinguishable.
+			TestTrue(TEXT("[Compact] source field present on functions when inherited functions are listed"), bFoundAnySource);
 			TestFalse(TEXT("[Compact] empty inputs arrays should be stripped"), bFoundEmptyInputsArray);
 			TestFalse(TEXT("[Compact] empty outputs arrays should be stripped"), bFoundEmptyOutputsArray);
 			TestTrue(TEXT("[Compact] non-empty inputs array should be present for MyTestFunc"), bFoundNonEmptyInputs);

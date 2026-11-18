@@ -1,24 +1,19 @@
-"""Reflect domain tools for CortexMCP."""
+"""Reflect domain tools for CortexMCP.
 
-from .hierarchy import register_reflect_hierarchy_tools
-from .detail import register_reflect_detail_tools
-from .overrides import register_reflect_override_tools
-from .dependencies import register_reflect_dependency_tools
-from .referencers import register_reflect_referencer_tools
-from .impact import register_reflect_impact_tools
-from .usages import register_reflect_usage_tools
+The thin wrappers over commands ``reflect_cmd`` already lists were removed (UnrealCortex
+issue #225): ``get_dependencies``, ``get_referencers``, ``query_class_detail``,
+``query_class_hierarchy``, ``query_overrides`` and ``query_usages`` duplicated the router
+at ~5.7K characters of default tool listing. The remaining standalones wrap commands the
+router does not list or add projection it cannot.
+"""
+
 from .cache import register_reflect_cache_tools
 from .context import register_reflect_context_tools
+from .impact import register_reflect_impact_tools
 
 
 def register_reflect_tools(mcp, connection):
     """Register all Reflect domain tools."""
-    register_reflect_hierarchy_tools(mcp, connection)
-    register_reflect_detail_tools(mcp, connection)
-    register_reflect_override_tools(mcp, connection)
-    register_reflect_dependency_tools(mcp, connection)
-    register_reflect_referencer_tools(mcp, connection)
-    register_reflect_impact_tools(mcp, connection)
-    register_reflect_usage_tools(mcp, connection)
     register_reflect_cache_tools(mcp, connection)
     register_reflect_context_tools(mcp, connection)
+    register_reflect_impact_tools(mcp, connection)

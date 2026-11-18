@@ -248,9 +248,9 @@ def test_registrar_leaves_non_json_failure_text_opaque():
 # Reflect standalone tools (previously: UECommandError raised, ConnectionError as text)
 # --------------------------------------------------------------------------------------
 
-def test_query_class_detail_surfaces_the_editor_suggestions_as_a_canonical_error():
+def test_query_class_context_surfaces_the_editor_suggestions_as_a_canonical_error():
     async def scenario():
-        from tools.reflect.detail import register_reflect_detail_tools
+        from tools.reflect.context import register_reflect_context_tools
 
         connection = _FakeConnection(
             error=UECommandError(
@@ -261,9 +261,9 @@ def test_query_class_detail_surfaces_the_editor_suggestions_as_a_canonical_error
             )
         )
         mcp, registrar = _registrar_server()
-        register_reflect_detail_tools(registrar, connection)
+        register_reflect_context_tools(registrar, connection)
 
-        result = await mcp.call_tool("query_class_detail", {"class_name": "Nope"})
+        result = await mcp.call_tool("query_class_context", {"class_name": "Nope"})
         payload = _assert_canonical_failure(
             result, code="CLASS_NOT_FOUND", message_contains="Nope"
         )
@@ -272,35 +272,37 @@ def test_query_class_detail_surfaces_the_editor_suggestions_as_a_canonical_error
     _run(scenario)
 
 
-def test_query_class_detail_connection_failure_is_a_canonical_connection_error():
+def test_query_class_context_connection_failure_is_a_canonical_connection_error():
     async def scenario():
-        from tools.reflect.detail import register_reflect_detail_tools
+        from tools.reflect.context import register_reflect_context_tools
 
         connection = _FakeConnection(error=ConnectionError("editor not reachable"))
         mcp, registrar = _registrar_server()
-        register_reflect_detail_tools(registrar, connection)
+        register_reflect_context_tools(registrar, connection)
 
-        result = await mcp.call_tool("query_class_detail", {"class_name": "AActor"})
+        result = await mcp.call_tool("query_class_context", {"class_name": "AActor"})
         _assert_canonical_failure(result, code="CONNECTION_ERROR")
 
     _run(scenario)
 
 
-def test_query_class_detail_success_is_not_an_error_result():
+def test_query_class_context_success_is_not_an_error_result():
     async def scenario():
-        from tools.reflect.detail import register_reflect_detail_tools
+        from tools.reflect.context import register_reflect_context_tools
 
         connection = _FakeConnection(
             responses=[
-                {"success": True, "data": {"name": "AActor", "type": "class", "parent": "UObject"}}
+                {"success": True, "data": {"name": "AActor", "type": "class", "parent": "UObject"}},
+                {"success": True, "data": {"name": "UObject", "type": "class"}},
+                {"success": True, "data": {"name": "AActor", "children": [], "truncated": False}},
             ]
         )
         mcp, registrar = _registrar_server()
-        register_reflect_detail_tools(registrar, connection)
+        register_reflect_context_tools(registrar, connection)
 
-        result = await mcp.call_tool("query_class_detail", {"class_name": "AActor"})
+        result = await mcp.call_tool("query_class_context", {"class_name": "AActor"})
         assert result.isError is False
-        assert _payload(result)["name"] == "AActor"
+        assert _payload(result)["self"]["name"] == "AActor"
 
     _run(scenario)
 
@@ -583,7 +585,10 @@ def test_oversized_response_without_an_array_refusal_has_a_message():
 
     payload = _assert_canonical_failure(result, code="RESPONSE_TOO_LARGE")
     assert isinstance(payload["_size"], int) and payload["_size"] > 40000
-    assert "limit" in payload["_suggestion"]
+    # A read with no truncatable array does not page: the hint must not advise `limit`
+    # (issue #225) and must name narrowing instead.
+    assert "pass 'limit'" not in payload["_suggestion"].lower()
+    assert "narrow" in payload["_suggestion"].lower()
 
 
 def test_oversized_single_array_entry_refusal_has_a_message():

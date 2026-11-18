@@ -904,7 +904,8 @@ async def test_scenario_typed_authoring_out_and_ref_implementation_signatures(mc
         terminator = next(node for node in subgraph["nodes"] if node["class"] == "K2Node_FunctionResult")
         assert pin(subgraph, entry["node_id"], "Title")["is_reference"] is True
         assert pin(subgraph, terminator["node_id"], "OutTitle")["direction"] == "input"
-        assert pin(subgraph, terminator["node_id"], "OutTitle")["category"] == "text"
+        # Compact reads omit pin `category` (duplicate of `type`, issue #225).
+        assert pin(subgraph, terminator["node_id"], "OutTitle")["type"] == "text"
     finally:
         await run.cleanup()
 

@@ -828,12 +828,18 @@ REFLECT_STANDALONE_TOOL_NAMES = frozenset({
     "reflect_cache_status",
     "rebuild_graph_cache",
     "query_class_context",
+    "impact_analysis",
+})
+
+# The six thin reflect wrappers (get_dependencies, get_referencers, query_class_detail,
+# query_class_hierarchy, query_overrides, query_usages) were removed: reflect_cmd already
+# lists the commands they wrapped. They must not come back through any preset.
+REMOVED_REFLECT_WRAPPERS = frozenset({
     "get_dependencies",
+    "get_referencers",
     "query_class_detail",
     "query_class_hierarchy",
-    "impact_analysis",
     "query_overrides",
-    "get_referencers",
     "query_usages",
 })
 

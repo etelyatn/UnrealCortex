@@ -122,7 +122,29 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
         "and re-run, or use reflect.find_usages / reflect.get_referencers (include_config) on the "
         "specific assets in question."
     ),
+    "graph.trace_exec": (
+        "Re-run with a smaller 'max_depth', or start the trace closer to the nodes you need; "
+        "the traversal nodes/edges are never paged."
+    ),
+    "graph.trace_dataflow": (
+        "Re-run with a smaller 'max_depth', or start the trace closer to the nodes you need; "
+        "the traversal nodes/edges are never paged."
+    ),
+    # Routed form: `reflect_cmd` passes qualified_command="reflect.class_hierarchy".
+    "reflect.class_hierarchy": (
+        "Re-run with a smaller 'max_results' or a narrower 'root'; the hierarchy is never paged."
+    ),
 }
+
+
+# The generic truncator's suggestions. Only reads whose owner pages with `limit` may
+# advertise it; every other read must name narrowing, because the native declared-contract
+# validator refuses an undeclared `limit` and a wrong suggestion costs a repeat call.
+_TRUNCATION_HINT = "Pass 'limit' parameter to paginate through results."
+_NARROWING_HINT = (
+    "The response exceeds the size budget; narrow the request (filter, narrower scope, or "
+    "fewer requested items) and re-run."
+)
 
 
 def _find_largest_list(data: dict) -> str | None:
@@ -454,6 +476,7 @@ def format_response(
     detail: bool = False,
     qualified_command: str | None = None,
     request_params: dict | None = None,
+    pages: bool = False,
 ) -> str:
     """Serialize data to JSON, truncating array results if over size limit.
 
@@ -478,6 +501,9 @@ def format_response(
         qualified_command: The exact routed read command (e.g. ``data.get_data_asset``), used to
             resolve the complete-or-refuse selector policy.
         request_params: The caller's selector/window, kept as context for refusals and errors.
+        pages: True only when the caller's read pages with ``limit`` (cache-owned pagination
+            owners). The generic truncation/refusal hints name ``limit`` only then; otherwise
+            they name narrowing, because the native owner refuses an undeclared ``limit``.
 
     Returns:
         JSON string, guaranteed under MAX_RESPONSE_CHARS.
@@ -718,7 +744,7 @@ def format_response(
                 "truncatable array; the complete result was refused."
             ),
             "_size": len(compact_json(working_data)),
-            "_suggestion": "Pass 'limit' parameter to paginate through results.",
+            "_suggestion": _TRUNCATION_HINT if pages else _NARROWING_HINT,
         })
 
     target_list = working_data[array_key]
@@ -745,7 +771,7 @@ def format_response(
         trial["_truncated"] = {
             "original_count": original_count,
             "returned_count": mid,
-            "suggestion": "Pass 'limit' parameter to paginate through results.",
+            "suggestion": _TRUNCATION_HINT if pages else _NARROWING_HINT,
         }
         trial_text = compact_json(trial)
         if len(trial_text) <= MAX_RESPONSE_CHARS:
@@ -787,7 +813,7 @@ def format_response(
     truncated["_truncated"] = {
         "original_count": original_count,
         "returned_count": best,
-        "suggestion": "Pass 'limit' parameter to paginate through results.",
+        "suggestion": _TRUNCATION_HINT if pages else _NARROWING_HINT,
     }
 
     logger.info(

@@ -376,6 +376,7 @@ def _handle_limit_request(qualified: str, params: dict, limit: int, connection) 
             f"{qualified.partition('.')[0]}_cmd",
             qualified_command=qualified,
             request_params=params,
+            pages=True,
         )
 
     template = {k: v for k, v in data.items() if k != array_key}
@@ -386,6 +387,63 @@ def _handle_limit_request(qualified: str, params: dict, limit: int, connection) 
         return _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
     except KeyError:
         return _cursor_expired(qualified)
+
+
+def _serve_cached_first_page(qualified: str, data: dict, params: dict) -> str:
+    """Serve an oversized cache-owned read without ``limit`` as page 1 plus a cursor.
+
+    The read already executed, so its rows are snapshotted (mirroring ``core.batch_query``)
+    instead of being truncated with a suggestion the caller must re-run the whole read to
+    use. Page 1 is the largest page that fits the budget; ``next_cursor`` continuations
+    retrieve the remaining rows from the snapshot without another native dispatch. A
+    missing primary array never enters this path (the caller checks before dispatch).
+    """
+    array_key = CACHED_PAGE_ARRAYS[qualified]
+    full_list = data.get(array_key)
+    if not isinstance(full_list, list) or not full_list:
+        return format_response(
+            data,
+            f"{qualified.partition('.')[0]}_cmd",
+            qualified_command=qualified,
+            request_params=params,
+            pages=True,
+        )
+
+    template = {k: v for k, v in data.items() if k != array_key}
+    clean_params = {k: v for k, v in params.items() if k not in ("limit", "cursor")}
+    cache_key = _pagination_cache.store(qualified, clean_params, array_key, full_list, template)
+    limit = min(len(full_list), _MAX_LIMIT)
+    try:
+        page, meta = _pagination_cache.get_page(cache_key, offset=0, limit=limit)
+        text = _format_cached_page(qualified, array_key, cache_key, 0, limit, page, meta["total"])
+    except KeyError:
+        return _cursor_expired(qualified)
+    if not _is_too_large_refusal(text):
+        return text
+    # The first row fits only without the continuation envelope. The generic truncation
+    # returns the row with `_truncated` progress; a `limit` retry cannot help here because
+    # every page carries the same envelope, so the hint names narrowing instead.
+    return format_response(
+        data,
+        f"{qualified.partition('.')[0]}_cmd",
+        qualified_command=qualified,
+        request_params=params,
+        pages=False,
+    )
+
+
+# Fields of the routed `detail="properties"` class view. Coverage/error metadata is not a
+# presentation level: an unreadable CDO or a partial result must survive the projection.
+_CLASS_DETAIL_PROPERTIES_FIELDS = frozenset({
+    "name", "type", "parent", "module", "asset_path", "source_path",
+    "blueprint_children_count", "interfaces", "properties", "components",
+    "cdo_unavailable", "_message", "error", "error_code",
+})
+
+
+def _project_class_detail_properties(data: dict) -> dict:
+    """Project a native full class_detail read down to the properties view (no functions)."""
+    return {k: v for k, v in data.items() if k in _CLASS_DETAIL_PROPERTIES_FIELDS}
 
 
 _EXECUTED_BATCH_NOTE = (
@@ -837,30 +895,50 @@ def make_router(domain: str, connection, docstring: str) -> Callable[[str, dict 
                 # discard what the caller sent and hide an undeclared `limit` from the native
                 # declared-contract validator that exists to refuse it.
 
-            # No pagination — normal dispatch
+            # No pagination — normal dispatch. A cache-owned read that overflows without
+            # `limit` is snapshotted and served as page 1 plus a cursor rather than truncated.
+            pages = qualified in CACHED_PAGE_ARRAYS
             if (domain, command) in _CACHED_READ_COMMANDS:
                 response = connection.send_command_cached(
                     qualified,
                     route_params,
                     ttl=_CACHED_READ_TTL,
                 )
+                data = _response_data(response)
+                if pages and len(compact_json(data)) > MAX_RESPONSE_CHARS:
+                    return _serve_cached_first_page(qualified, data, route_params)
                 return format_response(
-                    _response_data(response),
+                    data,
                     f"{domain}_cmd",
                     qualified_command=qualified,
                     request_params=route_params,
+                    pages=pages,
                 )
+            # The routed class-detail read keeps the former wrapper's `properties` view: the
+            # native owner implements summary/full only, so `properties` is a native full read
+            # with function signatures projected out before response budgeting.
+            project_class_detail = False
+            caller_params = route_params
+            if (domain, command) == ("reflect", "class_detail") and route_params.get("detail") == "properties":
+                route_params = {**route_params, "detail": "full"}
+                project_class_detail = True
 
             dispatch_timeout = _dispatch_timeout(qualified, route_params)
             if dispatch_timeout is None:
                 response = connection.send_command(qualified, route_params)
             else:
                 response = connection.send_command(qualified, route_params, timeout=dispatch_timeout)
+            data = _response_data(response)
+            if project_class_detail:
+                data = _project_class_detail_properties(data)
+            if pages and len(compact_json(data)) > MAX_RESPONSE_CHARS:
+                return _serve_cached_first_page(qualified, data, route_params)
             return format_response(
-                _response_data(response),
+                data,
                 f"{domain}_cmd",
                 qualified_command=qualified,
-                request_params=route_params,
+                request_params=caller_params,
+                pages=pages,
             )
         except UECommandError as exc:
             return _format_ue_command_error(
@@ -1075,7 +1153,7 @@ def _schema_status() -> str:
         return json.dumps(
             {
                 "exists": False,
-                "suggestion": "Run generate_project_schema to create schema files.",
+                "suggestion": "Run schema_generate to create schema files.",
             }
         )
 

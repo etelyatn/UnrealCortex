@@ -243,13 +243,7 @@ _REFLECT_STANDALONE_TOOLS = frozenset({
     "reflect_cache_status",
     "rebuild_graph_cache",
     "query_class_context",
-    "get_dependencies",
-    "query_class_detail",
-    "query_class_hierarchy",
     "impact_analysis",
-    "query_overrides",
-    "get_referencers",
-    "query_usages",
 })
 
 # ui: core/data/blueprint/graph/umg/editor routers; blueprint_compose, widget_compose;
@@ -260,8 +254,9 @@ _UI_TOOLSET = frozenset({
     "profile_operation_schema", "schema_generate", "editor_restart",
 })
 
-# blueprint: core/data/blueprint/graph/editor/reflect routers; blueprint_compose; all 11 Reflect
-# standalone tools; profile_operation_schema, schema_generate, editor_restart.
+# blueprint: core/data/blueprint/graph/editor/reflect routers; blueprint_compose; the Reflect
+# standalone tools (the thin wrappers over reflect_cmd commands were removed in issue #225);
+# profile_operation_schema, schema_generate, editor_restart.
 _BLUEPRINT_TOOLSET = frozenset({
     "core_cmd", "data_cmd", "blueprint_cmd", "graph_cmd", "editor_cmd", "reflect_cmd",
     "blueprint_compose",
