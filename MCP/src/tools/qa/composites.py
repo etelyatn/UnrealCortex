@@ -1,8 +1,11 @@
 """QA composite workflow tools."""
 
+import json
+
 from cortex_mcp.qa import detect_structural_issues, write_report_bundle
 from cortex_mcp.response import format_response
 from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tool_output import canonical_failure
 
 # One page of the finite editor log window; the native read caps a page at 200 retained rows, so a
 # page never has to be shortened after the fact.
@@ -126,55 +129,72 @@ def register_qa_composite_tools(mcp, connection: UEConnection):
         assertion: dict | None = None,
         screenshot_name: str = "qa_step.png",
     ) -> str:
+        action_command = action.get("command") if isinstance(action, dict) else None
+        if not isinstance(action_command, str) or not action_command:
+            return json.dumps(canonical_failure("INVALID_FIELD", "action.command is required."))
+        action_params = action.get("params", {})
+        for label, envelope in (("wait", wait), ("assertion", assertion)):
+            if envelope is None:
+                continue
+            if not isinstance(envelope.get("command"), str) or not envelope["command"]:
+                return json.dumps(canonical_failure(
+                    "INVALID_FIELD", f"{label}.command is required.",
+                ))
         try:
-            start_cursor, baseline_failure = _log_window_baseline(connection)
-
-            action_params = action.get("params", {})
             action_duration = float(action_params.get("duration", 0))
             action_timeout = float(action_params.get("timeout", 5.0))
-            action_response = connection.send_command(
-                action["command"], action_params, timeout=max(action_duration, action_timeout) + 5.0
+            wait_timeout = (
+                float(wait.get("params", {}).get("timeout", 5.0)) + 5.0
+                if wait is not None
+                else 5.0
+            )
+        except (TypeError, ValueError):
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD", "duration and timeout params must be numbers.",
+            ))
+
+        start_cursor, baseline_failure = _log_window_baseline(connection)
+
+        action_response = connection.send_command(
+            action_command, action_params, timeout=max(action_duration, action_timeout) + 5.0
+        )
+
+        wait_response = None
+        if wait is not None:
+            wait_response = connection.send_command(
+                wait["command"],
+                wait.get("params", {}),
+                timeout=wait_timeout,
             )
 
-            wait_response = None
-            if wait is not None:
-                wait_timeout = float(wait.get("params", {}).get("timeout", 5.0)) + 5.0
-                wait_response = connection.send_command(
-                    wait["command"],
-                    wait.get("params", {}),
-                    timeout=wait_timeout,
-                )
+        observed = connection.send_command("qa.observe_state", {})
+        log_entries, log_coverage = _read_log_window(connection, start_cursor, baseline_failure)
 
-            observed = connection.send_command("qa.observe_state", {})
-            log_entries, log_coverage = _read_log_window(connection, start_cursor, baseline_failure)
+        assert_response = None
+        if assertion is not None:
+            assert_response = connection.send_command(assertion["command"], assertion.get("params", {}))
 
-            assert_response = None
-            if assertion is not None:
-                assert_response = connection.send_command(assertion["command"], assertion.get("params", {}))
+        screenshot = connection.send_command(
+            "editor.capture_screenshot",
+            {"filename": screenshot_name},
+            timeout=60.0,
+        )
 
-            screenshot = connection.send_command(
-                "editor.capture_screenshot",
-                {"filename": screenshot_name},
-                timeout=60.0,
-            )
+        findings = detect_structural_issues(
+            observed.get("data", {}),
+            wait_response.get("data", {}) if wait_response else None,
+            {"entries": log_entries},
+        )
 
-            findings = detect_structural_issues(
-                observed.get("data", {}),
-                wait_response.get("data", {}) if wait_response else None,
-                {"entries": log_entries},
-            )
-
-            summary = {
-                "action_success": action_response.get("success", False),
-                "wait_success": wait_response.get("success", True) if wait_response else True,
-                "assert_success": assert_response.get("success", True) if assert_response else True,
-                "finding_count": len(findings),
-                "log_coverage": log_coverage,
-                "screenshot": screenshot.get("data", {}),
-            }
-            return format_response(summary, "test_step")
-        except (RuntimeError, ConnectionError, KeyError) as e:
-            return f"Error: {e}"
+        summary = {
+            "action_success": action_response.get("success", False),
+            "wait_success": wait_response.get("success", True) if wait_response else True,
+            "assert_success": assert_response.get("success", True) if assert_response else True,
+            "finding_count": len(findings),
+            "log_coverage": log_coverage,
+            "screenshot": screenshot.get("data", {}),
+        }
+        return format_response(summary, "test_step")
 
     @mcp.tool()
     def run_scenario_inline(
@@ -182,60 +202,81 @@ def register_qa_composite_tools(mcp, connection: UEConnection):
         steps: list[dict],
         verbose: bool = False,
     ) -> str:
-        try:
-            results: list[dict] = []
-            findings: list[dict] = []
+        if not isinstance(steps, list):
+            return json.dumps(canonical_failure("INVALID_FIELD", "steps must be an array."))
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                return json.dumps(canonical_failure(
+                    "INVALID_FIELD", f"Step {index} must be an object.",
+                ))
+            if not isinstance(step.get("command"), str) or not step["command"]:
+                return json.dumps(canonical_failure(
+                    "INVALID_FIELD", f"Step {index} requires a command.",
+                ))
+            step_params = step.get("params", {})
+            if not isinstance(step_params, dict):
+                return json.dumps(canonical_failure(
+                    "INVALID_FIELD", f"Step {index} params must be an object.",
+                ))
+            try:
+                float(step_params.get("duration", 0))
+                float(step_params.get("timeout", 5.0))
+            except (TypeError, ValueError):
+                return json.dumps(canonical_failure(
+                    "INVALID_FIELD", f"Step {index} duration and timeout must be numbers.",
+                ))
 
-            # One pre-action watermark bounds the first step's window; every later step continues
-            # from the previous window's fixed end, so a record that arrives between windows is
-            # attributed to exactly the next action instead of falling between two baselines.
-            start_cursor, baseline_failure = _log_window_baseline(connection)
+        results: list[dict] = []
+        findings: list[dict] = []
 
-            for index, step in enumerate(steps):
-                command = step.get("command", "")
-                params = step.get("params", {})
-                duration = float(params.get("duration", 0))
-                base_timeout = float(params.get("timeout", 5.0))
-                timeout = max(duration, base_timeout) + 5.0
+        # One pre-action watermark bounds the first step's window; every later step continues
+        # from the previous window's fixed end, so a record that arrives between windows is
+        # attributed to exactly the next action instead of falling between two baselines.
+        start_cursor, baseline_failure = _log_window_baseline(connection)
 
-                response = connection.send_command(command, params, timeout=timeout)
-                observed = connection.send_command("qa.observe_state", {})
-                log_entries, log_coverage = _read_log_window(
-                    connection,
-                    start_cursor,
-                    baseline_failure if index == 0 else None,
-                )
-                if log_coverage["window_end_cursor"] is not None:
-                    start_cursor = log_coverage["window_end_cursor"]
+        for index, step in enumerate(steps):
+            command = step.get("command", "")
+            params = step.get("params", {})
+            duration = float(params.get("duration", 0))
+            base_timeout = float(params.get("timeout", 5.0))
+            timeout = max(duration, base_timeout) + 5.0
 
-                step_findings = detect_structural_issues(
-                    observed.get("data", {}),
-                    response.get("data", {}),
-                    {"entries": log_entries},
-                )
-                findings.extend(step_findings)
+            response = connection.send_command(command, params, timeout=timeout)
+            observed = connection.send_command("qa.observe_state", {})
+            log_entries, log_coverage = _read_log_window(
+                connection,
+                start_cursor,
+                baseline_failure if index == 0 else None,
+            )
+            if log_coverage["window_end_cursor"] is not None:
+                start_cursor = log_coverage["window_end_cursor"]
 
-                step_result = {
-                    "index": index,
-                    "command": command,
-                    "success": response.get("success", False),
-                    "log_coverage": log_coverage,
-                    "findings": step_findings,
-                }
-                if verbose:
-                    step_result["response"] = response.get("data", {})
-                results.append(step_result)
+            step_findings = detect_structural_issues(
+                observed.get("data", {}),
+                response.get("data", {}),
+                {"entries": log_entries},
+            )
+            findings.extend(step_findings)
 
-            summary_lines = [
-                f"# QA Scenario Report: {scenario_name}",
-                "",
-                f"- Steps: {len(steps)}",
-                f"- Findings: {len(findings)}",
-                f"- Passed steps: {sum(1 for s in results if s['success'])}",
-            ]
-            report = write_report_bundle(scenario_name, summary_lines, findings)
+            step_result = {
+                "index": index,
+                "command": command,
+                "success": response.get("success", False),
+                "log_coverage": log_coverage,
+                "findings": step_findings,
+            }
+            if verbose:
+                step_result["response"] = response.get("data", {})
+            results.append(step_result)
 
-            payload = {"scenario": scenario_name, "steps": results, "report": report}
-            return format_response(payload, "run_scenario_inline")
-        except (RuntimeError, ConnectionError, ValueError, KeyError) as e:
-            return f"Error: {e}"
+        summary_lines = [
+            f"# QA Scenario Report: {scenario_name}",
+            "",
+            f"- Steps: {len(steps)}",
+            f"- Findings: {len(findings)}",
+            f"- Passed steps: {sum(1 for s in results if s['success'])}",
+        ]
+        report = write_report_bundle(scenario_name, summary_lines, findings)
+
+        payload = {"scenario": scenario_name, "steps": results, "report": report}
+        return format_response(payload, "run_scenario_inline")

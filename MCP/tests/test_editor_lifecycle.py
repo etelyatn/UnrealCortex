@@ -110,7 +110,9 @@ class TestRestartEditor:
             register_editor_composite_tools(mcp, conn)
             result = mcp.tools["restart_editor"](timeout=10)
             payload = json.loads(result)
-            assert "error" in payload
+            assert payload["success"] is False
+            assert payload["_error"] == "INVALID_OPERATION"
+            assert "uproject" in payload["_message"]
 
     @patch.dict(os.environ, {"UE_56_PATH": "C:/UE_5.6"}, clear=False)
     def test_restart_reads_project_path_from_port_file_when_pid_unknown(self, tmp_path):
@@ -241,7 +243,9 @@ class TestDoRestartEditor:
             result = do_restart_editor(conn, timeout=10)
 
         assert isinstance(result, dict)
-        assert "error" in result
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert "project directory" in result["_message"]
 
     def test_returns_error_dict_when_project_path_unknown(self, tmp_path):
         conn = MagicMock(spec=UEConnection)
@@ -252,7 +256,9 @@ class TestDoRestartEditor:
             result = do_restart_editor(conn, timeout=10)
 
         assert isinstance(result, dict)
-        assert "error" in result
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert "uproject" in result["_message"]
 
     @patch.dict(os.environ, {"UE_56_PATH": "C:/UE_5.6"}, clear=False)
     def test_returns_success_dict_on_full_flow(self, tmp_path):
@@ -319,4 +325,6 @@ class TestDoRestartEditor:
             result = do_restart_editor(conn, timeout=5, cancel=None)
 
         assert isinstance(result, dict)
-        assert "error" in result
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert result["_message"]

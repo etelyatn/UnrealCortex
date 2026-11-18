@@ -87,13 +87,13 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 {
 	if (!Params.IsValid())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing params"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
 	}
 
 	FString Path;
 	if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: path"));
 	}
 
 	FString ValidationError;
@@ -184,7 +184,7 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 		const bool bSaved = UEditorLoadingAndSavingUtils::SaveMap(NewWorld, Path);
 		if (!bSaved)
 		{
-			return FCortexCommandRouter::Error(CortexErrorCodes::SerializationError,
+			return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed,
 				FString::Printf(TEXT("Created level but failed to save to: %s"), *Path));
 		}
 
@@ -242,6 +242,7 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 			const FString FilePath = FPackageName::LongPackageNameToFilename(Path, FPackageName::GetMapPackageExtension());
 			FSavePackageArgs SaveArgs;
 			SaveArgs.TopLevelFlags = RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
 			const bool bSaved = UPackage::SavePackage(DestPackage, NewWorld, *FilePath, SaveArgs);
 
 			// Loaded template duplicates have no initialized world resources to tear down.
@@ -257,7 +258,7 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 
 			if (!bSaved)
 			{
-				return FCortexCommandRouter::Error(CortexErrorCodes::SerializationError,
+				return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed,
 					FString::Printf(TEXT("Failed to save level to: %s"), *Path));
 			}
 		}
@@ -287,13 +288,14 @@ FCortexCommandResult FCortexLevelLifecycleOps::CreateLevel(const TSharedPtr<FJso
 			const FString FilePath = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetMapPackageExtension());
 			FSavePackageArgs SaveArgs;
 			SaveArgs.TopLevelFlags = RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
 			const bool bSaved = UPackage::SavePackage(Package, NewWorld, *FilePath, SaveArgs);
 
 			NewWorld->DestroyWorld(false);
 
 			if (!bSaved)
 			{
-				return FCortexCommandRouter::Error(CortexErrorCodes::SerializationError,
+				return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed,
 					FString::Printf(TEXT("Failed to save level to: %s"), *Path));
 			}
 		}
@@ -309,13 +311,13 @@ FCortexCommandResult FCortexLevelLifecycleOps::OpenLevel(const TSharedPtr<FJsonO
 {
 	if (!Params.IsValid())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing params"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
 	}
 
 	FString Path;
 	if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: path"));
 	}
 
 	FString ValidationError;
@@ -391,19 +393,19 @@ FCortexCommandResult FCortexLevelLifecycleOps::DuplicateLevel(const TSharedPtr<F
 {
 	if (!Params.IsValid())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing params"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
 	}
 
 	FString SourcePath;
 	if (!Params->TryGetStringField(TEXT("source_path"), SourcePath) || SourcePath.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: source_path"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: source_path"));
 	}
 
 	FString DestPath;
 	if (!Params->TryGetStringField(TEXT("dest_path"), DestPath) || DestPath.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: dest_path"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: dest_path"));
 	}
 
 	FString ValidationError;
@@ -501,7 +503,7 @@ FCortexCommandResult FCortexLevelLifecycleOps::DuplicateLevel(const TSharedPtr<F
 
 	if (!bSaved)
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::SerializationError,
+		return FCortexCommandRouter::Error(CortexErrorCodes::SaveFailed,
 			FString::Printf(TEXT("Failed to save duplicated level to: %s"), *DestPath));
 	}
 
@@ -514,19 +516,19 @@ FCortexCommandResult FCortexLevelLifecycleOps::RenameLevel(const TSharedPtr<FJso
 {
 	if (!Params.IsValid())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing params"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
 	}
 
 	FString Path;
 	if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: path"));
 	}
 
 	FString NewPath;
 	if (!Params->TryGetStringField(TEXT("new_path"), NewPath) || NewPath.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: new_path"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: new_path"));
 	}
 
 	FString ValidationError;
@@ -595,13 +597,13 @@ FCortexCommandResult FCortexLevelLifecycleOps::DeleteLevel(const TSharedPtr<FJso
 {
 	if (!Params.IsValid())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing params"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
 	}
 
 	FString Path;
 	if (!Params->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("Missing required parameter: path"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: path"));
 	}
 
 	FString ValidationError;

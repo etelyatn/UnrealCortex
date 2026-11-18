@@ -717,7 +717,7 @@ bool FCortexGraphPatchCommandMissingAssetTest::RunTest(const FString& Parameters
 	Request->SetStringField(TEXT("patch_id"), TEXT("00000000-0000-0000-0000-0000000f0008"));
 	const FCortexCommandResult Result = Router.Execute(TEXT("graph.apply_patch"), Request);
 	TestFalse(TEXT("a missing asset is refused"), Result.bSuccess);
-	TestEqual(TEXT("missing asset error code"), Result.ErrorCode, FString(CortexErrorCodes::AssetNotFound));
+	TestEqual(TEXT("missing asset error code"), Result.ErrorCode, FString(CortexErrorCodes::BlueprintNotFound));
 
 	TSharedPtr<FJsonObject> NoAssetPath = MakeShared<FJsonObject>();
 	const FCortexCommandResult NoPathResult = Router.Execute(TEXT("graph.apply_patch"), NoAssetPath);

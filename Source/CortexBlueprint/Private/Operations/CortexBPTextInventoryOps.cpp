@@ -280,7 +280,7 @@ FCortexCommandResult FCortexBPTextInventoryOps::ExportTextInventory(const TShare
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (!Blueprint)
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound, LoadError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
 	TArray<TSharedPtr<FJsonObject>> Entries;

@@ -170,7 +170,10 @@ class TestContextNativeSummaryAndChildBounds:
 
         result = tool(class_name="AMyActor", detail="verbose")
 
-        assert result.startswith("Error"), result
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["_error"] == "INVALID_FIELD"
+        assert "expected one of" in payload["_message"]
         assert connection.requests == []
 
     def test_bounded_children_declare_incompleteness(self):

@@ -318,11 +318,13 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
             .Required(TEXT("property_path"), TEXT("string"), TEXT("Property path"))
-            .Required(TEXT("value"), TEXT("object"), TEXT("Property value")),
+            .Required(TEXT("value"), TEXT("object"), TEXT("Property value"))
+            .StrictParams(),
         FCortexCommandInfo{ TEXT("get_property"), TEXT("Read any property value") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to inspect"))
-            .Required(TEXT("property_path"), TEXT("string"), TEXT("Property path")),
+            .Required(TEXT("property_path"), TEXT("string"), TEXT("Property path"))
+            .StrictParams(),
         FCortexCommandInfo{ TEXT("get_schema"), TEXT("Get all editable properties and types") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to inspect"))

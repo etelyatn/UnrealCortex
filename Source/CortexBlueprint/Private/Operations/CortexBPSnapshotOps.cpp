@@ -814,7 +814,7 @@ FCortexCommandResult FCortexBPSnapshotOps::ExportSnapshot(const TSharedPtr<FJson
 	UBlueprint* Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
 	if (!Blueprint)
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::AssetNotFound, LoadError);
+		return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
 	}
 
 	FString BuildError;

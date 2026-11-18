@@ -1364,6 +1364,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleFinalizationTest,
 bool FCortexReplayLifecycleFinalizationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -1440,6 +1444,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleOwnedLaunchFocusTest,
 bool FCortexReplayLifecycleOwnedLaunchFocusTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -1583,6 +1591,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleImmutabilityTest,
 bool FCortexReplayLifecycleImmutabilityTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -1687,6 +1699,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecyclePieLossTest,
 bool FCortexReplayLifecyclePieLossTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -1750,6 +1766,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRevocationTest,
 bool FCortexReplayLifecycleRevocationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -1824,6 +1844,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleShutdownTest,
 bool FCortexReplayLifecycleShutdownTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -1887,6 +1911,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleModuleUnloadRunTest,
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FCortexReplayLifecycleModuleUnloadRunTest::RunTest(const FString& Parameters)
 {
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -1941,6 +1969,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleModuleUnloadCaptureTest,
 bool FCortexReplayLifecycleModuleUnloadCaptureTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -1970,6 +2002,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTimeoutPossessionTest,
 bool FCortexReplayLifecycleTimeoutPossessionTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2009,6 +2045,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTimeoutViewportTest,
 bool FCortexReplayLifecycleTimeoutViewportTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2114,6 +2154,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTrailingRevocationTest,
 bool FCortexReplayLifecycleTrailingRevocationTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -2216,6 +2260,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleDestructionTest,
 bool FCortexReplayLifecycleDestructionTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -2269,6 +2317,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleOwnedCapturePublishFailur
 bool FCortexReplayLifecycleOwnedCapturePublishFailureTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2383,6 +2435,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureRequiredPoseFaultT
 bool FCortexReplayLifecycleCaptureRequiredPoseFaultTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2495,6 +2551,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureProvenanceVersionT
 bool FCortexReplayLifecycleCaptureProvenanceVersionTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2579,6 +2639,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureStopBeforeRecordin
 bool FCortexReplayLifecycleCaptureStopBeforeRecordingTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2622,6 +2686,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureStopFaultedTest,
 bool FCortexReplayLifecycleCaptureStopFaultedTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2749,6 +2817,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureInvalidatedFrameFa
 bool FCortexReplayLifecycleCaptureInvalidatedFrameFaultsTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2797,6 +2869,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureInvalidatedFinalFr
 bool FCortexReplayLifecycleCaptureInvalidatedFinalFrameFaultsTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2842,6 +2918,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureStopDuringRecordin
 bool FCortexReplayLifecycleCaptureStopDuringRecordingTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2930,6 +3010,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndPublish
 bool FCortexReplayLifecycleExternalSessionEndPublishesTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -2993,6 +3077,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndStopKey
 bool FCortexReplayLifecycleExternalSessionEndStopKeyDroppedTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -3058,6 +3146,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndStopKey
 bool FCortexReplayLifecycleExternalSessionEndStopKeyRepeatDroppedTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -3119,6 +3211,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndEarlier
 bool FCortexReplayLifecycleExternalSessionEndEarlierStopKeyHoldWithheldTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -3186,6 +3282,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCaptureThrottleTest,
 bool FCortexReplayLifecycleCaptureThrottleTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -3236,6 +3336,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndIncompl
 bool FCortexReplayLifecycleExternalSessionEndIncompleteTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -3329,6 +3433,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTargetIdentityLossFaultsT
 bool FCortexReplayLifecycleTargetIdentityLossFaultsTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -3378,6 +3486,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleExternalSessionEndIncompl
 bool FCortexReplayLifecycleExternalSessionEndIncompleteReleasesTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
 	const TSharedRef<FCortexReplayTestFixture> Fixture = MakeShared<FCortexReplayTestFixture>();
 	const TSharedRef<FCortexReplayService> Service = MakeService(*Fixture);
@@ -3537,6 +3649,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRecordedFrameDeltasTest,
 bool FCortexReplayLifecycleRecordedFrameDeltasTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -3601,6 +3717,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleHeldKeySpansRecordedFrame
 bool FCortexReplayLifecycleHeldKeySpansRecordedFramesTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -3738,6 +3858,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleClockTakeoverForcedDeltaT
 bool FCortexReplayLifecycleClockTakeoverForcedDeltaTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -3805,6 +3929,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleFrameStepReplacedTest,
 bool FCortexReplayLifecycleFrameStepReplacedTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -3960,6 +4088,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleSlateResponsiveModeTest,
 bool FCortexReplayLifecycleSlateResponsiveModeTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -4072,6 +4204,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleInterruptedRunRetainsCaus
 bool FCortexReplayLifecycleInterruptedRunRetainsCauseTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -4162,6 +4298,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleForeignKeyInterruptionDet
 bool FCortexReplayLifecycleForeignKeyInterruptionDetailsTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -4249,6 +4389,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleTerminalDelegateFiresOnce
 bool FCortexReplayLifecycleTerminalDelegateFiresOnceTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -4441,6 +4585,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCancelResponseMatchesGetR
 bool FCortexReplayLifecycleCancelResponseMatchesGetRunTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -4834,6 +4982,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleOwnedWorldStopsTickingTes
 bool FCortexReplayLifecycleOwnedWorldStopsTickingTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -4904,6 +5056,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleRecordedFrameWithoutTickT
 bool FCortexReplayLifecycleRecordedFrameWithoutTickTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -4963,6 +5119,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleSlowHostReportsBehindTest
 bool FCortexReplayLifecycleSlowHostReportsBehindTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -5022,6 +5182,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleUiWaitCommitsTest,
 bool FCortexReplayLifecycleUiWaitCommitsTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -5081,6 +5245,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCancelDuringUiWaitTest,
 bool FCortexReplayLifecycleCancelDuringUiWaitTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -5249,6 +5417,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleInputConfigMismatchTest,
 
 bool FCortexReplayLifecycleInputConfigMismatchTest::RunTest(const FString& Parameters)
 {
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -5270,6 +5442,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleViewportCaptureMismatchTe
 
 bool FCortexReplayLifecycleViewportCaptureMismatchTest::RunTest(const FString& Parameters)
 {
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -5431,6 +5607,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCountdownPrecedesPlayback
 
 bool FCortexReplayLifecycleCountdownPrecedesPlaybackTest::RunTest(const FString& Parameters)
 {
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -5491,6 +5671,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCountdownDisabledTest,
 
 bool FCortexReplayLifecycleCountdownDisabledTest::RunTest(const FString& Parameters)
 {
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -5541,6 +5725,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCountdownIgnoresInputTest
 
 bool FCortexReplayLifecycleCountdownIgnoresInputTest::RunTest(const FString& Parameters)
 {
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;
@@ -5630,6 +5818,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayLifecycleCountdownPieEndInterrupts
 
 bool FCortexReplayLifecycleCountdownPieEndInterruptsTest::RunTest(const FString& Parameters)
 {
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;

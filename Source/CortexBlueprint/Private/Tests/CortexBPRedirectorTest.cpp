@@ -33,7 +33,8 @@ bool FCortexBPFixupRedirectorsTest::RunTest(const FString& Parameters)
 	{
 		GEngine->Exec(nullptr, TEXT("log LogAssetRegistry Error"));
 	}
-	AddExpectedError(TEXT("package was marked as deleted in editor"), EAutomationExpectedErrorFlags::Contains, 1);
+	// Windows logs this exactly once for the rewritten source package; Linux never logs it (issue 205), so -1 ignores it there.
+	AddExpectedError(TEXT("package was marked as deleted in editor"), EAutomationExpectedErrorFlags::Contains, PLATFORM_WINDOWS ? 1 : -1);
 
 	FCortexBPCommandHandler Handler;
 	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);

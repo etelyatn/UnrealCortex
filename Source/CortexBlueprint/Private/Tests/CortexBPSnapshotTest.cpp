@@ -349,7 +349,7 @@ bool FCortexBPExportSnapshotTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("missing out_path code"), NoOutResult.ErrorCode, CortexErrorCodes::InvalidField);
 	const FCortexCommandResult Missing = Export(TEXT("/Game/Temp/CortexSnapshot_DoesNotExist/BP_Missing"), OutputPath(TEXT("missing"), Suffix));
 	TestFalse(TEXT("unknown asset fails"), Missing.bSuccess);
-	TestEqual(TEXT("unknown asset error code"), Missing.ErrorCode, CortexErrorCodes::AssetNotFound);
+	TestEqual(TEXT("unknown asset error code"), Missing.ErrorCode, CortexErrorCodes::BlueprintNotFound);
 
 	// Widget Blueprint: widgets, bindings and animations by reflection.
 	FString WidgetAssetPath;

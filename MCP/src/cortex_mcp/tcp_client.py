@@ -35,6 +35,7 @@ CACHED_READ_COMMANDS = frozenset({
     ("blueprint", "list_settable_defaults"),
     ("graph", "list_event_handlers"),
     ("level", "list_actor_classes"),
+    ("core", "get_operation_schema"),
 })
 
 # Read detection for write-triggered invalidation. Unknown commands count as writes: a read
@@ -387,7 +388,9 @@ class UEConnection:
             self._socket = sock
             try:
                 self._validate_project()
-                self._send_and_receive("get_capabilities", {})
+                # Liveness-only handshake: _validate_project already exchanged get_status, so a
+                # full capabilities payload here is a wasted round trip (issue #224 item 12).
+                self._send_and_receive("ping", {})
             except _ProjectMismatchError:
                 raise
             except ConnectionError as e:

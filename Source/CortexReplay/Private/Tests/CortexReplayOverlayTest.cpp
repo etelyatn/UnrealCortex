@@ -225,6 +225,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexReplayOverlayLifecycleTest,
 
 bool FCortexReplayOverlayLifecycleTest::RunTest(const FString& Parameters)
 {
+	if (CortexReplaySkipWithoutPhysicalKeyState(*this))
+	{
+		return true;
+	}
 	if (CortexReplayLivePrerequisites::DeferUntilMeasured(*this, [this, Parameters]() { RunTest(Parameters); }))
 	{
 		return true;

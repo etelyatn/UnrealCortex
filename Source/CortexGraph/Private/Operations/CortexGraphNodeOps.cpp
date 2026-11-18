@@ -164,6 +164,37 @@ bool TryParseGraphKind(const FString& GraphKindString, ECortexGraphKind& OutKind
 	return false;
 }
 
+/**
+ * Resolve a reference literal of a legacy pin write to a live object. In-memory objects win; a disk
+ * load only happens when the package is actually available, so a mistyped path cannot emit
+ * SkipPackage warnings. An empty path or "None" is the null reference.
+ */
+UObject* ResolvePinReferenceObject(const FString& ReferencePath)
+{
+	const FString TrimmedPath = ReferencePath.TrimStartAndEnd();
+	if (TrimmedPath.IsEmpty() || TrimmedPath.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+	{
+		return nullptr;
+	}
+
+	if (UObject* InMemory = FindObject<UObject>(nullptr, *TrimmedPath))
+	{
+		return InMemory;
+	}
+
+	const FString PackageName = FPackageName::ObjectPathToPackageName(TrimmedPath);
+	const bool bPackageAvailable = !PackageName.IsEmpty()
+		&& (FindPackage(nullptr, *PackageName) != nullptr
+			|| FPackageName::DoesPackageExist(PackageName)
+			|| FPackageName::IsScriptPackage(PackageName));
+	if (!bPackageAvailable)
+	{
+		return nullptr;
+	}
+
+	return LoadObject<UObject>(nullptr, *TrimmedPath);
+}
+
 bool ResolveMutableNodeGraphForSetPinValue(
 	UBlueprint* Blueprint,
 	const FString& GraphName,
@@ -365,7 +396,7 @@ UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortex
 	if (!DoesGraphBlueprintPackageExist(PkgName))
 	{
 		OutError = FCortexCommandRouter::Error(
-			CortexErrorCodes::AssetNotFound,
+			CortexErrorCodes::BlueprintNotFound,
 			FString::Printf(TEXT("Blueprint not found: %s"), *NormalizedPath)
 		);
 		return nullptr;
@@ -377,7 +408,7 @@ UBlueprint* FCortexGraphNodeOps::LoadBlueprint(const FString& AssetPath, FCortex
 	if (Blueprint == nullptr)
 	{
 		OutError = FCortexCommandRouter::Error(
-			CortexErrorCodes::AssetNotFound,
+			CortexErrorCodes::BlueprintNotFound,
 			FString::Printf(TEXT("Blueprint not found: %s"), *NormalizedPath)
 		);
 	}
@@ -2052,6 +2083,84 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 			FingerprintBefore);
 	}
 
+	// The engine schema owns pin-default validity: resolve the candidate exactly as it would be
+	// written, let the schema refuse it, and only then touch the pin. A refusal changes nothing.
+	FString NewDefaultValue;
+	UObject* NewDefaultObject = nullptr;
+	FText NewDefaultText;
+
+	const FName PinCategory = Pin->PinType.PinCategory;
+	const bool bNullReference = Value.IsEmpty()
+		|| Value.Equals(TEXT("None"), ESearchCase::IgnoreCase);
+
+	if (PinCategory == UEdGraphSchema_K2::PC_Text)
+	{
+		NewDefaultText = FText::FromString(Value);
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_Class || PinCategory == UEdGraphSchema_K2::PC_SoftClass)
+	{
+		UClass* ResolvedClass = nullptr;
+		if (!bNullReference)
+		{
+			FCortexCommandResult ResolveError;
+			if (!FCortexGraphSymbolResolver::ResolveClass(Value, ResolvedClass, ResolveError) || ResolvedClass == nullptr)
+			{
+				const FString Reason = ResolveError.ErrorMessage.IsEmpty()
+					? FString::Printf(TEXT("'%s' did not resolve"), *Value)
+					: ResolveError.ErrorMessage;
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidValue,
+					FString::Printf(TEXT("Pin '%s' needs a resolvable class: %s"), *PinName, *Reason));
+			}
+		}
+
+		if (PinCategory == UEdGraphSchema_K2::PC_SoftClass)
+		{
+			// Soft references stay soft: the path lives in DefaultValue, never in DefaultObject.
+			NewDefaultValue = ResolvedClass != nullptr ? ResolvedClass->GetPathName() : FString();
+		}
+		else
+		{
+			NewDefaultObject = ResolvedClass;
+		}
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_Object
+		|| PinCategory == UEdGraphSchema_K2::PC_Interface
+		|| PinCategory == UEdGraphSchema_K2::PC_SoftObject)
+	{
+		UObject* ResolvedObject = ResolvePinReferenceObject(Value);
+		if (ResolvedObject == nullptr && !bNullReference)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidValue,
+				FString::Printf(TEXT("Pin '%s' needs a resolvable object path, but '%s' did not resolve"), *PinName, *Value));
+		}
+
+		if (PinCategory == UEdGraphSchema_K2::PC_SoftObject)
+		{
+			// Soft references stay soft: the path lives in DefaultValue, never in DefaultObject.
+			NewDefaultValue = ResolvedObject != nullptr ? ResolvedObject->GetPathName() : FString();
+		}
+		else
+		{
+			NewDefaultObject = ResolvedObject;
+		}
+	}
+	else
+	{
+		NewDefaultValue = Value;
+	}
+
+	if (const UEdGraphSchema* Schema = Graph->GetSchema())
+	{
+		const FString ValidationMessage =
+			Schema->IsPinDefaultValid(Pin, NewDefaultValue, NewDefaultObject, NewDefaultText);
+		if (!ValidationMessage.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, ValidationMessage);
+		}
+	}
+
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex: Set pin value %s.%s"), *NodeId, *PinName)
 	));
@@ -2059,33 +2168,11 @@ FCortexCommandResult FCortexGraphNodeOps::SetPinValue(const TSharedPtr<FJsonObje
 	Graph->Modify();
 	Node->Modify();
 
-	// Set the default value
-	// For class/object pins, try to resolve and set DefaultObject
-	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Text)
+	Pin->DefaultValue = NewDefaultValue;
+	Pin->DefaultObject = NewDefaultObject;
+	if (PinCategory == UEdGraphSchema_K2::PC_Text)
 	{
-		Pin->DefaultTextValue = FText::FromString(Value);
-		Pin->DefaultValue.Empty();
-		Pin->DefaultObject = nullptr;
-	}
-	else if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class ||
-		Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_SoftClass)
-	{
-		// Try to load the class from the value string
-		UClass* ClassObject = LoadClass<UObject>(nullptr, *Value);
-		if (ClassObject)
-		{
-			Pin->DefaultObject = ClassObject;
-			Pin->DefaultValue = TEXT("");  // Clear string value when using object reference
-		}
-		else
-		{
-			// Fallback to string value if class can't be loaded
-			Pin->DefaultValue = Value;
-		}
-	}
-	else
-	{
-		Pin->DefaultValue = Value;
+		Pin->DefaultTextValue = NewDefaultText;
 	}
 
 	Graph->NotifyGraphChanged();
@@ -2169,6 +2256,16 @@ FCortexCommandResult FCortexGraphNodeOps::ApplyTextPinValue(
 		return FCortexCommandRouter::Error(ErrorCode, ErrorMessage);
 	}
 
+	// The engine schema owns the FText default representation; a refusal leaves the pin untouched.
+	if (const UEdGraphSchema* Schema = Graph->GetSchema())
+	{
+		const FString ValidationMessage = Schema->IsPinDefaultValid(Pin, FString(), nullptr, NewText);
+		if (!ValidationMessage.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, ValidationMessage);
+		}
+	}
+
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex: Set text pin value %s.%s"), *NodeId, *PinName)));
 
@@ -2202,11 +2299,12 @@ FCortexCommandResult FCortexGraphNodeOps::ApplyTextPinValue(
 		FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
 	const bool bSaved = UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs);
 	if (!bSaved)
 	{
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::VerificationFailed,
+			CortexErrorCodes::SaveFailed,
 			FString::Printf(TEXT("Failed to save Blueprint package %s after text pin mutation"), *Package->GetName()));
 	}
 

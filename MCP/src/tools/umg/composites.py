@@ -4,7 +4,8 @@ import json
 import logging
 from cortex_mcp.verification import VERIFICATION_TIMEOUT
 from cortex_mcp.verification.umg import verify_umg
-from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tcp_client import UECommandError, UEConnection
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure, failed_step_code
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +289,7 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
         try:
             _validate_widget_spec(name, path, widgets, animations)
         except ValueError as e:
-            return json.dumps({"success": False, "error": f"Invalid spec: {e}"})
+            return json.dumps(canonical_failure("INVALID_FIELD", f"Invalid spec: {e}"))
 
         # 2. Build batch commands
         commands = _build_widget_batch_commands(name, path, widgets, animations)
@@ -301,10 +302,8 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
                 "stop_on_error": True,
                 "commands": commands,
             }, timeout=timeout)
-        except RuntimeError as e:
-            return json.dumps({"success": False, "error": str(e)})
         except (ConnectionError, TimeoutError, OSError) as e:
-            return json.dumps({"success": False, "error": f"Connection error: {e}"})
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(e)))
 
         batch_data = batch_result.get("data", {})
         results = batch_data.get("results", [])
@@ -338,20 +337,26 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
                         "user_action_required": f"Manually delete partial asset at {asset_path}",
                     }
 
-            response = {
-                "success": False,
-                "summary": f"Step {failed_step['index']} of {total_steps} failed: "
-                           f"{failed_step.get('command', '?')} - "
-                           f"{failed_step.get('error_message', 'Unknown error')}",
-                "asset_path": asset_path,
-                "completed_steps": completed_count,
-                "failed_step": {
-                    "index": failed_step["index"],
-                    "command": failed_step.get("command", ""),
-                    "error": failed_step.get("error_message", ""),
+            summary = (
+                f"Step {failed_step['index']} of {total_steps} failed: "
+                f"{failed_step.get('command', '?')} - "
+                f"{failed_step.get('error_message', 'Unknown error')}"
+            )
+            response = canonical_failure(
+                failed_step_code(failed_step),
+                summary,
+                {
+                    "summary": summary,
+                    "asset_path": asset_path,
+                    "completed_steps": completed_count,
+                    "failed_step": {
+                        "index": failed_step["index"],
+                        "command": failed_step.get("command", ""),
+                        "error": failed_step.get("error_message", ""),
+                    },
+                    "total_steps": total_steps,
                 },
-                "total_steps": total_steps,
-            }
+            )
             if recovery_action:
                 response["recovery_action"] = recovery_action
             return json.dumps(response, indent=2)
@@ -368,14 +373,17 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
                     connection.send_command("blueprint.save", {"asset_path": asset_path})
                 except Exception:
                     pass
-                return json.dumps({
-                    "success": False,
-                    "error": f"Widget Blueprint compilation failed: {e}",
-                    "asset_path": asset_path,
-                    "suggestion": "Asset was created but has compile errors. "
-                                  "Open in Unreal Editor to inspect the widget tree, "
-                                  "then fix the spec and recreate.",
-                }, indent=2)
+                code = e.code if isinstance(e, UECommandError) and e.code else "INVALID_OPERATION"
+                return json.dumps(canonical_failure(
+                    code,
+                    f"Widget Blueprint compilation failed: {e}",
+                    {
+                        "asset_path": asset_path,
+                        "suggestion": "Asset was created but has compile errors. "
+                                      "Open in Unreal Editor to inspect the widget tree, "
+                                      "then fix the spec and recreate.",
+                    },
+                ), indent=2)
 
             try:
                 connection.send_command("blueprint.save", {"asset_path": asset_path})

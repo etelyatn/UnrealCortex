@@ -696,6 +696,7 @@ namespace CortexBPComponentOpsPrivate
 
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		SaveArgs.SaveFlags = SAVE_NoError;
 		if (!UPackage::SavePackage(Package, Blueprint, *PackageFilename, SaveArgs))
 		{
 			OutError = FString::Printf(TEXT("Failed to save Blueprint package: %s"), *Package->GetName());
@@ -1246,10 +1247,9 @@ FCortexCommandResult FCortexBPComponentOps::AddSCSComponent(const TSharedPtr<FJs
 	if (bCompile)
 	{
 		FKismetEditorUtilities::CompileBlueprint(BP, EBlueprintCompileOptions::SkipSave);
-		ResponseData->SetBoolField(TEXT("compiled"), true);
-		ResponseData->SetStringField(TEXT("compile_status"),
-			(BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings)
-				? TEXT("UpToDate") : TEXT("Error"));
+		const bool bDidCompile = CortexBPComponentOpsPrivate::IsBlueprintCompiled(BP);
+		ResponseData->SetBoolField(TEXT("compiled"), bDidCompile);
+		ResponseData->SetStringField(TEXT("compile_status"), bDidCompile ? TEXT("UpToDate") : TEXT("Error"));
 	}
 	else
 	{
@@ -1265,6 +1265,7 @@ FCortexCommandResult FCortexBPComponentOps::AddSCSComponent(const TSharedPtr<FJs
 		{
 			FSavePackageArgs SaveArgs;
 			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
 			const bool bSaved = UPackage::SavePackage(BP->GetPackage(), BP, *PackageFilename, SaveArgs);
 			if (!bSaved)
 			{

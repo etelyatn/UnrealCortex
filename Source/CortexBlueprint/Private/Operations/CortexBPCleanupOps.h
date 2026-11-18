@@ -51,5 +51,9 @@ public:
 
 	/** Test hook: runs in the cleanup readback, after the compile, so a test can force a CDO divergence. */
 	static void SetCdoDivergenceTestHook(TFunction<void(class UBlueprint*)> InHook);
+
+	/** Test hook: runs after each dependent compile in recompile_dependents, before the status
+	 *  check, so a test can force a compile-failed status for the honest-failure contract. */
+	static void SetRecompileDependentsPostCompileTestHook(TFunction<void(class UBlueprint*)> InHook);
 #endif
 };

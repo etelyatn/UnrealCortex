@@ -31,7 +31,7 @@ UPrimitiveComponent* FCortexMaterialDynamicOps::ResolveComponent(
 	FString ActorPath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("actor_path"), ActorPath) || ActorPath.IsEmpty())
 	{
-		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("actor_path is required"));
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("actor_path is required"));
 		return nullptr;
 	}
 
@@ -209,7 +209,7 @@ FCortexCommandResult FCortexMaterialDynamicOps::ListDynamicInstances(const TShar
 	FString ActorPath;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("actor_path"), ActorPath) || ActorPath.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("actor_path is required"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("actor_path is required"));
 	}
 
 	AActor* Actor = FCortexPIEUtils::FindActorInPIE(World, ActorPath);
@@ -803,17 +803,17 @@ FCortexCommandResult FCortexMaterialDynamicOps::SetDynamicParameter(const TShare
 	FString ParamType;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("name"), ParamName) || ParamName.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("name is required"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("name is required"));
 	}
 	if (!Params->TryGetStringField(TEXT("type"), ParamType) || ParamType.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("type is required (scalar, vector, or texture)"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("type is required (scalar, vector, or texture)"));
 	}
 
 	TSharedPtr<FJsonValue> Value = Params->TryGetField(TEXT("value"));
 	if (!Value.IsValid())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("value is required"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("value is required"));
 	}
 
 	TSharedPtr<FJsonValue> PreviousValue;
@@ -879,7 +879,7 @@ FCortexCommandResult FCortexMaterialDynamicOps::GetDynamicParameter(const TShare
 	FString ParamName;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("name"), ParamName) || ParamName.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("name is required"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("name is required"));
 	}
 
 	const FName MaterialParamName(*ParamName);
@@ -982,7 +982,7 @@ FCortexCommandResult FCortexMaterialDynamicOps::SetDynamicParameters(const TShar
 	const TArray<TSharedPtr<FJsonValue>>* ParametersArray = nullptr;
 	if (!Params.IsValid() || !Params->TryGetArrayField(TEXT("parameters"), ParametersArray) || ParametersArray->Num() == 0)
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("parameters array is required and must not be empty"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("parameters array is required and must not be empty"));
 	}
 
 	TArray<TSharedPtr<FJsonValue>> Results;
@@ -1059,7 +1059,7 @@ FCortexCommandResult FCortexMaterialDynamicOps::ResetDynamicParameter(const TSha
 	FString ParamName;
 	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("name"), ParamName) || ParamName.IsEmpty())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidParameter, TEXT("name is required"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("name is required"));
 	}
 
 	const FName MaterialParamName(*ParamName);

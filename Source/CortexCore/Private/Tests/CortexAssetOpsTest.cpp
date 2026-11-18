@@ -15,6 +15,11 @@
 #include "Misc/FileHelper.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectHash.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "Materials/Material.h"
+#include "Misc/Guid.h"
+#include "Operations/CortexAssetOps.h"
+#include "PackageTools.h"
 
 namespace
 {
@@ -309,6 +314,84 @@ bool FCortexAssetSaveDryRunTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("dry_run should be true in response"), bDryRun);
 	}
 
+	return true;
+}
+
+// save_asset under dry_run must not load glob/path matches that are not already in memory
+// (issue #224 item 8): an unloaded package cannot be dirty.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexAssetSaveDryRunNoLoadTest,
+	"Cortex.Core.Asset.SaveAsset.DryRunNoLoad",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexAssetSaveDryRunNoLoadTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString AssetName = FString::Printf(TEXT("M_SaveNoLoad_%s"), *Suffix);
+	const FString PackageName = FString::Printf(TEXT("/Game/Temp/CortexSaveNoLoad_%s"), *Suffix);
+	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *PackageName, *AssetName);
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		PackageName, FPackageName::GetAssetPackageExtension());
+
+	UPackage* Package = CreatePackage(*PackageName);
+	UMaterial* Asset = NewObject<UMaterial>(Package, FName(*AssetName), RF_Public | RF_Standalone);
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	if (!TestTrue(TEXT("Fixture saved clean"), UPackage::SavePackage(Package, Asset, *PackageFilename, SaveArgs)))
+	{
+		Asset->MarkAsGarbage();
+		return false;
+	}
+
+	IAssetRegistry& Registry = FAssetRegistryModule::GetRegistry();
+	Registry.ScanFilesSynchronous({PackageFilename}, true);
+
+	TArray<UPackage*> ToUnload = {Package};
+	FText UnloadError;
+	if (!TestTrue(TEXT("Fixture package unloaded"), UPackageTools::UnloadPackages(ToUnload, UnloadError, true)))
+	{
+		TArray<UPackage*> Loaded = {FindPackage(nullptr, *PackageName)};
+		if (Loaded[0] != nullptr)
+		{
+			UPackageTools::UnloadPackages(Loaded, UnloadError, true);
+		}
+		IFileManager::Get().Delete(*PackageFilename, false, true);
+		Registry.ScanModifiedAssetFiles({PackageFilename});
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> RequestParams = MakeShared<FJsonObject>();
+	RequestParams->SetStringField(TEXT("asset_path"), ObjectPath);
+	RequestParams->SetBoolField(TEXT("dry_run"), true);
+
+	const FCortexCommandResult Result = FCortexAssetOps::SaveAsset(RequestParams);
+
+	TestTrue(TEXT("save_asset dry_run should succeed"), Result.bSuccess);
+	TestTrue(TEXT("save_asset dry_run returns a data payload"), Result.Data.IsValid());
+
+	if (Result.Data.IsValid())
+	{
+		bool bCanSave = true;
+		Result.Data->TryGetBoolField(TEXT("can_save"), bCanSave);
+		TestFalse(TEXT("Clean unloaded package cannot be saved"), bCanSave);
+
+		bool bWasDirty = true;
+		Result.Data->TryGetBoolField(TEXT("was_dirty"), bWasDirty);
+		TestFalse(TEXT("Unloaded package is not dirty"), bWasDirty);
+	}
+
+	TestNull(TEXT("Package stays unloaded under dry_run"), FindPackage(nullptr, *PackageName));
+
+	TArray<UPackage*> Loaded = {FindPackage(nullptr, *PackageName)};
+	if (Loaded[0] != nullptr)
+	{
+		UPackageTools::UnloadPackages(Loaded, UnloadError, true);
+	}
+	IFileManager::Get().Delete(*PackageFilename, false, true);
+	Registry.ScanModifiedAssetFiles({PackageFilename});
 	return true;
 }
 

@@ -156,9 +156,7 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 {
 	return {
 		FCortexCommandInfo{ TEXT("start_pie"), TEXT("Start PIE session") }
-			.Optional(TEXT("mode"), TEXT("string"), TEXT("PIE launch mode"))
-			.Optional(TEXT("map_name"), TEXT("string"), TEXT("Optional map to open before PIE"))
-			.Optional(TEXT("spawn_player"), TEXT("boolean"), TEXT("Spawn a default player when starting PIE")),
+			.Optional(TEXT("mode"), TEXT("string"), TEXT("PIE launch mode")),
 		FCortexCommandInfo{ TEXT("stop_pie"), TEXT("Stop PIE session") },
 		FCortexCommandInfo{ TEXT("pause_pie"), TEXT("Pause PIE") },
 		FCortexCommandInfo{ TEXT("resume_pie"), TEXT("Resume PIE") },

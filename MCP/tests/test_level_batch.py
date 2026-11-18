@@ -362,7 +362,8 @@ class TestLevelBatchTool:
         tool = self._get_tool(conn)
         result = json.loads(tool(operations=[{"op": "spawn"}]))  # missing class
         assert result["success"] is False
-        assert "Invalid spec" in result["error"]
+        assert result["_error"]
+        assert "Invalid spec" in result["_message"]
         conn.send_command.assert_not_called()
 
     def test_success_response_shape(self):
@@ -449,4 +450,5 @@ class TestLevelBatchTool:
             )
         )
         assert result["success"] is False
-        assert "Connection error" in result["error"]
+        assert result["_error"] == "CONNECTION_ERROR"
+        assert "refused" in result["_message"]

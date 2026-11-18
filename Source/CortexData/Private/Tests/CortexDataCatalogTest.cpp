@@ -69,7 +69,8 @@ bool FCortexDataCatalogTest::RunTest(const FString& Parameters)
 	FPlatformProcess::Sleep(0.1f);
 
 	// Act: Send get_data_catalog command
-	FString Command = TEXT("{\"command\":\"data.get_data_catalog\",\"params\":{}}\n");
+	// row_count/top_fields are opt-in since issue #224; this contract test exercises the full shape.
+	FString Command = TEXT("{\"command\":\"data.get_data_catalog\",\"params\":{\"include_row_count\":true}}\n");
 	FTCHARToUTF8 Utf8Converter(*Command);
 	int32 BytesSent = 0;
 	const bool bSent = ClientSocket->Send(

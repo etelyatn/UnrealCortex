@@ -75,6 +75,19 @@ Response:
 
 Namespace prefix routes to the registered domain handler in C++. Built-in commands (`get_status`, `get_capabilities`) have no prefix. Every request carries an `id`, including the connect handshake (`get_status` project check, then `get_capabilities`), so a late reply cannot be taken as the answer to a later request. An editor that does not answer the handshake fails the connect; no command was sent, so the call retries once.
 
+## Failure shape
+
+Every public tool reports a failure as one object and sets `isError`:
+
+```json
+{"success": false, "_error": "INVALID_VALUE", "_message": "location must be a 3-number array", "...": "non-reserved details"}
+```
+
+- `ToolOutputRegistrar` sets `isError=true` whenever the decoded result is a dict with a non-empty `_error`; a successful result or a `success:false` outcome without a code is not marked as an error.
+- A tool that raises `UECommandError` is published with the editor's `code`/`message` and its non-reserved details; a raised `ConnectionError` becomes `_error: "CONNECTION_ERROR"`. Other exceptions still propagate (programming errors).
+- Non-JSON text is never parsed for a code and stays an opaque text block.
+- Owners return this object at their source (routers, composites, standalone and Reflect tools): a locally refused request returns `INVALID_FIELD`/`INVALID_OPERATION`, a failed batch step passes the first native `error_code` through, and a lost connection returns `CONNECTION_ERROR`. Do not add a second failure shape or an alias for an old one.
+
 ## Testing
 
 ```bash

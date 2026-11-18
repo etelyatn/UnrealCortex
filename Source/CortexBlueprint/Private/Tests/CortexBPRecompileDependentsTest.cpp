@@ -1,7 +1,11 @@
 #include "Misc/AutomationTest.h"
 #include "Operations/CortexBPCleanupOps.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "Containers/Ticker.h"
+#include "HAL/FileManager.h"
+#include "Modules/ModuleManager.h"
+#include "PackageTools.h"
+#include "UObject/SavePackage.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -203,4 +207,216 @@ bool FCortexBPRecompileDependentsRejectsNonWritableDependentTest::RunTest(const 
 
 	ParentBP->MarkAsGarbage();
 	return true;
+}
+
+namespace
+{
+	FString RecompileFixturePackageFilename(const FString& PackageName)
+	{
+		return FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+	}
+
+	bool RecompileSaveFixture(UBlueprint* Blueprint)
+	{
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Standalone;
+		SaveArgs.SaveFlags = SAVE_NoError;
+		return UPackage::SavePackage(
+			Blueprint->GetOutermost(), Blueprint,
+			*RecompileFixturePackageFilename(Blueprint->GetOutermost()->GetName()), SaveArgs);
+	}
+
+	void RecompileFixtureCleanup(const TArray<FString>& PackageNames, const TArray<FString>& Filenames)
+	{
+		TArray<UPackage*> Loaded;
+		for (const FString& PackageName : PackageNames)
+		{
+			if (UPackage* Found = FindPackage(nullptr, *PackageName))
+			{
+				Loaded.Add(Found);
+			}
+		}
+		if (Loaded.Num() > 0)
+		{
+			FText UnloadError;
+			UPackageTools::UnloadPackages(Loaded, UnloadError, true);
+		}
+
+		for (const FString& Filename : Filenames)
+		{
+			IFileManager::Get().Delete(*Filename, false, true);
+		}
+
+		IAssetRegistry& AssetRegistry =
+			FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+		AssetRegistry.ScanModifiedAssetFiles(Filenames);
+		AssetRegistry.WaitForCompletion();
+	}
+}
+
+// Dependents saved on disk but not loaded must still be discovered (registry referencers) and
+// recompiled — the state after an editor restart (issue #224 item 6).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRecompileDependentsRegistryTest,
+	"Cortex.Blueprint.RecompileDependentsRegistry.Basic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPRecompileDependentsRegistryTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+
+	UBlueprint* ParentBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		CreateWritableRecompileTestPackage(TEXT("BP_RecompileRegistryParent")),
+		FName(*FString::Printf(TEXT("BP_RecompileRegistryParent_%s"), *Suffix)),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestNotNull(TEXT("Parent BP created"), ParentBP))
+	{
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(ParentBP);
+
+	UBlueprint* ChildBP = FKismetEditorUtilities::CreateBlueprint(
+		ParentBP->GeneratedClass,
+		CreateWritableRecompileTestPackage(TEXT("BP_RecompileRegistryChild")),
+		FName(*FString::Printf(TEXT("BP_RecompileRegistryChild_%s"), *Suffix)),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestNotNull(TEXT("Child BP created"), ChildBP))
+	{
+		ParentBP->MarkAsGarbage();
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(ChildBP);
+
+	const FString ParentPath = ParentBP->GetPathName();
+	const FString ChildPath = ChildBP->GetPathName();
+	const FString ParentPackageName = ParentBP->GetOutermost()->GetName();
+	const FString ChildPackageName = ChildBP->GetOutermost()->GetName();
+	const TArray<FString> Filenames = {
+		RecompileFixturePackageFilename(ParentPackageName),
+		RecompileFixturePackageFilename(ChildPackageName)};
+
+	if (!TestTrue(TEXT("Parent fixture saved"), RecompileSaveFixture(ParentBP))
+		|| !TestTrue(TEXT("Child fixture saved"), RecompileSaveFixture(ChildBP)))
+	{
+		RecompileFixtureCleanup({ParentPackageName, ChildPackageName}, Filenames);
+		return false;
+	}
+
+	IAssetRegistry& AssetRegistry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+	AssetRegistry.ScanFilesSynchronous(Filenames, true);
+
+	TArray<UPackage*> ToUnload = {ParentBP->GetOutermost(), ChildBP->GetOutermost()};
+	FText UnloadError;
+	if (!TestTrue(TEXT("Fixture packages unloaded"), UPackageTools::UnloadPackages(ToUnload, UnloadError, true)))
+	{
+		RecompileFixtureCleanup({ParentPackageName, ChildPackageName}, Filenames);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), ParentPath);
+	const FCortexCommandResult Result = FCortexBPCleanupOps::RecompileDependents(Params);
+
+	const bool bSucceeded = TestTrue(TEXT("recompile_dependents succeeds with unloaded dependents"), Result.bSuccess)
+		&& Result.Data.IsValid();
+	if (!bSucceeded)
+	{
+		RecompileFixtureCleanup({ParentPackageName, ChildPackageName}, Filenames);
+		return false;
+	}
+
+	double DependentCount = -1.0;
+	double RecompiledCount = -1.0;
+	Result.Data->TryGetNumberField(TEXT("dependent_count"), DependentCount);
+	Result.Data->TryGetNumberField(TEXT("recompiled_count"), RecompiledCount);
+	TestEqual(TEXT("Unloaded child discovered as a dependent"), static_cast<int32>(DependentCount), 1);
+	TestEqual(TEXT("Unloaded child recompiled"), static_cast<int32>(RecompiledCount), 1);
+
+	UBlueprint* ReloadedChild = FindObject<UBlueprint>(nullptr, *ChildPath);
+	if (TestNotNull(TEXT("Child loaded for recompile"), ReloadedChild))
+	{
+		TestTrue(
+			TEXT("Child blueprint up to date after recompile"),
+			ReloadedChild->Status == BS_UpToDate || ReloadedChild->Status == BS_UpToDateWithWarnings);
+	}
+
+	RecompileFixtureCleanup({ParentPackageName, ChildPackageName}, Filenames);
+	return true;
+}
+
+// A dependent that fails to compile must fail the command (issue #224 item 6): success with an
+// all-failed results array is dishonest.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPRecompileDependentsFailureHonestTest,
+	"Cortex.Blueprint.RecompileDependentsFailure.Honest",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPRecompileDependentsFailureHonestTest::RunTest(const FString& Parameters)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	UBlueprint* ParentBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		CreateWritableRecompileTestPackage(TEXT("BP_RecompileFailParent")),
+		FName(TEXT("BP_RecompileFailParent")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestNotNull(TEXT("Parent BP created"), ParentBP))
+	{
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(ParentBP);
+
+	UBlueprint* ChildBP = FKismetEditorUtilities::CreateBlueprint(
+		ParentBP->GeneratedClass,
+		CreateWritableRecompileTestPackage(TEXT("BP_RecompileFailChild")),
+		FName(TEXT("BP_RecompileFailChild")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!TestNotNull(TEXT("Child BP created"), ChildBP))
+	{
+		ParentBP->MarkAsGarbage();
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(ChildBP);
+
+	FCortexBPCleanupOps::SetRecompileDependentsPostCompileTestHook(
+		[](UBlueprint* HookBP)
+		{
+			if (HookBP)
+			{
+				HookBP->Status = BS_Error;
+			}
+		});
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), ParentBP->GetPathName());
+	const FCortexCommandResult Result = FCortexBPCleanupOps::RecompileDependents(Params);
+	FCortexBPCleanupOps::SetRecompileDependentsPostCompileTestHook(nullptr);
+
+	TestFalse(TEXT("Failed dependent compile fails the command"), Result.bSuccess);
+	TestEqual(TEXT("Error code is CompileFailed"), Result.ErrorCode, CortexErrorCodes::CompileFailed);
+	if (Result.ErrorDetails.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ResultsArray = nullptr;
+		Result.ErrorDetails->TryGetArrayField(TEXT("results"), ResultsArray);
+		TestTrue(TEXT("Failure details carry per-dependent results"), ResultsArray != nullptr && ResultsArray->Num() == 1);
+	}
+
+	ChildBP->MarkAsGarbage();
+	ParentBP->MarkAsGarbage();
+	return true;
+#else
+	AddInfo(TEXT("WITH_DEV_AUTOMATION_TESTS disabled; skipping dependent compile failure honesty test."));
+	return true;
+#endif
 }

@@ -584,7 +584,7 @@ class TestProjectValidation:
             mock_sock_cls.return_value = mock_sock
             conn.connect()
             mock_validate.assert_called_once()
-            mock_send.assert_called_once_with("get_capabilities", {})
+            mock_send.assert_called_once_with("ping", {})
 
     def test_connect_flow_calls_validate_even_without_expected_project(self):
         """Full connect() flow should always call _validate_project (it no-ops internally)."""
@@ -600,10 +600,10 @@ class TestProjectValidation:
             mock_sock_cls.return_value = mock_sock
             conn.connect()
             mock_validate.assert_called_once()
-            mock_send.assert_called_once_with("get_capabilities", {})
+            mock_send.assert_called_once_with("ping", {})
 
-    def test_connect_handshake_logs_warning_when_capabilities_fetch_fails(self):
-        """Capabilities handshake failure should not block connection establishment."""
+    def test_connect_handshake_logs_warning_when_ping_fails(self):
+        """Handshake ping failure should not block connection establishment."""
         conn = UEConnection(port=99999)
 
         with patch.object(conn, "_validate_project"), patch.object(

@@ -1,8 +1,10 @@
 #include "Misc/AutomationTest.h"
 #include "CortexCommandRouter.h"
 #include "CortexDataCommandHandler.h"
+#include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Misc/Guid.h"
 
 // Tests that search_datatable_content matches against the row name itself,
 // not only against field values. Regression for Issue 8.
@@ -167,6 +169,46 @@ bool FCortexDataSearchRowNameTest::RunTest(const FString& Parameters)
 			);
 		}
 	}
+
+	return true;
+}
+
+// search_text (or its "query" alias) is a required parameter. The gate runs before the table is
+// loaded, so a path that does not exist still exercises it, and the refusal is a missing field
+// rather than an invalid value.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexDataSearchMissingSearchTextTest,
+	"Cortex.Data.Search.MissingSearchText",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexDataSearchMissingSearchTextTest::RunTest(const FString& Parameters)
+{
+	FCortexDataCommandHandler Handler;
+	const FString TablePath = FString::Printf(
+		TEXT("/Game/Temp/DT_MissingSearchText_%s"),
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8));
+
+	TSharedPtr<FJsonObject> MissingParams = MakeShared<FJsonObject>();
+	MissingParams->SetStringField(TEXT("table_path"), TablePath);
+	const FCortexCommandResult Missing = Handler.Execute(TEXT("search_datatable_content"), MissingParams);
+	TestFalse(TEXT("search without search_text is refused"), Missing.bSuccess);
+	TestEqual(TEXT("search without search_text uses INVALID_FIELD"), Missing.ErrorCode, CortexErrorCodes::InvalidField);
+
+	TSharedPtr<FJsonObject> EmptyParams = MakeShared<FJsonObject>();
+	EmptyParams->SetStringField(TEXT("table_path"), TablePath);
+	EmptyParams->SetStringField(TEXT("search_text"), FString());
+	const FCortexCommandResult Empty = Handler.Execute(TEXT("search_datatable_content"), EmptyParams);
+	TestFalse(TEXT("search with an empty search_text is refused"), Empty.bSuccess);
+	TestEqual(TEXT("search with an empty search_text uses INVALID_FIELD"), Empty.ErrorCode, CortexErrorCodes::InvalidField);
+
+	// The alias still satisfies the gate: what follows is the missing table, not the missing field.
+	TSharedPtr<FJsonObject> AliasParams = MakeShared<FJsonObject>();
+	AliasParams->SetStringField(TEXT("table_path"), TablePath);
+	AliasParams->SetStringField(TEXT("query"), TEXT("needle"));
+	const FCortexCommandResult Alias = Handler.Execute(TEXT("search_datatable_content"), AliasParams);
+	TestFalse(TEXT("search through the query alias reaches the table load"), Alias.bSuccess);
+	TestEqual(TEXT("the query alias is not reported as a missing field"), Alias.ErrorCode, CortexErrorCodes::TableNotFound);
 
 	return true;
 }

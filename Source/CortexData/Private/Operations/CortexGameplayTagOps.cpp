@@ -36,6 +36,16 @@ static bool IsValidTagFormat(const FString& TagString, FString& OutError)
 	return true;
 }
 
+// Single ini line for a gameplay tag entry; shared by the single-tag and batch writers.
+static FString MakeTagEntryLine(const FString& TagString, const FString& DevComment)
+{
+	if (DevComment.IsEmpty())
+	{
+		return FString::Printf(TEXT("+GameplayTagList=(Tag=\"%s\",DevComment=\"\")"), *TagString);
+	}
+	return FString::Printf(TEXT("+GameplayTagList=(Tag=\"%s\",DevComment=\"%s\")"), *TagString, *DevComment);
+}
+
 FCortexCommandResult FCortexDataGameplayTagOps::ListGameplayTags(const TSharedPtr<FJsonObject>& Params)
 {
 	FString Prefix;
@@ -239,53 +249,214 @@ FCortexCommandResult FCortexDataGameplayTagOps::RegisterGameplayTags(const TShar
 		Registrations.Add(MoveTemp(Reg));
 	}
 
-	TArray<TSharedPtr<FJsonValue>> ResultsArray;
-	int32 SuccessCount = 0;
-	int32 AlreadyExistedCount = 0;
-	int32 FailedCount = 0;
-
-	for (const FTagRegistration& Reg : Registrations)
+	// Phase 1 outcome per tag, before any file I/O: a tag already valid in the runtime tree is
+	// reported as already_existed exactly as the single-tag path does.
+	enum class EBatchOutcome
 	{
-		bool bSuccess = false;
+		Register,
+		AlreadyInTree,
+		InFile,
+		Invalid,
+		WriteFailed
+	};
+	struct FBatchEntry
+	{
+		int32 RegistrationIndex = INDEX_NONE;
+		EBatchOutcome Outcome = EBatchOutcome::Invalid;
+		TSharedPtr<FJsonObject> ResultData;
 		FString ErrorMsg;
-		TSharedPtr<FJsonObject> ResultData = RegisterSingleTag(Reg.TagString, Reg.IniFile, Reg.DevComment, bSuccess, ErrorMsg);
+	};
 
-		if (ResultData.IsValid())
+	TArray<FBatchEntry> Entries;
+	Entries.SetNum(Registrations.Num());
+	for (int32 Index = 0; Index < Registrations.Num(); ++Index)
+	{
+		Entries[Index].RegistrationIndex = Index;
+		const FTagRegistration& Reg = Registrations[Index];
+
+		FString FormatError;
+		if (!IsValidTagFormat(Reg.TagString, FormatError))
 		{
-			if (bSuccess)
+			Entries[Index].ErrorMsg = FormatError;
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
+		ResultData->SetStringField(TEXT("tag"), Reg.TagString);
+		const bool bAlreadyInTree = FGameplayTag::RequestGameplayTag(FName(*Reg.TagString), false).IsValid();
+		ResultData->SetBoolField(TEXT("already_existed"), bAlreadyInTree);
+		if (bAlreadyInTree)
+		{
+			ResultData->SetBoolField(TEXT("success"), true);
+			Entries[Index].Outcome = EBatchOutcome::AlreadyInTree;
+		}
+		else
+		{
+			Entries[Index].Outcome = EBatchOutcome::Register;
+		}
+		Entries[Index].ResultData = MoveTemp(ResultData);
+	}
+
+	// Phase 2: group new tags by resolved ini file; each ini is read and written once.
+	TMap<FString, TArray<int32>> NewByIni;
+	for (int32 Index = 0; Index < Entries.Num(); ++Index)
+	{
+		if (Entries[Index].Outcome != EBatchOutcome::Register)
+		{
+			continue;
+		}
+		const FString ResolvedIniFile = ResolveIniFile(Registrations[Index].TagString, Registrations[Index].IniFile);
+		Entries[Index].ResultData->SetStringField(TEXT("ini_file"), ResolvedIniFile);
+		NewByIni.FindOrAdd(ResolvedIniFile).Add(Index);
+	}
+
+	bool bAnyLineAppended = false;
+	for (const TPair<FString, TArray<int32>>& IniGroup : NewByIni)
+	{
+		FString Directory = FPaths::GetPath(IniGroup.Key);
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		if (!PlatformFile.DirectoryExists(*Directory))
+		{
+			PlatformFile.CreateDirectoryTree(*Directory);
+		}
+
+		FString ExistingContents;
+		if (PlatformFile.FileExists(*IniGroup.Key) && !FFileHelper::LoadFileToString(ExistingContents, *IniGroup.Key))
+		{
+			// An existing but unreadable ini must not be replaced with a header-only file.
+			const FString ReadError = FString::Printf(TEXT("Failed to read file: %s"), *IniGroup.Key);
+			for (const int32 EntryIndex : IniGroup.Value)
 			{
-				bool bAlreadyExisted = false;
-				ResultData->TryGetBoolField(TEXT("already_existed"), bAlreadyExisted);
-				if (bAlreadyExisted)
+				if (Entries[EntryIndex].Outcome == EBatchOutcome::Register)
 				{
-					++AlreadyExistedCount;
+					Entries[EntryIndex].Outcome = EBatchOutcome::WriteFailed;
+					Entries[EntryIndex].ErrorMsg = ReadError;
 				}
-				else
+			}
+			continue;
+		}
+
+		const FString SectionHeader = TEXT("[/Script/GameplayTags.GameplayTagsList]");
+		if (!ExistingContents.Contains(SectionHeader))
+		{
+			if (!ExistingContents.IsEmpty() && !ExistingContents.EndsWith(TEXT("\n")))
+			{
+				ExistingContents += TEXT("\n");
+			}
+			ExistingContents += SectionHeader + TEXT("\n");
+		}
+		if (!ExistingContents.EndsWith(TEXT("\n")))
+		{
+			ExistingContents += TEXT("\n");
+		}
+
+		int32 AppendedCount = 0;
+		for (const int32 EntryIndex : IniGroup.Value)
+		{
+			const FString TagSearchPattern = FString::Printf(TEXT("Tag=\"%s\""), *Registrations[EntryIndex].TagString);
+			if (ExistingContents.Contains(TagSearchPattern))
+			{
+				// Earlier batch entry or a previous session already wrote this line: not new.
+				Entries[EntryIndex].Outcome = EBatchOutcome::InFile;
+				continue;
+			}
+
+			ExistingContents += MakeTagEntryLine(Registrations[EntryIndex].TagString, Registrations[EntryIndex].DevComment) + TEXT("\n");
+			++AppendedCount;
+		}
+
+		if (AppendedCount > 0)
+		{
+			if (FFileHelper::SaveStringToFile(ExistingContents, *IniGroup.Key))
+			{
+				bAnyLineAppended = true;
+				for (const int32 EntryIndex : IniGroup.Value)
 				{
-					++SuccessCount;
+					if (Entries[EntryIndex].Outcome == EBatchOutcome::Register)
+					{
+						UE_LOG(LogCortexData, Log, TEXT("Registered tag '%s' in %s"),
+							*Registrations[EntryIndex].TagString, *IniGroup.Key);
+					}
 				}
 			}
 			else
 			{
-				ResultData->SetStringField(TEXT("error"), ErrorMsg);
-				++FailedCount;
+				const FString WriteError = FString::Printf(TEXT("Failed to write to file: %s"), *IniGroup.Key);
+				for (const int32 EntryIndex : IniGroup.Value)
+				{
+					if (Entries[EntryIndex].Outcome == EBatchOutcome::Register)
+					{
+						Entries[EntryIndex].Outcome = EBatchOutcome::WriteFailed;
+						Entries[EntryIndex].ErrorMsg = WriteError;
+					}
+				}
 			}
-			ResultsArray.Add(MakeShared<FJsonValueObject>(ResultData.ToSharedRef()));
 		}
-		else
+	}
+
+	// Phase 3: one tag-tree refresh for the whole batch, then per-tag verification.
+	if (bAnyLineAppended)
+	{
+		UGameplayTagsManager::Get().EditorRefreshGameplayTagTree();
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ResultsArray;
+	int32 RegisteredCount = 0;
+	int32 AlreadyExistedCount = 0;
+	int32 FailedCount = 0;
+
+	for (FBatchEntry& Entry : Entries)
+	{
+		switch (Entry.Outcome)
+		{
+		case EBatchOutcome::Invalid:
 		{
 			TSharedRef<FJsonObject> ErrorEntry = MakeShared<FJsonObject>();
-			ErrorEntry->SetStringField(TEXT("tag"), Reg.TagString);
+			ErrorEntry->SetStringField(TEXT("tag"), Registrations[Entry.RegistrationIndex].TagString);
 			ErrorEntry->SetBoolField(TEXT("success"), false);
-			ErrorEntry->SetStringField(TEXT("error"), ErrorMsg);
+			ErrorEntry->SetStringField(TEXT("error"), Entry.ErrorMsg);
 			ResultsArray.Add(MakeShared<FJsonValueObject>(ErrorEntry));
 			++FailedCount;
+			break;
+		}
+		case EBatchOutcome::WriteFailed:
+			Entry.ResultData->SetStringField(TEXT("error"), Entry.ErrorMsg);
+			Entry.ResultData->SetBoolField(TEXT("success"), false);
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry.ResultData.ToSharedRef()));
+			++FailedCount;
+			break;
+		case EBatchOutcome::AlreadyInTree:
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry.ResultData.ToSharedRef()));
+			++AlreadyExistedCount;
+			break;
+		case EBatchOutcome::InFile:
+			// The line predates this batch (earlier entry or a previous editor session).
+			Entry.ResultData->SetBoolField(TEXT("success"), true);
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry.ResultData.ToSharedRef()));
+			++AlreadyExistedCount;
+			break;
+		case EBatchOutcome::Register:
+		{
+			// Newly written in this batch: verify after the single refresh.
+			const FGameplayTag NewTag = FGameplayTag::RequestGameplayTag(FName(*Registrations[Entry.RegistrationIndex].TagString), false);
+			if (!NewTag.IsValid())
+			{
+				UE_LOG(LogCortexData, Warning, TEXT("Tag '%s' was written to .ini but did not register after refresh. It will be available after editor restart."),
+					*Registrations[Entry.RegistrationIndex].TagString);
+				Entry.ResultData->SetStringField(TEXT("note"),
+					TEXT("Tag written to .ini. May require editor restart to fully register."));
+			}
+			Entry.ResultData->SetBoolField(TEXT("success"), true);
+			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry.ResultData.ToSharedRef()));
+			++RegisteredCount;
+			break;
+		}
 		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetArrayField(TEXT("results"), ResultsArray);
-	Data->SetNumberField(TEXT("registered"), SuccessCount);
+	Data->SetNumberField(TEXT("registered"), RegisteredCount);
 	Data->SetNumberField(TEXT("already_existed"), AlreadyExistedCount);
 	Data->SetNumberField(TEXT("failed"), FailedCount);
 
@@ -360,15 +531,7 @@ bool FCortexDataGameplayTagOps::AppendTagToIniFile(const FString& IniFilePath, c
 	}
 
 	// Build the tag entry line
-	FString TagEntry;
-	if (DevComment.IsEmpty())
-	{
-		TagEntry = FString::Printf(TEXT("+GameplayTagList=(Tag=\"%s\",DevComment=\"\")"), *TagString);
-	}
-	else
-	{
-		TagEntry = FString::Printf(TEXT("+GameplayTagList=(Tag=\"%s\",DevComment=\"%s\")"), *TagString, *DevComment);
-	}
+	const FString TagEntry = MakeTagEntryLine(TagString, DevComment);
 
 	// Check if this exact tag already exists in the file
 	FString TagSearchPattern = FString::Printf(TEXT("Tag=\"%s\""), *TagString);

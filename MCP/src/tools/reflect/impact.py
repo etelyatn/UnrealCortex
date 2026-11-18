@@ -1,8 +1,10 @@
 """MCP composite tool for impact analysis before breaking changes."""
 
+import json
 import logging
 from cortex_mcp.response import format_response
 from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure
 
 logger = logging.getLogger(__name__)
 
@@ -171,5 +173,5 @@ def register_reflect_impact_tools(mcp, connection: UEConnection):
                 }
 
             return format_response(result, "impact_analysis")
-        except (ConnectionError, RuntimeError) as e:
-            return f"Error: {e}"
+        except ConnectionError as e:
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(e)))

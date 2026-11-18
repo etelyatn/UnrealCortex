@@ -154,7 +154,8 @@ def test_submit_and_wait_timeout():
     ))
     data = json.loads(result)
     assert data["success"] is False
-    assert "Timeout" in data["error"]
+    assert data["_error"]
+    assert "Timeout" in data["_message"]
     assert data["data"]["status"] == "timeout"
 
 
@@ -174,7 +175,8 @@ def test_submit_and_wait_submit_fails():
     ))
     data = json.loads(result)
     assert data["success"] is False
-    assert "PROVIDER_NOT_FOUND" in data["error"]
+    assert data["_error"] == "PROVIDER_NOT_FOUND"
+    assert data["_message"] == "No provider configured"
 
 
 def test_gen_compose_invalid_type():
@@ -196,7 +198,8 @@ def test_gen_compose_invalid_type():
     result = asyncio.run(gen_compose(type="unknown"))
     data = json.loads(result)
     assert data["success"] is False
-    assert "Unknown gen type" in data["error"]
+    assert data["_error"]
+    assert "Unknown gen type" in data["_message"]
 
 
 def test_submit_and_wait_reports_connection_failure():
@@ -212,7 +215,8 @@ def test_submit_and_wait_reports_connection_failure():
     ))
     data = json.loads(result)
     assert data["success"] is False
-    assert "No running Unreal Editor" in data["error"]
+    assert data["_error"] == "CONNECTION_ERROR"
+    assert "No running Unreal Editor" in data["_message"]
 
 
 def test_submit_and_wait_timeout_marks_unknown_outcome():
@@ -230,7 +234,8 @@ def test_submit_and_wait_timeout_marks_unknown_outcome():
     assert data["success"] is False
     assert data["recovery_required"] is True
     assert data["data"]["status"] == "unknown"
-    assert "list_jobs" in data["error"]
+    assert data["_error"]
+    assert "list_jobs" in data["_message"]
 
 
 def test_submit_and_wait_poll_failure_keeps_job_id():
@@ -250,8 +255,9 @@ def test_submit_and_wait_poll_failure_keeps_job_id():
     assert data["success"] is False
     assert data["data"]["job_id"] == "gen_kept"
     assert data["data"]["status"] == "unknown"
-    assert "may still be running" in data["error"]
-    assert "list_jobs" in data["error"]
+    assert data["_error"]
+    assert "may still be running" in data["_message"]
+    assert "list_jobs" in data["_message"]
 
 
 def test_gen_compose_uses_the_real_connection_api():

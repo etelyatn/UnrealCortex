@@ -1138,16 +1138,34 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetProperty(const TSharedPtr<F
     FScopedTransaction Transaction(FText::FromString(
         FString::Printf(TEXT("Cortex: Set Property %s on %s"), *PropertyPath, *WidgetName)));
     CortexUMGUtils::ModifyWidgetForEdit(WBP, Widget);
-    TSharedPtr<FJsonValue> JsonValue = Params->TryGetField(TEXT("value"));
-    if (JsonValue.IsValid())
+
+    // A refusal carries the serializer's reason (for an unknown enum, the valid names); a write that
+    // applied with warnings returns them in the envelope's warnings instead of dropping them.
+    TArray<FString> Warnings;
+    const TSharedPtr<FJsonValue> JsonValue = Params->TryGetField(TEXT("value"));
+    if (JsonValue.IsValid()
+        && !FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Widget, Warnings))
     {
-        TArray<FString> Warnings;
-        if (!FCortexSerializer::JsonToProperty(JsonValue, Property, ValuePtr, Widget, Warnings))
+        TSharedPtr<FJsonObject> ErrorDetails;
+        if (Warnings.Num() > 0)
         {
-            return FCortexCommandRouter::Error(
-                CortexErrorCodes::InvalidPropertyValue,
-                FString::Printf(TEXT("Failed to set value for property: %s"), *PropertyPath));
+            ErrorDetails = MakeShared<FJsonObject>();
+            TArray<TSharedPtr<FJsonValue>> WarningValues;
+            WarningValues.Reserve(Warnings.Num());
+            for (const FString& Warning : Warnings)
+            {
+                WarningValues.Add(MakeShared<FJsonValueString>(Warning));
+            }
+            ErrorDetails->SetArrayField(TEXT("warnings"), WarningValues);
         }
+
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidPropertyValue,
+            Warnings.Num() > 0
+                ? FString::Printf(TEXT("Failed to set value for property: %s: %s"),
+                    *PropertyPath, *FString::Join(Warnings, TEXT("; ")))
+                : FString::Printf(TEXT("Failed to set value for property: %s"), *PropertyPath),
+            ErrorDetails);
     }
 
     FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);
@@ -1157,7 +1175,10 @@ FCortexCommandResult FCortexUMGWidgetPropertyOps::SetProperty(const TSharedPtr<F
     Data->SetStringField(TEXT("widget_name"), WidgetName);
     Data->SetStringField(TEXT("property_path"), PropertyPath);
     Data->SetStringField(TEXT("type"), Property->GetCPPType());
-    return FCortexCommandRouter::Success(Data);
+
+    FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
+    Result.Warnings = MoveTemp(Warnings);
+    return Result;
 }
 
 FCortexCommandResult FCortexUMGWidgetPropertyOps::GetProperty(const TSharedPtr<FJsonObject>& Params)

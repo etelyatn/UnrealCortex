@@ -17,6 +17,7 @@
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+#include "Misc/AutomationTest.h"
 #include "Widgets/SWindow.h"
 
 namespace
@@ -351,4 +352,15 @@ FCortexCommandResult PrepareAndCommit(FCortexReplayScheduler& Scheduler,
 	}
 
 	return Scheduler.CommitFrame(Scheduler.GetCompletedFrameCount());
+}
+
+bool CortexReplaySkipWithoutPhysicalKeyState(FAutomationTestBase& Test)
+{
+#if PLATFORM_WINDOWS
+	(void)Test;
+	return false;
+#else
+	Test.AddInfo(TEXT("Physical keyboard/mouse state is resolved only on Windows; live capture/replay test skipped on this platform"));
+	return true;
+#endif
 }

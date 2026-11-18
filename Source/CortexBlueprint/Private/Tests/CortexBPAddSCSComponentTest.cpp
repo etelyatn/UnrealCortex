@@ -9,7 +9,10 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
+#include "EdGraph/EdGraph.h"
 #include "GameFramework/Actor.h"
+#include "K2Node_CustomEvent.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/Guid.h"
 
@@ -353,6 +356,81 @@ bool FCortexBPAddSCSComponentNonSceneWithParentTest::RunTest(const FString& Para
 	FCortexCommandResult Result = FCortexBPComponentOps::AddSCSComponent(Params);
 	TestFalse(TEXT("Returns failure for non-scene with parent"), Result.bSuccess);
 	TestEqual(TEXT("Error code is InvalidField"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+
+	TestBP->MarkAsGarbage();
+	return true;
+}
+
+// `compiled` must describe the compile that actually ran, not the request: a Blueprint whose graph
+// cannot compile reports compiled=false even though the component was added.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPAddSCSComponentCompileFailureTest,
+	"Cortex.Blueprint.Component.AddSCSComponent.CompileFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPAddSCSComponentCompileFailureTest::RunTest(const FString& Parameters)
+{
+	// The fixture is deliberately broken: the compile that add_scs_component runs logs this compiler error once.
+	AddExpectedError(TEXT("Found more than one function with the same name"), EAutomationExpectedErrorFlags::Contains, 1);
+
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		CreateWritableAddSCSTestPackage(TEXT("BP_AddSCSCompileFailTest")),
+		FName(TEXT("BP_AddSCSCompileFailTest")),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint created"), TestBP);
+	if (!TestBP) { return false; }
+
+	USimpleConstructionScript* SCS = TestBP->SimpleConstructionScript;
+	TestNotNull(TEXT("SCS exists"), SCS);
+	if (!SCS) { TestBP->MarkAsGarbage(); return false; }
+
+	UEdGraph* EventGraph = nullptr;
+	if (TestBP->UbergraphPages.Num() > 0)
+	{
+		EventGraph = TestBP->UbergraphPages[0];
+	}
+	TestNotNull(TEXT("Event graph exists"), EventGraph);
+	if (!EventGraph) { TestBP->MarkAsGarbage(); return false; }
+
+	// Two custom events with the same name are a guaranteed compile error.
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		UK2Node_CustomEvent* Event = NewObject<UK2Node_CustomEvent>(EventGraph);
+		Event->CreateNewGuid();
+		Event->CustomFunctionName = FName(TEXT("DuplicateEventName"));
+		EventGraph->AddNode(Event, false, false);
+		Event->AllocateDefaultPins();
+	}
+	FBlueprintEditorUtils::MarkBlueprintAsModified(TestBP);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), TestBP->GetPathName());
+	Params->SetStringField(TEXT("component_class"), TEXT("StaticMeshComponent"));
+	Params->SetStringField(TEXT("component_name"), TEXT("BrokenMesh"));
+	Params->SetBoolField(TEXT("compile"), true);
+
+	const FCortexCommandResult Result = FCortexBPComponentOps::AddSCSComponent(Params);
+	TestTrue(TEXT("the component is still added to a Blueprint that fails to compile"), Result.bSuccess);
+
+	TestTrue(TEXT("Response data was returned"), Result.Data.IsValid());
+	if (Result.Data.IsValid())
+	{
+		bool bCompiled = true;
+		TestTrue(TEXT("Response has compiled"), Result.Data->TryGetBoolField(TEXT("compiled"), bCompiled));
+		TestFalse(TEXT("compiled reports the failed compile instead of claiming success"), bCompiled);
+
+		FString CompileStatus;
+		TestTrue(TEXT("Response has compile_status"), Result.Data->TryGetStringField(TEXT("compile_status"), CompileStatus));
+		TestEqual(TEXT("compile_status reports the error"), CompileStatus, FString(TEXT("Error")));
+	}
+
+	TestTrue(TEXT("BrokenMesh exists in SCS"),
+		SCS->GetAllNodes().ContainsByPredicate([](const USCS_Node* Node) {
+			return Node && Node->GetVariableName() == FName(TEXT("BrokenMesh"));
+		}));
 
 	TestBP->MarkAsGarbage();
 	return true;

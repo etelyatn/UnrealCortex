@@ -1,0 +1,1 @@
+{"port":8742,"pid":1234,"project":"CortexSandbox","project_path":"C:/test.uproject","started_at":"2026-01-01T00:00:00Z"}

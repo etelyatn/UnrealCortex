@@ -4,6 +4,7 @@ import json
 import logging
 
 from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure, failed_step_code
 
 logger = logging.getLogger(__name__)
 
@@ -333,22 +334,18 @@ def register_level_composite_tools(mcp, connection: UEConnection):
         try:
             _validate_level_batch_spec(operations)
         except ValueError as exc:
-            return json.dumps({"success": False, "error": f"Invalid spec: {exc}"})
+            return json.dumps(canonical_failure("INVALID_FIELD", f"Invalid spec: {exc}"))
 
         commands, _id_to_step, step_to_op_info = _build_level_batch_commands(operations, save)
         total_steps = len(commands)
 
         max_batch_size = 200
         if total_steps > max_batch_size:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        f"Batch expands to {total_steps} commands, exceeding limit of "
-                        f"{max_batch_size}. Split into smaller batches."
-                    ),
-                }
-            )
+            return json.dumps(canonical_failure(
+                "INVALID_OPERATION",
+                f"Batch expands to {total_steps} commands, exceeding limit of "
+                f"{max_batch_size}. Split into smaller batches.",
+            ))
 
         timeout = max(60, len(commands) * 2)
         try:
@@ -360,10 +357,8 @@ def register_level_composite_tools(mcp, connection: UEConnection):
                 },
                 timeout=timeout,
             )
-        except RuntimeError as exc:
-            return json.dumps({"success": False, "error": str(exc)})
         except (ConnectionError, TimeoutError, OSError) as exc:
-            return json.dumps({"success": False, "error": f"Connection error: {exc}"})
+            return json.dumps(canonical_failure(CONNECTION_ERROR_CODE, str(exc)))
 
         batch_data = batch_result.get("data", {})
         results = batch_data.get("results", [])
@@ -401,14 +396,20 @@ def register_level_composite_tools(mcp, connection: UEConnection):
                 )
 
         if failed_steps:
+            first_failure = failed_steps[0]
             return json.dumps(
-                {
-                    "success": False,
-                    "completed_steps": completed_count,
-                    "total_steps": total_steps,
-                    "spawned_actors": spawned_actors,
-                    "failed_steps": failed_steps,
-                },
+                canonical_failure(
+                    failed_step_code(first_failure),
+                    f"{len(failed_steps)} of {total_steps} steps failed; first: "
+                    f"{first_failure.get('command', '?')} - "
+                    f"{first_failure.get('error', 'Unknown error')}",
+                    {
+                        "completed_steps": completed_count,
+                        "total_steps": total_steps,
+                        "spawned_actors": spawned_actors,
+                        "failed_steps": failed_steps,
+                    },
+                ),
                 indent=2,
             )
 

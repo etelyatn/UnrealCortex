@@ -27,10 +27,10 @@ public:
     /** Collect component names as suggestions for COMPONENT_NOT_FOUND errors. */
     static TSharedPtr<FJsonObject> CollectComponentSuggestions(AActor* Actor, int32 MaxSuggestions = 5);
 
-    /** Parse a [X,Y,Z] JSON array field with a default fallback. Returns false only if format is invalid. */
+    /** Parse an optional [X,Y,Z] JSON array field. Missing keeps DefaultValue; a present non-array, wrong length or non-numeric element is a refusal. */
     static bool TryParseVector(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, const FVector& DefaultValue, FVector& OutVector);
 
-    /** Parse a required [X,Y,Z] JSON array field. Returns false if field is missing or invalid. */
+    /** Parse a required [X,Y,Z] JSON array field. Returns false if the field is missing, is not a 3-element array, or has a non-numeric element. */
     static bool ParseVectorField(const TSharedPtr<FJsonObject>& Params, const TCHAR* FieldName, FVector& OutVector);
 
     /** Serialize a vector as a [X,Y,Z] JSON array field. */

@@ -195,9 +195,11 @@ UDataTable* FCortexDataTableOps::FindSourceTableForRow(const UCompositeDataTable
 FCortexCommandResult FCortexDataTableOps::ListDatatables(const TSharedPtr<FJsonObject>& Params)
 {
 	FString PathFilter;
+	bool bIncludeRowCount = false;
 	if (Params.IsValid())
 	{
 		Params->TryGetStringField(TEXT("path_filter"), PathFilter);
+		Params->TryGetBoolField(TEXT("include_row_count"), bIncludeRowCount);
 	}
 
 	TArray<TSharedPtr<FJsonValue>> DatatablesArray;
@@ -233,23 +235,24 @@ FCortexCommandResult FCortexDataTableOps::ListDatatables(const TSharedPtr<FJsonO
 		// row_struct from AssetRegistry tag (no synchronous load required)
 		EntryJson->SetStringField(TEXT("row_struct"), GetRowStructNameFromTag(AssetData));
 
-		// Load asset to get accurate row count (DataTables are small; catalog is cached)
-		UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
+		// is_composite from registry class data; row_count and parent_tables require a load and
+		// are opt-in via include_row_count (issue #224: no synchronous loads by default).
+		const UClass* AssetClass = AssetData.GetClass();
+		const bool bIsComposite = AssetClass != nullptr && AssetClass->IsChildOf(UCompositeDataTable::StaticClass());
+		EntryJson->SetBoolField(TEXT("is_composite"), bIsComposite);
 
-		if (DataTable != nullptr)
+		if (bIncludeRowCount)
 		{
-			EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
-
-			const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
-			EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
-			if (CompositeTable != nullptr)
+			UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
+			if (DataTable != nullptr)
 			{
-				EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
+				EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
+				if (bIsComposite)
+				{
+					EntryJson->SetArrayField(
+						TEXT("parent_tables"), GetParentTablesJsonArray(Cast<UCompositeDataTable>(DataTable)));
+				}
 			}
-		}
-		else
-		{
-			EntryJson->SetBoolField(TEXT("is_composite"), false);
 		}
 
 		DatatablesArray.Add(MakeShared<FJsonValueObject>(EntryJson));
@@ -1078,7 +1081,7 @@ FCortexCommandResult FCortexDataTableOps::SearchDatatableContent(const TSharedPt
 		if (!Params->TryGetStringField(TEXT("query"), SearchText) || SearchText.IsEmpty())
 		{
 			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidValue,
+				CortexErrorCodes::InvalidField,
 				TEXT("Missing or empty required param: search_text (or query)")
 			);
 		}
@@ -1326,9 +1329,11 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 	};
 
 	bool bIncludeAssetPaths = false;
+	bool bIncludeRowCount = false;
 	if (Params.IsValid())
 	{
 		Params->TryGetBoolField(TEXT("include_asset_paths"), bIncludeAssetPaths);
+		Params->TryGetBoolField(TEXT("include_row_count"), bIncludeRowCount);
 	}
 
 	// --- DataTables section ---
@@ -1367,36 +1372,38 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 				// row_struct from AssetRegistry tag (no synchronous load required)
 				EntryJson->SetStringField(TEXT("row_struct"), GetRowStructNameFromTag(AssetData));
 
-				// Load asset to get accurate row count (DataTables are small; catalog is cached)
-				UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
+				// is_composite from registry class data; row_count, parent_tables and top_fields
+				// require a load and are opt-in via include_row_count (issue #224).
+				const UClass* AssetClass = AssetData.GetClass();
+		const bool bIsComposite = AssetClass != nullptr && AssetClass->IsChildOf(UCompositeDataTable::StaticClass());
+				EntryJson->SetBoolField(TEXT("is_composite"), bIsComposite);
 
-				if (DataTable != nullptr)
+				if (bIncludeRowCount)
 				{
-					EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
-
-					const UCompositeDataTable* CompositeTable = Cast<UCompositeDataTable>(DataTable);
-					EntryJson->SetBoolField(TEXT("is_composite"), CompositeTable != nullptr);
-					if (CompositeTable != nullptr)
+					UDataTable* DataTable = Cast<UDataTable>(AssetData.GetAsset());
+					if (DataTable != nullptr)
 					{
-						EntryJson->SetArrayField(TEXT("parent_tables"), GetParentTablesJsonArray(CompositeTable));
-					}
+						EntryJson->SetNumberField(TEXT("row_count"), DataTable->GetRowMap().Num());
 
-					// top_fields: first 8 field names from the row struct
-					const UScriptStruct* RowStruct = DataTable->GetRowStruct();
-					if (RowStruct != nullptr)
-					{
-						TArray<TSharedPtr<FJsonValue>> FieldNamesArray;
-						int32 FieldCount = 0;
-						for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt && FieldCount < 8; ++PropIt, ++FieldCount)
+						if (bIsComposite)
 						{
-							FieldNamesArray.Add(MakeShared<FJsonValueString>(PropIt->GetName()));
+							EntryJson->SetArrayField(
+								TEXT("parent_tables"), GetParentTablesJsonArray(Cast<UCompositeDataTable>(DataTable)));
 						}
-						EntryJson->SetArrayField(TEXT("top_fields"), FieldNamesArray);
+
+						// top_fields: first 8 field names from the row struct
+						const UScriptStruct* RowStruct = DataTable->GetRowStruct();
+						if (RowStruct != nullptr)
+						{
+							TArray<TSharedPtr<FJsonValue>> FieldNamesArray;
+							int32 FieldCount = 0;
+							for (TFieldIterator<FProperty> PropIt(RowStruct); PropIt && FieldCount < 8; ++PropIt, ++FieldCount)
+							{
+								FieldNamesArray.Add(MakeShared<FJsonValueString>(PropIt->GetName()));
+							}
+							EntryJson->SetArrayField(TEXT("top_fields"), FieldNamesArray);
+						}
 					}
-				}
-				else
-				{
-					EntryJson->SetBoolField(TEXT("is_composite"), false);
 				}
 
 				DatatablesArray.Add(MakeShared<FJsonValueObject>(EntryJson));
@@ -1554,18 +1561,21 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 					continue;
 				}
 
-				// Try to get entry count from the loaded table
-				UStringTable* LoadedTable = LoadObject<UStringTable>(nullptr, *AssetPath);
-				if (LoadedTable != nullptr)
+				// entry_count requires a load and is opt-in via include_row_count (issue #224).
+				if (bIncludeRowCount)
 				{
-					FStringTableConstRef TableRef = LoadedTable->GetStringTable();
-					int32 EntryCount = 0;
-					TableRef->EnumerateSourceStrings([&EntryCount](const FString&, const FString&) -> bool
+					UStringTable* LoadedTable = LoadObject<UStringTable>(nullptr, *AssetPath);
+					if (LoadedTable != nullptr)
 					{
-						++EntryCount;
-						return true;
-					});
-					Entry->SetNumberField(TEXT("entry_count"), EntryCount);
+						FStringTableConstRef TableRef = LoadedTable->GetStringTable();
+						int32 EntryCount = 0;
+						TableRef->EnumerateSourceStrings([&EntryCount](const FString&, const FString&) -> bool
+						{
+							++EntryCount;
+							return true;
+						});
+						Entry->SetNumberField(TEXT("entry_count"), EntryCount);
+					}
 				}
 
 				StringTableArray.Add(MakeShared<FJsonValueObject>(Entry));
@@ -1922,13 +1932,16 @@ FCortexCommandResult FCortexDataTableOps::CreateDataTable(const TSharedPtr<FJson
 
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	// A refused save is the caller's error to report; without SAVE_NoError the engine logs the refusal
+	// through the save context, which asserts in a headless automation run.
+	SaveArgs.SaveFlags = SAVE_NoError;
 	const bool bSaved = UPackage::SavePackage(Package, NewTable, *PackageFilename, SaveArgs);
 	if (!bSaved)
 	{
 		NewTable->MarkAsGarbage();
 		Package->MarkAsGarbage();
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::SerializationError,
+			CortexErrorCodes::SaveFailed,
 			FString::Printf(TEXT("Failed to save DataTable to disk: %s"), *TablePath)
 		);
 	}

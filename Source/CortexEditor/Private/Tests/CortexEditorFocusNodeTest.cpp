@@ -30,12 +30,12 @@ bool FCortexEditorFocusNodeMissingParamsTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexEditorFocusNodeAssetNotFoundTest,
-	"Cortex.Editor.FocusNode.AssetNotFound",
+	FCortexEditorFocusNodeBlueprintNotFoundTest,
+	"Cortex.Editor.FocusNode.BlueprintNotFound",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FCortexEditorFocusNodeAssetNotFoundTest::RunTest(const FString& Parameters)
+bool FCortexEditorFocusNodeBlueprintNotFoundTest::RunTest(const FString& Parameters)
 {
 	FCortexEditorCommandHandler Handler;
 
@@ -45,8 +45,8 @@ bool FCortexEditorFocusNodeAssetNotFoundTest::RunTest(const FString& Parameters)
 	FCortexCommandResult Result = Handler.Execute(TEXT("focus_node"), Params);
 
 	TestFalse(TEXT("focus_node with non-existent asset should fail"), Result.bSuccess);
-	TestEqual(TEXT("Error code should be ASSET_NOT_FOUND"),
-		Result.ErrorCode, CortexErrorCodes::AssetNotFound);
+	TestEqual(TEXT("Error code should be BLUEPRINT_NOT_FOUND"),
+		Result.ErrorCode, CortexErrorCodes::BlueprintNotFound);
 
 	return true;
 }

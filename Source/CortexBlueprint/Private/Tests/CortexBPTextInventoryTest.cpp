@@ -319,7 +319,7 @@ bool FCortexBPExportTextInventoryTest::RunTest(const FString& Parameters)
 	MissingParams->SetStringField(TEXT("asset_path"), TEXT("/Game/Temp/CortexTextInventory_DoesNotExist/BP_Missing"));
 	const FCortexCommandResult Missing = Handler.Execute(TEXT("export_text_inventory"), MissingParams);
 	TestFalse(TEXT("unknown asset fails"), Missing.bSuccess);
-	TestEqual(TEXT("unknown asset error code"), Missing.ErrorCode, CortexErrorCodes::AssetNotFound);
+	TestEqual(TEXT("unknown asset error code"), Missing.ErrorCode, CortexErrorCodes::BlueprintNotFound);
 
 	RetireInventoryPackage(WidgetBlueprint);
 	RetireInventoryPackage(Blueprint.Get());

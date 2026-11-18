@@ -198,7 +198,7 @@ FCortexCommandResult FCortexLevelQueryOps::ListActors(const TSharedPtr<FJsonObje
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FCortexCommandResult Error;
@@ -244,13 +244,13 @@ FCortexCommandResult FCortexLevelQueryOps::FindActors(const TSharedPtr<FJsonObje
 {
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     FString Pattern;
     if (!Params->TryGetStringField(TEXT("pattern"), Pattern) || Pattern.IsEmpty())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing required parameter: pattern"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: pattern"));
     }
 
     if (!Pattern.Contains(TEXT("*")) && !Pattern.Contains(TEXT("?")))
@@ -368,13 +368,13 @@ FCortexCommandResult FCortexLevelQueryOps::SelectActors(const TSharedPtr<FJsonOb
 
     if (!Params.IsValid())
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing params"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
     }
 
     const TArray<TSharedPtr<FJsonValue>>* ActorValues = nullptr;
     if (!Params->TryGetArrayField(TEXT("actors"), ActorValues) || !ActorValues)
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, TEXT("Missing required parameter: actors"));
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: actors"));
     }
 
     bool bAdd = false;

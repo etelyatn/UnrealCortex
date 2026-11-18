@@ -6,6 +6,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Engine/Blueprint.h"
 #include "GameFramework/Actor.h"
+#include "Misc/Guid.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FCortexGraphSetPinValueTest,
@@ -235,5 +236,168 @@ bool FCortexGraphSetPinValueTest::RunTest(const FString& Parameters)
 
 	TestBP->MarkAsGarbage();
 
+	return true;
+}
+
+// The engine schema owns pin-default validity: a value it refuses must never be written, and a
+// Blueprint path that does not resolve is BLUEPRINT_NOT_FOUND in Graph as it is in Blueprint/UMG.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphSetPinValueInvalidDefaultTest,
+	"Cortex.Graph.SetPinValue.InvalidDefaultValue",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphSetPinValueInvalidDefaultTest::RunTest(const FString& Parameters)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	UPackage* TestPackage = CreatePackage(*FString::Printf(
+		TEXT("/Game/Temp/CortexGraphSetPinValueInvalid_%s"), *Suffix));
+	TestPackage->SetPackageFlags(PKG_PlayInEditor);
+
+	UBlueprint* TestBP = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		TestPackage,
+		FName(*FString::Printf(TEXT("BP_SetPinValueInvalid_%s"), *Suffix)),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	TestNotNull(TEXT("Test Blueprint should be created"), TestBP);
+	if (TestBP == nullptr)
+	{
+		return false;
+	}
+
+	const FString AssetPath = TestBP->GetPathName();
+
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("graph"), TEXT("Cortex Graph"), TEXT("1.0.1"),
+		MakeShared<FCortexGraphCommandHandler>());
+
+	// Delay's Duration input is a real (float) pin with a default value widget.
+	TSharedPtr<FJsonObject> AddParams = MakeShared<FJsonObject>();
+	AddParams->SetStringField(TEXT("asset_path"), AssetPath);
+	AddParams->SetStringField(TEXT("node_class"), TEXT("UK2Node_CallFunction"));
+	TSharedPtr<FJsonObject> NodeParams = MakeShared<FJsonObject>();
+	NodeParams->SetStringField(TEXT("function_name"), TEXT("KismetSystemLibrary.Delay"));
+	AddParams->SetObjectField(TEXT("params"), NodeParams);
+
+	const FCortexCommandResult AddResult = Router.Execute(TEXT("graph.add_node"), AddParams);
+	TestTrue(TEXT("add_node should succeed"), AddResult.bSuccess);
+
+	FString NodeId;
+	if (AddResult.bSuccess && AddResult.Data.IsValid())
+	{
+		AddResult.Data->TryGetStringField(TEXT("node_id"), NodeId);
+	}
+	TestFalse(TEXT("Should have node_id"), NodeId.IsEmpty());
+	if (NodeId.IsEmpty())
+	{
+		TestBP->MarkAsGarbage();
+		return false;
+	}
+
+	const auto ReadDurationDefault = [&Router, &AssetPath, &NodeId](FString& OutValue) -> bool
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_id"), NodeId);
+
+		const FCortexCommandResult Result = Router.Execute(TEXT("graph.get_subgraph"), Params);
+		if (!Result.bSuccess || !Result.Data.IsValid())
+		{
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Pins = nullptr;
+		if (!Result.Data->TryGetArrayField(TEXT("pins"), Pins))
+		{
+			return false;
+		}
+
+		for (const TSharedPtr<FJsonValue>& PinValue : *Pins)
+		{
+			const TSharedPtr<FJsonObject>* PinObj = nullptr;
+			if (!PinValue->TryGetObject(PinObj) || PinObj == nullptr)
+			{
+				continue;
+			}
+
+			FString PinName;
+			if ((*PinObj)->TryGetStringField(TEXT("name"), PinName) && PinName == TEXT("Duration"))
+			{
+				(*PinObj)->TryGetStringField(TEXT("default_value"), OutValue);
+				return true;
+			}
+		}
+
+		return false;
+	};
+
+	// A valid real default is accepted and stored.
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_id"), NodeId);
+		Params->SetStringField(TEXT("pin_name"), TEXT("Duration"));
+		Params->SetStringField(TEXT("value"), TEXT("5.0"));
+
+		const FCortexCommandResult Result = Router.Execute(TEXT("graph.set_pin_value"), Params);
+		TestTrue(TEXT("a valid real default is accepted"), Result.bSuccess);
+
+		FString CurrentValue;
+		TestTrue(TEXT("Duration default is readable before the refusal"), ReadDurationDefault(CurrentValue));
+		TestEqual(TEXT("valid default is stored as 5.0"), CurrentValue, FString(TEXT("5.0")));
+	}
+
+	// "abc" is refused by the engine schema before the write, so the default never changes.
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_id"), NodeId);
+		Params->SetStringField(TEXT("pin_name"), TEXT("Duration"));
+		Params->SetStringField(TEXT("value"), TEXT("abc"));
+
+		const FCortexCommandResult Result = Router.Execute(TEXT("graph.set_pin_value"), Params);
+		TestFalse(TEXT("a non-numeric real default is refused"), Result.bSuccess);
+		TestEqual(TEXT("refusal uses INVALID_VALUE"), Result.ErrorCode, CortexErrorCodes::InvalidValue);
+		TestFalse(TEXT("refusal carries the schema message"), Result.ErrorMessage.IsEmpty());
+
+		FString CurrentValue;
+		TestTrue(TEXT("Duration default is readable after the refusal"), ReadDurationDefault(CurrentValue));
+		TestEqual(TEXT("refused value leaves the pin default unchanged"), CurrentValue, FString(TEXT("5.0")));
+	}
+
+	// The refused write does not poison the pin: a later valid value still applies.
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), AssetPath);
+		Params->SetStringField(TEXT("node_id"), NodeId);
+		Params->SetStringField(TEXT("pin_name"), TEXT("Duration"));
+		Params->SetStringField(TEXT("value"), TEXT("2.5"));
+
+		const FCortexCommandResult Result = Router.Execute(TEXT("graph.set_pin_value"), Params);
+		TestTrue(TEXT("a valid real default is accepted after a refusal"), Result.bSuccess);
+
+		FString CurrentValue;
+		TestTrue(TEXT("Duration default is readable after the valid write"), ReadDurationDefault(CurrentValue));
+		TestEqual(TEXT("valid default replaces the refused write"), CurrentValue, FString(TEXT("2.5")));
+	}
+
+	// Rule 2: an unresolved Blueprint path is BLUEPRINT_NOT_FOUND, not ASSET_NOT_FOUND.
+	{
+		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+		Params->SetStringField(TEXT("asset_path"), FString::Printf(
+			TEXT("/Game/Temp/CortexGraphSetPinValueMissing_%s/BP_Missing_%s"), *Suffix, *Suffix));
+		Params->SetStringField(TEXT("node_id"), TEXT("00000000-0000-0000-0000-000000000000"));
+		Params->SetStringField(TEXT("pin_name"), TEXT("Duration"));
+		Params->SetStringField(TEXT("value"), TEXT("1.0"));
+
+		const FCortexCommandResult Result = Router.Execute(TEXT("graph.set_pin_value"), Params);
+		TestFalse(TEXT("a missing Blueprint is refused"), Result.bSuccess);
+		TestEqual(TEXT("missing Blueprint uses BLUEPRINT_NOT_FOUND"),
+			Result.ErrorCode, CortexErrorCodes::BlueprintNotFound);
+	}
+
+	TestBP->MarkAsGarbage();
 	return true;
 }

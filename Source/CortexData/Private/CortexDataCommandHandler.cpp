@@ -228,7 +228,8 @@ const TArray<FCortexCommandInfo>& DataCommandInfos()
             .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
             .Required(TEXT("row_struct"), TEXT("string"), TEXT("Row struct type name")),
         FCortexCommandInfo{ TEXT("list_datatables"), TEXT("List all DataTables") }
-            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix filter")),
+            .Optional(TEXT("path_filter"), TEXT("string"), TEXT("Optional asset path prefix filter"))
+            .Optional(TEXT("include_row_count"), TEXT("boolean"), TEXT("Load each DataTable for row_count and parent_tables (default: false; no synchronous loads otherwise)")),
         FCortexCommandInfo{ TEXT("get_datatable_schema"), TEXT("Get row struct schema") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
             .Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited struct fields")),
@@ -274,7 +275,8 @@ const TArray<FCortexCommandInfo>& DataCommandInfos()
             .Optional(TEXT("keys"), TEXT("array"), TEXT("Exact StringTable keys for string_table_refs mode")),
         FCortexCommandInfo{ TEXT("get_data_catalog"), TEXT("Discovery catalog of all data; build only the selected sections and opt into the full asset path inventory") }
             .Optional(TEXT("sections"), TEXT("array"), TEXT("Catalog sections to build: datatables, gameplay_tags, data_assets, string_tables, curve_tables. Omitted or empty builds every section; unknown names are refused."))
-            .Optional(TEXT("include_asset_paths"), TEXT("boolean"), TEXT("Include the full per-class asset path inventory (default: false; use list_data_assets for one class)")),
+            .Optional(TEXT("include_asset_paths"), TEXT("boolean"), TEXT("Include the full per-class asset path inventory (default: false; use list_data_assets for one class)"))
+            .Optional(TEXT("include_row_count"), TEXT("boolean"), TEXT("Load DataTables and StringTables for row_count, parent_tables, top_fields and entry_count (default: false; no synchronous loads otherwise)")),
         FCortexCommandInfo{ TEXT("resolve_tags"), TEXT("Look up rows by GameplayTag") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("Target DataTable asset path"))
             .Required(TEXT("tag_field"), TEXT("string"), TEXT("Field containing GameplayTags"))

@@ -916,7 +916,12 @@ FCortexCommandResult FCortexCommandRouter::HandleBatch(const TSharedPtr<FJsonObj
 
 	// RAII: sets IsInBatch()=true, defers PostEditChange
 	FCortexBatchScope BatchScope;
-	FCortexBatchScope::CaptureDirtyBaseline();
+	// The baseline is consumed only by rollback verification; skip the full UPackage walk for
+	// read-only and plain batches (issue #224).
+	if (bRollbackOnError)
+	{
+		FCortexBatchScope::CaptureDirtyBaseline();
+	}
 	FCortexBatchScope::SetRollbackEnabled(bRollbackOnError);
 
 	TArray<TSharedPtr<FJsonValue>> ResultsArray;

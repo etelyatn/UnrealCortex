@@ -199,22 +199,19 @@ def test_strict_invocation_shape_is_refused_without_becoming_wrapped_output(tmp_
     _run(scenario)
 
 
-def test_opaque_failure_text_is_preserved_verbatim(tmp_path):
+def test_unreachable_editor_failure_is_one_canonical_json_envelope(tmp_path):
     project = _write_project(tmp_path)
 
     async def scenario():
         async with open_test_client(project) as session:
-            # No editor is reachable: the router returns a plain non-JSON failure string.
+            # No editor is reachable: the router reports the canonical connection failure.
             result = await session.call_tool("core_cmd", {"command": "get_status", "params": {}})
-            text = _single_text(result)
+            assert result.isError is True
             assert result.structuredContent is None
-            assert text.startswith("Error:")
-            try:
-                json.loads(text)
-            except json.JSONDecodeError:
-                pass
-            else:  # pragma: no cover - a parsing failure must never become empty success
-                raise AssertionError("opaque failure text was reported as JSON")
+            payload = json.loads(_single_text(result))
+            assert payload["success"] is False
+            assert payload["_error"] == "CONNECTION_ERROR"
+            assert payload["_message"]
 
     _run(scenario)
 
@@ -286,8 +283,10 @@ def test_optional_gen_tool_is_registered_and_refuses_before_submitting_a_job(tmp
             assert "\n" not in text
             assert result.structuredContent is None
             payload = json.loads(text)
+            assert result.isError is True
             assert payload["success"] is False
-            assert "unsupported_modality" in payload["error"]
+            assert payload["_error"]
+            assert "unsupported_modality" in payload["_message"]
 
     _run(scenario)
 
@@ -396,8 +395,10 @@ def test_optional_gen_async_registration_actually_runs_without_provider_contact(
         assert "\n" not in text
         assert result.structuredContent is None
         payload = json.loads(text)
+        assert result.isError is True
         assert payload["success"] is False
-        assert "unsupported_modality" in payload["error"]
+        assert payload["_error"]
+        assert "unsupported_modality" in payload["_message"]
         assert connection.send_calls == []
 
         # Supported modality: the awaited body reaches the provider boundary, so the tripwire
@@ -547,8 +548,10 @@ class TestInvocationLocalSizeAttribution:
         status_text, other_text, refused_text = asyncio.run(scenario())
         sizes = _response_sizes(connection)
 
-        # No editor: the second route records its own command and then fails opaquely.
-        assert other_text.startswith("Error:")
+        # No editor: the second route records its own command and then fails canonically.
+        other_payload = json.loads(other_text)
+        assert other_payload["success"] is False
+        assert other_payload["_error"] == "CONNECTION_ERROR"
         assert json.loads(refused_text)["_error"] == "INVALID_INVOCATION_SHAPE"
 
         assert sizes["total"]["calls"] == 3
@@ -637,7 +640,7 @@ def test_startup_toolset_exposes_exactly_the_design_surface(tmp_path, toolset, e
                 },
             ))
             # No editor: the route reached the native boundary instead of being refused locally.
-            assert schema_probe.startswith("Error:"), schema_probe
+            assert json.loads(schema_probe)["_error"] == "CONNECTION_ERROR", schema_probe
 
             # The profile facade is registered exactly where the preset advertises it.
             assert ("profile_operation_schema" in names) == (
@@ -760,7 +763,9 @@ def test_ui_preset_exposes_the_umg_router_and_its_router_dependencies(tmp_path):
             assert result.structuredContent is None
             # No editor is reachable, so the route failed at the native boundary instead of
             # being refused locally as an unknown tool or command.
-            assert text.startswith("Error:")
+            payload = json.loads(text)
+            assert payload["success"] is False
+            assert payload["_error"] == "CONNECTION_ERROR"
 
     _run(scenario)
 
