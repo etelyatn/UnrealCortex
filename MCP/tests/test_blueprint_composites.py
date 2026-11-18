@@ -92,8 +92,8 @@ class TestValidation:
             _validate_spec("BP_Test", "/Game/", bp_type=t, nodes=[], connections=[])
 
     def test_widget_type_rejected_with_redirect(self):
-        """Widget type is rejected with a message pointing to create_widget_screen."""
-        with pytest.raises(ValueError, match="create_widget_screen"):
+        """Widget type is rejected with a message pointing to widget_compose."""
+        with pytest.raises(ValueError, match="widget_compose"):
             _validate_spec("BP_Test", "/Game/", bp_type="Widget", nodes=[], connections=[])
 
     def test_duplicate_node_names(self):

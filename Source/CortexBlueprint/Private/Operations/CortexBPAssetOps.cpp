@@ -1214,6 +1214,10 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	// Parse compact flag (default true — omit empty arrays and source field)
 	bool bCompact = true;
 	Params->TryGetBoolField(TEXT("compact"), bCompact);
+	// Inherited functions are opt-in (issue #225): the default read lists the Blueprint's own
+	// callables only, so a parent-heavy class no longer dominates the response.
+	bool bIncludeInherited = false;
+	Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
 
 	// Load Blueprint
 	FString LoadError;
@@ -1321,7 +1325,7 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 		{
 			FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
 		}
-		if (!bCompact)
+		if (!bCompact || bIncludeInherited)
 		{
 			FuncObj->SetStringField(TEXT("source"), TEXT("blueprint"));
 		}
@@ -1329,9 +1333,7 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 		FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
 	}
 
-	// Inherited functions — included by default for AI agent discoverability
-	bool bIncludeInherited = true;
-	Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
+
 
 	if (bIncludeInherited && BP->ParentClass)
 	{
@@ -1408,7 +1410,7 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 			{
 				FuncObj->SetArrayField(TEXT("outputs"), OutputsArr);
 			}
-			if (!bCompact)
+			if (!bCompact || bIncludeInherited)
 			{
 				FuncObj->SetStringField(TEXT("source"), TEXT("inherited"));
 			}

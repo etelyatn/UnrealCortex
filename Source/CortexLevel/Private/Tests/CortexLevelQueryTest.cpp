@@ -504,3 +504,48 @@ bool FCortexLevelGetSelectionTest::RunTest(const FString& Parameters)
     DeleteActorsQuery(Router, Spawned);
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// Issue #225: get_bounds reports whether its actor scan hit the 10,000 cap.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexLevelGetBoundsScanTruncatedTest,
+    "Cortex.Level.Query.GetBounds.ScanTruncated",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexLevelGetBoundsScanTruncatedTest::RunTest(const FString& Parameters)
+{
+    if (!GEditor)
+    {
+        AddInfo(TEXT("No editor - skipping"));
+        return true;
+    }
+
+    FCortexCommandRouter Router = CreateLevelRouterQuery();
+    TArray<FString> Spawned = {
+        SpawnPointLightQuery(Router, TEXT("TruncA"), FVector(10, 20, 30)),
+        SpawnPointLightQuery(Router, TEXT("TruncB"), FVector(40, 50, 60))
+    };
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("class"), TEXT("PointLight"));
+
+    FCortexCommandResult Result = Router.Execute(TEXT("level.get_bounds"), Params);
+    TestTrue(TEXT("get_bounds should succeed"), Result.bSuccess);
+
+    if (Result.bSuccess && Result.Data.IsValid())
+    {
+        // The scan_truncated field must always be present: a small filtered scan reports
+        // false, and a scan that stops at the cap reports true instead of silence.
+        TestTrue(TEXT("scan_truncated field must be present"), Result.Data->HasField(TEXT("scan_truncated")));
+        bool bScanTruncated = true;
+        if (Result.Data->TryGetBoolField(TEXT("scan_truncated"), bScanTruncated))
+        {
+            TestFalse(TEXT("scan_truncated must be false for a small filtered scan"), bScanTruncated);
+        }
+    }
+
+    DeleteActorsQuery(Router, Spawned);
+    return true;
+}

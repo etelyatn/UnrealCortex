@@ -100,7 +100,12 @@ namespace
             FMath::Abs(Delta.Z) <= Region.Extent.Z;
     }
 
-    TArray<AActor*> CollectFilteredActors(UWorld* World, const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)
+    TArray<AActor*> CollectFilteredActors(
+        UWorld* World,
+        const TSharedPtr<FJsonObject>& Params,
+        FCortexCommandResult& OutError,
+        int32 MaxScanCount = 10000,
+        bool* bOutScanTruncated = nullptr)
     {
         FString ClassFilter;
         Params->TryGetStringField(TEXT("class"), ClassFilter);
@@ -137,12 +142,15 @@ namespace
 
         TArray<AActor*> Actors;
         int32 ScannedCount = 0;
-        constexpr int32 MaxScanCount = 10000;
 
         for (TActorIterator<AActor> It(World, FilterClass ? FilterClass : AActor::StaticClass()); It; ++It)
         {
             if (++ScannedCount > MaxScanCount)
             {
+                if (bOutScanTruncated != nullptr)
+                {
+                    *bOutScanTruncated = true;
+                }
                 break;
             }
 
@@ -296,7 +304,9 @@ FCortexCommandResult FCortexLevelQueryOps::GetBounds(const TSharedPtr<FJsonObjec
         return Error;
     }
 
-    TArray<AActor*> Actors = CollectFilteredActors(World, Params ? Params : MakeShared<FJsonObject>(), Error);
+    bool bScanTruncated = false;
+    TArray<AActor*> Actors = CollectFilteredActors(
+        World, Params ? Params : MakeShared<FJsonObject>(), Error, /*MaxScanCount=*/10000, &bScanTruncated);
     if (!Error.ErrorCode.IsEmpty())
     {
         return Error;
@@ -331,6 +341,7 @@ FCortexCommandResult FCortexLevelQueryOps::GetBounds(const TSharedPtr<FJsonObjec
     FCortexLevelUtils::SetVectorArray(Data, TEXT("center"), Center);
     FCortexLevelUtils::SetVectorArray(Data, TEXT("extent"), Extent);
     Data->SetNumberField(TEXT("actor_count"), Actors.Num());
+    Data->SetBoolField(TEXT("scan_truncated"), bScanTruncated);
     return FCortexCommandRouter::Success(Data);
 }
 

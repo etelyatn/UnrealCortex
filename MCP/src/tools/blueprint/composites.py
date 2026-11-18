@@ -81,7 +81,7 @@ def _validate_spec(
     if not path:
         raise ValueError("Missing required field: path")
     if bp_type == "Widget":
-        raise ValueError("type 'Widget' is not supported here. Use create_widget_screen instead.")
+        raise ValueError("type 'Widget' is not supported here. Use widget_compose instead.")
     if bp_type not in _VALID_BP_TYPES:
         raise ValueError(f"type must be one of {sorted(_VALID_BP_TYPES)}")
 
@@ -338,16 +338,15 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
         and wires connections. The generated steps run as one stop-on-error batch, and a partial
         asset is deleted when a step fails; this is recovery, not an atomic transaction.
 
-        Use this instead of calling create_blueprint + add_blueprint_variable + graph_add_node
-        individually when building a Blueprint from scratch. Creating a Blueprint is the only
-        mode this helper supports: updating an existing Blueprint runs through one reviewed
-        graph.apply_patch envelope (see blueprint_compose mode='update' with a `patch`).
-
+        Use this instead of chaining blueprint_cmd calls when building a Blueprint from
+        scratch. Creating a Blueprint is the only mode this helper supports: updating an
+        existing Blueprint runs through one reviewed graph.apply_patch envelope (see
+        blueprint_compose mode='update' with a `patch`).
         Args:
             name: Blueprint name (e.g., "BP_HealthSystem")
             path: Directory path (e.g., "/Game/Blueprints/")
             type: Blueprint base type: Actor, Component, Interface, FunctionLibrary
-                  (for Widget Blueprints use create_widget_screen instead)
+                  (for Widget Blueprints use widget_compose instead)
             parent_class: Optional C++ parent class path (e.g., "/Script/Engine.Character").
                           When set, overrides the base type selection.
             variables: Array of variable specs with:
@@ -413,7 +412,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
             Refusing mode='update' returns {"success": False, "error": <migration guidance>}.
 
         Example:
-            create_blueprint_graph(
+            blueprint_compose(
                 name="BP_HealthActor", path="/Game/Blueprints/",
                 variables=[{"name": "Health", "type": "float", "default_value": "100.0", "is_exposed": True}],
                 nodes=[

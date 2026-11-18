@@ -275,7 +275,7 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
         FCortexCommandInfo{ TEXT("find_actors"), TEXT("Find actors by pattern (auto-wildcards plain keywords)") }
             .Required(TEXT("pattern"), TEXT("string"), TEXT("Search pattern — plain keywords auto-wrapped as *keyword*"))
             .Optional(TEXT("include_components"), TEXT("boolean"), TEXT("Include component list per match")),
-        FCortexCommandInfo{ TEXT("get_bounds"), TEXT("Compute bounds for filtered actors") }
+        FCortexCommandInfo{ TEXT("get_bounds"), TEXT("Compute bounds for filtered actors; response carries scan_truncated=true when the 10,000-actor scan cap cut the scan") }
             .Optional(TEXT("class"), TEXT("string"), TEXT("Actor class filter"))
             .Optional(TEXT("tags"), TEXT("array"), TEXT("Required actor tags"))
             .Optional(TEXT("folder"), TEXT("string"), TEXT("World outliner folder"))

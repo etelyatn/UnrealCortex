@@ -458,3 +458,135 @@ bool FCortexBPListParentClassBlueprintTest::RunTest(const FString& Parameters)
 	RemoveTestDirectory(Dir);
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// Issue #225: include_inherited defaults to false; source distinguishes entries
+// whenever inherited functions are listed.
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGetInfoInheritedDefaultTest,
+	"Cortex.Blueprint.GetInfo.InheritedDefaultFalse",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPGetInfoInheritedDefaultTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexBPList119Test;
+
+	FCortexBPCommandHandler Handler;
+	const FString Dir = MakeUniqueDir(TEXT("GetInfoDefault"));
+	if (!TestTrue(TEXT("create actor BP"), CreateBlueprint(Handler, Dir, TEXT("BP_GID_Actor"), TEXT("Actor"), FString())))
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), Dir + TEXT("/BP_GID_Actor"));
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_info"), Params);
+	if (!TestTrue(TEXT("get_info should succeed"), Result.bSuccess) || !Result.Data.IsValid())
+	{
+		DeleteBlueprint(Handler, Dir, TEXT("BP_GID_Actor"));
+		RemoveTestDirectory(Dir);
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* FunctionsArray = nullptr;
+	if (TestTrue(TEXT("functions array should exist"), Result.Data->TryGetArrayField(TEXT("functions"), FunctionsArray)))
+	{
+		for (const TSharedPtr<FJsonValue>& FuncVal : *FunctionsArray)
+		{
+			const TSharedPtr<FJsonObject>& FuncObj = FuncVal->AsObject();
+			if (!FuncObj.IsValid())
+			{
+				continue;
+			}
+			FString Source;
+			if (FuncObj->TryGetStringField(TEXT("source"), Source) && Source == TEXT("inherited"))
+			{
+				AddError(TEXT("Default read must not include inherited functions (issue #225)"));
+				break;
+			}
+		}
+	}
+
+	DeleteBlueprint(Handler, Dir, TEXT("BP_GID_Actor"));
+	RemoveTestDirectory(Dir);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGetInfoCompactSourceTest,
+	"Cortex.Blueprint.GetInfo.CompactSourceWhenInherited",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexBPGetInfoCompactSourceTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexBPList119Test;
+
+	FCortexBPCommandHandler Handler;
+	const FString Dir = MakeUniqueDir(TEXT("GetInfoSource"));
+	if (!TestTrue(TEXT("create actor BP"), CreateBlueprint(Handler, Dir, TEXT("BP_GIS_Actor"), TEXT("Actor"), FString())))
+	{
+		return false;
+	}
+
+	// compact (default) + include_inherited=true: every entry carries source so own and
+	// inherited functions stay distinguishable.
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_path"), Dir + TEXT("/BP_GIS_Actor"));
+	Params->SetBoolField(TEXT("include_inherited"), true);
+	FCortexCommandResult Result = Handler.Execute(TEXT("get_info"), Params);
+	if (!TestTrue(TEXT("get_info should succeed"), Result.bSuccess) || !Result.Data.IsValid())
+	{
+		DeleteBlueprint(Handler, Dir, TEXT("BP_GIS_Actor"));
+		RemoveTestDirectory(Dir);
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* FunctionsArray = nullptr;
+	if (TestTrue(TEXT("functions array should exist"), Result.Data->TryGetArrayField(TEXT("functions"), FunctionsArray)))
+	{
+		bool bFoundInherited = false;
+		for (const TSharedPtr<FJsonValue>& FuncVal : *FunctionsArray)
+		{
+			const TSharedPtr<FJsonObject>& FuncObj = FuncVal->AsObject();
+			if (!FuncObj.IsValid())
+			{
+				continue;
+			}
+			FString Source;
+			TestTrue(TEXT("every function entry must carry source when inherited functions are listed"),
+				FuncObj->TryGetStringField(TEXT("source"), Source) && !Source.IsEmpty());
+			if (Source == TEXT("inherited"))
+			{
+				bFoundInherited = true;
+			}
+		}
+		TestTrue(TEXT("include_inherited=true must list at least one inherited function"), bFoundInherited);
+	}
+
+	// compact (default) without include_inherited: source stays absent (uniform listing).
+	TSharedPtr<FJsonObject> OwnParams = MakeShared<FJsonObject>();
+	OwnParams->SetStringField(TEXT("asset_path"), Dir + TEXT("/BP_GIS_Actor"));
+	FCortexCommandResult OwnResult = Handler.Execute(TEXT("get_info"), OwnParams);
+	if (TestTrue(TEXT("own-only get_info should succeed"), OwnResult.bSuccess) && OwnResult.Data.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* OwnFunctions = nullptr;
+		if (OwnResult.Data->TryGetArrayField(TEXT("functions"), OwnFunctions))
+		{
+			for (const TSharedPtr<FJsonValue>& FuncVal : *OwnFunctions)
+			{
+				const TSharedPtr<FJsonObject>& FuncObj = FuncVal->AsObject();
+				if (FuncObj.IsValid())
+				{
+					TestFalse(TEXT("compact own-only read keeps source absent"), FuncObj->HasField(TEXT("source")));
+				}
+			}
+		}
+	}
+
+	DeleteBlueprint(Handler, Dir, TEXT("BP_GIS_Actor"));
+	RemoveTestDirectory(Dir);
+	return true;
+}
