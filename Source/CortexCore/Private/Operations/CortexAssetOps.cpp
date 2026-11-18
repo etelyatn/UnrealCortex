@@ -402,61 +402,85 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 			continue;
 		}
 
-		UObject* Asset = LoadAssetWithFallbacks(AssetData, AssetPath);
-		if (Asset != nullptr)
-		{
-			Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
-		}
-		UPackage* Package = FindPackage(nullptr, *AssetData.PackageName.ToString());
-		if (Package == nullptr)
-		{
-			Package = LoadPackage(nullptr, *AssetData.PackageName.ToString(), LOAD_None);
-		}
-		if (Package == nullptr)
-		{
-			Entry->SetStringField(TEXT("error"), CortexErrorCodes::AssetNotFound);
-			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to load package: %s"), *AssetPath));
-			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
-			continue;
-		}
+	// Dirty state first: an unloaded package cannot be dirty, so nothing but a forced save
+	// ever needs a synchronous load. Under dry_run no load happens at all (issue #224).
+	UPackage* Package = FindPackage(nullptr, *AssetData.PackageName.ToString());
+	const bool bWasDirty = Package != nullptr && Package->IsDirty();
 
-		const bool bWasDirty = Package->IsDirty();
+	// Refine the registry class name only when the package is already in memory: a loaded
+	// package answers GetAsset() with its existing object, no load happens (issue #224).
+	if (Package != nullptr)
+	{
+		if (UObject* LoadedAsset = AssetData.GetAsset())
+		{
+			Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(LoadedAsset));
+		}
+	}
+
+	if (bDryRun)
+	{
 		Entry->SetBoolField(TEXT("was_dirty"), bWasDirty);
-
-		if (bDryRun)
-		{
-			Entry->SetBoolField(TEXT("can_save"), bForce || bWasDirty);
-			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
-			continue;
-		}
-
-		bool bSaved = true;
-		if (bForce || bWasDirty)
-		{
-			// World packages must save as .umap — the asset extension would create a
-			// shadow .uasset duplicate beside the tracked .umap.
-			const FString PackageFilename = FPackageName::LongPackageNameToFilename(
-				Package->GetName(),
-				Package->ContainsMap()
-					? FPackageName::GetMapPackageExtension()
-					: FPackageName::GetAssetPackageExtension()
-			);
-
-			FSavePackageArgs SaveArgs;
-			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-			SaveArgs.SaveFlags = SAVE_NoError;
-
-			bSaved = UPackage::SavePackage(Package, Asset, *PackageFilename, SaveArgs);
-		}
-
-		Entry->SetBoolField(TEXT("saved"), bSaved);
-		if (!bSaved)
-		{
-			Entry->SetStringField(TEXT("error"), CortexErrorCodes::SaveFailed);
-			Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to save: %s"), *AssetPath));
-		}
-
+		Entry->SetBoolField(TEXT("can_save"), bForce || bWasDirty);
 		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+		continue;
+	}
+
+	if (!bForce && !bWasDirty)
+	{
+		// Clean and not forced: nothing to save, no load required.
+		Entry->SetBoolField(TEXT("was_dirty"), bWasDirty);
+		Entry->SetBoolField(TEXT("saved"), true);
+		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+		continue;
+	}
+
+	// A save will happen: load now (first load for an unloaded package).
+	UObject* Asset = LoadAssetWithFallbacks(AssetData, AssetPath);
+	if (Asset != nullptr)
+	{
+		Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
+	}
+	// Asset resolution above may already have loaded the package; re-check before loading again.
+	if (Package == nullptr)
+	{
+		Package = FindPackage(nullptr, *AssetData.PackageName.ToString());
+	}
+	if (Package == nullptr)
+	{
+		Package = LoadPackage(nullptr, *AssetData.PackageName.ToString(), LOAD_None);
+	}
+	if (Package == nullptr)
+	{
+		Entry->SetStringField(TEXT("error"), CortexErrorCodes::AssetNotFound);
+		Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to load package: %s"), *AssetPath));
+		ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
+		continue;
+	}
+	Entry->SetBoolField(TEXT("was_dirty"), bWasDirty);
+
+	// World packages must save as .umap — the asset extension would create a
+	// shadow .uasset duplicate beside the tracked .umap.
+	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
+		Package->GetName(),
+		Package->ContainsMap()
+			? FPackageName::GetMapPackageExtension()
+			: FPackageName::GetAssetPackageExtension()
+	);
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+
+	const bool bSaved = UPackage::SavePackage(Package, Asset, *PackageFilename, SaveArgs);
+
+	Entry->SetBoolField(TEXT("saved"), bSaved);
+	if (!bSaved)
+	{
+		Entry->SetStringField(TEXT("error"), CortexErrorCodes::SaveFailed);
+		Entry->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed to save: %s"), *AssetPath));
+	}
+
+	ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();

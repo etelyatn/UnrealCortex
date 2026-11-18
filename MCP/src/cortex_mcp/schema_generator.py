@@ -848,7 +848,7 @@ def collect_data_domain(connection, project_root: pathlib.Path | None = None) ->
         Dict with catalog, schemas, example_rows, curve_tables, enum_values, summary.
     """
     # 1. Get catalog
-    catalog_resp = connection.send_command("data.get_data_catalog", {})
+    catalog_resp = connection.send_command("data.get_data_catalog", {"include_row_count": True})
     catalog = _decode_data(catalog_resp)
     excludes: list[str] = []
     tag_excludes: list[str] = []

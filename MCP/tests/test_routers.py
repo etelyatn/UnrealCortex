@@ -10,7 +10,7 @@ import pytest
 
 from cortex_mcp.capabilities import CORE_DOMAINS
 from cortex_mcp.tools.routers import make_router, register_router_tools, strict_router_tool
-from cortex_mcp.tcp_client import EditorConnection, UECommandError
+from cortex_mcp.tcp_client import EditorConnection, UECommandError, UEConnection
 from cortex_mcp import server
 
 
@@ -584,6 +584,42 @@ def test_core_router_uses_cached_send_for_get_data_catalog():
         ttl=600,
     )
     connection.send_command.assert_not_called()
+
+
+def test_core_router_uses_cached_send_for_get_operation_schema():
+    """Router descriptions tell the model to fetch core.get_operation_schema before unfamiliar
+    commands, so the response is a cached read (issue #224 item 11): identical consecutive calls
+    are one round trip, invalidated on the next write like every other cached read."""
+    connection = UEConnection(port=99999)
+    connection.connect = lambda: None
+    dispatched = []
+
+    def send_and_receive(command, params=None, timeout=None):
+        dispatched.append((command, dict(params or {})))
+        if command == "core.get_operation_schema":
+            return {"success": True, "data": {"domain": "core", "command": "get_operation_schema", "params": []}}
+        return {"success": True, "data": {"saved": True}}
+
+    connection._send_and_receive = send_and_receive
+    router = make_router("core", connection, "core docs")
+    schema_params = {"domain": "core", "command": "save_asset"}
+
+    first = json.loads(router("get_operation_schema", schema_params))
+    second = json.loads(router("get_operation_schema", schema_params))
+
+    assert first["command"] == "get_operation_schema"
+    assert second["command"] == "get_operation_schema"
+    assert [command for command, _ in dispatched] == ["core.get_operation_schema"]
+
+    # A write through the same connection drops the cached schema.
+    router("save_asset", {"asset_path": "/Game/Data/DT_TestSimple"})
+    router("get_operation_schema", schema_params)
+
+    assert [command for command, _ in dispatched] == [
+        "core.get_operation_schema",
+        "core.save_asset",
+        "core.get_operation_schema",
+    ]
 
 
 # --- agent-facing capability inventory and catalog selections (Task 8) ---
