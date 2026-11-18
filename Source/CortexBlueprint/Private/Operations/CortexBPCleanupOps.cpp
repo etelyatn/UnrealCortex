@@ -315,12 +315,9 @@ static void AppendRegistryDependentBlueprints(UBlueprint* TargetBlueprint, TArra
 
 	for (const FName ReferencerName : ReferencerNames)
 	{
-		// In-memory referencers were already collected by GetDependentBlueprints.
-		if (FindPackage(nullptr, *ReferencerName.ToString()) != nullptr)
-		{
-			continue;
-		}
-
+		// No package-level skip: loading one referencer can pull another referencer package into
+		// memory (child Blueprint imports its parent), and GetDependentBlueprints' snapshot is
+		// older than that. Deduplication happens on resolved Blueprint objects via `Known`.
 		FARFilter ReferencerFilter;
 		ReferencerFilter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
 		ReferencerFilter.bRecursiveClasses = true;

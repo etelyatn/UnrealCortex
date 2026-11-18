@@ -237,7 +237,8 @@ FCortexCommandResult FCortexDataTableOps::ListDatatables(const TSharedPtr<FJsonO
 
 		// is_composite from registry class data; row_count and parent_tables require a load and
 		// are opt-in via include_row_count (issue #224: no synchronous loads by default).
-		const bool bIsComposite = AssetData.AssetClassPath == UCompositeDataTable::StaticClass()->GetClassPathName();
+		const UClass* AssetClass = AssetData.GetClass();
+		const bool bIsComposite = AssetClass != nullptr && AssetClass->IsChildOf(UCompositeDataTable::StaticClass());
 		EntryJson->SetBoolField(TEXT("is_composite"), bIsComposite);
 
 		if (bIncludeRowCount)
@@ -1373,7 +1374,8 @@ FCortexCommandResult FCortexDataTableOps::GetDataCatalog(const TSharedPtr<FJsonO
 
 				// is_composite from registry class data; row_count, parent_tables and top_fields
 				// require a load and are opt-in via include_row_count (issue #224).
-				const bool bIsComposite = AssetData.AssetClassPath == UCompositeDataTable::StaticClass()->GetClassPathName();
+				const UClass* AssetClass = AssetData.GetClass();
+		const bool bIsComposite = AssetClass != nullptr && AssetClass->IsChildOf(UCompositeDataTable::StaticClass());
 				EntryJson->SetBoolField(TEXT("is_composite"), bIsComposite);
 
 				if (bIncludeRowCount)

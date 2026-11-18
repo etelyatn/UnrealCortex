@@ -54,10 +54,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FCortexListDatatablesNoLoadDefaultTest::RunTest(const FString& Parameters)
 {
-	if (FindPackage(nullptr, ProjectTablePackage) != nullptr)
+	// The response-shape assertion always runs; only the unload check needs the precondition
+	// that the fixture started out of memory.
+	const bool bTableInMemory = FindPackage(nullptr, ProjectTablePackage) != nullptr;
+	if (bTableInMemory)
 	{
-		AddInfo(TEXT("Project test table already in memory; skipping list no-load verification."));
-		return true;
+		AddInfo(TEXT("Project test table already in memory; skipping the unload assertion only."));
 	}
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -75,7 +77,10 @@ bool FCortexListDatatablesNoLoadDefaultTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Default list still reports is_composite"), (*Entry)->HasField(TEXT("is_composite")));
 	}
 
-	TestNull(TEXT("Project table stays unloaded"), FindPackage(nullptr, ProjectTablePackage));
+	if (!bTableInMemory)
+	{
+		TestNull(TEXT("Project table stays unloaded"), FindPackage(nullptr, ProjectTablePackage));
+	}
 	return true;
 }
 
@@ -117,10 +122,9 @@ bool FCortexDataCatalogNoLoadDefaultTest::RunTest(const FString& Parameters)
 {
 	const bool bTableInMemory = FindPackage(nullptr, ProjectTablePackage) != nullptr;
 	const bool bStringTableInMemory = FindPackage(nullptr, ProjectStringTablePackage) != nullptr;
-	if (bTableInMemory && bStringTableInMemory)
+	if (bTableInMemory || bStringTableInMemory)
 	{
-		AddInfo(TEXT("Project test assets already in memory; skipping catalog no-load verification."));
-		return true;
+		AddInfo(TEXT("A project test asset is already in memory; only its unload assertion is skipped."));
 	}
 
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
@@ -135,24 +139,24 @@ bool FCortexDataCatalogNoLoadDefaultTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
+	const TSharedPtr<FJsonObject>* TableEntry = FindEntryByPath(Result.Data, TEXT("datatables"), ProjectTablePath);
+	if (TestNotNull(TEXT("Project table catalogued"), TableEntry))
+	{
+		TestFalse(TEXT("Default catalog omits row_count"), (*TableEntry)->HasField(TEXT("row_count")));
+	}
 	if (!bTableInMemory)
 	{
-		const TSharedPtr<FJsonObject>* TableEntry = FindEntryByPath(Result.Data, TEXT("datatables"), ProjectTablePath);
-		if (TestNotNull(TEXT("Project table catalogued"), TableEntry))
-		{
-			TestFalse(TEXT("Default catalog omits row_count"), (*TableEntry)->HasField(TEXT("row_count")));
-		}
 		TestNull(TEXT("Project table stays unloaded"), FindPackage(nullptr, ProjectTablePackage));
 	}
 
+	const TSharedPtr<FJsonObject>* StringTableEntry =
+		FindEntryByPath(Result.Data, TEXT("string_tables"), ProjectStringTablePath);
+	if (TestNotNull(TEXT("Project StringTable catalogued"), StringTableEntry))
+	{
+		TestFalse(TEXT("Default catalog omits entry_count"), (*StringTableEntry)->HasField(TEXT("entry_count")));
+	}
 	if (!bStringTableInMemory)
 	{
-		const TSharedPtr<FJsonObject>* StringTableEntry =
-			FindEntryByPath(Result.Data, TEXT("string_tables"), ProjectStringTablePath);
-		if (TestNotNull(TEXT("Project StringTable catalogued"), StringTableEntry))
-		{
-			TestFalse(TEXT("Default catalog omits entry_count"), (*StringTableEntry)->HasField(TEXT("entry_count")));
-		}
 		TestNull(TEXT("Project StringTable stays unloaded"), FindPackage(nullptr, ProjectStringTablePackage));
 	}
 

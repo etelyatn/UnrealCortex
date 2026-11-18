@@ -321,7 +321,20 @@ FCortexCommandResult FCortexDataGameplayTagOps::RegisterGameplayTags(const TShar
 		}
 
 		FString ExistingContents;
-		FFileHelper::LoadFileToString(ExistingContents, *IniGroup.Key);
+		if (PlatformFile.FileExists(*IniGroup.Key) && !FFileHelper::LoadFileToString(ExistingContents, *IniGroup.Key))
+		{
+			// An existing but unreadable ini must not be replaced with a header-only file.
+			const FString ReadError = FString::Printf(TEXT("Failed to read file: %s"), *IniGroup.Key);
+			for (const int32 EntryIndex : IniGroup.Value)
+			{
+				if (Entries[EntryIndex].Outcome == EBatchOutcome::Register)
+				{
+					Entries[EntryIndex].Outcome = EBatchOutcome::WriteFailed;
+					Entries[EntryIndex].ErrorMsg = ReadError;
+				}
+			}
+			continue;
+		}
 
 		const FString SectionHeader = TEXT("[/Script/GameplayTags.GameplayTagsList]");
 		if (!ExistingContents.Contains(SectionHeader))

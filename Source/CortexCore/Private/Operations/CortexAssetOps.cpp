@@ -407,6 +407,16 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 	UPackage* Package = FindPackage(nullptr, *AssetData.PackageName.ToString());
 	const bool bWasDirty = Package != nullptr && Package->IsDirty();
 
+	// Refine the registry class name only when the package is already in memory: a loaded
+	// package answers GetAsset() with its existing object, no load happens (issue #224).
+	if (Package != nullptr)
+	{
+		if (UObject* LoadedAsset = AssetData.GetAsset())
+		{
+			Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(LoadedAsset));
+		}
+	}
+
 	if (bDryRun)
 	{
 		Entry->SetBoolField(TEXT("was_dirty"), bWasDirty);
@@ -429,6 +439,11 @@ FCortexCommandResult FCortexAssetOps::SaveAsset(const TSharedPtr<FJsonObject>& P
 	if (Asset != nullptr)
 	{
 		Entry->SetStringField(TEXT("asset_type"), GetAssetTypeName(Asset));
+	}
+	// Asset resolution above may already have loaded the package; re-check before loading again.
+	if (Package == nullptr)
+	{
+		Package = FindPackage(nullptr, *AssetData.PackageName.ToString());
 	}
 	if (Package == nullptr)
 	{

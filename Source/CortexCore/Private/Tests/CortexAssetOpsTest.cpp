@@ -369,10 +369,10 @@ bool FCortexAssetSaveDryRunNoLoadTest::RunTest(const FString& Parameters)
 
 	const FCortexCommandResult Result = FCortexAssetOps::SaveAsset(RequestParams);
 
-	const bool bSucceeded = TestTrue(TEXT("save_asset dry_run should succeed"), Result.bSuccess)
-		&& Result.Data.IsValid();
+	TestTrue(TEXT("save_asset dry_run should succeed"), Result.bSuccess);
+	TestTrue(TEXT("save_asset dry_run returns a data payload"), Result.Data.IsValid());
 
-	if (bSucceeded)
+	if (Result.Data.IsValid())
 	{
 		bool bCanSave = true;
 		Result.Data->TryGetBoolField(TEXT("can_save"), bCanSave);
