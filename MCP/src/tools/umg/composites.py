@@ -5,7 +5,12 @@ import logging
 from cortex_mcp.verification import VERIFICATION_TIMEOUT
 from cortex_mcp.verification.umg import verify_umg
 from cortex_mcp.tcp_client import UECommandError, UEConnection
-from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure, failed_step_code
+from cortex_mcp.tool_output import (
+    CONNECTION_ERROR_CODE,
+    batch_step_warnings,
+    canonical_failure,
+    failed_step_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +367,7 @@ def register_umg_composite_tools(mcp, connection: UEConnection):
             return json.dumps(response, indent=2)
 
         # 6. Success — post-batch
-        warnings = []
+        warnings = batch_step_warnings(results)
         if asset_path:
             try:
                 connection.send_command("blueprint.compile", {"asset_path": asset_path})

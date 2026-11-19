@@ -7,7 +7,12 @@ from typing import Any
 from cortex_mcp.verification import VERIFICATION_TIMEOUT
 from cortex_mcp.verification.material import verify_material
 from cortex_mcp.tcp_client import UEConnection
-from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure, failed_step_code
+from cortex_mcp.tool_output import (
+    CONNECTION_ERROR_CODE,
+    batch_step_warnings,
+    canonical_failure,
+    failed_step_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -695,7 +700,7 @@ def register_material_composite_tools(mcp, connection: UEConnection):
             return json.dumps(response, indent=2)
 
         # 6. Success — call auto_layout as separate post-batch call
-        warnings = []
+        warnings = batch_step_warnings(results)
         if asset_path:
             try:
                 connection.send_command("material.auto_layout", {
@@ -919,6 +924,9 @@ def register_material_composite_tools(mcp, connection: UEConnection):
             "total_steps": total_steps,
             "total_timing_ms": batch_data.get("total_timing_ms", 0),
         }
+        warnings = batch_step_warnings(results)
+        if warnings:
+            response["warnings"] = warnings
 
         try:
             instance_data = connection.send_command(

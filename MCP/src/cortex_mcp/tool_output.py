@@ -57,6 +57,21 @@ def failed_step_code(step: Any, fallback: str = "INVALID_OPERATION") -> str:
     return code if isinstance(code, str) and code else fallback
 
 
+def batch_step_warnings(results: Any) -> list[dict[str, Any]]:
+    """Native warnings of successful batch steps, one entry per step that reported any.
+
+    A composite sends ``batch`` itself, so the per-step ``warnings`` the native router attaches
+    to batch entries would otherwise never reach the caller.
+    """
+    if not isinstance(results, list):
+        return []
+    return [
+        {"step": entry.get("index"), "command": entry.get("command", ""), "warnings": entry["warnings"]}
+        for entry in results
+        if isinstance(entry, dict) and isinstance(entry.get("warnings"), list) and entry["warnings"]
+    ]
+
+
 def strip_schema_titles(schema: Any) -> Any:
     """Return a copy of a JSON schema without pydantic's generated ``title`` annotations.
 

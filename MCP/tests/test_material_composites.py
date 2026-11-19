@@ -548,6 +548,44 @@ class TestAutoLayoutWarning:
         assert "warnings" in result
         assert any(w["step"] == "auto_layout" for w in result["warnings"])
 
+    def test_native_step_warnings_kept_beside_auto_layout_warning(self):
+        """Native batch step warnings and the composite's own warnings are both reported."""
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = [
+            {
+                "success": True,
+                "data": {
+                    "results": [
+                        {"index": 0, "success": True, "command": "material.create_material",
+                         "data": {"asset_path": "/Game/M_Test"}},
+                        {"index": 1, "success": True, "command": "material.add_node",
+                         "data": {"node_id": "Expr_0"}, "warnings": ["Unknown property 'Foo' ignored"]},
+                    ],
+                    "total_timing_ms": 2,
+                },
+            },
+            RuntimeError("auto_layout failed"),
+            {"data": {"node_count": 1, "blend_mode": None, "shading_model": None}},
+            {"data": {"nodes": [{"expression_class": "MaterialExpressionConstant"}]}},
+            {"data": {"connections": []}},
+        ]
+
+        tool = _extract_tools(mock_conn)["create_material_graph"]
+        result = json.loads(tool(
+            name="M_Test", path="/Game/",
+            nodes=[{"class": "Constant", "name": "A"}],
+            connections=[{"from": "A.0", "to": "Material.BaseColor"}],
+        ))
+
+        assert result["success"] is True
+        steps = [w["step"] for w in result["warnings"]]
+        assert "auto_layout" in steps
+        assert {
+            "step": 1,
+            "command": "material.add_node",
+            "warnings": ["Unknown property 'Foo' ignored"],
+        } in result["warnings"]
+
 
 class TestErrorPropagation:
     """Tests for error response format from composite tool."""
@@ -1121,6 +1159,43 @@ class TestCreateMaterialInstanceTool:
 
         assert result["success"] is True
         assert result["parameter_count"] == 0
+
+    def test_success_surfaces_native_step_warnings(self):
+        """A batch step's native warnings reach the instance result, keyed by step."""
+        mock_conn = MagicMock()
+        mock_conn.send_command.side_effect = [
+            {
+                "success": True,
+                "data": {
+                    "results": [
+                        {"index": 0, "success": True, "command": "material.create_instance",
+                         "data": {"asset_path": "/Game/MI_Empty"},
+                         "warnings": ["Parent has no parameter 'Roughness'"]},
+                    ],
+                    "total_timing_ms": 3,
+                },
+            },
+            {
+                "data": {
+                    "name": "MI_Empty",
+                    "asset_path": "/Game/MI_Empty",
+                    "parent_material": "/Game/M_Parent",
+                    "overrides": {"scalar": [], "vector": [], "texture": []},
+                },
+            },
+        ]
+
+        tools = _extract_tools(mock_conn)
+        result = json.loads(tools["create_material_instance"](
+            name="MI_Empty", path="/Game/", parent="/Game/M_Parent", parameters=[],
+        ))
+
+        assert result["success"] is True
+        assert result["warnings"] == [{
+            "step": 0,
+            "command": "material.create_instance",
+            "warnings": ["Parent has no parameter 'Roughness'"],
+        }]
 
     def test_batch_top_level_failure(self):
         """Top-level batch failure returns an error response."""

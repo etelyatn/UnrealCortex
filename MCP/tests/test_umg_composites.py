@@ -453,6 +453,37 @@ class TestCompileFailureHandling:
 
         assert result["success"] is True
 
+    def test_success_surfaces_native_step_warnings(self):
+        """A batch step's native warnings reach the composite result, keyed by step."""
+        mock_connection = MagicMock()
+        mock_connection.send_command.return_value = {
+            "success": True,
+            "data": {
+                "results": [
+                    {"index": 0, "success": True, "command": "blueprint.create",
+                     "data": {"asset_path": "/Game/WBP_Test"}},
+                    {"index": 1, "success": True, "command": "umg.add_widget", "data": {}},
+                    {"index": 2, "success": True, "command": "umg.set_property", "data": {},
+                     "warnings": ["Unknown field 'NoSuchField' in struct 'Margin'"]},
+                ],
+                "total_timing_ms": 1,
+            },
+        }
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(
+            name="WBP_Test", path="/Game/UI/",
+            widgets=[{"class": "Border", "name": "Root",
+                      "properties": {"Padding": {"Left": 4, "NoSuchField": 1}}}],
+        ))
+
+        assert result["success"] is True
+        assert {
+            "step": 2,
+            "command": "umg.set_property",
+            "warnings": ["Unknown field 'NoSuchField' in struct 'Margin'"],
+        } in result["warnings"]
+
 
 class TestUMGVerificationIntegration:
     """Integration tests for UMG verification in the composite response."""
