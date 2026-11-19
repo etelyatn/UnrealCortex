@@ -405,13 +405,13 @@ class TestLevelBatchTool:
                         "index": 0,
                         "command": "level.spawn_actor",
                         "data": {"name": "PointLight_0"},
-                        "warnings": ["Property 'Intensity' fell back to its default"],
+                        "warnings": ["Actor has no StaticMeshComponent; mesh parameter ignored"],
                         "timing_ms": 10,
                     },
                     {
                         "success": True,
                         "index": 1,
-                        "command": "level.set_actor_property",
+                        "command": "level.set_folder",
                         "data": {},
                         "timing_ms": 1,
                     },
@@ -420,14 +420,22 @@ class TestLevelBatchTool:
             }
         }
         tool = self._get_tool(conn)
-        result = json.loads(tool(operations=[{"op": "spawn", "class": "PointLight"}], save=False))
+        result = json.loads(tool(
+            operations=[{
+                "op": "spawn",
+                "class": "PointLight",
+                "mesh": "/Engine/BasicShapes/Cube.Cube",
+                "folder": "Lights",
+            }],
+            save=False,
+        ))
 
         assert result["success"] is True
         assert result["warnings"] == [
             {
                 "step": 0,
                 "command": "level.spawn_actor",
-                "warnings": ["Property 'Intensity' fell back to its default"],
+                "warnings": ["Actor has no StaticMeshComponent; mesh parameter ignored"],
             }
         ]
 

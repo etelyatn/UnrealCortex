@@ -460,10 +460,11 @@ class TestCompileFailureHandling:
             "success": True,
             "data": {
                 "results": [
-                    {"index": 0, "success": True, "command": "umg.create_widget_blueprint",
+                    {"index": 0, "success": True, "command": "blueprint.create",
                      "data": {"asset_path": "/Game/WBP_Test"}},
-                    {"index": 1, "success": True, "command": "umg.set_property",
-                     "data": {}, "warnings": ["Member 'Padding.Top' was not applied"]},
+                    {"index": 1, "success": True, "command": "umg.add_widget", "data": {}},
+                    {"index": 2, "success": True, "command": "umg.set_property", "data": {},
+                     "warnings": ["Unknown field 'NoSuchField' in struct 'Margin'"]},
                 ],
                 "total_timing_ms": 1,
             },
@@ -472,14 +473,15 @@ class TestCompileFailureHandling:
         tool = _extract_tool(mock_connection)
         result = json.loads(tool(
             name="WBP_Test", path="/Game/UI/",
-            widgets=[{"class": "CanvasPanel", "name": "Root"}],
+            widgets=[{"class": "Border", "name": "Root",
+                      "properties": {"Padding": {"Left": 4, "NoSuchField": 1}}}],
         ))
 
         assert result["success"] is True
         assert {
-            "step": 1,
+            "step": 2,
             "command": "umg.set_property",
-            "warnings": ["Member 'Padding.Top' was not applied"],
+            "warnings": ["Unknown field 'NoSuchField' in struct 'Margin'"],
         } in result["warnings"]
 
 
