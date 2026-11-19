@@ -290,6 +290,35 @@ def test_send_command_does_not_replay_after_deferred_ack_timeout(monkeypatch):
     assert conn._socket is None
 
 
+def test_send_command_refuses_foreign_response_when_two_responses_behind(monkeypatch):
+    """A stream still out of step after one recovery read must fail, never answer with another reply."""
+    sent = []
+    sock = MagicMock()
+    sock.sendall.side_effect = lambda payload: sent.append(payload)
+    lines = []
+
+    def recv(_size):
+        if not lines:
+            request_id = json.loads(sent[-1].decode("utf-8"))["id"]
+            lines.extend([
+                {"id": "stale001", "success": True, "data": {"foreign": 1}},
+                {"id": "stale002", "success": True, "data": {"foreign": 2}},
+                {"id": request_id, "success": True, "data": {"own": True}},
+            ])
+        return json.dumps(lines.pop(0)).encode("utf-8") + b"\n"
+
+    sock.recv.side_effect = recv
+    conn, connect_calls = _connection_with_socket(monkeypatch, sock)
+
+    with pytest.raises(UECommandTimeoutError, match="desync"):
+        conn.send_command("level.spawn_actor", {"class": "PointLight"}, timeout=1.0)
+
+    # The command was dispatched and may still run: never replay it on a new connection.
+    assert len(sent) == 1
+    assert len(connect_calls) == 1
+    assert conn._socket is None
+
+
 def test_send_command_timeout_is_a_connection_error(monkeypatch):
     """Existing callers that catch ConnectionError keep working."""
     sock = MagicMock()

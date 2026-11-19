@@ -100,6 +100,14 @@ class UECommandTimeoutError(ConnectionError):
     """
 
 
+class UECommandDesyncError(UECommandTimeoutError):
+    """The response stream stayed out of step with a command that was already sent.
+
+    The command's own reply never arrived in order, so its outcome is unknown and it must not
+    be replayed, exactly as after a timeout.
+    """
+
+
 class _ProjectMismatchError(ConnectionError):
     """The connected editor serves a different project than the one this server targets."""
 
@@ -836,7 +844,8 @@ class UEConnection:
             response = json.loads(self._read_response_line(deadline))
 
             # Validate response ID for non-deferred responses to catch TCP stream desyncs.
-            # If the IDs don't match, the stream is one response ahead — read one more line.
+            # If the IDs don't match, read one more line; a stream still out of step after that
+            # is more than one response behind and must not answer with another command's reply.
             if response.get("status") != "deferred":
                 resp_id = response.get("id")
                 if resp_id and resp_id != request_id:
@@ -846,6 +855,12 @@ class UEConnection:
                         command, request_id, resp_id,
                     )
                     response = json.loads(self._read_response_line(deadline))
+                    recovered_id = response.get("id")
+                    if recovered_id and recovered_id != request_id:
+                        raise UECommandDesyncError(
+                            f"TCP stream desync: '{command}' (id={request_id}) received responses "
+                            f"for ids {resp_id} and {recovered_id}; its own result is unknown."
+                        )
 
             # Deferred protocol: first line is ack; final line contains command result.
             if response.get("status") == "deferred":
