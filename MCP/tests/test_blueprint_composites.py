@@ -614,6 +614,31 @@ class TestCompileFailureHandling:
 
         assert result["success"] is True
 
+    def test_success_surfaces_native_step_warnings(self):
+        """A batch step's native warnings reach the composite result, keyed by step."""
+        mock_connection = MagicMock()
+        mock_connection.send_command.return_value = {
+            "success": True,
+            "data": {
+                "results": [
+                    {"index": 0, "success": True, "command": "blueprint.create",
+                     "data": {"asset_path": "/Game/BP_Test"},
+                     "warnings": ["Parent class default was adjusted"]},
+                ],
+                "total_timing_ms": 1,
+            },
+        }
+
+        tool = _extract_tool(mock_connection)
+        result = json.loads(tool(name="BP_Test", path="/Game/"))
+
+        assert result["success"] is True
+        assert {
+            "step": 0,
+            "command": "blueprint.create",
+            "warnings": ["Parent class default was adjusted"],
+        } in result["warnings"]
+
 
 class TestLegacyUpdateRouteRemoved:
     """The legacy batch update route is gone: update mode refuses with migration guidance."""

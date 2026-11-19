@@ -4,7 +4,12 @@ import json
 import logging
 
 from cortex_mcp.tcp_client import UEConnection
-from cortex_mcp.tool_output import CONNECTION_ERROR_CODE, canonical_failure, failed_step_code
+from cortex_mcp.tool_output import (
+    CONNECTION_ERROR_CODE,
+    batch_step_warnings,
+    canonical_failure,
+    failed_step_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -413,14 +418,15 @@ def register_level_composite_tools(mcp, connection: UEConnection):
                 indent=2,
             )
 
-        return json.dumps(
-            {
-                "success": True,
-                "actor_count": len(spawned_actors),
-                "spawned_actors": spawned_actors,
-                "total_steps": total_steps,
-                "completed_steps": completed_count,
-                "total_timing_ms": batch_data.get("total_timing_ms", 0),
-            },
-            indent=2,
-        )
+        response = {
+            "success": True,
+            "actor_count": len(spawned_actors),
+            "spawned_actors": spawned_actors,
+            "total_steps": total_steps,
+            "completed_steps": completed_count,
+            "total_timing_ms": batch_data.get("total_timing_ms", 0),
+        }
+        warnings = batch_step_warnings(results)
+        if warnings:
+            response["warnings"] = warnings
+        return json.dumps(response, indent=2)

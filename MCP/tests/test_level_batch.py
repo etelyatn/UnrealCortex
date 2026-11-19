@@ -395,6 +395,57 @@ class TestLevelBatchTool:
         assert "PointLight_0" in result["spawned_actors"]
         assert result["completed_steps"] == result["total_steps"]
 
+    def test_success_surfaces_native_step_warnings(self):
+        conn = MagicMock()
+        conn.send_command.return_value = {
+            "data": {
+                "results": [
+                    {
+                        "success": True,
+                        "index": 0,
+                        "command": "level.spawn_actor",
+                        "data": {"name": "PointLight_0"},
+                        "warnings": ["Property 'Intensity' fell back to its default"],
+                        "timing_ms": 10,
+                    },
+                    {
+                        "success": True,
+                        "index": 1,
+                        "command": "level.set_actor_property",
+                        "data": {},
+                        "timing_ms": 1,
+                    },
+                ],
+                "total_timing_ms": 11,
+            }
+        }
+        tool = self._get_tool(conn)
+        result = json.loads(tool(operations=[{"op": "spawn", "class": "PointLight"}], save=False))
+
+        assert result["success"] is True
+        assert result["warnings"] == [
+            {
+                "step": 0,
+                "command": "level.spawn_actor",
+                "warnings": ["Property 'Intensity' fell back to its default"],
+            }
+        ]
+
+    def test_success_without_native_warnings_has_no_warnings_field(self):
+        conn = MagicMock()
+        conn.send_command.return_value = {
+            "data": {
+                "results": [
+                    {"success": True, "index": 0, "command": "level.spawn_actor", "data": {"name": "A"}},
+                ],
+            }
+        }
+        tool = self._get_tool(conn)
+        result = json.loads(tool(operations=[{"op": "spawn", "class": "PointLight"}], save=False))
+
+        assert result["success"] is True
+        assert "warnings" not in result
+
     def test_partial_failure_response_includes_op_id(self):
         conn = MagicMock()
         conn.send_command.return_value = {
