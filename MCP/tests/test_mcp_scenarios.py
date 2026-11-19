@@ -1155,7 +1155,7 @@ async def test_stress_bulk_scene_composite(mcp_client):
 
         # Verify via list_actors
         data = await call_tool(mcp_client, "list_actors", {
-            "class_filter": "PointLight",
+            "class": "PointLight",
         })
         assert data.get("count", 0) >= 20
 

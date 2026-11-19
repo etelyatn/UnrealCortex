@@ -3,6 +3,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "CortexReflectCommandHandler.h"
+#include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 #include "Operations/CortexReflectNameLookupOps.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -631,11 +632,13 @@ bool FCortexReflectNameLookupCommandTest::RunTest(const FString& Parameters)
 		}
 	}
 	{
-		// StrictParams: a misspelled parameter is refused instead of returning an unfiltered result.
+		// A misspelled parameter is refused by the router instead of returning an unfiltered result.
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetArrayField(TEXT("path_prefixes"), JsonStrings({TEXT("/Game/Temp/Cortex120/NameLookup/None")}));
 		Params->SetArrayField(TEXT("symbol"), JsonStrings({TEXT("Health")}));
-		FCortexCommandResult Typo = Handler.Execute(TEXT("find_name_lookups"), Params);
+		FCortexCommandRouter Router;
+		Router.RegisterDomain(TEXT("reflect"), TEXT("Cortex Reflect"), TEXT("1.0.0"), MakeShared<FCortexReflectCommandHandler>());
+		FCortexCommandResult Typo = Router.Execute(TEXT("reflect.find_name_lookups"), Params);
 		TestFalse(TEXT("misspelled symbols param is refused"), Typo.bSuccess);
 		TestEqual(TEXT("misspelled param code"), Typo.ErrorCode, FString(CortexErrorCodes::InvalidField));
 	}

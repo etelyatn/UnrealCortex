@@ -10,8 +10,8 @@ legacy overrides are genuine `UK2Node_Event` entries. It is compiled while still
 reparented to `UCortexGraphRetireTargetWidget` *without* compiling: in UE 5.8 the compile of the
 target-parent Blueprint converts every still-stale inherited override (one whose member the target
 parent does not declare) into an unsupported `UK2Node_CustomEvent`, so retirement must run while the
-real overrides are still eligible. `cleanup_migration(compile=false)` performs exactly the reparent
-the native fixture does (`ParentClass` assignment + `RefreshAllNodes`) with no target compile.
+real overrides are still eligible. `cleanup_migration(compile=false, save=false)` performs exactly the
+reparent the native fixture does (`ParentClass` assignment + `RefreshAllNodes`) with no target compile.
 
 The retained override is a *target-compatible* `UK2Node_Event` (`OnRetainedEvent` on the target
 parent): the graph contract refuses an event override whose member is not inherited by the current
@@ -323,7 +323,7 @@ async def test_scenario_retire_entries_live_workflow(mcp_client, surface):
         reparented = await blueprint(
             mcp_client,
             "cleanup_migration",
-            {"asset_path": package, "new_parent_class": TARGET_PARENT, "compile": False},
+            {"asset_path": package, "new_parent_class": TARGET_PARENT, "compile": False, "save": False},
         )
         assert reparented["reparented"] is True, reparented
         assert reparented["compiled"] is False, reparented

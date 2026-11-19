@@ -1,6 +1,5 @@
 #include "CortexDataCommandHandler.h"
 #include "CortexCommandRouter.h"
-#include "CortexCommandContract.h"
 #include "Operations/CortexDataTableOps.h"
 #include "Operations/CortexGameplayTagOps.h"
 #include "Operations/CortexDataAssetOps.h"
@@ -26,13 +25,6 @@ FCortexCommandResult FCortexDataCommandHandler::Execute(
     FDeferredResponseCallback DeferredCallback)
 {
     (void)DeferredCallback;
-
-    // Opted-in commands reject undeclared parameters and missing required ones before any work.
-    FCortexCommandResult ContractError;
-    if (!FCortexCommandContract::ValidateDeclaredParams(DataCommandInfos(), Command, Params, ContractError))
-    {
-        return ContractError;
-    }
 
     // Note: no longer static - virtual override of ICortexDomainHandler
     // DataTable operations
@@ -266,6 +258,7 @@ const TArray<FCortexCommandInfo>& DataCommandInfos()
         FCortexCommandInfo{ TEXT("search_datatable_content"), TEXT("Full-text search in tables") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable asset path"))
             .Optional(TEXT("search_text"), TEXT("string"), TEXT("Case-insensitive search text (alias: query)"))
+            .Optional(TEXT("query"), TEXT("string"), TEXT("Alias for search_text, used when search_text is absent or empty"))
             .Optional(TEXT("fields"), TEXT("array"), TEXT("Fields to search"))
             .Optional(TEXT("preview_fields"), TEXT("array"), TEXT("Fields to include in match previews"))
             .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum matches to return"))
@@ -290,7 +283,7 @@ const TArray<FCortexCommandInfo>& DataCommandInfos()
         FCortexCommandInfo{ TEXT("register_gameplay_tag"), TEXT("Register single tag") }
             .Required(TEXT("tag"), TEXT("string"), TEXT("GameplayTag to register"))
             .Optional(TEXT("dev_comment"), TEXT("string"), TEXT("Optional developer comment"))
-            .Optional(TEXT("source"), TEXT("string"), TEXT("Tag source name")),
+            .Optional(TEXT("ini_file"), TEXT("string"), TEXT("Target ini file (default: project DefaultGameplayTags.ini)")),
         FCortexCommandInfo{ TEXT("register_gameplay_tags"), TEXT("Batch register tags") }
             .Required(TEXT("tags"), TEXT("array"), TEXT("GameplayTags to register")),
         FCortexCommandInfo{ TEXT("list_data_assets"), TEXT("List DataAssets") }
@@ -318,7 +311,8 @@ const TArray<FCortexCommandInfo>& DataCommandInfos()
         FCortexCommandInfo{ TEXT("set_translation"), TEXT("Set StringTable entry") }
             .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
             .Required(TEXT("key"), TEXT("string"), TEXT("StringTable key"))
-            .Required(TEXT("text"), TEXT("string"), TEXT("Localized text value")),
+            .Required(TEXT("text"), TEXT("string"), TEXT("Localized text value"))
+            .Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the asset after setting the entry")),
         FCortexCommandInfo{ TEXT("update_string_table"), TEXT("Apply ordered StringTable batch mutations") }
             .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
             .Required(TEXT("operations"), TEXT("array"), TEXT("Ordered mutation operations"))
@@ -343,20 +337,18 @@ const TArray<FCortexCommandInfo>& DataCommandInfos()
         FCortexCommandInfo{ TEXT("update_curve_table_row"), TEXT("Update curve row") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("CurveTable asset path"))
             .Required(TEXT("row_name"), TEXT("string"), TEXT("Curve row identifier"))
-            .Required(TEXT("keyframes"), TEXT("array"), TEXT("Curve keyframes to apply")),
+            .Required(TEXT("keys"), TEXT("array"), TEXT("Curve keys to apply: array of {time, value} objects")),
         FCortexCommandInfo{ TEXT("export_datatable_json"), TEXT("Export DataTable rows to a JSON file and return a compact summary") }
             .Required(TEXT("table_path"), TEXT("string"), TEXT("DataTable or CompositeDataTable asset path"))
             .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
             .Optional(TEXT("fields"), TEXT("array"), TEXT("Subset of row fields to serialize"))
             .Optional(TEXT("row_names"), TEXT("array"), TEXT("Exact row names to export"))
             .Optional(TEXT("row_name_pattern"), TEXT("string"), TEXT("Wildcard row-name filter"))
-            .Optional(TEXT("include_schema"), TEXT("boolean"), TEXT("Include row struct schema metadata in the file"))
-            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit serialization warnings without failing")),
+            .Optional(TEXT("include_schema"), TEXT("boolean"), TEXT("Include row struct schema metadata in the file")),
         FCortexCommandInfo{ TEXT("export_string_table_json"), TEXT("Export StringTable entries to a JSON file and return a compact summary") }
             .Required(TEXT("string_table_path"), TEXT("string"), TEXT("StringTable asset path"))
             .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
-            .Optional(TEXT("key_pattern"), TEXT("string"), TEXT("Wildcard key filter"))
-            .Optional(TEXT("allow_partial"), TEXT("boolean"), TEXT("Permit serialization warnings without failing")),
+            .Optional(TEXT("key_pattern"), TEXT("string"), TEXT("Wildcard key filter")),
         FCortexCommandInfo{ TEXT("export_data_assets_json"), TEXT("Export DataAsset catalog entries or properties to a JSON file and return a compact summary") }
             .Required(TEXT("out_path"), TEXT("string"), TEXT("Output JSON file path"))
             .Optional(TEXT("class_name"), TEXT("string"), TEXT("DataAsset class filter"))

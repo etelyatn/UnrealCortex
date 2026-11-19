@@ -224,18 +224,12 @@ def register_editor_composite_tools(mcp, connection: UEConnection):
     @mcp.tool()
     def start_pie_session(
         mode: str = "selected_viewport",
-        map: str = "",
-        game_mode: str = "",
     ) -> str:
         """Start PIE then return current PIE state.
 
         Composite uses sequential calls, not batch, since PIE commands are deferred.
         """
         params = {"mode": mode}
-        if map:
-            params["map"] = map
-        if game_mode:
-            params["game_mode"] = game_mode
         try:
             connection.send_command("editor.start_pie", params, timeout=60.0)
             state = connection.send_command("editor.get_pie_state")

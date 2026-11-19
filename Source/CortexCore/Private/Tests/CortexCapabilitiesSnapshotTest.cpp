@@ -285,13 +285,13 @@ bool FCortexCapabilitiesSnapshotTest::RunTest(const FString& Parameters)
 	AssertCapabilityMatchesSnapshot(TEXT("editor"), TEXT("get_recent_logs"), TEXT("get_recent_logs"),
 		{ TEXT("severity"), TEXT("since_seconds"), TEXT("since_cursor"), TEXT("until_cursor"), TEXT("limit"), TEXT("count_only"), TEXT("category") });
 	AssertCapabilityMatchesSnapshot(TEXT("blueprint"), TEXT("add_function"), TEXT("add_blueprint_function"),
-		{ TEXT("asset_path"), TEXT("name"), TEXT("is_pure"), TEXT("access"), TEXT("inputs"), TEXT("outputs") });
+		{ TEXT("asset_path"), TEXT("name"), TEXT("inputs"), TEXT("outputs") });
 	AssertCapabilityMatchesSnapshot(TEXT("material"), TEXT("set_parameter"), TEXT("set_parameter"),
-		{ TEXT("asset_path"), TEXT("parameter_name"), TEXT("parameter_type"), TEXT("value") });
+		{ TEXT("asset_path"), TEXT("parameter_name"), TEXT("name"), TEXT("parameter_type"), TEXT("value") });
 	AssertCapabilityMatchesSnapshot(TEXT("level"), TEXT("spawn_actor"), TEXT("spawn_actor"),
-		{ TEXT("class_name"), TEXT("location"), TEXT("rotation"), TEXT("scale"), TEXT("label"), TEXT("folder"), TEXT("mesh"), TEXT("material") });
+		{ TEXT("class_name"), TEXT("location"), TEXT("rotation"), TEXT("scale"), TEXT("label"), TEXT("folder"), TEXT("level"), TEXT("mesh"), TEXT("material") });
 	AssertCapabilityMatchesSnapshot(TEXT("umg"), TEXT("add_widget"), TEXT("add_widget"),
-		{ TEXT("asset_path"), TEXT("widget_class"), TEXT("name"), TEXT("parent_name"), TEXT("slot_index") });
+		{ TEXT("asset_path"), TEXT("widget_class"), TEXT("name"), TEXT("parent_name"), TEXT("parent"), TEXT("slot_index") });
 	AssertCapabilityMatchesSnapshot(TEXT("qa"), TEXT("move_to"), TEXT("move_player_to"),
 		{ TEXT("target"), TEXT("timeout"), TEXT("acceptance_radius") });
 

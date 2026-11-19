@@ -5,8 +5,6 @@
       "params": [
         "asset_path",
         "name",
-        "is_pure",
-        "access",
         "inputs",
         "outputs"
       ]
@@ -813,9 +811,7 @@
     "start_pie_session": {
       "file": "tools/editor/composites.py",
       "params": [
-        "mode",
-        "map",
-        "game_mode"
+        "mode"
       ]
     },
     "stop_pie": {
@@ -1201,6 +1197,7 @@
         "scale",
         "label",
         "folder",
+        "level",
         "mesh",
         "material"
       ]
@@ -1522,6 +1519,7 @@
       "params": [
         "asset_path",
         "parameter_name",
+        "name",
         "parameter_type",
         "value"
       ]
@@ -1592,8 +1590,7 @@
       "params": [
         "action",
         "wait",
-        "assertion",
-        "screenshot_name"
+        "assertion"
       ]
     },
     "run_scenario_inline": {
@@ -1630,8 +1627,7 @@
       "params": [
         "action",
         "wait",
-        "assertion",
-        "screenshot_name"
+        "assertion"
       ]
     },
     "wait_for_condition": {
@@ -1771,6 +1767,7 @@
         "widget_class",
         "name",
         "parent_name",
+        "parent",
         "slot_index"
       ]
     },

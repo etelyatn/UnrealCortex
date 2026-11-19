@@ -207,6 +207,7 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .Optional(TEXT("scale"), TEXT("array"), TEXT("Optional spawn scale"))
             .Optional(TEXT("label"), TEXT("string"), TEXT("Actor label"))
             .Optional(TEXT("folder"), TEXT("string"), TEXT("World outliner folder"))
+            .Optional(TEXT("level"), TEXT("string"), TEXT("Optional sublevel to spawn into"))
             .Optional(TEXT("mesh"), TEXT("string"), TEXT("Optional mesh asset"))
             .Optional(TEXT("material"), TEXT("string"), TEXT("Optional material override")),
         FCortexCommandInfo{ TEXT("delete_actor"), TEXT("Delete actor by name/label") }

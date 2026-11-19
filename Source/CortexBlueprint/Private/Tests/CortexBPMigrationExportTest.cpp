@@ -6,6 +6,7 @@
 #include "Misc/AutomationTest.h"
 #include "CortexAssetMutationGuard.h"
 #include "CortexBPCommandHandler.h"
+#include "CortexCommandRouter.h"
 #include "CortexSafeFileContract.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
@@ -120,10 +121,12 @@ namespace CortexBPMigrationExportTestSupport
 		return Rows;
 	}
 
+	/** Runs through the router, which owns the declared-params contract, exactly as a TCP caller does. */
 	FCortexCommandResult Run(const FString& Command, const TSharedPtr<FJsonObject>& Params)
 	{
-		FCortexBPCommandHandler Handler;
-		return Handler.Execute(Command, Params);
+		FCortexCommandRouter Router;
+		Router.RegisterDomain(TEXT("blueprint"), TEXT("Cortex Blueprint"), TEXT("1.0.0"), MakeShared<FCortexBPCommandHandler>());
+		return Router.Execute(TEXT("blueprint.") + Command, Params);
 	}
 
 	FString IndexPathOf(const FString& OutPath)

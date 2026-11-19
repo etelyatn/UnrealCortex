@@ -397,6 +397,18 @@ FCortexCommandResult HandleApplyPatch(const TSharedPtr<FJsonObject>& Params)
 }
 }
 
+void FCortexGraphCommandHandler::DecorateParamRefusal(
+	const FString& Command,
+	const TSharedPtr<FJsonObject>& Params,
+	FCortexCommandResult& InOutRefusal) const
+{
+	// The router refused before the asset was loaded, so only the unloaded outcome can be stated.
+	if (Command == TEXT("apply_patch"))
+	{
+		InOutRefusal = WithCompactOutcome(InOutRefusal, MakeUnloadedRefusalJson(Params, InOutRefusal));
+	}
+}
+
 FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	const FString& Command,
 	const TSharedPtr<FJsonObject>& Params,
@@ -404,7 +416,7 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 {
 	(void)DeferredCallback;
 
-	if (Command == TEXT("get_authoring_context") || Command == TEXT("authoring_context"))
+	if (Command == TEXT("get_authoring_context"))
 	{
 		return FCortexGraphAuthoringContext::Read(Params);
 	}
@@ -529,7 +541,6 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("graph_path"), TEXT("string"), TEXT("Root-relative path of the graph containing the node, as published by list_graphs"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path"))
 			.Optional(TEXT("max_depth"), TEXT("number"), TEXT("Maximum traversal depth"))
-			.Optional(TEXT("traverse_policy"), TEXT("string"), TEXT("Traversal policy hint"))
 			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include traced edge list")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("trace_dataflow"), TEXT("Trace data-flow from a starting node; without a graph the first node of that name in any graph, nested graphs included, starts the trace") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
@@ -539,7 +550,6 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("graph_path"), TEXT("string"), TEXT("Root-relative path of the graph containing the node, as published by list_graphs"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path"))
 			.Optional(TEXT("max_depth"), TEXT("number"), TEXT("Maximum traversal depth"))
-			.Optional(TEXT("traverse_policy"), TEXT("string"), TEXT("Traversal policy hint"))
 			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include traced edge list")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("get_subgraph"), TEXT("Read a graph or selected node subset with optional edges; nested graphs (including Animation Blueprint state, transition and conduit graphs, read-only) are addressed by graph_guid or graph_path") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
@@ -547,31 +557,42 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("GraphGuid of any graph in the tree (list_graphs include_subgraphs); GRAPH_NOT_FOUND when unknown, INVALID_FIELD when shared by several graphs (use graph_path)"))
 			.Optional(TEXT("graph_path"), TEXT("string"), TEXT("Root-relative path published by list_graphs; resolves graphs whose graph_guid is not unique"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path; with graph_guid/graph_path it must equal that graph's own subgraph_path"))
+			.Optional(TEXT("node_id"), TEXT("string"), TEXT("Optional single node identifier; combined with node_ids when both are given"))
 			.Optional(TEXT("node_ids"), TEXT("array"), TEXT("Optional subset of node identifiers"))
-			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include edges between returned nodes")).RollbackSafe(),
+			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include edges between returned nodes"))
+			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Compact node serialization (default: true)")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("list_event_handlers"), TEXT("List event entry nodes across Blueprint graphs, nested graphs included; results carry graph_guid") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("Restrict to the graph with this GraphGuid and the graphs nested below it; GRAPH_NOT_FOUND when unknown, INVALID_FIELD when shared (use graph_path)"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Only with graph_guid/graph_path: must name the resolved graph; never a scope on its own"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Only with graph_guid/graph_path: must equal the resolved graph's own subgraph_path; never a scope on its own"))
 			.Optional(TEXT("graph_path"), TEXT("string"), TEXT("Restrict to the graph at this root-relative path (list_graphs) and the graphs nested below it")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("find_event_handler"), TEXT("Find matching event entry nodes across graphs, nested graphs included; results carry graph_guid") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("event_name"), TEXT("string"), TEXT("Event display name or identifier to match"))
 			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("Restrict to the graph with this GraphGuid and the graphs nested below it; GRAPH_NOT_FOUND when unknown, INVALID_FIELD when shared (use graph_path)"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Only with graph_guid/graph_path: must name the resolved graph; never a scope on its own"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Only with graph_guid/graph_path: must equal the resolved graph's own subgraph_path; never a scope on its own"))
 			.Optional(TEXT("graph_path"), TEXT("string"), TEXT("Restrict to the graph at this root-relative path (list_graphs) and the graphs nested below it")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("find_function_calls"), TEXT("Find call-function nodes by function name across graphs, nested graphs included; results carry graph_guid") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("function_name"), TEXT("string"), TEXT("Function-name filter"))
 			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("Restrict to the graph with this GraphGuid and the graphs nested below it; GRAPH_NOT_FOUND when unknown, INVALID_FIELD when shared (use graph_path)"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Only with graph_guid/graph_path: must name the resolved graph; never a scope on its own"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Only with graph_guid/graph_path: must equal the resolved graph's own subgraph_path; never a scope on its own"))
 			.Optional(TEXT("graph_path"), TEXT("string"), TEXT("Restrict to the graph at this root-relative path (list_graphs) and the graphs nested below it")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add a node to a mutable graph. Delegate graphs are readable but not mutable.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_class"), TEXT("string"), TEXT("Node class to create"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Target graph, defaults to EventGraph"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
+			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("Never accepted: addressing is graph_name/subgraph_path. A graph_guid is refused (INVALID_OPERATION for a nested read-only graph, INVALID_FIELD otherwise, GRAPH_NOT_FOUND when unknown) instead of silently targeting the default graph"))
 			.Optional(TEXT("position"), TEXT("object"), TEXT("Optional node placement coordinates"))
 			.Optional(TEXT("params"), TEXT("object"), TEXT("Node-specific creation parameters")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("describe_node"), TEXT("Return the typed construction contract for a supported node class") }
 			.Required(TEXT("node_class"), TEXT("string"), TEXT("Node class to describe"))
+			.Optional(TEXT("asset_path"), TEXT("string"), TEXT("Optional Blueprint asset path; validates the contract against that Blueprint's class context"))
+			.Optional(TEXT("target"), TEXT("object"), TEXT("Optional target graph locator (graph_ref or graph_guid/graph_path); requires asset_path"))
 			.Optional(TEXT("params"), TEXT("object"), TEXT("Optional construction params used to allocate expected pins")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("remove_node"), TEXT("Remove a node from a mutable graph and clean up connections. Delegate graphs are readable but not mutable.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
@@ -584,6 +605,12 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Required(TEXT("source_pin"), TEXT("string"), TEXT("Output pin name"))
 			.Required(TEXT("target_node"), TEXT("string"), TEXT("Node ID of the input node"))
 			.Required(TEXT("target_pin"), TEXT("string"), TEXT("Input pin name"))
+			.Optional(TEXT("from_node"), TEXT("string"), TEXT("Alias of source_node"))
+			.Optional(TEXT("source_node_id"), TEXT("string"), TEXT("Alias of source_node"))
+			.Optional(TEXT("from_pin"), TEXT("string"), TEXT("Alias of source_pin"))
+			.Optional(TEXT("to_node"), TEXT("string"), TEXT("Alias of target_node"))
+			.Optional(TEXT("target_node_id"), TEXT("string"), TEXT("Alias of target_node"))
+			.Optional(TEXT("to_pin"), TEXT("string"), TEXT("Alias of target_pin"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing both nodes"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("disconnect"), TEXT("Disconnect a pin in a mutable graph. Delegate graphs are readable but not mutable.") }

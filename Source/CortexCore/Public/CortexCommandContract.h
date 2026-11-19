@@ -8,17 +8,18 @@
 /**
  * Enforces the parameter contract a command declares through GetSupportedCommands().
  *
- * The declaration is the single source of truth: a command that opts in with
- * FCortexCommandInfo::StrictParams() accepts only the parameters it declares, and only when every
- * declared-required parameter is present. Declared types are deliberately NOT enforced because the
- * declared type string is documentation, not a machine contract - a declared "object" may also
- * legitimately accept a scalar - so this check can never reject a value the handler supports.
+ * The router validates every routed domain command against its declaration before the handler runs
+ * (FCortexCommandRouter::Execute). Every top-level key must be declared; every declared-required key
+ * must be present only when the command opts in with FCortexCommandInfo::StrictParams(), because many
+ * commands accept alternative shapes (single target or batch items) that a Required() marker cannot
+ * express. Declared types are deliberately NOT enforced because the declared type string is
+ * documentation, not a machine contract - a declared "object" may also legitimately accept a scalar.
  *
- * Router-owned parameters (a leading underscore, e.g. _telemetry_parallel) are added by the MCP
- * router rather than by a caller and are always accepted.
+ * Router-owned parameters (a leading underscore, e.g. _telemetry_parallel) are never refused by this
+ * check; a handler that enforces its own closed key set (graph.apply_patch, Replay) may still refuse them.
  *
  * A refusal describes the offending parameter and the accepted contract; it never suggests a
- * parameter the command does not declare.
+ * parameter the command does not declare, and never echoes an oversized caller-supplied name.
  */
 struct CORTEXCORE_API FCortexCommandContract
 {
@@ -28,18 +29,6 @@ struct CORTEXCORE_API FCortexCommandContract
 	 */
 	static bool ValidateParams(
 		const FCortexCommandInfo& Info,
-		const TSharedPtr<FJsonObject>& Params,
-		FCortexCommandResult& OutError);
-
-	/**
-	 * Validate Command's declared contract for the domains that declare it.
-	 *
-	 * Returns false and fills OutError only for a violation: a command that has not opted in, or a
-	 * command not present in Infos (the router reports unknown commands itself), returns true.
-	 */
-	static bool ValidateDeclaredParams(
-		const TArray<FCortexCommandInfo>& Infos,
-		const FString& Command,
 		const TSharedPtr<FJsonObject>& Params,
 		FCortexCommandResult& OutError);
 };

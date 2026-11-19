@@ -182,8 +182,7 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("mode"), TEXT("string"), TEXT("start (default), update, or stop; update requires an owned run"))
 			.Optional(TEXT("duration_ms"), TEXT("number"), TEXT("Finite positive start duration; omitted runs until stop or session cancellation")),
 		FCortexCommandInfo{ TEXT("inject_input_sequence"), TEXT("Execute timed input sequence") }
-			.Required(TEXT("steps"), TEXT("array"), TEXT("Timed input steps to execute"))
-			.Optional(TEXT("timeout"), TEXT("number"), TEXT("Overall timeout in seconds")),
+			.Required(TEXT("steps"), TEXT("array"), TEXT("Timed input steps to execute")),
 		FCortexCommandInfo{ TEXT("capture_screenshot"), TEXT("Redraw and capture the active viewport with explicit camera provenance") }
 			.Optional(TEXT("output_path"), TEXT("string"), TEXT("Optional screenshot output path")),
 		FCortexCommandInfo{ TEXT("get_viewport_info"), TEXT("Get viewport state") },
@@ -192,7 +191,9 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("rotation"), TEXT("object"), TEXT("Camera rotation with numeric pitch/yaw/roll"))
 			.Optional(TEXT("allow_during_pie"), TEXT("boolean"), TEXT("Allow transient editor-client change during possessed PIE; does not control game camera")),
 		FCortexCommandInfo{ TEXT("focus_actor"), TEXT("Frame actor in viewport") }
-			.Required(TEXT("actor_path"), TEXT("string"), TEXT("Actor path to frame (alias: actor_name, actor)")),
+			.Required(TEXT("actor_path"), TEXT("string"), TEXT("Actor path to frame (alias: actor_name, actor)"))
+			.Optional(TEXT("actor_name"), TEXT("string"), TEXT("Alias of actor_path, used when actor_path is absent or empty"))
+			.Optional(TEXT("actor"), TEXT("string"), TEXT("Alias of actor_path, used when actor_path and actor_name are absent or empty")),
 		FCortexCommandInfo{ TEXT("focus_node"), TEXT("Open Blueprint editor and focus a specific graph node; graph_guid selects the graph when several graphs share a name (graph_guid is published by graph.list_graphs)") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Graph node identifier"))

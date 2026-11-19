@@ -127,7 +127,6 @@ def register_qa_composite_tools(mcp, connection: UEConnection):
         action: dict,
         wait: dict | None = None,
         assertion: dict | None = None,
-        screenshot_name: str = "qa_step.png",
     ) -> str:
         action_command = action.get("command") if isinstance(action, dict) else None
         if not isinstance(action_command, str) or not action_command:
@@ -176,7 +175,7 @@ def register_qa_composite_tools(mcp, connection: UEConnection):
 
         screenshot = connection.send_command(
             "editor.capture_screenshot",
-            {"filename": screenshot_name},
+            {},
             timeout=60.0,
         )
 

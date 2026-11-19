@@ -14,6 +14,8 @@ struct FCortexRegisteredDomain
 	FString DisplayName;
 	FString Version;
 	TSharedPtr<ICortexDomainHandler> Handler;
+	/** Handler->GetSupportedCommands() snapshot keyed by command name; every table is static. */
+	TMap<FString, FCortexCommandInfo> Commands;
 };
 
 // Forward declaration
@@ -92,6 +94,9 @@ private:
 
 	/** Whether a registered domain command explicitly opts into rollback-enabled batches. */
 	bool IsRollbackSafeCommand(const FString& Command) const;
+
+	/** Declaration of Namespace.SubCommand, or null when the domain or command is not declared. */
+	const FCortexCommandInfo* FindCommandInfo(const FString& Namespace, const FString& SubCommand) const;
 
 	/** Parse a $ref string and extract the resolved FJsonValue. */
 	static bool ParseAndResolveRef(

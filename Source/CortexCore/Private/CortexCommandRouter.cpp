@@ -6,6 +6,7 @@
 #include "CortexEngineCompat.h"
 #include "CortexFileUtils.h"
 #include "ICortexDomainHandler.h"
+#include "CortexCommandContract.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/App.h"
 #include "AssetRegistry/IAssetRegistry.h"
@@ -321,22 +322,20 @@ bool FCortexCommandRouter::IsRollbackSafeCommand(const FString& Command) const
 		return false;
 	}
 
+	const FCortexCommandInfo* Info = FindCommandInfo(Namespace, DomainCommand);
+	return Info != nullptr && Info->bRollbackSafe;
+}
+
+const FCortexCommandInfo* FCortexCommandRouter::FindCommandInfo(const FString& Namespace, const FString& SubCommand) const
+{
 	for (const FCortexRegisteredDomain& Domain : RegisteredDomains)
 	{
-		if (Domain.Namespace != Namespace || !Domain.Handler.IsValid())
+		if (Domain.Namespace == Namespace)
 		{
-			continue;
+			return Domain.Commands.Find(SubCommand);
 		}
-		for (const FCortexCommandInfo& Info : Domain.Handler->GetSupportedCommands())
-		{
-			if (Info.Name == DomainCommand)
-			{
-				return Info.bRollbackSafe;
-			}
-		}
-		return false;
 	}
-	return false;
+	return nullptr;
 }
 
 void FCortexBatchScope::SetRollbackEnabled(bool bEnabled)
@@ -380,6 +379,19 @@ FCortexCommandResult FCortexCommandRouter::Execute(
 				// A request without a "params" object arrives here as a null pointer. Domain handlers
 				// dereference Params unconditionally, so hand them an empty object instead.
 				const TSharedPtr<FJsonObject> SafeParams = Params.IsValid() ? Params : TSharedPtr<FJsonObject>(MakeShared<FJsonObject>());
+
+				// The published declaration is the contract: refuse an undeclared param before the
+				// handler can load, transact or mutate anything. A command absent from the table is
+				// left to the handler, which reports its own unknown-command error.
+				if (const FCortexCommandInfo* Info = Domain.Commands.Find(SubCommand))
+				{
+					FCortexCommandResult Refusal;
+					if (!FCortexCommandContract::ValidateParams(*Info, SafeParams, Refusal))
+					{
+						Domain.Handler->DecorateParamRefusal(SubCommand, SafeParams, Refusal);
+						return Refusal;
+					}
+				}
 				return Domain.Handler->Execute(SubCommand, SafeParams, MoveTemp(DeferredCallback));
 			}
 		}
@@ -482,7 +494,15 @@ void FCortexCommandRouter::RegisterDomain(
 	const FString& Version,
 	TSharedPtr<ICortexDomainHandler> Handler)
 {
-	RegisteredDomains.Add({ Namespace, DisplayName, Version, Handler });
+	FCortexRegisteredDomain& Domain = RegisteredDomains.Add_GetRef({ Namespace, DisplayName, Version, Handler });
+	if (Handler.IsValid())
+	{
+		for (FCortexCommandInfo& Info : Handler->GetSupportedCommands())
+		{
+			const FString Name = Info.Name;
+			Domain.Commands.Add(Name, MoveTemp(Info));
+		}
+	}
 	bCapabilitiesCacheDirty = true;
 
 	if (!bCacheTickerScheduled)

@@ -1,5 +1,4 @@
 #include "CortexBPCommandHandler.h"
-#include "CortexCommandContract.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPAnalysisOps.h"
@@ -56,15 +55,6 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 	FDeferredResponseCallback DeferredCallback)
 {
 	(void)DeferredCallback;
-
-	// The declaration is the contract: commands that opt in with StrictParams() refuse unknown or missing params
-	// before any work, exactly as the Data, UMG and Reflect handlers do.
-	static const TArray<FCortexCommandInfo> DeclaredCommands = GetSupportedCommands();
-	FCortexCommandResult ContractError;
-	if (!FCortexCommandContract::ValidateDeclaredParams(DeclaredCommands, Command, Params, ContractError))
-	{
-		return ContractError;
-	}
 
 	const bool bReadOnly = Command == TEXT("list") || Command == TEXT("get_info")
 		|| Command == TEXT("get_class_defaults") || Command == TEXT("list_inherited_properties")
@@ -368,8 +358,6 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 	Commands.Add(FCortexCommandInfo{TEXT("add_function"), TEXT("Add a function to a Blueprint")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("name"), TEXT("string"), TEXT("Function name"))
-		.Optional(TEXT("is_pure"), TEXT("boolean"), TEXT("Create as a pure function"))
-		.Optional(TEXT("access"), TEXT("string"), TEXT("Function access level"))
 		.Optional(TEXT("inputs"), TEXT("array"), TEXT("Input parameter definitions"))
 		.Optional(TEXT("outputs"), TEXT("array"), TEXT("Output parameter definitions")));
 	Commands.Add(FCortexCommandInfo{
@@ -398,14 +386,16 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("include_values"), TEXT("boolean"), TEXT("Include effective values; default false"))
 		.Optional(TEXT("include_members"), TEXT("boolean"), TEXT("Expand one level of struct member metadata (values only with include_values)"))
 		.Optional(TEXT("discovery_offset"), TEXT("number"), TEXT("Metadata discovery page offset; default 0"))
-		.Optional(TEXT("discovery_limit"), TEXT("number"), TEXT("Metadata discovery page size; default 100, max 200")));
+		.Optional(TEXT("discovery_limit"), TEXT("number"), TEXT("Metadata discovery page size; default 100, max 200"))
+		.Optional(TEXT("blueprint_path"), TEXT("string"), TEXT("Optional alternate Blueprint path")));
 	Commands.Add(FCortexCommandInfo{TEXT("list_settable_defaults"), TEXT("List settable class-default property metadata (paged)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("properties"), TEXT("array"), TEXT("Specific property paths to select"))
 		.Optional(TEXT("include_values"), TEXT("boolean"), TEXT("Include effective values; default false"))
 		.Optional(TEXT("include_members"), TEXT("boolean"), TEXT("Expand one level of struct member metadata (values only with include_values)"))
 		.Optional(TEXT("discovery_offset"), TEXT("number"), TEXT("Metadata discovery page offset; default 0"))
-		.Optional(TEXT("discovery_limit"), TEXT("number"), TEXT("Metadata discovery page size; default 100, max 200")));
+		.Optional(TEXT("discovery_limit"), TEXT("number"), TEXT("Metadata discovery page size; default 100, max 200"))
+		.Optional(TEXT("blueprint_path"), TEXT("string"), TEXT("Optional alternate Blueprint path")));
 	Commands.Add(FCortexCommandInfo{TEXT("set_class_defaults"), TEXT("Set default property values on a Blueprint CDO")}
 		.OptionalBatchItems(TEXT("Batch items with target, properties, compile, save, echo, expected_fingerprint"))
 		.OptionalExpectedFingerprint()
@@ -456,7 +446,6 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("new_parent_class"), TEXT("string"), TEXT("New C++ parent class: Blueprint asset path, full class path or unique short name"))
 		.Optional(TEXT("remove_variables"), TEXT("array"), TEXT("Variables to remove (a variable a native member replaces is adopted by the engine instead)"))
 		.Optional(TEXT("remove_functions"), TEXT("array"), TEXT("Function graphs to remove"))
-		.Optional(TEXT("migrated_overrides"), TEXT("array"), TEXT("Accepted for the MCP wrapper, which prunes the override event nodes itself"))
 		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true = report the plan, the referencing nodes and the SaveGame findings, mutate and dirty nothing (default false)"))
 		.OptionalExpectedFingerprint(TEXT("Stale-write guard {graph_authoring_version, graph_authoring_hash, migration_state_hash}; read it from a dry run"))
 		.Optional(TEXT("remove_referencing_nodes"), TEXT("boolean"), TEXT("Remove the graph nodes that name a variable removed explicitly (default false = refuse)"))

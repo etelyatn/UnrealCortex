@@ -20,7 +20,7 @@ _CREATE_DOC = (
     "Component, Interface, FunctionLibrary — Widget Blueprints use widget_compose), parent_class\n"
     "(optional C++ class path, e.g. \"/Script/Engine.Character\"), graph_name (default\n"
     "\"EventGraph\"), variables ([{name, type, default_value?, is_exposed?, category?}]),\n"
-    "functions ([{name, is_pure?, access?}]), nodes, connections.\n"
+    "functions ([{name}]), nodes, connections.\n"
     "\n"
     "nodes: [{name, class, params?, pin_values?, pin_text_values?}]. Common classes: Event,\n"
     "CustomEvent, CallFunction, Branch, Sequence, VariableGet, VariableSet, SpawnActor, CastTo,\n"

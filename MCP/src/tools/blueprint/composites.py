@@ -72,6 +72,11 @@ def _contains_ref_syntax(value):
     return False
 
 
+# Function-spec fields the old spec documented but blueprint.add_function never read; the declared command
+# contract now refuses them, so the composite refuses them up front instead of sending them.
+_UNSUPPORTED_FUNCTION_FIELDS = ("is_pure", "access")
+
+
 def _validate_spec(
     name: str,
     path: str,
@@ -105,6 +110,13 @@ def _validate_spec(
     func_names = [f.get("name", "") for f in functions]
     if len(func_names) != len(set(func_names)):
         raise ValueError("Duplicate function names in spec")
+    for func in functions:
+        refused = [field for field in _UNSUPPORTED_FUNCTION_FIELDS if field in func]
+        if refused:
+            raise ValueError(
+                f"Function '{func.get('name', '')}' sets {', '.join(refused)}: blueprint.add_function does not "
+                "accept these fields, so a function spec takes only name"
+            )
 
     # Node validation
     node_names = []
@@ -211,10 +223,6 @@ def _build_batch_commands(
             "asset_path": asset_path_ref,
             "name": func["name"],
         }
-        if "is_pure" in func:
-            func_params["is_pure"] = func["is_pure"]
-        if "access" in func:
-            func_params["access"] = func["access"]
         commands.append({"command": "blueprint.add_function", "params": func_params})
 
     # Build node_name -> step_index map dynamically to stay correct if
@@ -363,8 +371,7 @@ def register_blueprint_composite_tools(mcp, connection: UEConnection):
                 - category: Optional category name
             functions: Array of function specs with:
                 - name: Function name
-                - is_pure: Optional bool
-                - access: Optional access level
+                (a function spec takes only name; is_pure and access are refused)
             graph_name: Target graph name (default: "EventGraph")
             nodes: Array of node specs with:
                 - name: Unique identifier for referencing in connections

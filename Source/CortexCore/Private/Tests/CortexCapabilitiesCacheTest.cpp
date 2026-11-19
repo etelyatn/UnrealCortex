@@ -207,8 +207,8 @@ bool FCortexCapabilitiesRepresentativeMetadataTest::RunTest(const FString& Param
 	}
 
 	TestEqual(TEXT("core.save_asset param count"), SaveParams->Num(), 5);
-	TestEqual(TEXT("graph.add_node param count"), AddNodeParams->Num(), 6);
-	TestEqual(TEXT("reflect.class_hierarchy param count"), ClassHierarchyParams->Num(), 6);
+	TestEqual(TEXT("graph.add_node param count"), AddNodeParams->Num(), 7);
+	TestEqual(TEXT("reflect.class_hierarchy param count"), ClassHierarchyParams->Num(), 7);
 
 	return true;
 }
