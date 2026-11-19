@@ -1,7 +1,7 @@
 {
   "FileVersion": 3,
-  "Version": 42,
-  "VersionName": "0.4.21",
+  "Version": 43,
+  "VersionName": "0.4.22",
   "FriendlyName": "Unreal Cortex",
   "Description": "Modular MCP plugin for AI-powered Unreal Engine development",
   "Category": "Developer Tools",
