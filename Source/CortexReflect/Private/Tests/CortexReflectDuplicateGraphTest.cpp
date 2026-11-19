@@ -4,6 +4,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "CortexReflectCommandHandler.h"
+#include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Blueprint/UserWidget.h"
@@ -986,12 +987,14 @@ bool FCortexReflectDuplicateGraphOutPathTest::RunTest(const FString& Parameters)
 
 	FCortexReflectCommandHandler Handler;
 
-	// Unknown parameters are refused (StrictParams) rather than silently ignored.
+	// Unknown parameters are refused by the router (declared-params enforcement) rather than silently ignored.
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetArrayField(TEXT("path_prefixes"), JsonStrings({TEXT("/Game/Temp/Cortex120/Duplicate/NoSuchFolder")}));
 		Params->SetNumberField(TEXT("min_node"), 3);
-		const FCortexCommandResult Typo = Handler.Execute(TEXT("find_duplicate_graphs"), Params);
+		FCortexCommandRouter Router;
+		Router.RegisterDomain(TEXT("reflect"), TEXT("Cortex Reflect"), TEXT("1.0.0"), MakeShared<FCortexReflectCommandHandler>());
+		const FCortexCommandResult Typo = Router.Execute(TEXT("reflect.find_duplicate_graphs"), Params);
 		TestFalse(TEXT("misspelled min_node is refused"), Typo.bSuccess);
 		TestEqual(TEXT("misspelled param code"), Typo.ErrorCode, FString(CortexErrorCodes::InvalidField));
 	}

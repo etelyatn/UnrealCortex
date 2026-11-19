@@ -296,20 +296,23 @@ bool FCortexBPReplaceInterfaceTest::RunTest(const FString& Parameters)
 		return false;
 	}
 	FCortexBPCommandHandler Handler;
+	// The declared contract is enforced by the router, so these refusals go through it as a TCP caller would.
+	FCortexCommandRouter Router;
+	Router.RegisterDomain(TEXT("blueprint"), TEXT("Cortex Blueprint"), TEXT("1.0.0"), MakeShared<FCortexBPCommandHandler>());
 
 	// A missing function_map is refused, and so is an unknown parameter.
 	{
 		TSharedPtr<FJsonObject> Params = EntryParams(Impl.Blueprint, Old, New, false, true);
 		Params->RemoveField(TEXT("function_map"));
-		const FCortexCommandResult Result = Handler.Execute(TEXT("replace_interface"), Params);
+		const FCortexCommandResult Result = Router.Execute(TEXT("blueprint.replace_interface"), Params);
 		TestFalse(TEXT("A missing function_map is refused"), Result.bSuccess);
 		TestEqual(TEXT("... as INVALID_FIELD"), Result.ErrorCode, FString(CortexErrorCodes::InvalidField));
 		TSharedPtr<FJsonObject> Unknown = EntryParams(Impl.Blueprint, Old, New, false, true);
 		Unknown->SetStringField(TEXT("bogus"), TEXT("x"));
-		TestFalse(TEXT("An unknown parameter is refused"), Handler.Execute(TEXT("replace_interface"), Unknown).bSuccess);
+		TestFalse(TEXT("An unknown parameter is refused"), Router.Execute(TEXT("blueprint.replace_interface"), Unknown).bSuccess);
 		TSharedPtr<FJsonObject> NoDryRun = EntryParams(Impl.Blueprint, Old, New, false, true);
 		NoDryRun->RemoveField(TEXT("dry_run"));
-		const FCortexCommandResult NoDryRunResult = Handler.Execute(TEXT("replace_interface"), NoDryRun);
+		const FCortexCommandResult NoDryRunResult = Router.Execute(TEXT("blueprint.replace_interface"), NoDryRun);
 		TestFalse(TEXT("A missing dry_run is refused"), NoDryRunResult.bSuccess);
 		TestEqual(TEXT("... as INVALID_FIELD"), NoDryRunResult.ErrorCode, FString(CortexErrorCodes::InvalidField));
 	}

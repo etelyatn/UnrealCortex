@@ -1,6 +1,5 @@
 #include "CortexUMGCommandHandler.h"
 #include "CortexCommandRouter.h"
-#include "CortexCommandContract.h"
 #include "Operations/CortexUMGWidgetTreeOps.h"
 #include "Operations/CortexUMGWidgetPropertyOps.h"
 #include "Operations/CortexUMGWidgetAnimationOps.h"
@@ -38,13 +37,6 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     FDeferredResponseCallback DeferredCallback)
 {
     (void)DeferredCallback;
-
-    // Opted-in commands reject undeclared parameters and missing required ones before any work.
-    FCortexCommandResult ContractError;
-    if (!FCortexCommandContract::ValidateDeclaredParams(UMGCommandInfos(), Command, Params, ContractError))
-    {
-        return ContractError;
-    }
 
     // This setter validates native name bounds before resolving its own mutation guard.
     if (Command == TEXT("set_property_binding"))
@@ -209,6 +201,7 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .Required(TEXT("widget_class"), TEXT("string"), TEXT("Widget class to create"))
             .Required(TEXT("name"), TEXT("string"), TEXT("Widget name"))
             .Optional(TEXT("parent_name"), TEXT("string"), TEXT("Parent widget name (alias: parent)"))
+            .Optional(TEXT("parent"), TEXT("string"), TEXT("Alias for parent_name"))
             .Optional(TEXT("slot_index"), TEXT("number"), TEXT("Insertion index within the parent")),
         FCortexCommandInfo{ TEXT("remove_widget"), TEXT("Remove a widget and subtree") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
@@ -278,9 +271,9 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))
             .Optional(TEXT("target"), TEXT("string"), TEXT("Brush target"))
-            .Optional(TEXT("color"), TEXT("object"), TEXT("Brush tint color"))
+            .Optional(TEXT("color"), TEXT("string"), TEXT("Brush tint color string"))
             .Optional(TEXT("draw_as"), TEXT("string"), TEXT("Brush draw mode"))
-            .Optional(TEXT("corner_radius"), TEXT("object"), TEXT("Rounded box corner radius")),
+            .Optional(TEXT("corner_radius"), TEXT("number"), TEXT("Uniform rounded box corner radius")),
         FCortexCommandInfo{ TEXT("set_padding"), TEXT("Set padding or margin") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Widget to modify"))

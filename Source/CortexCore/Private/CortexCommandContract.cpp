@@ -5,9 +5,16 @@
 
 namespace
 {
+	/** Longest caller-supplied key echoed back in a refusal; longer names are reported by length only. */
+	constexpr int32 MaxEchoedParamNameLen = 64;
+
 	/** "asset_path, widget_name, padding, target" - used only to make a refusal actionable. */
 	FString DescribeDeclaredParams(const FCortexCommandInfo& Info)
 	{
+		if (Info.Params.Num() == 0)
+		{
+			return TEXT("none");
+		}
 		TArray<FString> Names;
 		Names.Reserve(Info.Params.Num());
 		for (const FCortexParamInfo& Param : Info.Params)
@@ -39,13 +46,21 @@ bool FCortexCommandContract::ValidateParams(
 				[&Key](const FCortexParamInfo& Param) { return Param.Name == Key; });
 			if (!bDeclared)
 			{
+				const FString Field = Key.Len() <= MaxEchoedParamNameLen
+					? FString::Printf(TEXT("Unknown param '%s'"), *Key)
+					: FString::Printf(TEXT("Unknown param (name length %d)"), Key.Len());
 				OutError = FCortexCommandRouter::Error(
 					CortexErrorCodes::InvalidField,
-					FString::Printf(TEXT("Unknown param '%s'. Accepted params: %s"),
-						*Key, *DescribeDeclaredParams(Info)));
+					FString::Printf(TEXT("%s. Accepted params: %s"), *Field, *DescribeDeclaredParams(Info)));
 				return false;
 			}
 		}
+	}
+
+	if (!Info.bStrictParams)
+	{
+		// Required presence is opt-in: handlers own it for commands with alternative call shapes.
+		return true;
 	}
 
 	for (const FCortexParamInfo& Param : Info.Params)
@@ -64,21 +79,5 @@ bool FCortexCommandContract::ValidateParams(
 		}
 	}
 
-	return true;
-}
-
-bool FCortexCommandContract::ValidateDeclaredParams(
-	const TArray<FCortexCommandInfo>& Infos,
-	const FString& Command,
-	const TSharedPtr<FJsonObject>& Params,
-	FCortexCommandResult& OutError)
-{
-	for (const FCortexCommandInfo& Info : Infos)
-	{
-		if (Info.Name == Command)
-		{
-			return Info.bStrictParams ? ValidateParams(Info, Params, OutError) : true;
-		}
-	}
 	return true;
 }

@@ -81,7 +81,6 @@ bool FCortexGraphTraceExecTest::RunTest(const FString& Parameters)
 	TraceParams->SetStringField(TEXT("asset_path"), AssetPath);
 	TraceParams->SetStringField(TEXT("start_node_id"), FirstPrintNodeId);
 	TraceParams->SetNumberField(TEXT("max_depth"), 10);
-	TraceParams->SetStringField(TEXT("traverse_policy"), TEXT("Opaque"));
 	TraceParams->SetBoolField(TEXT("include_edges"), true);
 
 	const FCortexCommandResult TraceResult = Router.Execute(TEXT("graph.trace_exec"), TraceParams);

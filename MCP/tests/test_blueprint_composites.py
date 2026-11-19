@@ -113,11 +113,14 @@ class TestValidation:
             _validate_spec("BP_Test", "/Game/", variables=variables, nodes=[], connections=[])
 
     def test_duplicate_function_names(self):
-        functions = [
-            {"name": "DoStuff", "is_pure": False},
-            {"name": "DoStuff", "is_pure": True},
-        ]
+        functions = [{"name": "DoStuff"}, {"name": "DoStuff"}]
         with pytest.raises(ValueError, match="Duplicate function names"):
+            _validate_spec("BP_Test", "/Game/", functions=functions, nodes=[], connections=[])
+
+    @pytest.mark.parametrize("field", ["is_pure", "access"])
+    def test_function_fields_the_command_does_not_read_are_refused(self, field):
+        functions = [{"name": "DoStuff", field: "Public"}]
+        with pytest.raises(ValueError, match=field):
             _validate_spec("BP_Test", "/Game/", functions=functions, nodes=[], connections=[])
 
     def test_node_missing_class(self):

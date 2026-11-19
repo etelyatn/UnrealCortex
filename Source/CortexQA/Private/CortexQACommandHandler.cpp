@@ -92,6 +92,7 @@ TArray<FCortexCommandInfo> FCortexQACommandHandler::GetSupportedCommands() const
             .Optional(TEXT("timeout"), TEXT("number"), TEXT("Wait timeout in seconds"))
             .Optional(TEXT("actor"), TEXT("string"), TEXT("Actor for actor-scoped conditions"))
             .Optional(TEXT("property"), TEXT("string"), TEXT("Property path to inspect"))
+            .Optional(TEXT("distance"), TEXT("number"), TEXT("Distance threshold for player_near (default 200)"))
             .Optional(TEXT("value"), TEXT("object"), TEXT("Expected value")),
         FCortexCommandInfo{ TEXT("teleport_player"), TEXT("Teleport player pawn to location/rotation in PIE") }
             .Required(TEXT("location"), TEXT("array"), TEXT("World-space teleport destination"))
@@ -106,6 +107,7 @@ TArray<FCortexCommandInfo> FCortexQACommandHandler::GetSupportedCommands() const
             .Required(TEXT("type"), TEXT("string"), TEXT("Assertion type"))
             .Optional(TEXT("actor"), TEXT("string"), TEXT("Actor for actor-scoped assertions"))
             .Optional(TEXT("property"), TEXT("string"), TEXT("Property path"))
+            .Optional(TEXT("distance"), TEXT("number"), TEXT("Distance threshold for player_near (default 200)"))
             .Optional(TEXT("value"), TEXT("object"), TEXT("Observed value"))
             .Optional(TEXT("expected"), TEXT("object"), TEXT("Expected value"))
             .Optional(TEXT("message"), TEXT("string"), TEXT("Assertion failure context")),

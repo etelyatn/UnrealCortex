@@ -9,7 +9,7 @@ public:
 	/**
 	 * Clean up a Blueprint after C++ migration, on the guarded-run skeleton.
 	 *
-	 * Params: asset_path (required), new_parent_class?, remove_variables?, remove_functions?, migrated_overrides?,
+	 * Params: asset_path (required), new_parent_class?, remove_variables?, remove_functions?,
 	 *         compile?=true, save?=true, dry_run?, expected_fingerprint?, remove_referencing_nodes?,
 	 *         acknowledged_collisions?, acknowledged_losses?, expected_cdo_values?.
 	 *

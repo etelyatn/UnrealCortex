@@ -56,7 +56,6 @@ def register_qa_standalone_tools(mcp, connection) -> None:
         action: dict,
         wait: dict | None = None,
         assertion: dict | None = None,
-        screenshot_name: str = "qa_step.png",
     ) -> str:
         for field, step in (("action", action), ("wait", wait), ("assertion", assertion)):
             error = _step_shape_error(field, step)
@@ -66,5 +65,4 @@ def register_qa_standalone_tools(mcp, connection) -> None:
             action=action,
             wait=wait,
             assertion=assertion,
-            screenshot_name=screenshot_name,
         )

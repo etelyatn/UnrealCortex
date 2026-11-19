@@ -21,4 +21,10 @@ public:
 	) override;
 
 	virtual TArray<FCortexCommandInfo> GetSupportedCommands() const override;
+
+	/** A router refusal of `graph.apply_patch` still carries the compact (unloaded) outcome envelope. */
+	virtual void DecorateParamRefusal(
+		const FString& Command,
+		const TSharedPtr<FJsonObject>& Params,
+		FCortexCommandResult& InOutRefusal) const override;
 };

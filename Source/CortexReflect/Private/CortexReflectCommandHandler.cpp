@@ -1,5 +1,4 @@
 #include "CortexReflectCommandHandler.h"
-#include "CortexCommandContract.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexReflectOps.h"
 #include "Operations/CortexReflectDependencyGraphOps.h"
@@ -19,13 +18,6 @@ FCortexCommandResult FCortexReflectCommandHandler::Execute(
 	FDeferredResponseCallback DeferredCallback)
 {
 	(void)DeferredCallback;
-
-	static const TArray<FCortexCommandInfo> Infos = ReflectCommandInfos();
-	FCortexCommandResult ContractError;
-	if (!FCortexCommandContract::ValidateDeclaredParams(Infos, Command, Params, ContractError))
-	{
-		return ContractError;
-	}
 
 	if (Command == TEXT("find_usages"))
 	{
@@ -115,6 +107,7 @@ TArray<FCortexCommandInfo> ReflectCommandInfos()
 	return {
 		FCortexCommandInfo{ TEXT("class_hierarchy"), TEXT("Get class inheritance tree") }
 			.Required(TEXT("root"), TEXT("string"), TEXT("Root class name or Blueprint asset path"))
+			.Optional(TEXT("class_name"), TEXT("string"), TEXT("Alias for root"))
 			.Optional(TEXT("depth"), TEXT("number"), TEXT("Maximum inheritance depth to traverse"))
 			.Optional(TEXT("include_blueprint"), TEXT("boolean"), TEXT("Include Blueprint-derived classes"))
 			.Optional(TEXT("include_engine"), TEXT("boolean"), TEXT("Include engine classes"))
@@ -125,9 +118,11 @@ TArray<FCortexCommandInfo> ReflectCommandInfos()
 		FCortexCommandInfo{ TEXT("class_detail"), TEXT("Get detailed info for a single class") }
 			.Required(TEXT("class_name"), TEXT("string"), TEXT("Class name or Blueprint asset path"))
 			.Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited members in the response"))
+			.Optional(TEXT("root"), TEXT("string"), TEXT("Alias for class_name"))
 			.Optional(TEXT("detail"), TEXT("string"), TEXT("Detail level: 'summary' (identity/parent/routing only) or 'full' (default); any other value is refused")),
 		FCortexCommandInfo{ TEXT("find_overrides"), TEXT("Find Blueprint overrides of a class") }
 			.Required(TEXT("class_name"), TEXT("string"), TEXT("Base class to inspect for overrides"))
+			.Optional(TEXT("root"), TEXT("string"), TEXT("Alias for class_name"))
 			.Optional(TEXT("depth"), TEXT("number"), TEXT("Inheritance depth to search"))
 			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum overrides to return"))
 			.Optional(TEXT("path_prefixes"), TEXT("array"), TEXT("Interface classes only: mounted content folders searched for implementing Blueprints (default /Game)")),
@@ -141,6 +136,9 @@ TArray<FCortexCommandInfo> ReflectCommandInfos()
 			.Optional(TEXT("max_blueprints"), TEXT("number"), TEXT("Maximum Blueprints to inspect during deep scans")),
 		FCortexCommandInfo{ TEXT("search"), TEXT("Search classes by pattern") }
 			.Required(TEXT("pattern"), TEXT("string"), TEXT("Class-name pattern to search for"))
+			.Optional(TEXT("query"), TEXT("string"), TEXT("Alias for pattern"))
+			.Optional(TEXT("type_filter"), TEXT("string"), TEXT("Restrict results to a class type"))
+			.Optional(TEXT("module_filter"), TEXT("string"), TEXT("Restrict results to a module"))
 			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum classes to return"))
 			.Optional(TEXT("include_engine"), TEXT("boolean"), TEXT("Include engine classes in search results")),
 		FCortexCommandInfo{ TEXT("get_dependencies"), TEXT("Get asset dependencies from Asset Registry") }

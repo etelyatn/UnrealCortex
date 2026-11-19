@@ -24,7 +24,7 @@ struct CORTEXCORE_API FCortexCommandInfo
 	FString Description;
 	TArray<FCortexParamInfo> Params;
 	bool bRollbackSafe = false;
-	/** Opt in to declared-contract enforcement; see FCortexCommandContract::ValidateDeclaredParams. */
+	/** Also enforce declared-required presence at the router; see FCortexCommandContract. */
 	bool bStrictParams = false;
 
 	FCortexCommandInfo& Param(
@@ -72,11 +72,11 @@ struct CORTEXCORE_API FCortexCommandInfo
 	}
 
 	/**
-	 * Opt in to declared-contract enforcement: the command accepts only the parameters it declares,
-	 * and every declared-required parameter must be present. Declared types are not enforced.
+	 * Also enforce declared-required presence at the router: every Required() param must be present.
+	 * Unknown params are refused for every declared command regardless. Declared types are not enforced.
 	 *
-	 * Enable only once this declaration matches the parameters the handler actually reads - an
-	 * incomplete declaration would refuse a parameter the handler supports.
+	 * Opt in only when every Required() param is genuinely required by the handler - a command that
+	 * also accepts an alternative shape (e.g. batch items or an alias) would refuse a working call.
 	 */
 	FCortexCommandInfo& StrictParams()
 	{
@@ -103,4 +103,16 @@ public:
 
 	/** List supported commands for capability discovery. */
 	virtual TArray<FCortexCommandInfo> GetSupportedCommands() const = 0;
+
+	/**
+	 * Called when the router refuses Command because Params violate its declaration, before the
+	 * handler would have run. A domain whose responses carry a fixed envelope may attach it to
+	 * InOutRefusal's details; it must not turn the refusal into success or change its code/message.
+	 */
+	virtual void DecorateParamRefusal(
+		const FString& Command,
+		const TSharedPtr<FJsonObject>& Params,
+		FCortexCommandResult& InOutRefusal) const
+	{
+	}
 };

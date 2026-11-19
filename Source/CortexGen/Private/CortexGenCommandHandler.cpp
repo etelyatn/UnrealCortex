@@ -65,11 +65,13 @@ TArray<FCortexCommandInfo> FCortexGenCommandHandler::GetSupportedCommands() cons
         .Optional(TEXT("source_image_path"), TEXT("string"), TEXT("Local file path to reference image for image-to-mesh"))
         .Optional(TEXT("provider"), TEXT("string"), TEXT("Provider ID to use (default: settings default)"))
         .Optional(TEXT("destination"), TEXT("string"), TEXT("UE content path for import destination"))
+        .Optional(TEXT("quality"), TEXT("string"), TEXT("Provider quality override forwarded to the provider request"))
     );
 
     Commands.Add(FCortexCommandInfo{TEXT("start_image"), TEXT("Generate a reference image from a text prompt")}
         .Required(TEXT("prompt"), TEXT("string"), TEXT("Text description of the image to generate"))
         .Optional(TEXT("provider"), TEXT("string"), TEXT("Provider ID to use (default: settings default)"))
+        .Optional(TEXT("destination"), TEXT("string"), TEXT("UE content path for import destination"))
     );
 
     Commands.Add(FCortexCommandInfo{TEXT("start_texturing"), TEXT("Apply AI texturing to an existing mesh")}
@@ -77,6 +79,7 @@ TArray<FCortexCommandInfo> FCortexGenCommandHandler::GetSupportedCommands() cons
         .Optional(TEXT("prompt"), TEXT("string"), TEXT("Text description for the texturing style"))
         .Optional(TEXT("provider"), TEXT("string"), TEXT("Provider ID to use (default: settings default)"))
         .Optional(TEXT("destination"), TEXT("string"), TEXT("UE content path for import destination"))
+        .Optional(TEXT("quality"), TEXT("string"), TEXT("Provider quality override forwarded to the provider request"))
     );
 
     Commands.Add(FCortexCommandInfo{TEXT("job_status"), TEXT("Get the current status of a generation job")}

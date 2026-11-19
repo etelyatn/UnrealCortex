@@ -653,13 +653,24 @@ bool FCortexGraphPatchCommandRefusalTest::RunTest(const FString& Parameters)
 	FOperations Operations;
 	Operations.Begin();
 
-	// (a) unknown field: the envelope validator owns the shape and never guesses
+	// (a) unknown field: the router refuses a top-level key the declaration does not list before the
+	// handler loads anything, and Graph still reports the compact (unloaded) outcome envelope.
 	TSharedPtr<FJsonObject> UnknownField = IntentRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-0000000f0004"), nullptr);
 	UnknownField->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
 	const FCortexCommandResult UnknownResult = Router.Execute(TEXT("graph.apply_patch"), UnknownField);
-	TestFalse(TEXT("an unknown envelope field is refused"), UnknownResult.bSuccess);
-	TestEqual(TEXT("unknown field error code"), UnknownResult.ErrorCode, FString(CortexErrorCodes::InvalidField));
-	AssertCompactRefusal(*this, UnknownResult, TEXT("00000000-0000-0000-0000-0000000f0004"), true, false);
+	TestFalse(TEXT("an undeclared envelope field is refused"), UnknownResult.bSuccess);
+	TestEqual(TEXT("undeclared field error code"), UnknownResult.ErrorCode, FString(CortexErrorCodes::InvalidField));
+	TestTrue(TEXT("the refusal names the undeclared field"), UnknownResult.ErrorMessage.Contains(TEXT("'graph_name'")));
+	AssertCompactRefusal(*this, UnknownResult, TEXT("00000000-0000-0000-0000-0000000f0004"), false, false);
+
+	// (a2) a router-owned (underscore) key bypasses the router check, so the envelope validator owns the shape
+	// and never guesses: the refusal is the compact outcome that names the patch.
+	TSharedPtr<FJsonObject> UnderscoreField = IntentRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-0000000f0004"), nullptr);
+	UnderscoreField->SetStringField(TEXT("_unknown_field"), TEXT("EventGraph"));
+	const FCortexCommandResult UnderscoreResult = Router.Execute(TEXT("graph.apply_patch"), UnderscoreField);
+	TestFalse(TEXT("an unknown router-exempt envelope field is refused by the envelope validator"), UnderscoreResult.bSuccess);
+	TestEqual(TEXT("unknown envelope field error code"), UnderscoreResult.ErrorCode, FString(CortexErrorCodes::InvalidField));
+	AssertCompactRefusal(*this, UnderscoreResult, TEXT("00000000-0000-0000-0000-0000000f0004"), true, false);
 
 	// (b) a flag that cannot be a boolean at all is refused. The engine's JSON DOM coerces
 	// strings and numbers into bools, so only arrays, objects and null are refused here; the MCP
