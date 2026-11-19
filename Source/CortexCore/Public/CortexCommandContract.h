@@ -15,7 +15,8 @@
  * express. Declared types are deliberately NOT enforced because the declared type string is
  * documentation, not a machine contract - a declared "object" may also legitimately accept a scalar.
  *
- * Router-owned parameters (a leading underscore, e.g. _telemetry_parallel) are always accepted.
+ * Router-owned parameters (a leading underscore, e.g. _telemetry_parallel) are never refused by this
+ * check; a handler that enforces its own closed key set (graph.apply_patch, Replay) may still refuse them.
  *
  * A refusal describes the offending parameter and the accepted contract; it never suggests a
  * parameter the command does not declare, and never echoes an oversized caller-supplied name.
