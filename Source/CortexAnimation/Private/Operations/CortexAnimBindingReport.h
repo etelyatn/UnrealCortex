@@ -61,4 +61,10 @@ public:
 
 	/** Adds `property_access` (one entry per property-access node) to Data. */
 	static bool AppendPropertyAccess(UAnimBlueprint* AnimBlueprint, int32 Limit, const TSharedPtr<FJsonObject>& Data, FCortexCommandResult& OutError);
+
+	/**
+	 * Adds `nodes`: per anim node its graph locator, node struct, input pins with their source (bound, linked, unconnected) and
+	 * the compiler's fast-path verdict (UAnimGraphNode_Base::BlueprintUsage, transient: set by the last compile in this session).
+	 */
+	static bool AppendNodes(UAnimBlueprint* AnimBlueprint, int32 Limit, const TSharedPtr<FJsonObject>& Data, FCortexCommandResult& OutError);
 };

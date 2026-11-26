@@ -874,6 +874,22 @@ def test_dispatch_timeout_is_the_long_window_for_whole_project_scans(qualified):
     assert _dispatch_timeout(qualified, {}) == 1800.0
 
 
+@pytest.mark.parametrize(
+    ("params", "expected_timeout"),
+    [
+        ({}, 90.0),
+        ({"timeout_seconds": 600}, 630.0),
+        ({"timeout_seconds": float("nan")}, 90.0),
+        ({"timeout_seconds": True}, 90.0),
+        ({"timeout_seconds": "600"}, 90.0),
+    ],
+)
+def test_sample_runtime_pose_receive_window_covers_its_real_time_budget(params, expected_timeout):
+    from cortex_mcp.tools.routers import _dispatch_timeout
+
+    assert _dispatch_timeout("anim.sample_runtime_pose", params) == expected_timeout
+
+
 def test_blueprint_router_uses_cached_send_for_discovery_reads():
     connection = MagicMock()
     connection.send_command_cached.return_value = {

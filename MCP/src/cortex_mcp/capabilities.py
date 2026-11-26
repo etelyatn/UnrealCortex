@@ -106,6 +106,7 @@ _ANIM_INSPECTION_COMMANDS = {
     "get_montage_info",
     "get_skeleton_info",
     "get_animbp_info",
+    "sample_runtime_pose",
 }
 _ANIM_AUTHORING_FAMILIES = {
     "named notify": {"add_named_notify", "update_named_notify", "remove_named_notify"},
@@ -137,6 +138,12 @@ def _build_animation_hint(command_names: set[str]) -> str:
                 "blueprint remove_graph, previewing with dry_run=true first). "
                 "Variables are separate: move them with blueprint adopt_native_member."
             )
+    if "sample_runtime_pose" in command_names:
+        lines.append(
+            "sample_runtime_pose reads bone transforms of a PIE skeletal mesh repeatedly over game time "
+            "(set_time_dilation slows it with the game; space local, component or delta_from_ref) with optional "
+            "anim-instance properties per sample; it needs a running PIE session."
+        )
     lines.append(
         "Use precise canonical selectors for updates/removes, including montage selector { index, name, start_time } "
         "and socket selector { index, socket_name, bone_name }, pass expected_fingerprint for mutations, use "
