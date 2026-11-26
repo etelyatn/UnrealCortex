@@ -536,6 +536,16 @@ UEdGraphNode* FCortexGraphNodeOps::FindNode(UEdGraph* Graph, const FString& Node
 	return nullptr;
 }
 
+bool FCortexGraphNodeOps::ValidateWritableAssetPath(const FString& AssetPath, FCortexCommandResult& OutError)
+{
+	return ValidateWritableGraphNodeBlueprintAssetPath(AssetPath, OutError);
+}
+
+bool FCortexGraphNodeOps::ResolveMutableGraph(UBlueprint* Blueprint, const FString& GraphName, UEdGraph*& OutGraph, FCortexCommandResult& OutError)
+{
+	return ResolveMutableNodeGraph(Blueprint, GraphName, OutGraph, OutError);
+}
+
 UEdGraphPin* FCortexGraphNodeOps::FindPin(UEdGraphNode* Node, const FString& PinName, FCortexCommandResult& OutError)
 {
 	for (UEdGraphPin* Pin : Node->Pins)

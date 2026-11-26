@@ -39,6 +39,10 @@ public:
 	static UEdGraph* FindGraph(UBlueprint* Blueprint, const FString& GraphName, FCortexCommandResult& OutError);
 	static UEdGraphNode* FindNode(UEdGraph* Graph, const FString& NodeId, FCortexCommandResult& OutError);
 	static UEdGraphPin* FindPin(UEdGraphNode* Node, const FString& PinName, FCortexCommandResult& OutError);
+	/** Refuse an asset path outside the writable content roots (the check every graph mutator runs before loading). */
+	static bool ValidateWritableAssetPath(const FString& AssetPath, FCortexCommandResult& OutError);
+	/** Resolve a root graph by name that graph_cmd may mutate; GRAPH_NOT_FOUND or INVALID_OPERATION otherwise. */
+	static bool ResolveMutableGraph(UBlueprint* Blueprint, const FString& GraphName, UEdGraph*& OutGraph, FCortexCommandResult& OutError);
 	/**
 	 * Serialize pin to JSON.
 	 * bDetailed: if true, includes is_connected and default_value fields.
