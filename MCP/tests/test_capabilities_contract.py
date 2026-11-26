@@ -9,10 +9,13 @@ returning a partial document. A fake connection keeps these unit-level and edito
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from cortex_mcp.tools.routers import make_router, strict_router_tool
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # Sized so the raw document exceeds the 40 KB response budget while the names projection of it
 # stays comfortably inside it - that gap is exactly what the ordering defect erased.
@@ -85,12 +88,69 @@ def test_names_detail_returns_the_projection_instead_of_refusing(core_cmd, param
     assert set(result["domains"]) == {f"domain{i}" for i in range(_DOMAINS)}
 
 
-def test_names_detail_drops_the_signature_inventory(core_cmd):
+def test_names_detail_lists_only_command_names(core_cmd):
     result = json.loads(core_cmd("get_capabilities", {}))
 
-    command = result["domains"]["domain0"]["commands"][0]
+    body = result["domains"]["domain0"]
+    assert body["name"] == "Domain 0"
+    assert body["commands"] == [f"command_{j}" for j in range(_COMMANDS_PER_DOMAIN)]
+
+
+def test_names_detail_of_the_recorded_inventory_fits_the_budget():
+    """Issue 262: the recorded editor inventory's names view must not refuse as too large."""
+    document = json.loads((FIXTURES_DIR / "capabilities_cache_full.json").read_text(encoding="utf-8"))
+    core = strict_router_tool(
+        make_router("core", _FakeConnection({"success": True, "data": document}), ""), "core"
+    )
+
+    result = json.loads(core("get_capabilities", {"detail": "names"}))
+
+    assert "_error" not in result, result.get("_error")
+    assert result["domains"]["material"]["commands"] == [
+        command["name"] for command in document["domains"]["material"]["commands"]
+    ]
+
+
+@pytest.mark.parametrize("detail", ["names", "full"])
+def test_domain_selects_one_domain(core_cmd, detail):
+    result = json.loads(core_cmd("get_capabilities", {"domain": "domain2", "detail": detail}))
+
+    assert "_error" not in result, result
+    assert list(result["domains"]) == ["domain2"]
+    assert result["plugin_version"] == "0.0.0-test"
+
+
+def test_domain_full_keeps_signatures(core_cmd):
+    result = json.loads(core_cmd("get_capabilities", {"domain": "domain1", "detail": "full"}))
+
+    command = result["domains"]["domain1"]["commands"][0]
     assert command["name"] == "command_0"
-    assert "params" not in command
+    assert len(command["params"]) == _PARAMS_PER_COMMAND
+
+
+@pytest.mark.parametrize("domain", ["missing", "", 7])
+def test_unknown_domain_is_refused_with_the_available_domains(core_cmd, domain):
+    result = json.loads(core_cmd("get_capabilities", {"domain": domain}))
+
+    assert result["_error"] == "INVALID_FIELD"
+    assert "domain0" in result["_message"] and "domain3" in result["_message"]
+
+
+def test_domain_selector_is_not_forwarded_to_the_editor():
+    seen: list = []
+
+    class _Recording(_FakeConnection):
+        def send_command_cached(self, command, params=None, ttl=300.0, timeout=None):
+            seen.append((command, params))
+            return self.payload
+
+    core = strict_router_tool(
+        make_router("core", _Recording({"success": True, "data": _capability_document()}), ""),
+        "core",
+    )
+    json.loads(core("get_capabilities", {"domain": "domain0"}))
+
+    assert seen == [("get_capabilities", {})]
 
 
 def test_invalid_detail_is_refused(core_cmd):
@@ -107,3 +167,5 @@ def test_oversized_full_read_refuses_without_inventing_a_selector(core_cmd):
     assert result.get("reader_complete") is False
     # This command declares no limit/cursor, so a refusal must not advise one.
     assert "limit" not in json.dumps(result).lower()
+    # The refusal names the selectors that do narrow it.
+    assert "domain" in json.dumps(result)

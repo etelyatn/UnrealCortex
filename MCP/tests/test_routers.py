@@ -678,12 +678,9 @@ def test_core_router_names_detail_projects_command_names_only():
 
     assert payload.get("_error") is None, payload
     assert sorted(payload["domains"]) == sorted(capabilities["domains"])
-    assert _command_names(payload) == _command_names(capabilities)
-    assert all(
-        "params" not in command
-        for domain in payload["domains"].values()
-        for command in domain["commands"]
-    )
+    assert {
+        domain: body["commands"] for domain, body in payload["domains"].items()
+    } == _command_names(capabilities)
 
     # The Python-owned selector never reaches the editor: native get_capabilities has no detail
     # parameter, and the facade makes exactly one native call.
@@ -706,7 +703,7 @@ def test_core_router_capabilities_default_view_is_names_only():
     assert payload.get("_error") is None, payload
     assert sorted(payload["domains"]) == sorted(capabilities["domains"])
     assert all(
-        "params" not in command
+        isinstance(command, str)
         for domain in payload["domains"].values()
         for command in domain["commands"]
     )
@@ -743,7 +740,7 @@ def test_core_router_names_view_keeps_full_signatures_available():
     names_view = json.loads(router("get_capabilities", {"detail": "names"}))
     assert names_view.get("_error") is None, names_view
     assert all(
-        "params" not in command
+        isinstance(command, str)
         for domain in names_view["domains"].values()
         for command in domain["commands"]
     )
