@@ -18,12 +18,15 @@ Porting the injection would not work on UE 5.8:
   (`FEngineLoop::ShouldUseIdleMode`), not to the editor.
 
 The actual cap is the editor's background CPU throttle. `UEditorEngine::GetMaxTickRate` returns 3 FPS
-whenever `ShouldThrottleCPUUsage()` is true (EditorEngine.cpp ~2526-2563). That is true when the
-editor is neither the foreground application nor focused and `UEditorPerformanceSettings::
+whenever `ShouldThrottleCPUUsage()` is true (EditorEngine.cpp ~2526-2563). The common case is an editor
+that is neither the foreground application nor focused while `UEditorPerformanceSettings::
 bThrottleCPUWhenNotForeground` ("Use Less CPU when in Background") is set, which is the default
-(EditorPerformanceSettings.cpp:21). An AI client drives PIE from another window, so its session runs at
-3 FPS: input sequences, `wait_for`, movement and timing checks crawl. Automation runs never see it:
-`ShouldThrottleCPUUsage()` returns false under `-unattended` and `GIsAutomationTesting`.
+(EditorPerformanceSettings.cpp:21). With the preference off, the editor still throttles when all of its
+windows are hidden (minimized). The engine skips the throttle during drag-and-drop, asset
+loading/compilation and shader compilation (EditorEngine.cpp ~5330-5375). An AI client drives PIE from
+another window, so its session runs at 3 FPS: input sequences, `wait_for`, movement and timing checks
+crawl. Automation runs never see it: `ShouldThrottleCPUUsage()` returns false under `-unattended` and
+`GIsAutomationTesting`.
 
 ## Decision
 
@@ -58,3 +61,15 @@ delegate returns true, `ShouldThrottleCPUUsage()` returns false.
   Replay keep their contracts; the effect is the editor's tick rate while the editor is in the
   background.
 - The veto never outlives the Cortex-owned session. A borrowed physical-input binding never holds it.
+
+### Ownership boundaries (review decisions)
+
+- A play request that replaces a queued Cortex request before the engine consumes it (a one-frame
+  window) is already adopted by `FCortexEditorPIEState` as the `start_pie` result, and the AI then
+  drives it. The veto follows that existing ownership model; no request fingerprinting was added.
+- An owned physical-input session's lease is scoped to the session's ownership. The shipped owners
+  (Cortex Replay run and capture) validate the target every tick (`CortexReplayServiceRun.cpp`,
+  `CortexReplayServiceCapture.cpp`) and finalize and shut down the session when PIE ends, which
+  releases the lease.
+- CortexEditor is only unloaded at editor exit, after the tick loop stops, so no module-shutdown
+  unregistration is needed.
