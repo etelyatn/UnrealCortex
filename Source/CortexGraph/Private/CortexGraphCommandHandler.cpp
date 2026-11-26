@@ -622,10 +622,14 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("to_pin"), TEXT("string"), TEXT("Alias of target_pin"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing both nodes"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")).RollbackSafe(),
-		FCortexCommandInfo{ TEXT("disconnect"), TEXT("Disconnect a pin in a mutable graph. Delegate graphs are readable but not mutable.") }
+		FCortexCommandInfo{ TEXT("disconnect"), TEXT("Disconnect pins in a mutable graph: node_id + pin_name breaks every link on that pin; graph.connect's source_node + source_pin + target_node + target_pin breaks only that one link. Delegate graphs are readable but not mutable.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
-			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node containing the pin"))
-			.Required(TEXT("pin_name"), TEXT("string"), TEXT("Pin to disconnect"))
+			.Optional(TEXT("node_id"), TEXT("string"), TEXT("Pin shape: node containing the pin whose links are all broken"))
+			.Optional(TEXT("pin_name"), TEXT("string"), TEXT("Pin shape: pin to disconnect from everything"))
+			.Optional(TEXT("source_node"), TEXT("string"), TEXT("Link shape: node ID of one end of the link"))
+			.Optional(TEXT("source_pin"), TEXT("string"), TEXT("Link shape: pin on source_node"))
+			.Optional(TEXT("target_node"), TEXT("string"), TEXT("Link shape: node ID of the other end of the link"))
+			.Optional(TEXT("target_pin"), TEXT("string"), TEXT("Link shape: pin on target_node"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
 		FCortexCommandInfo{ TEXT("set_pin_value"), TEXT("Set an input pin default in a mutable graph. Delegate graphs are readable but not mutable. Non-text pins use value; FText pins may use canonical text descriptor and are verified after save/reload.") }

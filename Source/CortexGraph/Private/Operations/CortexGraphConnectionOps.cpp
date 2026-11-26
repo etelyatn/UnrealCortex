@@ -324,19 +324,47 @@ FCortexCommandResult FCortexGraphConnectionOps::Connect(const TSharedPtr<FJsonOb
 FCortexCommandResult FCortexGraphConnectionOps::Disconnect(const TSharedPtr<FJsonObject>& Params)
 {
 	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
+	}
+
+	// Two shapes: node_id + pin_name breaks every link on that pin; graph.connect's
+	// source_node + source_pin + target_node + target_pin breaks exactly that one link.
+	const bool bPinShape = Params->HasField(TEXT("node_id")) || Params->HasField(TEXT("pin_name"));
+	const bool bLinkShape = Params->HasField(TEXT("source_node")) || Params->HasField(TEXT("source_pin"))
+		|| Params->HasField(TEXT("target_node")) || Params->HasField(TEXT("target_pin"));
+	if (bPinShape && bLinkShape)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			TEXT("Use either node_id + pin_name (break every link on the pin) or source_node + source_pin + target_node + target_pin (break one link), not both"));
+	}
+
 	FString NodeId;
 	FString PinName;
-
-	bool bHasParams = Params.IsValid()
-		&& Params->TryGetStringField(TEXT("asset_path"), AssetPath)
-		&& Params->TryGetStringField(TEXT("node_id"), NodeId)
-		&& Params->TryGetStringField(TEXT("pin_name"), PinName);
+	FString TargetNodeId;
+	FString TargetPinName;
+	bool bHasParams = false;
+	if (bLinkShape)
+	{
+		bHasParams = Params->TryGetStringField(TEXT("source_node"), NodeId) && !NodeId.IsEmpty()
+			&& Params->TryGetStringField(TEXT("source_pin"), PinName) && !PinName.IsEmpty()
+			&& Params->TryGetStringField(TEXT("target_node"), TargetNodeId) && !TargetNodeId.IsEmpty()
+			&& Params->TryGetStringField(TEXT("target_pin"), TargetPinName) && !TargetPinName.IsEmpty();
+	}
+	else
+	{
+		bHasParams = Params->TryGetStringField(TEXT("node_id"), NodeId)
+			&& Params->TryGetStringField(TEXT("pin_name"), PinName);
+	}
 
 	if (!bHasParams)
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("Missing required params: asset_path, node_id, pin_name")
+			bLinkShape
+				? TEXT("Missing required params for one link: source_node, source_pin, target_node, target_pin")
+				: TEXT("Missing required params: node_id and pin_name, or source_node, source_pin, target_node and target_pin")
 		);
 	}
 
@@ -387,6 +415,56 @@ FCortexCommandResult FCortexGraphConnectionOps::Disconnect(const TSharedPtr<FJso
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::PinNotFound,
 			FString::Printf(TEXT("Pin '%s' not found on node '%s'"), *PinName, *NodeId));
+	}
+
+	if (bLinkShape)
+	{
+		UEdGraphNode* TargetNode = FCortexGraphNodeOps::FindNode(Graph, TargetNodeId, LoadError);
+		if (TargetNode == nullptr)
+		{
+			return LoadError;
+		}
+		UEdGraphPin* TargetPin = TargetNode->FindPin(FName(*TargetPinName));
+		if (TargetPin == nullptr)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::PinNotFound,
+				FString::Printf(TEXT("Pin '%s' not found on node '%s'"), *TargetPinName, *TargetNodeId));
+		}
+		if (!Pin->LinkedTo.Contains(TargetPin))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("Pins are not connected: %s.%s -> %s.%s"), *NodeId, *PinName, *TargetNodeId, *TargetPinName));
+		}
+
+		FScopedTransaction Transaction(FText::FromString(TEXT("Cortex:Disconnect Link")));
+		Graph->Modify();
+		// Cortex-created nodes lack RF_Transactional; record both ends so one undo restores the link.
+		for (UEdGraphNode* LinkEnd : { Node, TargetNode })
+		{
+			LinkEnd->SetFlags(RF_Transactional);
+			LinkEnd->Modify();
+		}
+		if (const UEdGraphSchema* Schema = Graph->GetSchema())
+		{
+			Schema->BreakSinglePinLink(Pin, TargetPin);
+		}
+		else
+		{
+			Pin->BreakLinkTo(TargetPin);
+		}
+
+		Graph->NotifyGraphChanged();
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetBoolField(TEXT("disconnected"), true);
+		Data->SetNumberField(TEXT("broken_connections"), 1);
+		Data->SetStringField(TEXT("source"), FString::Printf(TEXT("%s.%s"), *NodeId, *PinName));
+		Data->SetStringField(TEXT("target"), FString::Printf(TEXT("%s.%s"), *TargetNodeId, *TargetPinName));
+
+		UE_LOG(LogCortexGraph, Log, TEXT("Disconnected link %s.%s -> %s.%s"),
+			*NodeId, *PinName, *TargetNodeId, *TargetPinName);
+		return FCortexCommandRouter::Success(Data);
 	}
 
 	// Get connection count BEFORE breaking (for reporting)
