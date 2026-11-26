@@ -1025,8 +1025,8 @@ _CAPABILITIES_DETAIL_VALUES = ("names", "full")
 def _project_capability_names(document: dict) -> dict:
     """Names-only projection of an authoritative capabilities document.
 
-    Domains, command names and every non-signature field are preserved; only the per-command
-    ``params`` signature inventory is dropped. A NEW document is built, so the authoritative
+    Each domain keeps its non-command fields; its ``commands`` become the bare command names, so
+    the whole surface fits the response budget. A NEW document is built, so the authoritative
     response — and the Saved cache it was read from — is never mutated in place.
     """
     if not isinstance(document, dict):
@@ -1043,9 +1043,7 @@ def _project_capability_names(document: dict) -> dict:
             continue
         projected_body = {k: v for k, v in body.items() if k != "commands"}
         projected_body["commands"] = [
-            {k: v for k, v in command.items() if k != "params"}
-            if isinstance(command, dict)
-            else command
+            command.get("name") if isinstance(command, dict) else command
             for command in body["commands"]
         ]
         projected_domains[domain] = projected_body
@@ -1056,12 +1054,14 @@ def _project_capability_names(document: dict) -> dict:
 
 
 def _get_capabilities(connection, params: dict) -> str:
-    """Agent-facing capability inventory: ``detail=names`` (default) or ``detail=full``.
+    """Agent-facing capability inventory: ``detail=names`` (default) or ``detail=full``, optionally
+    narrowed to one ``domain``.
 
-    ``detail`` is Python-owned presentation only. It is validated and removed before the native
-    call, and the native ``get_capabilities`` command never receives it. The projection runs after
-    the authoritative response arrives, so a projected view is never written back to the Saved
-    capabilities cache and a following ``detail=full`` read still carries the signatures.
+    ``detail`` and ``domain`` are Python-owned presentation only. They are validated and removed
+    before the native call, and the native ``get_capabilities`` command never receives them. The
+    selection runs after the authoritative response arrives, so a projected view is never written
+    back to the Saved capabilities cache and a following ``detail=full`` read still carries the
+    signatures.
     """
     detail = params.get("detail", "names")
     if detail not in _CAPABILITIES_DETAIL_VALUES:
@@ -1069,7 +1069,8 @@ def _get_capabilities(connection, params: dict) -> str:
             "INVALID_FIELD", "detail must be 'names' (default) or 'full'."
         ))
 
-    native_params = {k: v for k, v in params.items() if k != "detail"}
+    selector_keys = ("detail", "domain")
+    native_params = {k: v for k, v in params.items() if k not in selector_keys}
     response = connection.send_command_cached(
         "get_capabilities",
         native_params,
@@ -1080,18 +1081,26 @@ def _get_capabilities(connection, params: dict) -> str:
         return format_response(failure, "ue_command_error", command="get_capabilities")
 
     data = _response_data(response)
-    if detail == "full":
-        return format_response(
-            data,
-            "get_capabilities",
-            qualified_command="get_capabilities",
-            request_params=native_params,
-        )
+    request_params = dict(native_params)
+    if "domain" in params:
+        domain = params["domain"]
+        domains = data.get("domains") if isinstance(data, dict) else None
+        available = sorted(domains) if isinstance(domains, dict) else []
+        if not isinstance(domain, str) or domain not in available:
+            return json.dumps(canonical_failure(
+                "INVALID_FIELD",
+                f"domain must be one of the registered domains: {', '.join(available)}.",
+            ))
+        data = {**data, "domains": {domain: domains[domain]}}
+        request_params["domain"] = domain
+
+    if detail == "names":
+        data = _project_capability_names(data)
     return format_response(
-        _project_capability_names(data),
+        data,
         "get_capabilities",
         qualified_command="get_capabilities",
-        request_params=native_params,
+        request_params=request_params,
     )
 
 
