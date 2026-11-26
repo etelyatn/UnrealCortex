@@ -79,6 +79,7 @@ NATIVE_FAMILIES = [
     "DynamicCast",
     "ConstructObject",
     "Event",
+    "PropertyAccess",
 ]
 
 
