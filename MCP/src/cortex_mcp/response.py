@@ -86,8 +86,8 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
         "sections=['complexity_metrics'] for a bounded summary, or split the oversized Blueprint."
     ),
     "get_capabilities": (
-        "Request detail=names for the command names of every domain, pass domain=<name> to read "
-        "one domain, or inspect one operation schema with get_operation_schema."
+        "Request detail=names for command names only, narrow an unscoped read with domain=<name>, "
+        "or inspect one operation schema with get_operation_schema."
     ),
     "get_data_catalog": _CATALOG_SECTION_SELECTOR,
     "data.get_data_catalog": _CATALOG_SECTION_SELECTOR,
