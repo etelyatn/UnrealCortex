@@ -9,6 +9,7 @@
 
 class APawn;
 class APlayerController;
+class FCortexEditorCPUThrottleBypassLease;
 class FCortexEditorPhysicalInputCaptureProcessor;
 class FDragDropOperation;
 class FSlateApplication;
@@ -406,6 +407,8 @@ private:
 	 * tearing the level viewport down asserts), and stops its teardown ticker.
 	 */
 	bool bOwnedTerminationResolved = false;
+	/** Keeps the editor's background CPU throttle off from BeginOwnedPIE until the owned teardown resolves. */
+	TUniquePtr<FCortexEditorCPUThrottleBypassLease> CPUThrottleBypass;
 	/**
 	 * True once this operation has issued its single RequestEndPlayMap for the owned context.
 	 *

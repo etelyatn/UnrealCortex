@@ -17,6 +17,10 @@
 //     *operation-owned* cancellation token is captured between that admission and the stale
 //     cleanup ticker, then re-checked (same object, not cancelled) after the successor is Playing
 //     and after it owns a live continuous Enhanced Input run with a real consumed value.
+//  4. Background CPU throttle bypass (issue 245): a Cortex-started session vetoes the editor's
+//     background CPU throttle from admission until it ends, whether it is stopped through
+//     stop_pie or ended by the engine (toolbar stop); a session Cortex did not start keeps the
+//     engine default.
 //
 // Case 3 drives the actual private operation entrypoints (FCortexEditorPIEOps::StartPIE and
 // FCortexEditorInputOps::InjectInputContinuous) against a test-owned FCortexEditorPIEState. That
@@ -31,6 +35,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "CortexEditorCommandHandler.h"
+#include "CortexEditorCPUThrottleTestUtils.h"
 #include "CortexEditorPIEState.h"
 #include "CortexTypes.h"
 #include "HAL/ThreadSafeBool.h"
@@ -895,6 +900,124 @@ bool FCortexEditorPIEGenerationStaleCancelTest::RunTest(const FString& Parameter
 
 	AddCortexPIEGenerationTeardown(this, TEXT("cleanup"), ReadOperationState,
 		[Fixture]() { Fixture->Reset(); });
+
+	return true;
+}
+
+// =============================================================================================
+// 4. The background CPU throttle bypass is held exactly while a Cortex-started session lives
+// =============================================================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorPIECPUThrottleBypassTest,
+	"Cortex.Editor.PIE.CPUThrottleBypass.CortexStartedSessionOnly",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorPIECPUThrottleBypassTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+
+	// Test-owned tracker, as in case 3: the Cortex start below is the only Cortex-started session.
+	const TSharedPtr<FCortexEditorPIEState> PIEState = MakeShared<FCortexEditorPIEState>();
+	PIEState->BindDelegates();
+
+	const TSharedPtr<int32> BaselineVetoes = MakeShared<int32>(0);
+	const TSharedPtr<FCortexPIEGenerationDeferredCapture> StartCapture =
+		MakeShared<FCortexPIEGenerationDeferredCapture>();
+	const TSharedPtr<FCortexPIEGenerationDeferredCapture> StopCapture =
+		MakeShared<FCortexPIEGenerationDeferredCapture>();
+	const TSharedPtr<FCortexPIEGenerationDeferredCapture> SecondStartCapture =
+		MakeShared<FCortexPIEGenerationDeferredCapture>();
+	const TFunction<FString()> ReadOperationState =
+		[PIEState]() { return CortexPIEGenerationReadOperationState(PIEState); };
+	const auto MakeCapture = [](const TSharedPtr<FCortexPIEGenerationDeferredCapture>& Capture)
+	{
+		return [Capture](FCortexCommandResult Result)
+		{
+			++Capture->Count;
+			Capture->Last = MoveTemp(Result);
+		};
+	};
+
+	AddCortexPIEGenerationTeardown(this, TEXT("precondition"), ReadOperationState);
+
+	// --- A session Cortex did not start keeps the engine's background throttle ----------------
+	AddCortexPIEGenerationStep([this, BaselineVetoes]()
+	{
+		if (GEditor == nullptr || GEditor->PlayWorld != nullptr)
+		{
+			AddError(TEXT("the throttle bypass case must begin with no running PIE world"));
+			return;
+		}
+		*BaselineVetoes = CortexCountEditorCPUThrottleVetoes();
+		GEditor->RequestPlaySession(FRequestPlaySessionParams());
+		TestEqual(TEXT("an engine-started request adds no throttle veto"),
+			CortexCountEditorCPUThrottleVetoes(), *BaselineVetoes);
+	});
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexPIEGenerationWaitForPlaying(this));
+	AddCortexPIEGenerationStep([this, PIEState, BaselineVetoes]()
+	{
+		TestEqual(TEXT("the tracker follows the engine-started session"),
+			PIEState->GetState(), ECortexPIEState::Playing);
+		TestEqual(TEXT("a playing session Cortex did not start keeps the engine background throttle"),
+			CortexCountEditorCPUThrottleVetoes(), *BaselineVetoes);
+	});
+	AddCortexPIEGenerationTeardown(this, TEXT("engine-started session"), ReadOperationState);
+
+	// --- A Cortex-started session holds the bypass until stop_pie ends it -----------------------
+	AddCortexPIEGenerationStep([this, PIEState, BaselineVetoes, StartCapture, MakeCapture]()
+	{
+		const FCortexCommandResult Result = FCortexEditorPIEOps::StartPIE(
+			*PIEState,
+			MakeCortexPIEGenerationStartParams(CortexPIEGenerationModeNewWindow),
+			MakeCapture(StartCapture));
+		TestTrue(TEXT("the Cortex start is deferred"), Result.bIsDeferred);
+		TestEqual(TEXT("a Cortex start vetoes the background throttle from admission"),
+			CortexCountEditorCPUThrottleVetoes(), *BaselineVetoes + 1);
+	});
+	AddCortexPIEGenerationWaitForCapture(this, StartCapture, TEXT("the Cortex start's success callback"));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexPIEGenerationWaitForPlaying(this));
+	AddCortexPIEGenerationStep([this, PIEState, BaselineVetoes, StartCapture, StopCapture, MakeCapture]()
+	{
+		TestTrue(TEXT("the Cortex start succeeds"), StartCapture->Last.bSuccess);
+		TestEqual(TEXT("a playing Cortex session vetoes the background throttle"),
+			CortexCountEditorCPUThrottleVetoes(), *BaselineVetoes + 1);
+		const FCortexCommandResult Result = FCortexEditorPIEOps::StopPIE(*PIEState, MakeCapture(StopCapture));
+		TestTrue(TEXT("the Cortex stop is deferred"), Result.bIsDeferred);
+	});
+	AddCortexPIEGenerationWaitForCapture(this, StopCapture, TEXT("the Cortex stop's success callback"));
+	AddCortexPIEGenerationStep([this, PIEState, BaselineVetoes, StopCapture]()
+	{
+		TestTrue(TEXT("the Cortex stop succeeds"), StopCapture->Last.bSuccess);
+		TestEqual(TEXT("stop_pie releases the throttle veto"),
+			CortexCountEditorCPUThrottleVetoes(), *BaselineVetoes);
+	});
+	AddCortexPIEGenerationTeardown(this, TEXT("stop_pie session"), ReadOperationState);
+
+	// --- A Cortex-started session ended by the engine (toolbar stop) releases it too -----------
+	AddCortexPIEGenerationStep([this, PIEState, SecondStartCapture, MakeCapture]()
+	{
+		const FCortexCommandResult Result = FCortexEditorPIEOps::StartPIE(
+			*PIEState,
+			MakeCortexPIEGenerationStartParams(CortexPIEGenerationModeNewWindow),
+			MakeCapture(SecondStartCapture));
+		TestTrue(TEXT("the second Cortex start is deferred"), Result.bIsDeferred);
+	});
+	AddCortexPIEGenerationWaitForCapture(this, SecondStartCapture, TEXT("the second Cortex start's success callback"));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexPIEGenerationWaitForPlaying(this));
+	AddCortexPIEGenerationStep([this, BaselineVetoes]()
+	{
+		TestEqual(TEXT("the second Cortex session vetoes the background throttle"),
+			CortexCountEditorCPUThrottleVetoes(), *BaselineVetoes + 1);
+	});
+	// The teardown ends the session through the engine (RequestEndPlayMap), as a toolbar stop does.
+	AddCortexPIEGenerationTeardown(this, TEXT("engine-ended Cortex session"), ReadOperationState,
+		[this, BaselineVetoes]()
+		{
+			TestEqual(TEXT("an engine-ended Cortex session releases the throttle veto"),
+				CortexCountEditorCPUThrottleVetoes(), *BaselineVetoes);
+		});
 
 	return true;
 }

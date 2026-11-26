@@ -84,6 +84,18 @@ void FCortexEditorPIEState::SetState(ECortexPIEState NewState)
 	UE_LOG(LogCortexEditor, Log, TEXT("PIE state: %s -> %s"),
 		*StateToString(State), *StateToString(NewState));
 	State = NewState;
+	if (State == ECortexPIEState::Stopped)
+	{
+		CPUThrottleBypass.Reset();
+	}
+}
+
+void FCortexEditorPIEState::HoldCPUThrottleBypass()
+{
+	if (!CPUThrottleBypass.IsValid())
+	{
+		CPUThrottleBypass = MakeUnique<FCortexEditorCPUThrottleBypassLease>();
+	}
 }
 
 bool FCortexEditorPIEState::IsInTransition() const

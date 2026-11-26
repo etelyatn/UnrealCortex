@@ -3,6 +3,7 @@
 #include "Application/SlateApplicationBase.h"
 #include "Camera/PlayerCameraManager.h"
 #include "CortexCommandRouter.h"
+#include "CortexEditorCPUThrottleBypass.h"
 #include "CortexEditorPhysicalInputCapture.h"
 #include "CortexEditorPhysicalInputDispatch.h"
 #include "CortexEditorPhysicalInputGuards.h"
@@ -423,6 +424,7 @@ bool FCortexEditorPhysicalInputSession::TickInternal(float DeltaTime)
 		if (bOwnedTerminationResolved)
 		{
 			OwnedState = EOwnedState::None;
+			CPUThrottleBypass.Reset();
 			TickerHandle.Reset();
 			return false; // Teardown observed; stop the minimal observer.
 		}
@@ -698,6 +700,7 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BindTarget(UWorld& World
 	BoundPawnClass = ResolvedBinding.Pawn.Get()->GetClass();
 	bBound = true;
 	bOwnsPIE = false;
+	CPUThrottleBypass.Reset();
 	++Generation;
 	AttachCaptureToBinding();
 	return MakeSuccessResult();
@@ -958,6 +961,7 @@ void FCortexEditorPhysicalInputSession::Shutdown()
 	{
 		// Resolved (or never owned): no further teardown work and no ticker.
 		OwnedState = EOwnedState::None;
+		CPUThrottleBypass.Reset();
 		RemoveTicker();
 	}
 }

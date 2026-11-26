@@ -4,6 +4,7 @@
 
 #include "CortexEditorPhysicalInputSession.h"
 
+#include "CortexEditorCPUThrottleBypass.h"
 #include "CortexEditorModule.h"
 #include "CortexEditorPhysicalInputResults.h"
 #include "Editor.h"
@@ -985,6 +986,10 @@ FCortexCommandResult FCortexEditorPhysicalInputSession::BeginOwnedPIE(
 	++Generation;
 
 	EnsureTicker();
+	if (!CPUThrottleBypass.IsValid())
+	{
+		CPUThrottleBypass = MakeUnique<FCortexEditorCPUThrottleBypassLease>();
+	}
 
 	// Queue the request through the public engine API. Stock builds expose no per-request teardown
 	// authority, so the owned end uses the aggregate end; the exact queued copy is fingerprinted
