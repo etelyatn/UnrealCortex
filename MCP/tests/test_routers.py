@@ -882,6 +882,7 @@ def test_dispatch_timeout_is_the_long_window_for_whole_project_scans(qualified):
         ({"timeout_seconds": float("nan")}, 90.0),
         ({"timeout_seconds": True}, 90.0),
         ({"timeout_seconds": "600"}, 90.0),
+        ({"timeout_seconds": -100}, 90.0),
     ],
 )
 def test_sample_runtime_pose_receive_window_covers_its_real_time_budget(params, expected_timeout):

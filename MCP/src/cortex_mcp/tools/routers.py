@@ -88,11 +88,12 @@ def _dispatch_timeout(qualified: str, params: dict) -> float | None:
 
 
 def _requested_seconds(requested: Any, default: float) -> float:
-    """A caller-requested deferred budget, or the command default when it is not a finite number."""
+    """A caller-requested deferred budget, or the command default when it is not a finite non-negative number."""
     if (
         isinstance(requested, bool)
         or not isinstance(requested, (int, float))
         or not math.isfinite(requested)
+        or requested < 0
     ):
         return default
     return float(requested)

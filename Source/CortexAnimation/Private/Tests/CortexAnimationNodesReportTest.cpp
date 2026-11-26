@@ -60,11 +60,13 @@ bool FCortexAnimationNodesReportTest::RunTest(const FString& Parameters)
 		FFixtureGuard Guard(AnimBlueprint);
 		UAnimGraphNode_SequencePlayer* Bound = AddSequencePlayerNode(AnimBlueprint);
 		UAnimGraphNode_SequencePlayer* Unconnected = AddSequencePlayerNode(AnimBlueprint);
-		if (!TestTrue(TEXT("sequence players"), Bound != nullptr && Unconnected != nullptr))
+		UAnimGraphNode_SequencePlayer* Isolated = AddSequencePlayerNode(AnimBlueprint);
+		if (!TestTrue(TEXT("sequence players"), Bound != nullptr && Unconnected != nullptr && Isolated != nullptr))
 		{
 			return false;
 		}
 		TestTrue(TEXT("PlayRate binds to NativeSpeed"), BindPropertyByReflection(Bound, TEXT("PlayRate"), { TEXT("NativeSpeed") }));
+		TestTrue(TEXT("the isolated player's PlayRate binds too"), BindPropertyByReflection(Isolated, TEXT("PlayRate"), { TEXT("NativeSpeed") }));
 		TestTrue(TEXT("the bound player feeds the result"), ConnectToResult(AnimBlueprint, Bound));
 		CompileAndAssertClean(*this, AnimBlueprint);
 		TestEqual(TEXT("engine oracle: a bound input compiles to the fast path"),
@@ -110,6 +112,15 @@ bool FCortexAnimationNodesReportTest::RunTest(const FString& Parameters)
 				FString(TEXT("no_properties")));
 			TestTrue(TEXT("fast_path is null without dynamic inputs"), UnconnectedEntry->HasTypedField<EJson::Null>(TEXT("fast_path")));
 		}
+
+		// Bound but feeding no output pose: the compiler prunes it, so a fresh compile leaves it without a verdict.
+		const TSharedPtr<FJsonObject> IsolatedEntry = NodeEntry(Info, Isolated);
+		if (TestNotNull(TEXT("the isolated node is listed"), IsolatedEntry.Get()))
+		{
+			TestEqual(TEXT("a pruned node with a binding is unreachable, not uncompiled"), IsolatedEntry->GetStringField(TEXT("blueprint_usage")),
+				FString(TEXT("unreachable")));
+			TestTrue(TEXT("fast_path is null for an unreachable node"), IsolatedEntry->HasTypedField<EJson::Null>(TEXT("fast_path")));
+		}
 	}
 
 	// ── PlayRate linked to a function call (Blueprint thunk): not_compiled before compile, uses_blueprint after ──
@@ -127,6 +138,9 @@ bool FCortexAnimationNodesReportTest::RunTest(const FString& Parameters)
 		}
 		UEdGraphNode* Call = LinkPlayRateToCall(*this, AnimBlueprint, Linked);
 		TestTrue(TEXT("the linked player feeds the result"), ConnectToResult(AnimBlueprint, Linked));
+		// An editor edit marks the Blueprint modified; the fixture helpers do not.
+		FBlueprintEditorUtils::MarkBlueprintAsModified(AnimBlueprint);
+		TestNotEqual(TEXT("the edited Blueprint is not up to date"), static_cast<int32>(AnimBlueprint->Status), static_cast<int32>(BS_UpToDate));
 
 		const FCortexCommandResult Before = NodesInfo(Router, AnimBlueprint);
 		const TSharedPtr<FJsonObject> BeforeEntry = NodeEntry(Before, Linked);

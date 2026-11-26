@@ -30,8 +30,9 @@ public:
 
 	/**
 	 * Completes a deferred command by polling on the core ticker every IntervalSeconds (0: every frame) while World remains
-	 * the active PIE world. Paused frames are skipped. The first result Poll returns answers the command; if PIE
-	 * ends or is replaced first, the command answers PIE_TERMINATED "PIE terminated during {OperationLabel}".
+	 * the active PIE world. Paused frames are skipped unless bPollWhilePaused (a poll with its own real-time budget must keep
+	 * answering while the game is paused). The first result Poll returns answers the command; if PIE ends or is replaced
+	 * first, the command answers PIE_TERMINATED "PIE terminated during {OperationLabel}".
 	 * Returns the deferred result whose transport deadline covers OperationSeconds plus a grace period.
 	 */
 	static FCortexCommandResult StartDeferredPIEPoll(
@@ -40,5 +41,6 @@ public:
 		double OperationSeconds,
 		const FString& OperationLabel,
 		FDeferredResponseCallback DeferredCallback,
-		FPIEPoll Poll);
+		FPIEPoll Poll,
+		bool bPollWhilePaused = false);
 };

@@ -33,7 +33,7 @@ Out of scope: playback control, writing poses, sampling non-PIE worlds, per-bind
 | `properties` | Optional, ≤32 anim-instance property names; unknown `PROPERTY_NOT_FOUND`; requested without an anim instance `INVALID_OPERATION`. |
 | `timeout_seconds` | Real-time budget 1-1800, default 60. |
 
-No PIE: `PIE_NOT_ACTIVE`. All validation happens before deferral. The first sample is taken on the first frame after the call, then every `interval_seconds` of game time measured from that frame (one sample per frame at most; actual `game_time` is reported). Paused frames are skipped.
+No PIE: `PIE_NOT_ACTIVE`. All validation happens before deferral. The first sample is taken on the first frame after the call; each later sample waits until at least `interval_seconds` of game time have passed since the previous one (one sample per frame at most, so a frame hitch never bunches samples; actual `game_time` is reported). Paused frames take no sample, but the poll keeps running while paused so the real-time `timeout_seconds` still answers with the samples taken (review finding, 2026-11-26).
 
 Response: `world`, `actor`, `actor_class`, `mesh_component`, `skeletal_mesh`, `anim_instance_class` (or null), `space`, `interval_seconds`, `sample_count` (requested), `completed`, `stop_reason` (`completed | timeout | target_destroyed`; a stop keeps the samples taken), `samples[]`: `index`, `game_time`, `time_dilation`, `recently_rendered`, `bones` (object keyed by bone: `translation {x,y,z}`, `rotation {pitch,yaw,roll}`, `scale {x,y,z}`; `delta_from_ref` adds `angle_degrees`), `properties` (object keyed by name, values as `FJsonObjectConverter`).
 
@@ -43,9 +43,9 @@ PIE ending mid-run: `PIE_TERMINATED` (the shared poll contract). The MCP router 
 
 ## Contract: `get_animbp_info include:["nodes"]`
 
-One entry per anim node (graph then node order, `binding_limit` bounded, standard `count/returned/truncated/items`): `node_id` (the name `graph.get_node_settings` takes), `node_guid`, `node_class`, `graph_guid`, `graph_name`, `node_struct`, `blueprint_usage` (`no_properties | does_not_use_blueprint | uses_blueprint | not_compiled`), `fast_path` (true for `does_not_use_blueprint`, false for `uses_blueprint`, null otherwise), `inputs[]` per non-pose input data pin: `pin`, `hidden`, `source` (`bound` when `HasBinding(pin)`, else `linked` with `linked_to[] {node_id, node_guid, node_class, pin_name}` (the `property_access` link shape plus `node_id`), else `unconnected` with `default_value`).
+One entry per anim node (graph then node order, `binding_limit` bounded, standard `count/returned/truncated/items`): `node_id` (the name `graph.get_node_settings` takes), `node_guid`, `node_class`, `graph_guid`, `graph_name`, `node_struct`, `blueprint_usage` (`no_properties | does_not_use_blueprint | uses_blueprint | not_compiled | unreachable`), `fast_path` (true for `does_not_use_blueprint`, false for `uses_blueprint`, null otherwise), `inputs[]` per non-pose input data pin: `pin`, `hidden`, `source` (`bound` when `HasBinding(pin)`, else `linked` with `linked_to[] {node_id, node_guid, node_class, pin_name}` (the `property_access` link shape plus `node_id`), else `unconnected` with `default_value`).
 
-`not_compiled` is reported when the engine value is `NoProperties` but the node has a linked or bound input; compile the Anim Blueprint to obtain the real value.
+The engine value `NoProperties` on a node with a linked or bound input has two causes: the Blueprint changed since its last compile (`Status` not up to date) → `not_compiled`, compile for the real value; or the compiler pruned the node because it feeds no output pose (`FAnimBlueprintCompilerContext` resets every node, then `PruneIsolatedAnimationNodes`) → `unreachable`, the node never runs and recompiling does not change it.
 
 ## Selected design
 

@@ -59,14 +59,15 @@ FCortexCommandResult FCortexPIEUtils::StartDeferredPIEPoll(
 	const double OperationSeconds,
 	const FString& OperationLabel,
 	FDeferredResponseCallback DeferredCallback,
-	FPIEPoll Poll)
+	FPIEPoll Poll,
+	const bool bPollWhilePaused)
 {
 	// The core ticker keeps running after PIE teardown destroys the world and its timer manager.
 	constexpr double TransportGraceSeconds = 5.0;
 
 	FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateLambda(
-			[WeakWorld = TWeakObjectPtr<UWorld>(World), OperationLabel, Callback = MoveTemp(DeferredCallback), Poll = MoveTemp(Poll)](float DeltaTime) mutable
+			[WeakWorld = TWeakObjectPtr<UWorld>(World), OperationLabel, Callback = MoveTemp(DeferredCallback), Poll = MoveTemp(Poll), bPollWhilePaused](float DeltaTime) mutable
 			{
 				(void)DeltaTime;
 				UWorld* PollWorld = WeakWorld.Get();
@@ -78,7 +79,7 @@ FCortexCommandResult FCortexPIEUtils::StartDeferredPIEPoll(
 					return false;
 				}
 
-				if (PollWorld->IsPaused())
+				if (!bPollWhilePaused && PollWorld->IsPaused())
 				{
 					return true;
 				}

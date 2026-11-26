@@ -312,16 +312,19 @@ TOptional<FCortexCommandResult> FCortexAnimPoseSampler::Step(UWorld& World, cons
 	{
 		return Finish(TEXT("timeout"));
 	}
-
-	const double Now = World.GetTimeSeconds();
-	if (Samples.Num() == 0)
-	{
-		FirstSampleGameTime = Now;
-	}
-	else if (Now + ScheduleToleranceSeconds < FirstSampleGameTime + Samples.Num() * Request.IntervalSeconds)
+	// Paused frames take no sample, but the real-time budget above still answers.
+	if (World.IsPaused())
 	{
 		return NullOpt;
 	}
+
+	// Each sample waits a full interval after the previous one, so a hitch never bunches the next samples together.
+	const double Now = World.GetTimeSeconds();
+	if (Samples.Num() > 0 && Now + ScheduleToleranceSeconds < NextSampleGameTime)
+	{
+		return NullOpt;
+	}
+	NextSampleGameTime = Now + Request.IntervalSeconds;
 
 	TakeSample(World, *Mesh);
 	if (Samples.Num() >= Request.SampleCount)
@@ -514,5 +517,5 @@ FCortexCommandResult FCortexAnimRuntimeOps::SampleRuntimePose(const TSharedPtr<F
 		[Sampler](UWorld& PIEWorld) -> TOptional<FCortexCommandResult>
 		{
 			return Sampler->Step(PIEWorld, FPlatformTime::Seconds());
-		});
+		}, /*bPollWhilePaused=*/true);
 }

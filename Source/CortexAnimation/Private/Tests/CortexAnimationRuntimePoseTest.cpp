@@ -10,6 +10,7 @@
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "GameFramework/PlayerState.h"
 #include "Engine/Engine.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
@@ -394,7 +395,34 @@ bool FCortexAnimationRuntimePoseGameTimeTest::RunTest(const FString& Parameters)
 	// 3 intervals of 0.02 s at 0.01 s frames: 1 + 3*2 = 7 frames undilated; at 0.5 dilation 1 + 3*4 = 13.
 	TestEqual(TEXT("undilated sampling takes seven frames"), FramesByDilation[0], 7);
 	TestEqual(TEXT("half-speed sampling takes thirteen frames"), FramesByDilation[1], 13);
+
+	// ── A frame hitch jumps past several interval points: the next sample still waits a full interval ──
 	Fixture.World->GetWorldSettings()->TimeDilation = 1.0f;
+	FCortexAnimPoseRequest HitchRequest;
+	if (!TestTrue(TEXT("the hitch request validates"),
+		Parse(Fixture.World, Params(Fixture.Actor->GetName(), { TEXT("pelvis") }, TEXT("local"), 3, 0.1), HitchRequest).bSuccess))
+	{
+		return false;
+	}
+	FCortexAnimPoseSampler Hitch(HitchRequest, 0.0);
+	Fixture.Tick();
+	TestFalse(TEXT("the first frame takes the first sample"), Hitch.Step(*Fixture.World, 0.0).IsSet());
+	Fixture.Tick(0.35f);
+	TestFalse(TEXT("the hitch frame takes the second sample"), Hitch.Step(*Fixture.World, 0.0).IsSet());
+	Fixture.Tick();
+	TestFalse(TEXT("one frame after the hitch is too early for the third sample"), Hitch.Step(*Fixture.World, 0.0).IsSet());
+	int32 HitchFrames = 0;
+	TOptional<FCortexCommandResult> HitchResult = Run(Fixture, Hitch, 50, HitchFrames);
+	if (TestTrue(TEXT("the hitch run answers"), HitchResult.IsSet() && HitchResult->bSuccess))
+	{
+		const TArray<TSharedPtr<FJsonObject>> HitchSamples = Samples(*HitchResult);
+		TestEqual(TEXT("three samples are taken"), HitchSamples.Num(), 3);
+		for (int32 Index = 1; Index < HitchSamples.Num(); ++Index)
+		{
+			const double Spacing = HitchSamples[Index]->GetNumberField(TEXT("game_time")) - HitchSamples[Index - 1]->GetNumberField(TEXT("game_time"));
+			TestTrue(*FString::Printf(TEXT("after a hitch samples stay at least interval_seconds apart (%.4f)"), Spacing), Spacing >= 0.1 - 1.0e-4);
+		}
+	}
 	return true;
 }
 
@@ -441,6 +469,29 @@ bool FCortexAnimationRuntimePoseLifecycleTest::RunTest(const FString& Parameters
 		TestFalse(TEXT("a timed-out run is not complete"), TimedOut->Data->GetBoolField(TEXT("completed")));
 		TestEqual(TEXT("the stop reason is timeout"), TimedOut->Data->GetStringField(TEXT("stop_reason")), FString(TEXT("timeout")));
 		TestEqual(TEXT("the samples taken before the budget ran out are kept"), Samples(*TimedOut).Num(), 2);
+	}
+
+	// ── Paused: no samples while the world is paused, and the real-time budget still answers ──
+	FCortexAnimPoseRequest PausedRequest;
+	if (!TestTrue(TEXT("the paused request validates"), Parse(Fixture.World, TimeoutParams, PausedRequest).bSuccess))
+	{
+		return false;
+	}
+	FCortexAnimPoseSampler PausedSampler(PausedRequest, 200.0);
+	Fixture.Tick();
+	TestFalse(TEXT("an unpaused step samples"), PausedSampler.Step(*Fixture.World, 201.0).IsSet());
+	APlayerState* Pauser = Fixture.World->SpawnActor<APlayerState>();
+	Fixture.World->GetWorldSettings()->SetPauserPlayerState(Pauser);
+	TestTrue(TEXT("the world is paused"), Fixture.World->IsPaused());
+	Fixture.Tick();
+	TestFalse(TEXT("a paused step inside the budget waits"), PausedSampler.Step(*Fixture.World, 202.0).IsSet());
+	Fixture.Tick();
+	TOptional<FCortexCommandResult> PausedOut = PausedSampler.Step(*Fixture.World, 206.0);
+	Fixture.World->GetWorldSettings()->SetPauserPlayerState(nullptr);
+	if (TestTrue(TEXT("a paused step past the budget answers"), PausedOut.IsSet() && PausedOut->bSuccess && PausedOut->Data.IsValid()))
+	{
+		TestEqual(TEXT("the paused run stops on timeout"), PausedOut->Data->GetStringField(TEXT("stop_reason")), FString(TEXT("timeout")));
+		TestEqual(TEXT("no sample is taken while paused"), Samples(*PausedOut).Num(), 1);
 	}
 
 	// ── Target destroyed mid-run ──

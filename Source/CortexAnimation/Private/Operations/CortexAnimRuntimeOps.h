@@ -53,7 +53,7 @@ private:
 
 	FCortexAnimPoseRequest Request;
 	double StartRealSeconds = 0.0;
-	double FirstSampleGameTime = 0.0;
+	double NextSampleGameTime = 0.0;
 	TArray<TSharedPtr<FJsonValue>> Samples;
 	/** Identity captured at validation, so a stop after the target is destroyed still names it. */
 	TSharedPtr<FJsonObject> Header;

@@ -426,6 +426,7 @@ bool FCortexAnimBindingReport::AppendNodes(UAnimBlueprint* AnimBlueprint, const 
 
 	TArray<UAnimGraphNode_Base*> Nodes;
 	CollectAnimNodes(AnimBlueprint, Nodes);
+	const bool bUpToDate = AnimBlueprint->Status == BS_UpToDate || AnimBlueprint->Status == BS_UpToDateWithWarnings;
 
 	TArray<TSharedPtr<FJsonValue>> Entries;
 	for (const UAnimGraphNode_Base* Node : Nodes)
@@ -475,7 +476,9 @@ bool FCortexAnimBindingReport::AppendNodes(UAnimBlueprint* AnimBlueprint, const 
 			Inputs.Add(MakeShared<FJsonValueObject>(Input));
 		}
 
-		// BlueprintUsage is transient and only the compiler sets it: NoProperties on a node with dynamic inputs means no compile yet.
+		// BlueprintUsage is transient and only the compiler sets it, for the nodes it keeps. NoProperties on a node with dynamic
+		// inputs means the Blueprint changed since its last compile, or (when it is up to date) the compiler pruned the node
+		// because it feeds no output pose.
 		FString Usage;
 		TSharedPtr<FJsonValue> FastPath = MakeShared<FJsonValueNull>();
 		switch (Node->BlueprintUsage)
@@ -490,7 +493,7 @@ bool FCortexAnimBindingReport::AppendNodes(UAnimBlueprint* AnimBlueprint, const 
 			break;
 		case EBlueprintUsage::NoProperties:
 		default:
-			Usage = bHasDynamicInput ? TEXT("not_compiled") : TEXT("no_properties");
+			Usage = !bHasDynamicInput ? TEXT("no_properties") : (bUpToDate ? TEXT("unreachable") : TEXT("not_compiled"));
 			break;
 		}
 
