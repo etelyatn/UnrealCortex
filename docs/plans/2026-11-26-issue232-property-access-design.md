@@ -49,14 +49,16 @@ path and the fields by reflection.
     before any segment reaches it.
   - `PropertyAccessEditor` feature unavailable → `INVALID_OPERATION`.
   - Resolve against `SkeletonGeneratedClass` with the per-segment callback form. Refused (`INVALID_FIELD`): an index on
-    a getter (the compiler expands the whole return value and never indexes it), an index on a non-array property, a
+    a getter (the compiler expands the whole return value and never indexes it), an index on a non-array property, an
+    index outside a fixed-size C array (the runtime reads `Offset + ElementSize * N` with no bounds check), a
     member or getter denied by the editor permission lists (`UPersonaOptions::IsAllowedProperty`,
     `FBlueprintActionDatabase::IsFunctionAllowed(..., Property)` — the library compiler applies them when Anim Blueprint
     validation is on and turns the failure into a compile *warning*, leaving an unpopulated cache), and a leaf whose pin
     type is missing or wildcard.
   - A failing path names the segment that blocks it: the first failing prefix, or, when the previous segment is a value
     without members (`["bIsDead", "Member"]`), that segment.
-- Target graph: macro graphs are refused (`INVALID_OPERATION`) in `add_node` and `apply_patch` preflight. The Anim
+- Target graph: macro graphs are refused (`INVALID_OPERATION`) in `add_node`, `apply_patch` preflight and contextual
+  `describe_node` with a target. The Anim
   Blueprint compiler creates cached-copy variables only for ubergraph, function and interface graphs; a node inlined from
   a macro with a non-thread-safe path reaches `check(!bRequiresCachedVariable)` in `ExpandNode`.
 - `ApplyNodeConstructionParams`: writes `Path` through its `FArrayProperty` (inner `FStrProperty` checked). Nothing else:
@@ -104,7 +106,7 @@ the engine parser. `text_path` is the node's stored display path. `display_name`
 
 | Test | Proves |
 |---|---|
-| `Describe` | `describe_node PropertyAccess` and the canonical class path are supported with required `path`; asset-free describe with params is family-only without a probe (even for a malformed path); contextual describe returns a typed `Value` pin without adding nodes or dirtying the package |
+| `Describe` | `describe_node PropertyAccess` and the canonical class path are supported with required `path`; asset-free describe with params is family-only without a probe (even for a malformed path); contextual describe returns a typed `Value` pin without adding nodes or dirtying the package; a macro target is refused |
 | `AddAndRead` | `add_node` with a member bool path → bool `Value` pin, `property_access` thread-safe; `GetOwningActor.bHidden` → not thread-safe; `get_subgraph` (compact and verbose) and `search_nodes` return the path |
-| `Refusals` | Actor Blueprint, child Anim Blueprint, macro graph, missing/empty/non-string/malformed (`bIsDead[`, `bIsDead[x]`) path, unknown segment (named), member of a scalar (names the scalar), index on a non-array, indexed getter, non-getter function; no node added |
+| `Refusals` | Actor Blueprint, child Anim Blueprint, macro graph, missing/empty/non-string/malformed (`bIsDead[`, `bIsDead[x]`) path, unknown segment (named), member of a scalar (names the scalar), index on a non-array, indexed getter, fixed-size array index out of range (`FixedValues[2]` on a test-only native parent with `float FixedValues[2]`; `FixedValues[1]` accepted as a `real` pin), non-getter function; no node added |
 | `Patch` | preflight refuses an unknown path and a macro target; `apply_patch` creates a thread-safe access (`bIsDead`, no cache) and the issue's owner read (`GetOwningActor.bHidden` in a thread-safe function, cached copy generated on the class), each wired to a `VariableSet`, compiled with no warnings, readback `matched` |

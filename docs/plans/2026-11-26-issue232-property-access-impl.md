@@ -17,7 +17,7 @@ Design: [2026-11-26-issue232-property-access-design.md](2026-11-26-issue232-prop
 
 ## Tests
 
-`Source/CortexGraph/Private/Tests/CortexGraphPropertyAccessTest.cpp` (`Cortex.Graph.PropertyAccess.*`): see the design's test table.
+`Source/CortexGraph/Private/Tests/CortexGraphPropertyAccessTest.cpp` (`Cortex.Graph.PropertyAccess.*`) with the test-only native parent `UCortexGraphPropertyAccessAnimInstance` (`CortexGraphPropertyAccessTestTypes.h`, a `float FixedValues[2]` member): see the design's test table.
 
 ## Behavior visible to callers
 
