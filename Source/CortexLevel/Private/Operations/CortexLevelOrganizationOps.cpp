@@ -132,7 +132,7 @@ namespace
     FCortexBatchPreflightResult PreflightLevelOrganizationActor(const FCortexBatchMutationItem& Item)
     {
         FCortexCommandResult Error;
-        UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+        UWorld* World = FCortexLevelUtils::ResolveWorld(Item.Params, Error);
         if (!World)
         {
             return FCortexBatchPreflightResult::Error(Error.ErrorCode, Error.ErrorMessage, Error.ErrorDetails);
@@ -186,6 +186,11 @@ FCortexCommandResult FCortexLevelOrganizationOps::AttachActor(const TSharedPtr<F
         {
             return ParseError;
         }
+        FCortexCommandResult WorldError;
+        if (!FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request, WorldError))
+        {
+            return WorldError;
+        }
 
         return MakeLevelOrganizationBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -210,7 +215,7 @@ FCortexCommandResult FCortexLevelOrganizationOps::AttachActor(const TSharedPtr<F
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -231,7 +236,11 @@ FCortexCommandResult FCortexLevelOrganizationOps::AttachActor(const TSharedPtr<F
     FString Socket;
     Params->TryGetStringField(TEXT("socket"), Socket);
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Attach Actor")));
+    FCortexLevelPIETransactionScope PIEScope(World);
+
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Attach Actor")),
+        FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
     Actor->AttachToActor(Parent, FAttachmentTransformRules::KeepWorldTransform, FName(*Socket));
 
@@ -252,6 +261,11 @@ FCortexCommandResult FCortexLevelOrganizationOps::DetachActor(const TSharedPtr<F
         {
             return ParseError;
         }
+        FCortexCommandResult WorldError;
+        if (!FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request, WorldError))
+        {
+            return WorldError;
+        }
 
         return MakeLevelOrganizationBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -271,7 +285,7 @@ FCortexCommandResult FCortexLevelOrganizationOps::DetachActor(const TSharedPtr<F
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -283,7 +297,11 @@ FCortexCommandResult FCortexLevelOrganizationOps::DetachActor(const TSharedPtr<F
         return Error;
     }
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Detach Actor")));
+    FCortexLevelPIETransactionScope PIEScope(World);
+
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Detach Actor")),
+        FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
     Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 
@@ -302,6 +320,11 @@ FCortexCommandResult FCortexLevelOrganizationOps::SetTags(const TSharedPtr<FJson
         if (!FCortexBatchMutation::ParseRequest(Params, TEXT("actor"), Request, ParseError))
         {
             return ParseError;
+        }
+        FCortexCommandResult WorldError;
+        if (!FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request, WorldError))
+        {
+            return WorldError;
         }
 
         return MakeLevelOrganizationBatchCommandResult(FCortexBatchMutation::Run(
@@ -328,7 +351,7 @@ FCortexCommandResult FCortexLevelOrganizationOps::SetTags(const TSharedPtr<FJson
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -346,7 +369,11 @@ FCortexCommandResult FCortexLevelOrganizationOps::SetTags(const TSharedPtr<FJson
         Tags.Add(FName(*TagValue->AsString()));
     }
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Tags")));
+    FCortexLevelPIETransactionScope PIEScope(World);
+
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Set Tags")),
+        FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
     Actor->Tags = Tags;
 
@@ -372,6 +399,11 @@ FCortexCommandResult FCortexLevelOrganizationOps::SetFolder(const TSharedPtr<FJs
         {
             return ParseError;
         }
+        FCortexCommandResult WorldError;
+        if (!FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request, WorldError))
+        {
+            return WorldError;
+        }
 
         return MakeLevelOrganizationBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -393,7 +425,7 @@ FCortexCommandResult FCortexLevelOrganizationOps::SetFolder(const TSharedPtr<FJs
     Params->TryGetStringField(TEXT("folder"), Folder);
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -405,7 +437,11 @@ FCortexCommandResult FCortexLevelOrganizationOps::SetFolder(const TSharedPtr<FJs
         return Error;
     }
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Folder")));
+    FCortexLevelPIETransactionScope PIEScope(World);
+
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Set Folder")),
+        FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
     Actor->SetFolderPath(FName(*Folder));
 

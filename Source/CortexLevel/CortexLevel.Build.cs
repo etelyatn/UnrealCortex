@@ -18,6 +18,7 @@ public class CortexLevel : ModuleRules
             "Engine",
             "Json",
             "JsonUtilities",
+            "CortexEditor",
             "UnrealEd",
             "LevelEditor",
             "DataLayerEditor",
