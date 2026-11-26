@@ -104,8 +104,9 @@ An independent review found two issues that were fixed before merge:
   pixels differ between two camera poses, so the view change is observable.
 - Multi-client PIE is not covered: `world: "pie"` targets `GEditor->PlayWorld` and its first
   player controller.
-- `level_compose` does not accept `world`; multi-actor PIE work uses individual `level_cmd`
-  calls. The router's native `batch` is not exposed as a `core_cmd` command.
+- `level_compose` does not accept `world`; multi-actor PIE work can use
+  `core_cmd(batch_query)` with `world` on each `level.*` step (the PIE transaction scope keeps
+  the batch's editor-world undo entry) or individual `level_cmd` calls.
 - The parent CortexSandbox workspace system docs (`docs/systems/cortex-level.md`,
   `docs/systems/INDEX.md`) are updated separately in that repository; this plugin report
   covers the plugin implementation.

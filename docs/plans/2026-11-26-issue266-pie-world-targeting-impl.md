@@ -77,8 +77,10 @@ Add the `set_pie_view` declaration with required `location`/`rotation` and optio
   - `find_actors` and `get_info` see the PIE world;
   - `duplicate_actor` refuses PIE in both single and batched forms, with the batch
     failing at preflight;
-  - a PIE `set_transform` inside `core.batch` leaves no PIE objects in the editor
-    transaction buffer (`GEditor->Trans->ContainsPieObjects()` is false);
+  - a `core.batch` with an editor-world `set_transform` and a PIE `set_transform` keeps the
+    editor write journaled and commits an undo entry
+    (`IsObjectInTransactionBuffer(EditorActor)` is true and the undo transaction id changes)
+    while the PIE actor is not in the editor transaction buffer;
   - `delete_actor` removes it from PIE;
   - without `world`, spawn/delete still target the editor world while PIE runs.
 - `Cortex.Level.PIE.SetView` — latent PIE session:
