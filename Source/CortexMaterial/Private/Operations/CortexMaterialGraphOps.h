@@ -3,9 +3,6 @@
 #include "CoreMinimal.h"
 #include "CortexCommandRouter.h"
 
-class UMaterial;
-class UMaterialExpression;
-
 /** Material-specific layout constants derived from UE SGraphNode rendering.
  *  See docs/plans/2026-02-23-material-layout-sizing-design.md for derivation. */
 namespace CortexMaterialLayout
@@ -52,7 +49,4 @@ public:
 	static FCortexCommandResult AutoLayout(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult SetNodeProperty(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult GetNodePins(const TSharedPtr<FJsonObject>& Params);
-
-private:
-	static UMaterialExpression* FindExpression(UMaterial* Material, const FString& NodeId);
 };

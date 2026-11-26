@@ -159,38 +159,38 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 		FCortexCommandInfo{ TEXT("reset_parameter"), TEXT("Reset instance override to parent value") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material instance asset path"))
 			.Required(TEXT("parameter_name"), TEXT("string"), TEXT("Parameter name")),
-		FCortexCommandInfo{ TEXT("list_nodes"), TEXT("List material expression nodes") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path")),
+		FCortexCommandInfo{ TEXT("list_nodes"), TEXT("List expression nodes in a material or material function graph") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material, material function, or material function instance asset path")),
 		FCortexCommandInfo{ TEXT("get_node"), TEXT("Get node details by ID; optional properties selects editable node property names") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material, material function, or material function instance asset path"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node identifier"))
 			.Optional(TEXT("properties"), TEXT("array"), TEXT("Editable node property names to select (dotted struct paths allowed). Omitted or empty reads every editable property; unknown or non-editable names are refused.")),
-		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add expression node to material graph") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add an expression node to a material or material function graph") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material or material function asset path (function instances are read-only)"))
 			.Required(TEXT("expression_class"), TEXT("string"), TEXT("Expression class name (short names like VectorParameter accepted; alias: node_class)"))
 			.Optional(TEXT("node_class"), TEXT("string"), TEXT("Alias for expression_class"))
 			.Optional(TEXT("position"), TEXT("object"), TEXT("Optional node position")),
-		FCortexCommandInfo{ TEXT("remove_node"), TEXT("Remove expression node from material") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+		FCortexCommandInfo{ TEXT("remove_node"), TEXT("Remove an expression node from a material or material function graph") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material or material function asset path (function instances are read-only)"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node identifier")),
-		FCortexCommandInfo{ TEXT("list_connections"), TEXT("List all node connections in material") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
-			.Optional(TEXT("include_input_state"), TEXT("boolean"), TEXT("Include complete typed root-input state alongside connected edges")),
-		FCortexCommandInfo{ TEXT("connect"), TEXT("Connect nodes in material graph") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+		FCortexCommandInfo{ TEXT("list_connections"), TEXT("List all node connections in a material or material function graph") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material, material function, or material function instance asset path"))
+			.Optional(TEXT("include_input_state"), TEXT("boolean"), TEXT("Include complete typed MaterialResult input state (materials only)")),
+		FCortexCommandInfo{ TEXT("connect"), TEXT("Connect expression nodes in a material or material function graph") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material or material function asset path (function instances are read-only)"))
 			.Required(TEXT("source_node"), TEXT("string"), TEXT("Source node identifier"))
 			.Required(TEXT("source_output"), TEXT("number"), TEXT("Source output index"))
-			.Required(TEXT("target_node"), TEXT("string"), TEXT("Target node identifier"))
+			.Required(TEXT("target_node"), TEXT("string"), TEXT("Target node identifier, or MaterialResult for a material root input"))
 			.Required(TEXT("target_input"), TEXT("string"), TEXT("Target input pin name (e.g. 'BaseColor', 'A', 'Input')"))
 			.Optional(TEXT("from_node"), TEXT("string"), TEXT("Alias for source_node"))
 			.Optional(TEXT("to_node"), TEXT("string"), TEXT("Alias for target_node"))
 			.Optional(TEXT("to_input"), TEXT("string"), TEXT("Alias for target_input")),
-		FCortexCommandInfo{ TEXT("disconnect"), TEXT("Disconnect nodes in material graph") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
-			.Required(TEXT("target_node"), TEXT("string"), TEXT("Target node identifier"))
+		FCortexCommandInfo{ TEXT("disconnect"), TEXT("Disconnect an expression input or a MaterialResult input") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material or material function asset path (function instances are read-only)"))
+			.Required(TEXT("target_node"), TEXT("string"), TEXT("Target node identifier, or MaterialResult for a material root input"))
 			.Required(TEXT("target_input"), TEXT("string"), TEXT("Target input pin name (e.g. 'BaseColor', 'A', 'Input')")),
-		FCortexCommandInfo{ TEXT("set_material_input"), TEXT("Patch serialized MaterialResult input state; omitted fields preserve state; save explicitly") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+		FCortexCommandInfo{ TEXT("set_material_input"), TEXT("Patch serialized MaterialResult input state on a material; omitted fields preserve state; save explicitly") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path (material only)"))
 			.Required(TEXT("input"), TEXT("string"), TEXT("Root input name, for example OpacityMask or CustomizedUVs0"))
 			.Optional(TEXT("use_constant"), TEXT("boolean"), TEXT("Select inline constant where the Material Editor permits it"))
 			.Optional(TEXT("constant"), TEXT("any"), TEXT("Finite scalar number, color {r,g,b,a}, vector {x,y,z}, or UV {x,y}; complete objects required"))
@@ -200,18 +200,18 @@ TArray<FCortexCommandInfo> FCortexMaterialCommandHandler::GetSupportedCommands()
 			.Optional(TEXT("mask_g"), TEXT("number"), TEXT("Green channel, integer 0 or 1"))
 			.Optional(TEXT("mask_b"), TEXT("number"), TEXT("Blue channel, integer 0 or 1"))
 			.Optional(TEXT("mask_a"), TEXT("number"), TEXT("Alpha channel, integer 0 or 1")),
-		FCortexCommandInfo{ TEXT("auto_layout"), TEXT("Auto-layout material graph nodes by connection topology") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+		FCortexCommandInfo{ TEXT("auto_layout"), TEXT("Auto-layout material or material function graph nodes by connection topology") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material or material function asset path (function instances are read-only)"))
 			.Optional(TEXT("horizontal_spacing"), TEXT("number"), TEXT("Horizontal spacing between node columns; values <= 0 are ignored"))
 			.Optional(TEXT("vertical_spacing"), TEXT("number"), TEXT("Vertical spacing between nodes in a column; values <= 0 are ignored")),
-		FCortexCommandInfo{ TEXT("set_node_property"), TEXT("Set property value on material expression node") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+		FCortexCommandInfo{ TEXT("set_node_property"), TEXT("Set a property value on a material or material function expression node") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material or material function asset path (function instances are read-only)"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node identifier"))
 			.Required(TEXT("property_name"), TEXT("string"), TEXT("Expression property name (alias: property)"))
 			.Optional(TEXT("property"), TEXT("string"), TEXT("Alias for property_name"))
 			.Required(TEXT("value"), TEXT("object"), TEXT("Property value")),
-		FCortexCommandInfo{ TEXT("get_node_pins"), TEXT("Get input and output pin names for a material expression node") }
-			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material asset path"))
+		FCortexCommandInfo{ TEXT("get_node_pins"), TEXT("Get input and output pin names for an expression node in a material or material function") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Material, material function, or material function instance asset path"))
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Node identifier")),
 		FCortexCommandInfo{ TEXT("list_collections"), TEXT("List material parameter collections") }
 			.Optional(TEXT("path"), TEXT("string"), TEXT("Content path to search"))
