@@ -84,14 +84,18 @@ namespace
 
 	/**
 	 * The asset fingerprint graph.set_pin_value uses, plus a digest of the node settings: unsaved edits of a dirty asset
-	 * leave the former unchanged. The digest hashes the UTF-8 JSON of the settings (numbers at full precision).
+	 * leave the former unchanged. The digest covers the UTF-8 JSON of the settings (numbers at full precision) and the
+	 * struct's exported text (property types the JSON serializer does not represent, every static-array element).
 	 */
 	TSharedPtr<FJsonObject> CurrentFingerprint(UBlueprint* Blueprint, const UEdGraphNode* Node, const FStructProperty* NodeProperty)
 	{
 		TSharedPtr<FJsonObject> Fingerprint = MakeObjectAssetFingerprint(Blueprint, GetTypeHash(static_cast<uint32>(Blueprint->Status))).ToJson();
+		const void* NodeValue = NodeProperty->ContainerPtrToValuePtr<void>(Node);
 		FString SettingsText;
 		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&SettingsText);
-		FJsonSerializer::Serialize(SettingsJson(NodeProperty->Struct, NodeProperty->ContainerPtrToValuePtr<void>(Node)).ToSharedRef(), Writer);
+		FJsonSerializer::Serialize(SettingsJson(NodeProperty->Struct, NodeValue).ToSharedRef(), Writer);
+		SettingsText += TEXT("\n");
+		NodeProperty->Struct->ExportText(SettingsText, NodeValue, nullptr, nullptr, PPF_None, nullptr);
 		const FTCHARToUTF8 Utf8(*SettingsText);
 		FMD5 Md5;
 		Md5.Update(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
@@ -520,17 +524,19 @@ namespace
 	}
 
 	/**
-	 * Sets one value of a change record, or, when its JSON is larger than MaxChars, null plus `<field>_omitted_chars`: a
-	 * small write that replaces a large array must not produce a response too large for the MCP layer to deliver.
+	 * Sets one value of a change record, or null plus `<field>_omitted_chars` when its JSON exceeds 8192 characters or
+	 * what remains of the response budget: a small write that replaces large arrays must not produce a response too large
+	 * for the MCP layer to deliver, which would hide the applied write and its fingerprint.
 	 */
-	void SetBoundedChangeValue(const TSharedPtr<FJsonObject>& Change, const FString& Field, const TSharedPtr<FJsonValue>& Value)
+	void SetBoundedChangeValue(const TSharedPtr<FJsonObject>& Change, const FString& Field, const TSharedPtr<FJsonValue>& Value, int32& InOutBudget)
 	{
 		constexpr int32 MaxChars = 8192;
 		FString Text;
 		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Text);
 		FJsonSerializer::Serialize(Value, FString(), Writer);
-		if (Text.Len() <= MaxChars)
+		if (Text.Len() <= FMath::Min(MaxChars, InOutBudget))
 		{
+			InOutBudget -= Text.Len();
 			Change->SetField(Field, Value);
 			return;
 		}
@@ -963,19 +969,21 @@ FCortexCommandResult FCortexGraphNodeSettingsOps::SetNodeSettings(const TSharedP
 
 	// Read back from what the request leaves: the live node after an apply, the scratch copy for a preview.
 	TArray<TSharedPtr<FJsonValue>> Changes;
+	// Shared across every value, well under the MCP layer's 40000-character response limit.
+	int32 ReadbackBudget = 24000;
 	for (int32 Index = 0; Index < Paths.Num(); ++Index)
 	{
 		const TSharedPtr<FJsonValue> Requested = PathValueJson(NodeStruct, Scratch.GetStructMemory(), Paths[Index]);
 		const TSharedPtr<FJsonValue> After = bDryRun ? Requested : PathValueJson(NodeStruct, LiveValue, Paths[Index]);
 		TSharedPtr<FJsonObject> Change = MakeShared<FJsonObject>();
 		Change->SetStringField(TEXT("path"), Paths[Index]);
-		SetBoundedChangeValue(Change, TEXT("before"), BeforeValues[Index]);
-		SetBoundedChangeValue(Change, TEXT("after"), After);
+		SetBoundedChangeValue(Change, TEXT("before"), BeforeValues[Index], ReadbackBudget);
+		SetBoundedChangeValue(Change, TEXT("after"), After, ReadbackBudget);
 		if (!FJsonValue::CompareEqual(*Requested, *After))
 		{
 			// The node's own edit reaction changed the value, as it would for an edit in the details panel.
 			Change->SetBoolField(TEXT("adjusted"), true);
-			SetBoundedChangeValue(Change, TEXT("requested"), Requested);
+			SetBoundedChangeValue(Change, TEXT("requested"), Requested, ReadbackBudget);
 			ResultWarnings.Add(MakeShared<FJsonValueString>(
 				FString::Printf(TEXT("The node adjusted '%s' after the edit; 'after' is the node's value"), *Paths[Index])));
 		}
