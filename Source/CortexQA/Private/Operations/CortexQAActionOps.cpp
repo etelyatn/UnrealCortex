@@ -2,6 +2,7 @@
 
 #include "CortexCommandRouter.h"
 #include "CortexQAConditionUtils.h"
+#include "CortexPIEUtils.h"
 #include "CortexQAUtils.h"
 #include "CortexTypes.h"
 #include "Blueprint/AIBlueprintHelperLibrary.h"
@@ -140,7 +141,7 @@ FCortexCommandResult FCortexQAActionOps::Interact(const TSharedPtr<FJsonObject>&
 
     TWeakObjectPtr<APlayerController> WeakPC = PC;
     const double StartGameTime = PIEWorld->GetTimeSeconds();
-    return FCortexQAUtils::StartDeferredPIEPoll(
+    return FCortexPIEUtils::StartDeferredPIEPoll(
         PIEWorld, 0.05f, DurationSeconds, TEXT("interact hold"), MoveTemp(DeferredCallback),
         [WeakPC, InteractionKey, KeyName, DurationSeconds, StartGameTime](UWorld& World) -> TOptional<FCortexCommandResult>
         {
@@ -212,7 +213,7 @@ FCortexCommandResult FCortexQAActionOps::MoveTo(const TSharedPtr<FJsonObject>& P
 
     TWeakObjectPtr<APawn> WeakPawn = Pawn;
     double LastPollGameTime = StartGameTime;
-    return FCortexQAUtils::StartDeferredPIEPoll(
+    return FCortexPIEUtils::StartDeferredPIEPoll(
         PIEWorld, 0.1f, TimeoutSeconds, TEXT("move_to"), MoveTemp(DeferredCallback),
         [TargetLocation, AcceptanceRadius, TimeoutSeconds, StartGameTime, LastPollGameTime, WeakPawn, MovementMethod, bUseNavigation](UWorld& World) mutable -> TOptional<FCortexCommandResult>
         {
@@ -289,7 +290,7 @@ FCortexCommandResult FCortexQAActionOps::WaitFor(const TSharedPtr<FJsonObject>& 
     {
         const double StartRealTime = FPlatformTime::Seconds();
         const double ClampedTimeoutSeconds = FMath::Max(0.0, TimeoutSeconds);
-        return FCortexQAUtils::StartDeferredPIEPoll(
+        return FCortexPIEUtils::StartDeferredPIEPoll(
             PIEWorld, 0.1f, ClampedTimeoutSeconds, TEXT("wait_for delay"), MoveTemp(DeferredCallback),
             [ClampedTimeoutSeconds, StartRealTime](UWorld& World) -> TOptional<FCortexCommandResult>
             {
@@ -307,7 +308,7 @@ FCortexCommandResult FCortexQAActionOps::WaitFor(const TSharedPtr<FJsonObject>& 
 
     const double StartGameTime = PIEWorld->GetTimeSeconds();
     TSharedPtr<FJsonValue> LastActualValue;
-    return FCortexQAUtils::StartDeferredPIEPoll(
+    return FCortexPIEUtils::StartDeferredPIEPoll(
         PIEWorld, 0.1f, TimeoutSeconds, TEXT("wait_for"), MoveTemp(DeferredCallback),
         [Params, TimeoutSeconds, StartGameTime, Type, LastActualValue](UWorld& World) mutable -> TOptional<FCortexCommandResult>
         {

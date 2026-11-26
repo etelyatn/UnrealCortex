@@ -47,7 +47,10 @@ _CACHED_READ_TTL = 300
 # DataTable/DataAsset, and data.verify_type_replacement loads, compiles, diffs and optionally resaves all of them.
 # statetree.replace_node and anim.rebind_function compile (and on failure recompile) the tree or AnimBP they migrate,
 # which scales with the asset; statetree.get_runtime_state reads the running PIE world, so it gets the same window.
+# anim.sample_runtime_pose samples a PIE pose over game time and answers when done or when its own real-time
+# budget `timeout_seconds` (default 60 s) is spent.
 _WAIT_READY_DEFAULT_SECONDS = 120.0
+_SAMPLE_RUNTIME_POSE_DEFAULT_SECONDS = 60.0
 _DEFERRED_TIMEOUT_MARGIN = 30.0
 _LIVE_CODING_COMPILE_WINDOW = 1830.0
 _LONG_SYNCHRONOUS_WINDOW = 1800.0
@@ -75,15 +78,25 @@ def _dispatch_timeout(qualified: str, params: dict) -> float | None:
     if qualified in _LONG_SYNCHRONOUS_COMMANDS:
         return _LONG_SYNCHRONOUS_WINDOW
     if qualified == "editor.wait_ready":
-        requested = params.get("timeout")
-        if (
-            isinstance(requested, bool)
-            or not isinstance(requested, (int, float))
-            or not math.isfinite(requested)
-        ):
-            requested = _WAIT_READY_DEFAULT_SECONDS
-        return float(requested) + _DEFERRED_TIMEOUT_MARGIN
+        return _requested_seconds(params.get("timeout"), _WAIT_READY_DEFAULT_SECONDS) + _DEFERRED_TIMEOUT_MARGIN
+    if qualified == "anim.sample_runtime_pose":
+        return (
+            _requested_seconds(params.get("timeout_seconds"), _SAMPLE_RUNTIME_POSE_DEFAULT_SECONDS)
+            + _DEFERRED_TIMEOUT_MARGIN
+        )
     return None
+
+
+def _requested_seconds(requested: Any, default: float) -> float:
+    """A caller-requested deferred budget, or the command default when it is not a finite non-negative number."""
+    if (
+        isinstance(requested, bool)
+        or not isinstance(requested, (int, float))
+        or not math.isfinite(requested)
+        or requested < 0
+    ):
+        return default
+    return float(requested)
 
 
 _pagination_cache = PaginationCache(max_entries=16, ttl_seconds=600.0)
