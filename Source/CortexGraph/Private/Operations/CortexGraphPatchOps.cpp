@@ -1,6 +1,7 @@
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphAuthoringContext.h"
 #include "Operations/CortexGraphImplementationOps.h"
+#include "Operations/CortexGraphPropertyAccess.h"
 #include "Operations/CortexGraphInterfaceMigration.h"
 #include "Operations/CortexGraphMigrationOps.h"
 #include "Operations/CortexGraphNodeContract.h"
@@ -2213,6 +2214,7 @@ bool FCortexGraphPatchOps::Preflight(
 		if (NormalizedNode->TryGetObjectField(TEXT("params"), ParamsPtr) && ParamsPtr && ParamsPtr->IsValid()) NodeParams = *ParamsPtr;
 		if (!ValidateConstructionParamShape(NodeClass, NodeParams, OutError)) return false;
 		if (!FCortexGraphNodeContract::Validate(NodeClass, Blueprint, NodeParams, OutError)) return false;
+		if (Family == FName("PropertyAccess") && !FCortexGraphPropertyAccess::ValidateGraph(Blueprint, TargetGraph, OutError)) return false;
 		const FGuid DerivedGuid = FCortexGraphPatchOps::DeriveNodeGuid(OutPrepared.PatchId, ClientId);
 		if (const FString* OtherClientId = DerivedGuidOwners.Find(DerivedGuid))
 		{
@@ -3956,13 +3958,31 @@ bool CompareNodeSymbol(
 		return true;
 	}
 
+	if (FCortexGraphPropertyAccess::IsPropertyAccessNode(Live))
+	{
+		TArray<FString> RequestedPath;
+		FString ParseError;
+		if (!FCortexGraphPropertyAccess::ParsePathParam(Params, RequestedPath, ParseError))
+		{
+			OutFailure = FString::Printf(TEXT("planned property access path is invalid: %s"), *ParseError);
+			return false;
+		}
+		TArray<FString> NativePath;
+		FCortexGraphPropertyAccess::ReadPath(Live, NativePath);
+		// Cortex creates the Automatic call site (NAME_None); a reused node switched to another call site differs.
+		OutExpected = FString::Printf(TEXT("%s|context=None"), *FString::Join(RequestedPath, TEXT(".")));
+		OutActual = FString::Printf(TEXT("%s|context=%s"), *FString::Join(NativePath, TEXT(".")),
+			*FCortexGraphPropertyAccess::ReadContextId(Live).ToString());
+		return true;
+	}
+
 	// A selector this build cannot compare natively means the node identity was never verified:
 	// fail closed instead of reporting success.
 	if (Params.IsValid())
 	{
 		static const TCHAR* const UnverifiableSelectors[] = {
 			TEXT("function_name"), TEXT("member"), TEXT("variable_name"), TEXT("class"), TEXT("target_class"),
-			TEXT("enum_name"), TEXT("macro_path"), TEXT("delegate_name"), TEXT("timeline_name")
+			TEXT("enum_name"), TEXT("macro_path"), TEXT("delegate_name"), TEXT("timeline_name"), TEXT("path")
 		};
 		for (const TCHAR* Selector : UnverifiableSelectors)
 		{

@@ -1042,7 +1042,7 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 	{
 		TestTrue(TEXT("the published node families are the authoring families"),
 			NodesParam->Description.Contains(TEXT(
-				"Supported families: CallFunction, VariableGet, VariableSet, Self, DynamicCast, ConstructObject, Event.")));
+				"Supported families: CallFunction, VariableGet, VariableSet, Self, DynamicCast, ConstructObject, Event, PropertyAccess.")));
 		TestTrue(TEXT("the published nodes parameter declares its conditional requirement"),
 			NodesParam->Description.Contains(TEXT("Required for an authoring request")));
 	}

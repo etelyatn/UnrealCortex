@@ -1,6 +1,7 @@
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphNodeContract.h"
 #include "Operations/CortexGraphPinDefaults.h"
+#include "Operations/CortexGraphPropertyAccess.h"
 #include "Operations/CortexGraphSymbolResolver.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
@@ -938,6 +939,10 @@ FCortexCommandResult FCortexGraphNodeOps::SearchNodes(const TSharedPtr<FJsonObje
 			{
 				Entry->SetStringField(TEXT("subgraph_path"), GraphEntry.SubgraphPath);
 			}
+			if (const TSharedPtr<FJsonObject> PropertyAccess = FCortexGraphPropertyAccess::Describe(Node))
+			{
+				Entry->SetObjectField(TEXT("property_access"), PropertyAccess);
+			}
 			ResultsArray.Add(MakeShared<FJsonValueObject>(Entry));
 		}
 	}
@@ -1066,6 +1071,11 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 
 	FCortexCommandResult ContractError;
 	if (!FCortexGraphNodeContract::Validate(NodeClassName, Blueprint, NodeConstructionParams, ContractError))
+	{
+		return ContractError;
+	}
+	if (FCortexGraphPropertyAccess::IsPropertyAccessNode(NodeClass->GetDefaultObject<UEdGraphNode>())
+		&& !FCortexGraphPropertyAccess::ValidateGraph(Blueprint, Graph, ContractError))
 	{
 		return ContractError;
 	}
@@ -1216,6 +1226,10 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	Data->SetStringField(TEXT("class"), AddedNodeClass);
 	Data->SetStringField(TEXT("node_class"), AddedNodeClass);
 	Data->SetStringField(TEXT("display_name"), NewNode->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+	if (const TSharedPtr<FJsonObject> PropertyAccess = FCortexGraphPropertyAccess::Describe(NewNode))
+	{
+		Data->SetObjectField(TEXT("property_access"), PropertyAccess);
+	}
 
 	TArray<TSharedPtr<FJsonValue>> PinsArray;
 	for (UEdGraphPin* Pin : NewNode->Pins)
@@ -1278,7 +1292,8 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 	{
 		Data->SetStringField(TEXT("validation_status"), TEXT("family_only"));
 
-		if (bHasParams)
+		// A Property Access path only resolves from a real Anim Blueprint class, so it is never probed without one.
+		if (bHasParams && !FCortexGraphPropertyAccess::IsPropertyAccessNode(NodeClass ? NodeClass->GetDefaultObject<UEdGraphNode>() : nullptr))
 		{
 			// Family-only probe without asset context: for static libraries or standalone nodes
 			UBlueprint* ProbeOwner = NewObject<UBlueprint>(GetTransientPackage(), UBlueprint::StaticClass());
@@ -1829,6 +1844,11 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializeNode(const UEdGraphNode* N
 	if (Node->GetClass() == UK2Node_Tunnel::StaticClass())
 	{
 		Entry->SetBoolField(TEXT("is_tunnel_boundary"), true);
+	}
+
+	if (const TSharedPtr<FJsonObject> PropertyAccess = FCortexGraphPropertyAccess::Describe(Node))
+	{
+		Entry->SetObjectField(TEXT("property_access"), PropertyAccess);
 	}
 
 	if (bIncludePins)
