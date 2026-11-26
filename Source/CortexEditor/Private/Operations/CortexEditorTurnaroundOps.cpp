@@ -82,60 +82,11 @@ namespace CortexEditorTurnaroundPrivate
 	/** Opens each asset in its asset editor; loads from disk only after the package is known to exist. */
 	void ReopenAssets(const TArray<FString>& Requested, TArray<TSharedPtr<FJsonValue>>& OutOpened, TArray<TSharedPtr<FJsonValue>>& OutFailed)
 	{
-		UAssetEditorSubsystem* AssetEditors = GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
-
 		for (const FString& Path : Requested)
 		{
+			FString ErrorCode;
 			FString Failure;
-			FString ObjectPath = FCortexEditorUtils::NormalizeMountedContentPath(Path);
-			if (!ObjectPath.Contains(TEXT(".")))
-			{
-				ObjectPath += TEXT(".") + FPackageName::GetShortName(ObjectPath);
-			}
-			const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
-
-			// Maps are never reopened: opening one switches the editor world and may prompt to save.
-			const TCHAR* MapRefusal = TEXT("Asset is a map; maps are not reopened (it would switch the editor world)");
-			UObject* Asset = FindObject<UObject>(nullptr, *ObjectPath);
-			if (Asset && Asset->IsA<UWorld>())
-			{
-				Failure = MapRefusal;
-				Asset = nullptr;
-			}
-			else if (!Asset)
-			{
-				const IAssetRegistry* Registry = IAssetRegistry::Get();
-				const FAssetData AssetData = Registry ? Registry->GetAssetByObjectPath(FSoftObjectPath(ObjectPath)) : FAssetData();
-				if (AssetData.AssetClassPath == UWorld::StaticClass()->GetClassPathName())
-				{
-					Failure = MapRefusal;
-				}
-			}
-			if (!Asset && Failure.IsEmpty())
-			{
-				if (!FPackageName::IsValidLongPackageName(PackageName) || !FPackageName::DoesPackageExist(PackageName))
-				{
-					Failure = TEXT("Asset not found");
-				}
-				else
-				{
-					Asset = LoadObject<UObject>(nullptr, *ObjectPath);
-					if (!Asset)
-					{
-						Failure = TEXT("Asset could not be loaded");
-					}
-				}
-			}
-			if (Asset && !AssetEditors)
-			{
-				Failure = TEXT("Asset editor subsystem is unavailable");
-			}
-			else if (Asset && !AssetEditors->OpenEditorForAsset(Asset))
-			{
-				Failure = TEXT("No asset editor could be opened for this asset");
-			}
-
-			if (Failure.IsEmpty())
+			if (FCortexEditorTurnaroundOps::OpenAssetInEditor(Path, ErrorCode, Failure))
 			{
 				OutOpened.Add(MakeShared<FJsonValueString>(Path));
 			}
@@ -329,4 +280,63 @@ bool FCortexEditorTurnaroundOps::IsEditorReady(FString& OutBlocker)
 
 	OutBlocker.Reset();
 	return true;
+}
+
+UObject* FCortexEditorTurnaroundOps::OpenAssetInEditor(const FString& Path, FString& OutErrorCode, FString& OutFailure)
+{
+	FString ObjectPath = FCortexEditorUtils::NormalizeMountedContentPath(Path);
+	if (!ObjectPath.Contains(TEXT(".")))
+	{
+		ObjectPath += TEXT(".") + FPackageName::GetShortName(ObjectPath);
+	}
+	const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+
+	// Maps are never opened: opening one switches the editor world and may prompt to save.
+	const TCHAR* MapRefusal = TEXT("Asset is a map; maps are not opened (it would switch the editor world)");
+	UObject* Asset = FindObject<UObject>(nullptr, *ObjectPath);
+	bool bIsMap = Asset && Asset->IsA<UWorld>();
+	if (!Asset)
+	{
+		const IAssetRegistry* Registry = IAssetRegistry::Get();
+		const FAssetData AssetData = Registry ? Registry->GetAssetByObjectPath(FSoftObjectPath(ObjectPath)) : FAssetData();
+		bIsMap = AssetData.AssetClassPath == UWorld::StaticClass()->GetClassPathName();
+	}
+	if (bIsMap)
+	{
+		OutErrorCode = CortexErrorCodes::InvalidOperation;
+		OutFailure = MapRefusal;
+		return nullptr;
+	}
+
+	if (!Asset)
+	{
+		if (!FPackageName::IsValidLongPackageName(PackageName) || !FPackageName::DoesPackageExist(PackageName))
+		{
+			OutErrorCode = CortexErrorCodes::AssetNotFound;
+			OutFailure = TEXT("Asset not found");
+			return nullptr;
+		}
+		Asset = LoadObject<UObject>(nullptr, *ObjectPath);
+		if (!Asset)
+		{
+			OutErrorCode = CortexErrorCodes::AssetNotFound;
+			OutFailure = TEXT("Asset could not be loaded");
+			return nullptr;
+		}
+	}
+
+	UAssetEditorSubsystem* AssetEditors = GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+	if (!AssetEditors)
+	{
+		OutErrorCode = CortexErrorCodes::EditorNotAvailable;
+		OutFailure = TEXT("Asset editor subsystem is unavailable");
+		return nullptr;
+	}
+	if (!AssetEditors->OpenEditorForAsset(Asset))
+	{
+		OutErrorCode = CortexErrorCodes::EditorNotAvailable;
+		OutFailure = TEXT("No asset editor could be opened for this asset");
+		return nullptr;
+	}
+	return Asset;
 }

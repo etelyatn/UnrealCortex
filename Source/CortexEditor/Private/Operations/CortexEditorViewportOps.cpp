@@ -1,4 +1,5 @@
 #include "Operations/CortexEditorViewportOps.h"
+#include "CortexEditorModule.h"
 #include "Misc/EngineVersionComparison.h"
 #include "CortexCommandRouter.h"
 #include "Framework/Application/SlateApplication.h"
@@ -22,6 +23,16 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Framework/Docking/TabManager.h"
+#include "Layout/WidgetPath.h"
+#include "Misc/App.h"
+#include "Operations/CortexEditorTurnaroundOps.h"
+#include "Rendering/SlateRenderer.h"
+#include "GraphEditor.h"
+#include "SGraphPanel.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/SWindow.h"
 
 namespace
 {
@@ -39,6 +50,140 @@ TSharedPtr<IAssetViewport> GetActiveAssetViewport()
 	}
 
 	return LevelEditorModule->GetFirstActiveViewport();
+}
+
+/** output_path when given, otherwise a timestamped PNG under Saved/CortexScreenshots. */
+FString ResolveCaptureOutputPath(const TSharedPtr<FJsonObject>& Params, const TCHAR* DefaultPrefix)
+{
+	FString OutputPath;
+	if (Params.IsValid())
+	{
+		Params->TryGetStringField(TEXT("output_path"), OutputPath);
+	}
+	if (OutputPath.IsEmpty())
+	{
+		const FString Dir = FPaths::ProjectSavedDir() / TEXT("CortexScreenshots");
+		IFileManager::Get().MakeDirectory(*Dir, true);
+		OutputPath = Dir / FString::Printf(TEXT("%s_%s.png"), DefaultPrefix, *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+	}
+	return OutputPath;
+}
+
+/**
+ * Forces the pixels opaque (scene and Slate back buffers carry no meaningful alpha), encodes them as PNG and writes
+ * the file. Returns false with OutError set on failure.
+ */
+bool WriteOpaquePng(TArray<FColor>& Pixels, const FIntPoint Size, const FString& OutputPath, FString& OutError)
+{
+	for (FColor& Pixel : Pixels)
+	{
+		Pixel.A = 255;
+	}
+
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+	const TSharedPtr<IImageWrapper> PngWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+	if (!PngWrapper.IsValid() ||
+		!PngWrapper->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor), Size.X, Size.Y, ERGBFormat::BGRA, 8))
+	{
+		OutError = TEXT("Failed to encode PNG");
+		return false;
+	}
+
+	const TArray64<uint8>& Compressed = PngWrapper->GetCompressed();
+	if (!FFileHelper::SaveArrayToFile(Compressed, *OutputPath))
+	{
+		OutError = TEXT("Failed to write PNG file");
+		return false;
+	}
+	return true;
+}
+
+/**
+ * A graph editor positions its view over real time: it waits until its node widgets exist (a newly opened editor
+ * creates them over its first ticks), then scrolls to them with an active timer driven by frame delta time. Capture
+ * ticks Slate at roughly the editor frame rate, up to this budget, until every graph panel it shows is at rest.
+ */
+constexpr double GraphSettleBudgetSeconds = 2.0;
+constexpr float GraphSettleTickSeconds = 1.0f / 60.0f;
+
+enum class ECortexEditorPanel : uint8
+{
+	Window,
+	Editor,
+	Details,
+	Graph,
+};
+
+bool ParseEditorPanel(const FString& Name, ECortexEditorPanel& OutPanel)
+{
+	if (Name == TEXT("window"))
+	{
+		OutPanel = ECortexEditorPanel::Window;
+		return true;
+	}
+	if (Name == TEXT("editor"))
+	{
+		OutPanel = ECortexEditorPanel::Editor;
+		return true;
+	}
+	if (Name == TEXT("details"))
+	{
+		OutPanel = ECortexEditorPanel::Details;
+		return true;
+	}
+	if (Name == TEXT("graph"))
+	{
+		OutPanel = ECortexEditorPanel::Graph;
+		return true;
+	}
+	return false;
+}
+
+/** Collects widgets of Type under Root, not descending into a match. Only the live (painted) widget tree is walked. */
+void CollectWidgetsOfType(const TSharedRef<SWidget>& Root, const FName Type, TArray<TSharedRef<SWidget>>& OutWidgets)
+{
+	if (Root->GetType() == Type)
+	{
+		OutWidgets.Add(Root);
+		return;
+	}
+	FChildren* Children = Root->GetChildren();
+	if (Children == nullptr)
+	{
+		return;
+	}
+	for (int32 Index = 0; Index < Children->Num(); ++Index)
+	{
+		CollectWidgetsOfType(Children->GetChildAt(Index), Type, OutWidgets);
+	}
+}
+
+/** On-screen draw area of Widget, or 0 when it is not in a visible widget path of any window. */
+double GetVisibleWidgetArea(const TSharedRef<SWidget>& Widget)
+{
+	FWidgetPath Path;
+	if (!FSlateApplication::Get().GeneratePathToWidgetUnchecked(Widget, Path))
+	{
+		return 0.0;
+	}
+	const FVector2f Size = Path.FindArrangedWidget(Widget).Get(FArrangedWidget::GetNullWidget()).Geometry.GetDrawSize();
+	return static_cast<double>(Size.X) * static_cast<double>(Size.Y);
+}
+
+/** True while a graph editor under Widget still has a pending or running view movement. */
+bool HasMovingGraphPanel(const TSharedRef<SWidget>& Widget)
+{
+	TArray<TSharedRef<SWidget>> GraphEditors;
+	CollectWidgetsOfType(Widget, FName(TEXT("SGraphEditor")), GraphEditors);
+	for (const TSharedRef<SWidget>& GraphEditorWidget : GraphEditors)
+	{
+		const SNodePanel* Panel = StaticCastSharedRef<SGraphEditor>(GraphEditorWidget)->GetGraphPanel();
+		if (Panel != nullptr && (Panel->HasDeferredZoomDestination() || Panel->HasActiveTimers()))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 }
 
@@ -122,17 +267,7 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 			TEXT("No active editor viewport found"));
 	}
 
-	FString OutputPath;
-	if (Params.IsValid())
-	{
-		Params->TryGetStringField(TEXT("output_path"), OutputPath);
-	}
-	if (OutputPath.IsEmpty())
-	{
-		const FString Dir = FPaths::ProjectSavedDir() / TEXT("CortexScreenshots");
-		IFileManager::Get().MakeDirectory(*Dir, true);
-		OutputPath = Dir / FString::Printf(TEXT("cortex_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
-	}
+	const FString OutputPath = ResolveCaptureOutputPath(Params, TEXT("cortex"));
 
 	FViewport* ActiveViewport = Viewport->GetActiveViewport();
 	const FIntPoint Size = ActiveViewport->GetSizeXY();
@@ -167,30 +302,11 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	}
 
 	// UE viewport scene renders with alpha=0 (alpha channel is used for
-	// depth/stencil internally). Force opaque so PNG doesn't appear transparent.
-	for (FColor& Pixel : Pixels)
+	// depth/stencil internally); WriteOpaquePng forces it opaque.
+	FString WriteError;
+	if (!WriteOpaquePng(Pixels, Size, OutputPath, WriteError))
 	{
-		Pixel.A = 255;
-	}
-
-	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
-	const TSharedPtr<IImageWrapper> PngWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
-	if (!PngWrapper.IsValid() ||
-		!PngWrapper->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor), Size.X, Size.Y, ERGBFormat::BGRA, 8))
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::ScreenshotFailed,
-			TEXT("Failed to encode PNG"));
-	}
-
-	const TArray64<uint8>& Compressed = PngWrapper->GetCompressed();
-	TArray<uint8> FileBytes;
-	FileBytes.Append(Compressed.GetData(), static_cast<int32>(Compressed.Num()));
-	if (!FFileHelper::SaveArrayToFile(FileBytes, *OutputPath))
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::ScreenshotFailed,
-			TEXT("Failed to write PNG file"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::ScreenshotFailed, WriteError);
 	}
 
 	const double CaptureTimeMs = (FPlatformTime::Seconds() - StartTime) * 1000.0;
@@ -641,5 +757,204 @@ FCortexCommandResult FCortexEditorViewportOps::FocusNode(const TSharedPtr<FJsonO
 		TargetNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
 	Data->SetStringField(TEXT("node_class"), TargetNode->GetClass()->GetName());
 
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexEditorViewportOps::CaptureEditorPanel(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	FString PanelName;
+	if (Params.IsValid())
+	{
+		Params->TryGetStringField(TEXT("asset_path"), AssetPath);
+		Params->TryGetStringField(TEXT("panel"), PanelName);
+	}
+	const bool bHasAsset = !AssetPath.IsEmpty();
+	if (PanelName.IsEmpty())
+	{
+		PanelName = bHasAsset ? TEXT("editor") : TEXT("window");
+	}
+	ECortexEditorPanel Panel = ECortexEditorPanel::Window;
+	if (!ParseEditorPanel(PanelName, Panel))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("panel must be window, editor, details or graph, got '%s'"), *PanelName));
+	}
+	if (Panel == ECortexEditorPanel::Editor && !bHasAsset)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("panel 'editor' requires asset_path"));
+	}
+	if (!FSlateApplication::IsInitialized() || !FApp::CanEverRender())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable,
+			TEXT("The editor cannot render Slate windows in this process (no Slate application or -NullRHI)"));
+	}
+	FSlateApplication& Slate = FSlateApplication::Get();
+
+	// The root to search: the asset editor's tab content, or a top-level window.
+	TSharedPtr<SWidget> Root;
+	TSharedPtr<SWindow> RootWindow;
+	FString EditorName;
+	if (bHasAsset)
+	{
+		FString ErrorCode;
+		FString Failure;
+		UObject* Asset = FCortexEditorTurnaroundOps::OpenAssetInEditor(AssetPath, ErrorCode, Failure);
+		if (Asset == nullptr)
+		{
+			return FCortexCommandRouter::Error(ErrorCode, FString::Printf(TEXT("%s: %s"), *Failure, *AssetPath));
+		}
+		UAssetEditorSubsystem* AssetEditors = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+		IAssetEditorInstance* Editor = AssetEditors->FindEditorForAsset(Asset, false);
+		const TSharedPtr<FTabManager> TabManager = Editor ? Editor->GetAssociatedTabManager() : nullptr;
+		const TSharedPtr<SDockTab> OwnerTab = TabManager.IsValid() ? TabManager->GetOwnerTab() : nullptr;
+		if (!OwnerTab.IsValid())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable,
+				FString::Printf(TEXT("The editor opened for %s has no Slate tab to capture"), *AssetPath));
+		}
+		EditorName = Editor->GetEditorName().ToString();
+		Root = OwnerTab->GetContent();
+	}
+	else
+	{
+		RootWindow = Slate.GetActiveTopLevelRegularWindow();
+		if (!RootWindow.IsValid())
+		{
+			// The editor is not the foreground application (an AI client drives it from another window).
+			RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
+		}
+		if (!RootWindow.IsValid())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable, TEXT("No top-level editor window to capture"));
+		}
+		Root = RootWindow;
+	}
+
+	// Arrange the widgets (a newly opened editor's panels) before measuring them.
+	Slate.Tick(ESlateTickType::All);
+	const FString RootLabel = bHasAsset
+		? FString::Printf(TEXT("the asset editor of %s"), *AssetPath)
+		: FString::Printf(TEXT("the editor window '%s'"), *RootWindow->GetTitle().ToString());
+
+	TSharedPtr<SWidget> Target;
+	int32 MatchCount = 0;
+	if (Panel == ECortexEditorPanel::Details || Panel == ECortexEditorPanel::Graph)
+	{
+		const FName WidgetType = Panel == ECortexEditorPanel::Details ? FName(TEXT("SDetailsView")) : FName(TEXT("SGraphEditor"));
+		TArray<TSharedRef<SWidget>> Candidates;
+		CollectWidgetsOfType(Root.ToSharedRef(), WidgetType, Candidates);
+		double LargestArea = 0.0;
+		for (const TSharedRef<SWidget>& Candidate : Candidates)
+		{
+			const double Area = GetVisibleWidgetArea(Candidate);
+			if (Area <= 0.0)
+			{
+				continue;
+			}
+			++MatchCount;
+			if (Area > LargestArea)
+			{
+				LargestArea = Area;
+				Target = Candidate;
+			}
+		}
+		if (!Target.IsValid())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::WidgetNotFound,
+				FString::Printf(TEXT("No visible %s panel (%s) in %s"), *PanelName, *WidgetType.ToString(), *RootLabel));
+		}
+	}
+	else if (GetVisibleWidgetArea(Root.ToSharedRef()) <= 0.0)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::WidgetNotFound,
+			FString::Printf(TEXT("%s is not on screen"), *RootLabel));
+	}
+	else if (Panel == ECortexEditorPanel::Window && !RootWindow.IsValid())
+	{
+		Target = Slate.FindWidgetWindow(Root.ToSharedRef());
+	}
+	else
+	{
+		Target = Root;
+	}
+
+	// A graph panel may still move its view (to the nodes of a newly opened graph, or after focus_node): let it finish.
+	if (Target.IsValid() && HasMovingGraphPanel(Target.ToSharedRef()))
+	{
+		const double Deadline = FPlatformTime::Seconds() + GraphSettleBudgetSeconds;
+		while (HasMovingGraphPanel(Target.ToSharedRef()) && FPlatformTime::Seconds() < Deadline)
+		{
+			FPlatformProcess::Sleep(GraphSettleTickSeconds);
+			Slate.Tick(ESlateTickType::All);
+		}
+		if (HasMovingGraphPanel(Target.ToSharedRef()))
+		{
+			UE_LOG(LogCortexEditor, Log, TEXT("capture_editor_panel: a graph view in the %s panel was still moving after %.1f s; capturing it as is"),
+				*PanelName, GraphSettleBudgetSeconds);
+		}
+	}
+
+	const TSharedPtr<SWindow> Window = Target.IsValid() ? Slate.FindWidgetWindow(Target.ToSharedRef()) : nullptr;
+	if (!Window.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::WidgetNotFound, TEXT("The panel is not in an editor window"));
+	}
+	// TakeScreenshot reads back during its own draw of Window; a window that draw skips would leave the renderer
+	// holding the request (and a pointer to our pixel buffer) for a later frame, so such windows are refused first.
+	const TSharedPtr<SWindow> ModalWindow = Slate.GetActiveModalWindow();
+	if (ModalWindow.IsValid() && ModalWindow != Window)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorBusy,
+			FString::Printf(TEXT("A modal dialog is open (%s); close it before capturing"), *ModalWindow->GetTitle().ToString()));
+	}
+	if (!Window->IsVisible() || Window->IsWindowMinimized())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::ScreenshotFailed,
+			FString::Printf(TEXT("The window '%s' is hidden or minimized"), *Window->GetTitle().ToString()));
+	}
+
+	const FString OutputPath = ResolveCaptureOutputPath(Params, TEXT("cortex_panel"));
+	const double StartTime = FPlatformTime::Seconds();
+	TArray<FColor> Pixels;
+	FIntVector CapturedSize = FIntVector::ZeroValue;
+	if (!Slate.TakeScreenshot(Target.ToSharedRef(), Pixels, CapturedSize))
+	{
+		// Drop a request the renderer did not consume: target no window, so no frame writes into the sink.
+		static TArray<FColor> UnusedScreenshotSink;
+		if (FSlateRenderer* Renderer = Slate.GetRenderer())
+		{
+			Renderer->PrepareToTakeScreenshot(FIntRect(), &UnusedScreenshotSink, nullptr);
+		}
+		return FCortexCommandRouter::Error(CortexErrorCodes::ScreenshotFailed,
+			FString::Printf(TEXT("Slate could not read back the %s panel"), *PanelName));
+	}
+
+	const FIntPoint Size(CapturedSize.X, CapturedSize.Y);
+	Pixels.SetNum(Size.X * Size.Y);
+	FString WriteError;
+	if (!WriteOpaquePng(Pixels, Size, OutputPath, WriteError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::ScreenshotFailed, WriteError);
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("path"), FPaths::ConvertRelativePathToFull(OutputPath));
+	Data->SetNumberField(TEXT("width"), Size.X);
+	Data->SetNumberField(TEXT("height"), Size.Y);
+	Data->SetNumberField(TEXT("file_size_bytes"), static_cast<double>(IFileManager::Get().FileSize(*OutputPath)));
+	Data->SetNumberField(TEXT("capture_time_ms"), (FPlatformTime::Seconds() - StartTime) * 1000.0);
+	Data->SetStringField(TEXT("panel"), PanelName);
+	Data->SetStringField(TEXT("widget_type"), Target->GetType().ToString());
+	Data->SetStringField(TEXT("window_title"), Window->GetTitle().ToString());
+	if (Panel == ECortexEditorPanel::Details || Panel == ECortexEditorPanel::Graph)
+	{
+		Data->SetNumberField(TEXT("match_count"), MatchCount);
+	}
+	if (bHasAsset)
+	{
+		Data->SetStringField(TEXT("asset_path"), AssetPath);
+		Data->SetStringField(TEXT("editor_name"), EditorName);
+	}
 	return FCortexCommandRouter::Success(Data);
 }
