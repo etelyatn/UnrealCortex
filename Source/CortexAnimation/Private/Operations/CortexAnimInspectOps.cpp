@@ -90,11 +90,12 @@ struct FAnimBlueprintInfoIncludes
 	bool bPropertyAccess = false;
 	bool bLifecycle = false;
 	bool bNotifyHandlers = false;
+	bool bNodes = false;
 };
 
 bool TryReadAnimBlueprintInfoIncludes(const TSharedPtr<FJsonObject>& Params, FAnimBlueprintInfoIncludes& OutIncludes, FCortexCommandResult& OutError)
 {
-	static const TCHAR* Allowed = TEXT("bindings, node_functions, property_access, lifecycle, notify_handlers");
+	static const TCHAR* Allowed = TEXT("bindings, node_functions, property_access, lifecycle, notify_handlers, nodes");
 	if (!Params.IsValid() || !Params->HasField(TEXT("include")))
 	{
 		return true;
@@ -141,6 +142,10 @@ bool TryReadAnimBlueprintInfoIncludes(const TSharedPtr<FJsonObject>& Params, FAn
 		else if (Entry == TEXT("notify_handlers"))
 		{
 			OutIncludes.bNotifyHandlers = true;
+		}
+		else if (Entry == TEXT("nodes"))
+		{
+			OutIncludes.bNodes = true;
 		}
 		else
 		{
@@ -647,6 +652,10 @@ FCortexCommandResult FCortexAnimInspectOps::GetAnimBlueprintInfo(const TSharedPt
 		return Error;
 	}
 	if (Includes.bNotifyHandlers && !FCortexAnimNotifyHandlerReport::AppendNotifyHandlers(AnimBlueprint, BindingLimit, Data, Error))
+	{
+		return Error;
+	}
+	if (Includes.bNodes && !FCortexAnimBindingReport::AppendNodes(AnimBlueprint, BindingLimit, Data, Error))
 	{
 		return Error;
 	}

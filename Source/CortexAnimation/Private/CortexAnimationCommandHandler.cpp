@@ -5,6 +5,7 @@
 #include "Operations/CortexAnimInspectOps.h"
 #include "Operations/CortexAnimMontageOps.h"
 #include "Operations/CortexAnimRebindOps.h"
+#include "Operations/CortexAnimRuntimeOps.h"
 #include "Operations/CortexAnimObjectNotifyOps.h"
 #include "Operations/CortexAnimNotifyStateOps.h"
 #include "Operations/CortexAnimSocketOps.h"
@@ -14,8 +15,6 @@ FCortexCommandResult FCortexAnimationCommandHandler::Execute(
 	const TSharedPtr<FJsonObject>& Params,
 	FDeferredResponseCallback DeferredCallback)
 {
-	(void)DeferredCallback;
-
 	if (Command == TEXT("list_assets"))
 	{
 		return FCortexAnimInspectOps::ListAssets(Params);
@@ -35,6 +34,10 @@ FCortexCommandResult FCortexAnimationCommandHandler::Execute(
 	if (Command == TEXT("get_animbp_info"))
 	{
 		return FCortexAnimInspectOps::GetAnimBlueprintInfo(Params);
+	}
+	if (Command == TEXT("sample_runtime_pose"))
+	{
+		return FCortexAnimRuntimeOps::SampleRuntimePose(Params, MoveTemp(DeferredCallback));
 	}
 	if (Command == TEXT("rebind_function"))
 	{
@@ -162,8 +165,20 @@ TArray<FCortexCommandInfo> FCortexAnimationCommandHandler::GetSupportedCommands(
 			.Optional(TEXT("state_limit"), TEXT("number"), TEXT("Maximum states per state machine returned; default 100, max 200"))
 			.Optional(TEXT("conduit_limit"), TEXT("number"), TEXT("Maximum conduits per state machine returned; default 100, max 200"))
 			.Optional(TEXT("transition_limit"), TEXT("number"), TEXT("Maximum transitions per state machine returned; default 100, max 200"))
-			.Optional(TEXT("include"), TEXT("array"), TEXT("Opt-in sections: bindings (anim-node pin bindings with resolved paths and root_declared_in), node_functions (initial_update/become_relevant/update function slots), property_access (property-access nodes), lifecycle (implemented update hooks with thread safety, native equivalent and non-thread-safe calls; adds uses_multithreaded_update), notify_handlers (AnimNotify_* handlers mapped to native handlers with signature compatibility and conflicts). Unknown entries are INVALID_FIELD; absent returns the default payload"))
+			.Optional(TEXT("include"), TEXT("array"), TEXT("Opt-in sections: bindings (anim-node pin bindings with resolved paths and root_declared_in), node_functions (initial_update/become_relevant/update function slots), property_access (property-access nodes), lifecycle (implemented update hooks with thread safety, native equivalent and non-thread-safe calls; adds uses_multithreaded_update), notify_handlers (AnimNotify_* handlers mapped to native handlers with signature compatibility and conflicts), nodes (per anim node: node_id for graph.get_node_settings, input pins with source bound/linked/unconnected, and the compiler's fast-path verdict blueprint_usage/fast_path). Unknown entries are INVALID_FIELD; absent returns the default payload"))
 			.Optional(TEXT("binding_limit"), TEXT("number"), TEXT("Maximum entries per opted-in section; default 200, max 1000"))
+	);
+	Commands.Add(
+		FCortexCommandInfo{ TEXT("sample_runtime_pose"), TEXT("Sample bone transforms of a skeletal mesh in the running PIE world repeatedly over game time (time dilation slows sampling with the game), with optional anim-instance properties per sample. Read-only; answers after the last sample (stop_reason completed, timeout or target_destroyed keeps the samples taken).") }
+			.Optional(TEXT("actor"), TEXT("string"), TEXT("Actor label, name or path; exactly one of actor or actor_class"))
+			.Optional(TEXT("actor_class"), TEXT("string"), TEXT("Class name (BP_Hero_C or BP_Hero) or class path; must match exactly one actor (class or superclass)"))
+			.Optional(TEXT("mesh_component"), TEXT("string"), TEXT("Skeletal mesh component name; default: the actor's only skeletal mesh component"))
+			.Required(TEXT("bones"), TEXT("array"), TEXT("1-64 unique bone names of the mesh"))
+			.Optional(TEXT("space"), TEXT("string"), TEXT("local (parent-bone space, default), component, or delta_from_ref (local relative to the reference pose; adds angle_degrees)"))
+			.Optional(TEXT("sample_count"), TEXT("number"), TEXT("Samples to take; default 10, 1-300"))
+			.Optional(TEXT("interval_seconds"), TEXT("number"), TEXT("Game seconds between samples; default 0.1, 0-60; 0 samples every frame"))
+			.Optional(TEXT("properties"), TEXT("array"), TEXT("Up to 32 anim-instance property names logged at every sample"))
+			.Optional(TEXT("timeout_seconds"), TEXT("number"), TEXT("Real-time budget for the whole run; default 60, 1-1800"))
 	);
 	Commands.Add(
 		FCortexCommandInfo{ TEXT("rebind_function"), TEXT("Retarget a Blueprint function to a function the Blueprint or its parent classes declare, in anim-node function bindings and the three function slots. K2 call nodes are left untouched and listed. Mutating; inspect first, pass the current fingerprint; defaults dry_run=true, compile=true, save=false. Any failure after the first mutation restores the captured journal, runs one recovery compile and verifies by content readback.") }

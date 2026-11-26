@@ -485,6 +485,12 @@ def _fake_anim_capabilities(command_names: list[str]) -> dict:
         "remove_notify_state": common_asset + [
             {"name": "selector", "type": "object", "required": True}, expected, *optional_mutation,
         ],
+        "get_animbp_info": common_asset,
+        "sample_runtime_pose": [
+            {"name": "actor", "type": "string", "required": False},
+            {"name": "bones", "type": "array", "required": True},
+            {"name": "timeout_seconds", "type": "number", "required": False},
+        ],
     }
     return {
         "domains": {
@@ -580,6 +586,16 @@ def test_anim_docstrings_advertise_the_function_rebind_family():
     assert "remove_variable" not in function_sentence
     assert "adopt_native_member" in docstring
     assert "add_notify" not in docstring
+
+
+def test_anim_docstrings_advertise_runtime_pose_sampling_when_live():
+    """sample_runtime_pose is a read-only PIE inspection command: advertised whenever the live editor exposes it."""
+    live = build_router_docstrings(_fake_anim_capabilities(["sample_runtime_pose"]))["anim"]
+    assert "sample_runtime_pose" in live
+    assert "game time" in live
+
+    absent = build_router_docstrings(_fake_anim_capabilities(["get_animbp_info"]))["anim"]
+    assert "sample_runtime_pose" not in absent
 
 
 class TestFallbackDrift:

@@ -1,6 +1,7 @@
 #include "Operations/CortexAnimBindingReport.h"
 
 #include "AnimGraphNode_Base.h"
+#include "AnimationGraphSchema.h"
 #include "Animation/AnimBlueprint.h"
 #include "CortexCommandRouter.h"
 #include "Dom/JsonObject.h"
@@ -415,5 +416,98 @@ bool FCortexAnimBindingReport::AppendPropertyAccess(UAnimBlueprint* AnimBlueprin
 	}
 
 	Data->SetObjectField(TEXT("property_access"), FCortexAnimAssetUtils::MakeLimitedArray(Accesses, Limit));
+	return true;
+}
+
+bool FCortexAnimBindingReport::AppendNodes(UAnimBlueprint* AnimBlueprint, const int32 Limit, const TSharedPtr<FJsonObject>& Data, FCortexCommandResult& OutError)
+{
+	using namespace CortexAnimBindingReportPrivate;
+	(void)OutError;
+
+	TArray<UAnimGraphNode_Base*> Nodes;
+	CollectAnimNodes(AnimBlueprint, Nodes);
+	const bool bUpToDate = AnimBlueprint->Status == BS_UpToDate || AnimBlueprint->Status == BS_UpToDateWithWarnings;
+
+	TArray<TSharedPtr<FJsonValue>> Entries;
+	for (const UAnimGraphNode_Base* Node : Nodes)
+	{
+		TArray<TSharedPtr<FJsonValue>> Inputs;
+		bool bHasDynamicInput = false;
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin == nullptr || Pin->Direction != EGPD_Input || Pin->bOrphanedPin || UAnimationGraphSchema::IsPosePin(Pin->PinType))
+			{
+				continue;
+			}
+			TSharedRef<FJsonObject> Input = MakeShared<FJsonObject>();
+			Input->SetStringField(TEXT("pin"), Pin->PinName.ToString());
+			Input->SetBoolField(TEXT("hidden"), Pin->bHidden);
+			if (Node->HasBinding(Pin->PinName))
+			{
+				Input->SetStringField(TEXT("source"), TEXT("bound"));
+				bHasDynamicInput = true;
+			}
+			else if (Pin->LinkedTo.Num() > 0)
+			{
+				Input->SetStringField(TEXT("source"), TEXT("linked"));
+				bHasDynamicInput = true;
+				TArray<TSharedPtr<FJsonValue>> Links;
+				for (const UEdGraphPin* Other : Pin->LinkedTo)
+				{
+					const UEdGraphNode* OtherNode = Other != nullptr ? Other->GetOwningNodeUnchecked() : nullptr;
+					if (OtherNode == nullptr)
+					{
+						continue;
+					}
+					TSharedRef<FJsonObject> Link = MakeShared<FJsonObject>();
+					Link->SetStringField(TEXT("node_id"), OtherNode->GetName());
+					Link->SetStringField(TEXT("node_guid"), GuidText(OtherNode->NodeGuid));
+					Link->SetStringField(TEXT("node_class"), OtherNode->GetClass()->GetName());
+					Link->SetStringField(TEXT("pin_name"), Other->PinName.ToString());
+					Links.Add(MakeShared<FJsonValueObject>(Link));
+				}
+				Input->SetArrayField(TEXT("linked_to"), Links);
+			}
+			else
+			{
+				Input->SetStringField(TEXT("source"), TEXT("unconnected"));
+				Input->SetStringField(TEXT("default_value"), Pin->GetDefaultAsString());
+			}
+			Inputs.Add(MakeShared<FJsonValueObject>(Input));
+		}
+
+		// BlueprintUsage is transient and only the compiler sets it, for the nodes it keeps. NoProperties on a node with dynamic
+		// inputs means the Blueprint changed since its last compile, or (when it is up to date) the compiler pruned the node
+		// because it feeds no output pose.
+		FString Usage;
+		TSharedPtr<FJsonValue> FastPath = MakeShared<FJsonValueNull>();
+		switch (Node->BlueprintUsage)
+		{
+		case EBlueprintUsage::DoesNotUseBlueprint:
+			Usage = TEXT("does_not_use_blueprint");
+			FastPath = MakeShared<FJsonValueBoolean>(true);
+			break;
+		case EBlueprintUsage::UsesBlueprint:
+			Usage = TEXT("uses_blueprint");
+			FastPath = MakeShared<FJsonValueBoolean>(false);
+			break;
+		case EBlueprintUsage::NoProperties:
+		default:
+			Usage = !bHasDynamicInput ? TEXT("no_properties") : (bUpToDate ? TEXT("unreachable") : TEXT("not_compiled"));
+			break;
+		}
+
+		const UScriptStruct* NodeStruct = Node->GetFNodeType();
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		SetNodeLocator(Entry, Node);
+		Entry->SetStringField(TEXT("node_id"), Node->GetName());
+		Entry->SetStringField(TEXT("node_struct"), NodeStruct != nullptr ? NodeStruct->GetName() : FString());
+		Entry->SetStringField(TEXT("blueprint_usage"), Usage);
+		Entry->SetField(TEXT("fast_path"), FastPath);
+		Entry->SetArrayField(TEXT("inputs"), Inputs);
+		Entries.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	Data->SetObjectField(TEXT("nodes"), FCortexAnimAssetUtils::MakeLimitedArray(Entries, Limit));
 	return true;
 }
