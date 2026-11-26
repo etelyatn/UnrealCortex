@@ -101,7 +101,13 @@ bool IsTraversable(const FProperty* Property, bool bIndexed)
 
 UClass* FCortexGraphPropertyAccess::GetNodeClass()
 {
-	return FindObject<UClass>(nullptr, TEXT("/Script/PropertyAccessNode.K2Node_PropertyAccess"));
+	// Resolved once per class lifetime: this runs for every node of every serialized or fingerprinted graph.
+	static TWeakObjectPtr<UClass> CachedClass;
+	if (!CachedClass.IsValid())
+	{
+		CachedClass = FindObject<UClass>(nullptr, TEXT("/Script/PropertyAccessNode.K2Node_PropertyAccess"));
+	}
+	return CachedClass.Get();
 }
 
 bool FCortexGraphPropertyAccess::IsPropertyAccessNode(const UEdGraphNode* Node)
@@ -202,6 +208,13 @@ bool FCortexGraphPropertyAccess::ValidatePath(const UBlueprint* Blueprint, const
 		{
 			SegmentError = FString::Printf(TEXT("segment '%s' indexes '%s', which is not an array"), *Path[SegmentIndex], *Property->GetName());
 		}
+		// A fixed-size C array element is read at a computed offset with no bounds check at runtime.
+		if (SegmentError.IsEmpty() && HasIndex(Path[SegmentIndex]) && Property->ArrayDim > 1
+			&& (StaticArrayIndex < 0 || StaticArrayIndex >= Property->ArrayDim))
+		{
+			SegmentError = FString::Printf(TEXT("segment '%s' index %d is out of range for '%s' (size %d)"),
+				*Path[SegmentIndex], StaticArrayIndex, *Property->GetName(), Property->ArrayDim);
+		}
 		if (SegmentError.IsEmpty() && !Property->HasAnyPropertyFlags(CPF_ReturnParm) && !GetDefault<UPersonaOptions>()->IsAllowedProperty(Property))
 		{
 			SegmentError = FString::Printf(TEXT("property '%s' is not allowed for property access by the editor permission lists"), *Property->GetName());
@@ -247,8 +260,12 @@ bool FCortexGraphPropertyAccess::ValidatePath(const UBlueprint* Blueprint, const
 			{
 				if (Count < Path.Num() && PrefixLeaf != nullptr && !IsTraversable(PrefixLeaf, PrefixIndex != INDEX_NONE))
 				{
-					Reason = FString::Printf(TEXT("segment '%s' (index %d) is a %s and has no members, so the path cannot continue to '%s'"),
-						*Path[Count - 1], Count - 1, *PrefixLeaf->GetCPPType(), *Path[Count]);
+					const FArrayProperty* ArrayLeaf = CastField<FArrayProperty>(PrefixLeaf);
+					Reason = ArrayLeaf != nullptr && PrefixIndex == INDEX_NONE && IsTraversable(PrefixLeaf, true)
+						? FString::Printf(TEXT("segment '%s' (index %d) is an array: index an element ('%s[N]') to continue to '%s'"),
+							*Path[Count - 1], Count - 1, *Path[Count - 1], *Path[Count])
+						: FString::Printf(TEXT("segment '%s' (index %d) is a %s and has no members, so the path cannot continue to '%s'"),
+							*Path[Count - 1], Count - 1, *PrefixLeaf->GetCPPType(), *Path[Count]);
 					break;
 				}
 				continue;

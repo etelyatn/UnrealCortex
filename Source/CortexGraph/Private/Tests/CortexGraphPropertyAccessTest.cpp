@@ -4,6 +4,7 @@
 #include "CortexGraphTestContentRoot.h"
 #include "Operations/CortexGraphPatchOps.h"
 #include "Operations/CortexGraphPatchState.h"
+#include "CortexGraphPropertyAccessTestTypes.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimInstance.h"
@@ -77,7 +78,7 @@ namespace CortexGraphPropertyAccessTest
 			UPackage* Package = CreateCortexGraphTestPackage(TEXT("ABP_Issue232"), OwnedPackageName);
 			TStrongObjectPtr<UAnimBlueprintFactory> Factory(NewObject<UAnimBlueprintFactory>());
 			Factory->BlueprintType = BPTYPE_Normal;
-			Factory->ParentClass = UAnimInstance::StaticClass();
+			Factory->ParentClass = UCortexGraphPropertyAccessAnimInstance::StaticClass();
 			Factory->TargetSkeleton = nullptr;
 			Factory->bTemplate = true;
 			AnimBlueprint = Cast<UAnimBlueprint>(Factory->FactoryCreateNew(
@@ -384,6 +385,25 @@ bool FCortexGraphPropertyAccessDescribeTest::RunTest(const FString& Parameters)
 	}
 	TestEqual(TEXT("contextual describe adds no node"), CountNodes(Fixture.AnimBlueprint), NodesBefore);
 	TestEqual(TEXT("contextual describe leaves the package dirty state"), Fixture.AnimBlueprint->GetPackage()->IsDirty(), bDirtyBefore);
+
+	// A macro target is refused by describe as by add_node and apply_patch, never reported validated.
+	for (UEdGraph* Macro : Fixture.AnimBlueprint->MacroGraphs)
+	{
+		if (Macro == nullptr || Macro->GetName() != MacroGraphName)
+		{
+			continue;
+		}
+		TSharedPtr<FJsonObject> Target = MakeShared<FJsonObject>();
+		Target->SetStringField(TEXT("graph_guid"), Macro->GraphGuid.ToString());
+		TSharedPtr<FJsonObject> InMacro = MakeShared<FJsonObject>();
+		InMacro->SetStringField(TEXT("node_class"), TEXT("PropertyAccess"));
+		InMacro->SetStringField(TEXT("asset_path"), Fixture.AnimBlueprint->GetPathName());
+		InMacro->SetObjectField(TEXT("target"), Target);
+		InMacro->SetObjectField(TEXT("params"), PathParams({ TEXT("bIsDead") }));
+		const FCortexCommandResult Result = Router.Execute(TEXT("graph.describe_node"), InMacro);
+		TestFalse(TEXT("describe with a macro target is refused"), Result.bSuccess);
+		TestEqual(TEXT("describe with a macro target is an invalid operation"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
+	}
 	return true;
 }
 
@@ -495,6 +515,7 @@ bool FCortexGraphPropertyAccessRefusalsTest::RunTest(const FString& Parameters)
 		{ TEXT("index on a non-array"), PathParams({ TEXT("bIsDead[0]") }), CortexErrorCodes::InvalidField, TEXT("not an array") },
 		{ TEXT("indexed getter"), PathParams({ TEXT("GetOwningActor[0]"), TEXT("bHidden") }), CortexErrorCodes::InvalidField, TEXT("cannot be indexed") },
 		{ TEXT("member of a scalar"), PathParams({ TEXT("bIsDead"), TEXT("Member") }), CortexErrorCodes::InvalidField, TEXT("'bIsDead' (index 0) is a bool") },
+		{ TEXT("fixed array index out of range"), PathParams({ TEXT("FixedValues[2]") }), CortexErrorCodes::InvalidField, TEXT("out of range") },
 	};
 
 	const int32 NodesBefore = CountNodes(Fixture.AnimBlueprint);
@@ -513,6 +534,16 @@ bool FCortexGraphPropertyAccessRefusalsTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("a macro graph is refused"), Result.bSuccess);
 		TestEqual(TEXT("a macro graph is an invalid operation"), Result.ErrorCode, CortexErrorCodes::InvalidOperation);
 		TestEqual(TEXT("the macro refusal adds no node"), CountNodes(Fixture.AnimBlueprint), NodesBefore);
+	}
+
+	{
+		// The last element of the fixed-size array is in range and yields its element type.
+		const FCortexCommandResult InRange = AddNode(Router, Fixture.AnimBlueprint, PathParams({ TEXT("FixedValues[1]") }));
+		TestTrue(FString::Printf(TEXT("an in-range fixed array element is accepted: %s"), *InRange.ErrorMessage), InRange.bSuccess);
+		if (InRange.bSuccess)
+		{
+			TestEqual(TEXT("the fixed array element is a real"), PinType(InRange.Data, TEXT("Value")), FString(TEXT("real")));
+		}
 	}
 
 	UBlueprint* ActorBlueprint = Fixture.CreateActorBlueprint();

@@ -1335,6 +1335,7 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 	const TSharedPtr<FJsonObject>* TargetObjPtr = nullptr;
 	const bool bHasTarget = Params->TryGetObjectField(TEXT("target"), TargetObjPtr) && TargetObjPtr != nullptr && (*TargetObjPtr).IsValid();
 	TSharedPtr<FJsonObject> ResolvedTargetObj;
+	const UEdGraph* ResolvedTargetGraph = nullptr;
 
 	if (bHasTarget)
 	{
@@ -1448,6 +1449,7 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 
 		if (FoundGraph != nullptr)
 		{
+			ResolvedTargetGraph = FoundGraph;
 			if (FoundKind == ECortexGraphKind::Delegate || !IsMutableGraphKind(FoundKind))
 			{
 				return FCortexCommandRouter::Error(
@@ -1470,6 +1472,11 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 	// Validate node params against Blueprint context
 	FCortexCommandResult ValidateError;
 	if (!FCortexGraphNodeContract::Validate(NodeClassName, Blueprint, NodeParams, ValidateError))
+	{
+		return ValidateError;
+	}
+	if (FCortexGraphPropertyAccess::IsPropertyAccessNode(NodeClass ? NodeClass->GetDefaultObject<UEdGraphNode>() : nullptr)
+		&& !FCortexGraphPropertyAccess::ValidateGraph(Blueprint, ResolvedTargetGraph, ValidateError))
 	{
 		return ValidateError;
 	}
