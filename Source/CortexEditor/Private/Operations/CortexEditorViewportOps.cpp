@@ -895,10 +895,13 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureEditorPanel(const TSharedP
 		}
 	}
 
-	const TSharedPtr<SWindow> Window = Target.IsValid() ? Slate.FindWidgetWindow(Target.ToSharedRef()) : nullptr;
+	// The settle ticks process window messages: the panel's window may have closed or the panel left it meanwhile.
+	// TakeScreenshot asserts on a widget that is in no live window, so the path is checked again right before it.
+	const TSharedPtr<SWindow> Window = Target.IsValid() && GetVisibleWidgetArea(Target.ToSharedRef()) > 0.0
+		? Slate.FindWidgetWindow(Target.ToSharedRef()) : nullptr;
 	if (!Window.IsValid())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::WidgetNotFound, TEXT("The panel is not in an editor window"));
+		return FCortexCommandRouter::Error(CortexErrorCodes::WidgetNotFound, TEXT("The panel is not in an open editor window"));
 	}
 	// TakeScreenshot reads back during its own draw of Window; a window that draw skips would leave the renderer
 	// holding the request (and a pointer to our pixel buffer) for a later frame, so such windows are refused first.

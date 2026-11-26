@@ -26,7 +26,6 @@
 #include "UObject/Package.h"
 #include "EngineUtils.h"
 #include "GameFramework/WorldSettings.h"
-#include "Engine/Selection.h"
 
 namespace
 {
@@ -300,10 +299,12 @@ bool FCortexEditorCaptureEditorPanelWindowTest::RunTest(const FString& Parameter
 	}
 	else
 	{
-		TArray<AActor*> PreviousSelection;
-		GEditor->GetSelectedActors()->GetSelectedObjects<AActor>(PreviousSelection);
-		GEditor->SelectNone(false, true);
-		GEditor->SelectActor(Subject, true, true);
+		// Only the subject is added and removed again; any existing selection (actors, components, BSP) is left alone.
+		const bool bWasSelected = Subject->IsSelected();
+		if (!bWasSelected)
+		{
+			GEditor->SelectActor(Subject, true, true);
+		}
 
 		const FPanelCapture Details = CaptureAndCheck(*this, Handler, FString(), TEXT("details"), TEXT("details"), DetailsPath);
 		if (Window.bSuccess && Details.bSuccess)
@@ -312,12 +313,10 @@ bool FCortexEditorCaptureEditorPanelWindowTest::RunTest(const FString& Parameter
 			TestTrue(TEXT("the Details panel is a part of the window"), Details.Width * Details.Height < Window.Width * Window.Height);
 		}
 
-		GEditor->SelectNone(false, true);
-		for (AActor* Previous : PreviousSelection)
+		if (!bWasSelected)
 		{
-			GEditor->SelectActor(Previous, true, false);
+			GEditor->SelectActor(Subject, false, true);
 		}
-		GEditor->NoteSelectionChange();
 	}
 
 	IFileManager::Get().Delete(*WindowPath, false, true, true);

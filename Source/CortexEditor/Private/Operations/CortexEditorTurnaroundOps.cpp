@@ -14,6 +14,7 @@
 #include "HAL/PlatformTime.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/UObjectGlobals.h"
@@ -310,10 +311,19 @@ UObject* FCortexEditorTurnaroundOps::OpenAssetInEditor(const FString& Path, FStr
 
 	if (!Asset)
 	{
-		if (!FPackageName::IsValidLongPackageName(PackageName) || !FPackageName::DoesPackageExist(PackageName))
+		FString PackageFilename;
+		if (!FPackageName::IsValidLongPackageName(PackageName) || !FPackageName::DoesPackageExist(PackageName, &PackageFilename))
 		{
 			OutErrorCode = CortexErrorCodes::AssetNotFound;
 			OutFailure = TEXT("Asset not found");
+			return nullptr;
+		}
+		// The Asset Registry may not have scanned the package yet (right after editor start): the file decides.
+		const FString Extension = FPaths::GetExtension(PackageFilename, true);
+		if (FPackageName::IsMapPackageExtension(*Extension) || Extension == FPackageName::GetTextMapPackageExtension())
+		{
+			OutErrorCode = CortexErrorCodes::InvalidOperation;
+			OutFailure = MapRefusal;
 			return nullptr;
 		}
 		Asset = LoadObject<UObject>(nullptr, *ObjectPath);
