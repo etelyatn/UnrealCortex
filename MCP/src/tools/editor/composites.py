@@ -32,6 +32,42 @@ def do_shutdown_editor(connection: UEConnection, force: bool = True) -> dict:
         }
 
 
+# One relaunch is retried when the first launched editor process exits before it reports a Cortex port.
+_MAX_LAUNCH_ATTEMPTS = 2
+
+
+def _launch_editor(editor_exe: pathlib.Path, project_path: str) -> subprocess.Popen:
+    return subprocess.Popen(
+        [
+            str(editor_exe),
+            project_path,
+            "-nosplash",
+            "-nopause",
+            "-AutoDeclinePackageRecovery",
+            '-ExecCmds="Mainframe.ShowRestoreAssetsPromptOnStartup 0"',
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _read_launched_port(saved_dir: pathlib.Path, pid: int) -> int | None:
+    """Port the editor process ``pid`` published in its own port file, else None."""
+    try:
+        data = json.loads((saved_dir / f"CortexPort-{pid}.txt").read_text().strip())
+        return int(data["port"]) if data.get("pid") == pid else None
+    except (json.JSONDecodeError, ValueError, OSError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _process_state(process: subprocess.Popen) -> dict:
+    exit_code = process.poll()
+    state = {"editor_pid": process.pid, "editor_running": exit_code is None}
+    if exit_code is not None:
+        state["exit_code"] = exit_code
+    return state
+
+
 def do_restart_editor(
     connection: UEConnection,
     timeout: int = 120,
@@ -78,13 +114,22 @@ def do_restart_editor(
             except (json.JSONDecodeError, OSError):
                 continue
 
-    port_file_pattern = f"CortexPort-{current_pid}.txt" if current_pid else None
-
     if not project_path:
         return canonical_failure(
             "INVALID_OPERATION",
             "Cannot determine .uproject path. "
             "Ensure editor was started with enhanced port file.",
+        )
+
+    # Resolve the launch before shutting anything down: a restart that cannot relaunch must leave the editor open.
+    engine_path = os.environ.get("UE_56_PATH", "")
+    editor_exe = pathlib.Path(engine_path) / "Engine" / "Binaries" / "Win64" / "UnrealEditor.exe"
+    if not engine_path or not editor_exe.is_file():
+        reason = "UE_56_PATH not set" if not engine_path else f"{editor_exe} not found"
+        return canonical_failure(
+            "INVALID_OPERATION",
+            f"{reason} - cannot launch editor; the running editor was left open",
+            {"shutdown": "not_attempted", "relaunch_attempted": False},
         )
 
     try:
@@ -124,73 +169,78 @@ def do_restart_editor(
             except OSError:
                 pass
 
-        # Phase 2: launch editor
-        engine_path = os.environ.get("UE_56_PATH", "")
-        if not engine_path:
-            return canonical_failure("INVALID_OPERATION", "UE_56_PATH not set - cannot launch editor")
-
-        editor_exe = (
-            pathlib.Path(engine_path)
-            / "Engine"
-            / "Binaries"
-            / "Win64"
-            / "UnrealEditor.exe"
-        )
-
-        subprocess.Popen(
-            [
-                str(editor_exe),
-                project_path,
-                "-nosplash",
-                "-nopause",
-                "-AutoDeclinePackageRecovery",
-                '-ExecCmds="Mainframe.ShowRestoreAssetsPromptOnStartup 0"',
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-        if cancel and cancel.is_set():
-            return {"cancelled": True}
-
-        # Phase 3: wait for new port
+        # Phase 2: launch editor and wait for its new port file. If the launched process exits before it
+        # reports a port, relaunch once; a process that is still running is never launched twice.
         remaining = timeout - (time.monotonic() - start_time)
         launch_deadline = time.monotonic() + max(0.0, remaining)
+        process = None
+        launch_attempts = 0
         new_port = None
-        new_pid = None
 
-        while time.monotonic() < launch_deadline:
+        while True:
+            if process is None:
+                launch_attempts += 1
+                try:
+                    process = _launch_editor(editor_exe, project_path)
+                except OSError as exc:
+                    return canonical_failure(
+                        "INVALID_OPERATION",
+                        f"Editor relaunch failed: {exc}. No relaunched editor is running; launch the editor manually.",
+                        {
+                            "launch": "failed",
+                            "relaunch_attempted": True,
+                            "launch_attempts": launch_attempts,
+                            "editor_running": False,
+                        },
+                    )
+                if cancel and cancel.is_set():
+                    return {"cancelled": True}
+
+            if time.monotonic() >= launch_deadline:
+                break
             time.sleep(3)
             if cancel and cancel.is_set():
                 return {"cancelled": True}
-            for port_file in saved_dir.glob("CortexPort-*.txt"):
-                if port_file_pattern and port_file.name == port_file_pattern:
-                    continue
-                try:
-                    content = port_file.read_text().strip()
-                    if content.startswith("{"):
-                        data = json.loads(content)
-                        found_pid = data.get("pid")
-                        if found_pid and found_pid != current_pid:
-                            new_pid = found_pid
-                            new_port = int(data["port"])
-                            break
-                except (json.JSONDecodeError, ValueError, OSError, KeyError):
-                    continue
-            if new_port is not None:
+            # Only the launched process's own port file counts, and only while that process is alive: a port file
+            # left by a launch that died is stale.
+            if process.poll() is None:
+                new_port = _read_launched_port(saved_dir, process.pid)
+                if new_port is not None:
+                    break
+                continue
+            if launch_attempts >= _MAX_LAUNCH_ATTEMPTS:
                 break
+            # Relaunch even when the deadline has passed: a starting editor, reported as such, beats a closed one.
+            logger.warning("Relaunched editor pid %s exited with code %s before ready; retrying once", process.pid, process.poll())
+            process = None
 
         if new_port is None:
-            return canonical_failure(
-                "INVALID_OPERATION",
-                f"Editor did not start within {timeout}s",
-                {"launch": "timeout"},
-            )
+            state = _process_state(process)
+            running = state["editor_running"]
+            details = {
+                "launch": "timeout" if running else "exited",
+                "relaunch_attempted": True,
+                "launch_attempts": launch_attempts,
+                **state,
+            }
+            if running:
+                message = (
+                    f"Relaunched editor (pid {process.pid}) did not report a Cortex port within {timeout}s; "
+                    "it is still running and may still be starting."
+                )
+            else:
+                exit_code = state["exit_code"]
+                message = (
+                    f"Relaunched editor exited with code {exit_code} after {launch_attempts} launch attempt(s); "
+                    "no relaunched editor is running. Launch the editor manually."
+                )
+            return canonical_failure("INVALID_OPERATION", message, details)
 
+        new_pid = process.pid
         if cancel and cancel.is_set():
             return {"cancelled": True}
 
-        # Phase 4: verify
+        # Phase 3: verify
         connection.port = new_port
         connection._pid = new_pid
         connection._project_path = project_path
@@ -202,7 +252,13 @@ def do_restart_editor(
             return canonical_failure(
                 CONNECTION_ERROR_CODE,
                 f"Verification failed: {exc}",
-                {"port": new_port, "pid": new_pid},
+                {
+                    "port": new_port,
+                    "pid": new_pid,
+                    "relaunch_attempted": True,
+                    "launch_attempts": launch_attempts,
+                    **_process_state(process),
+                },
             )
 
         elapsed = time.monotonic() - start_time
@@ -212,6 +268,7 @@ def do_restart_editor(
             "pid": new_pid,
             "project": pathlib.Path(project_path).stem,
             "domains": domains,
+            "launch_attempts": launch_attempts,
             "restart_time_seconds": round(elapsed, 1),
         }
     finally:

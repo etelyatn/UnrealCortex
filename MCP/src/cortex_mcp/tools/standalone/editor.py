@@ -25,7 +25,9 @@ def register_editor_standalone_tools(mcp, connection) -> None:
         description=(
             "Restart the connected Unreal Editor: shut the editor down, relaunch it, and verify the "
             "MCP endpoint is reachable again. Returns the restart result. Disruptive to unsaved editor "
-            "state; `timeout` bounds the wait for the editor to come back.\n"
+            "state; `timeout` bounds the wait for the editor to come back. Refuses before shutdown when "
+            "the editor executable cannot be resolved; relaunches once if the new editor exits before it is "
+            "ready. A failure reports relaunch_attempted, launch_attempts, editor_pid and editor_running.\n"
         ),
     )
     def editor_restart(timeout: int = 120) -> str:
