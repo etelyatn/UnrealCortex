@@ -129,13 +129,20 @@ namespace
         return FCortexCommandRouter::Error(BatchResult.ErrorCode, BatchResult.ErrorMessage, Data);
     }
 
-    FCortexBatchPreflightResult PreflightLevelActor(const FCortexBatchMutationItem& Item)
+    FCortexBatchPreflightResult PreflightLevelActorImpl(const FCortexBatchMutationItem& Item, bool bRequireEditor)
     {
         FCortexCommandResult Error;
         UWorld* World = FCortexLevelUtils::ResolveWorld(Item.Params, Error);
         if (!World)
         {
             return FCortexBatchPreflightResult::Error(Error.ErrorCode, Error.ErrorMessage, Error.ErrorDetails);
+        }
+
+        if (bRequireEditor && !FCortexLevelUtils::ShouldTransact(World))
+        {
+            return FCortexBatchPreflightResult::Error(
+                CortexErrorCodes::InvalidOperation,
+                TEXT("duplicate_actor does not support world 'pie'; use level.spawn_actor to create a runtime actor"));
         }
 
         AActor* Actor = FCortexLevelUtils::FindActorByLabelOrPath(World, Item.Target, Error);
@@ -145,6 +152,16 @@ namespace
         }
 
         return FCortexBatchPreflightResult::Success(MakeLevelActorFingerprint(Actor).ToJson());
+    }
+
+    FCortexBatchPreflightResult PreflightLevelActor(const FCortexBatchMutationItem& Item)
+    {
+        return PreflightLevelActorImpl(Item, /*bRequireEditor=*/false);
+    }
+
+    FCortexBatchPreflightResult PreflightDuplicateActor(const FCortexBatchMutationItem& Item)
+    {
+        return PreflightLevelActorImpl(Item, /*bRequireEditor=*/true);
     }
 
     FCortexCommandResult CommitDeleteActor(const FCortexBatchMutationItem& Item)
@@ -188,6 +205,8 @@ FCortexCommandResult FCortexLevelActorOps::SpawnActor(const TSharedPtr<FJsonObje
     {
         return Error;
     }
+
+    FCortexLevelPIETransactionScope PIEScope(World);
 
     UClass* ActorClass = FCortexLevelUtils::ResolveActorClass(ClassIdentifier, Error);
     if (!ActorClass)
@@ -325,7 +344,11 @@ FCortexCommandResult FCortexLevelActorOps::DeleteActor(const TSharedPtr<FJsonObj
         {
             return ParseError;
         }
-        FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request);
+        FCortexCommandResult WorldError;
+        if (!FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request, WorldError))
+        {
+            return WorldError;
+        }
 
         return MakeLevelActorBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -373,6 +396,8 @@ FCortexCommandResult FCortexLevelActorOps::DeleteActor(const TSharedPtr<FJsonObj
     FString ActorLabel = Actor->GetActorLabel();
     FString ActorClass = Actor->GetClass()->GetName();
 
+    FCortexLevelPIETransactionScope PIEScope(World);
+
     bool bDeleted = false;
     if (FCortexLevelUtils::ShouldTransact(World))
     {
@@ -416,11 +441,15 @@ FCortexCommandResult FCortexLevelActorOps::DuplicateActor(const TSharedPtr<FJson
         {
             return ParseError;
         }
-        FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request);
+        FCortexCommandResult WorldError;
+        if (!FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request, WorldError))
+        {
+            return WorldError;
+        }
 
         return MakeLevelActorBatchCommandResult(FCortexBatchMutation::Run(
             Request,
-            PreflightLevelActor,
+            PreflightDuplicateActor,
             CommitDuplicateActor));
     }
 
@@ -496,7 +525,11 @@ FCortexCommandResult FCortexLevelActorOps::RenameActor(const TSharedPtr<FJsonObj
         {
             return ParseError;
         }
-        FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request);
+        FCortexCommandResult WorldError;
+        if (!FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request, WorldError))
+        {
+            return WorldError;
+        }
 
         return MakeLevelActorBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -534,6 +567,8 @@ FCortexCommandResult FCortexLevelActorOps::RenameActor(const TSharedPtr<FJsonObj
         return Error;
     }
 
+    FCortexLevelPIETransactionScope PIEScope(World);
+
     FScopedTransaction Transaction(
         FText::FromString(TEXT("Cortex: Rename Actor")),
         FCortexLevelUtils::ShouldTransact(World));
@@ -559,6 +594,8 @@ FCortexCommandResult FCortexLevelActorOps::SetPIEView(const TSharedPtr<FJsonObje
     {
         return FCortexPIEUtils::PIENotActiveError();
     }
+
+    FCortexLevelPIETransactionScope PIEScope(PlayWorld);
 
     APlayerController* PlayerController = PlayWorld->GetFirstPlayerController();
     if (PlayerController == nullptr)

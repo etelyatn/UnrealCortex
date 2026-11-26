@@ -13,8 +13,13 @@
   - `pie` → `FCortexPIEUtils::GetPIEWorld()`, `PIENotActive` when null;
   - unknown → `INVALID_VALUE` naming the accepted values.
 - Add `ShouldTransact(World)` → true unless `WorldType == EWorldType::PIE`.
-- Add `ApplyWorldToBatchRequest(Params, Request)`: copy a top-level `world` into
-  every batch item that does not already set one.
+- Add `ApplyWorldToBatchRequest(Params, Request, OutError)`: validate a top-level
+  `world` with the same parser as the single-target shape, refuse a malformed value
+  with `INVALID_VALUE`, and copy it into every batch item that does not already set
+  one.
+- Add `FCortexLevelPIETransactionScope`: for a PIE world, detach `GUndo` for the
+  operation scope so an outer `core.batch` transaction cannot journal transient PIE
+  objects through `Modify()` (including engine setters such as `SetActorLabel`).
 - `CortexLevel.Build.cs` adds the `CortexEditor` private dependency for
   `FCortexPIEUtils`.
 
@@ -62,18 +67,23 @@ Add the `set_pie_view` declaration with required `location`/`rotation` and optio
 `Source/CortexLevel/Private/Tests/CortexLevelPIECommandsTest.cpp`:
 
 - `Cortex.Level.PIE.WorldValidation` — no-PIE refusal `PIE_NOT_ACTIVE` (including
-  case-insensitive `PIE`), unknown value `INVALID_VALUE`, and no editor-world spawn
-  from the refused request.
+  case-insensitive `PIE` and `set_pie_view`), unknown/non-string/empty value
+  `INVALID_VALUE`, no editor-world spawn from a refused request, and a malformed
+  top-level batch `world` that must not delete the editor-world target.
 - `Cortex.Level.PIE.ActorCommands` — latent PIE session:
   - spawn into PIE, find it in `GEditor->PlayWorld` and not in the editor world;
   - `set_transform`, `set_actor_property`/`get_actor_property`;
   - batch `set_tags` with top-level `world: "pie"` (preflight + commit);
   - `find_actors` and `get_info` see the PIE world;
-  - `duplicate_actor` refuses PIE;
+  - `duplicate_actor` refuses PIE in both single and batched forms, with the batch
+    failing at preflight;
+  - a PIE `set_transform` inside `core.batch` leaves no PIE objects in the editor
+    transaction buffer (`GEditor->Trans->ContainsPieObjects()` is false);
   - `delete_actor` removes it from PIE;
   - without `world`, spawn/delete still target the editor world while PIE runs.
 - `Cortex.Level.PIE.SetView` — latent PIE session:
   - first call spawns the tagged camera and sets the view target/FOV;
+  - an out-of-range FOV is refused with `INVALID_VALUE`;
   - second call reuses the same camera and updates pose/FOV.
 
 Tests route through `FCortexCommandRouter` so the declared `world` parameter is
@@ -81,8 +91,8 @@ validated, not only the handler.
 
 ### 6. Documentation and toolkit
 
-- `docs/systems/cortex-level.md`: PIE targeting section, dependency, tool table.
-- `docs/systems/INDEX.md`: CortexLevel dependency line and domain description.
+- Parent CortexSandbox workspace system docs: `docs/systems/cortex-level.md` and
+  `docs/systems/INDEX.md` (separate repository scope; updated in the workspace).
 - Plugin verification report.
 - `cortex-toolkit`: `skills/cortex-level/SKILL.md`,
   `resources/level-patterns.md`, `resources/level-design.md`,

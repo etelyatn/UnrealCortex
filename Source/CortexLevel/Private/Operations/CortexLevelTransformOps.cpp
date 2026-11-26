@@ -154,6 +154,8 @@ FCortexCommandResult FCortexLevelTransformOps::SetTransform(const TSharedPtr<FJs
             FString::Printf(TEXT("%s must be a [x,y,z] array of numbers"), FieldName));
     }
 
+    FCortexLevelPIETransactionScope PIEScope(World);
+
     FScopedTransaction Transaction(
         FText::FromString(TEXT("Cortex: Set Actor Transform")),
         FCortexLevelUtils::ShouldTransact(World));
@@ -223,6 +225,8 @@ FCortexCommandResult FCortexLevelTransformOps::SetActorProperty(const TSharedPtr
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: value"));
     }
+
+    FCortexLevelPIETransactionScope PIEScope(World);
 
     FScopedTransaction Transaction(
         FText::FromString(TEXT("Cortex: Set Actor Property")),

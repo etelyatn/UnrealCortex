@@ -1,16 +1,39 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/TransArray.h"
 #include "CortexCommandRouter.h"
 
 class AActor;
 class UWorld;
 class UJsonObject;
 
+/** Detaches the editor transaction buffer while a PIE write runs. PIE world clones retain
+ *  RF_Transactional and an outer core.batch transaction keeps GUndo active, so an engine setter
+ *  (SetActorLabel, SetFolderPath, ...) would otherwise journal transient PIE objects; PIE
+ *  teardown then resets the whole undo history. Inactive for editor-world writes. */
+class FCortexLevelPIETransactionScope
+{
+public:
+    explicit FCortexLevelPIETransactionScope(UWorld* World);
+    ~FCortexLevelPIETransactionScope();
+
+    FCortexLevelPIETransactionScope(const FCortexLevelPIETransactionScope&) = delete;
+    FCortexLevelPIETransactionScope& operator=(const FCortexLevelPIETransactionScope&) = delete;
+
+private:
+    bool bActive = false;
+    ITransaction* PreviousUndo = nullptr;
+};
+
 class FCortexLevelUtils
 {
 public:
     static UWorld* GetEditorWorld(FCortexCommandResult& OutError);
+
+    /** Parse the optional `world` param. Absent means "editor". A present empty, non-string or
+     *  unknown value is refused with INVALID_VALUE. */
+    static bool ParseWorldMode(const TSharedPtr<FJsonObject>& Params, FString& OutWorldMode, FCortexCommandResult& OutError);
 
     /** Resolve the optional `world` param: absent or "editor" targets the editor world,
      *  "pie" targets GEditor->PlayWorld (PIE_NOT_ACTIVE when PIE is not running), and any
@@ -21,8 +44,12 @@ public:
      *  editor transaction buffer (PIE teardown resets it and discards editor undo history). */
     static bool ShouldTransact(UWorld* World);
 
-    /** Copy a top-level `world` into every batch item whose params do not already set one. */
-    static void ApplyWorldToBatchRequest(const TSharedPtr<FJsonObject>& Params, FCortexBatchMutationRequest& Request);
+    /** Validate a top-level `world` and copy it into every batch item whose params do not already
+     *  set one. Returns false with the same INVALID_VALUE refusal the single-target shape uses. */
+    static bool ApplyWorldToBatchRequest(
+        const TSharedPtr<FJsonObject>& Params,
+        FCortexBatchMutationRequest& Request,
+        FCortexCommandResult& OutError);
 
     static AActor* FindActorByLabelOrPath(UWorld* World, const FString& ActorIdentifier, FCortexCommandResult& OutError);
     static UClass* ResolveActorClass(const FString& ClassIdentifier, FCortexCommandResult& OutError);

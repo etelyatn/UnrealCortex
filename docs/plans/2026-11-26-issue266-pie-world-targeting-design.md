@@ -53,7 +53,8 @@ Batched write commands (`delete_actor`, `rename_actor`, `attach_actor`,
 `detach_actor`, `set_tags`, `set_folder`, `set_component_property`) apply a
 top-level `world` to every item whose own params do not set one. A per-item
 `world` overrides the top-level value. Preflight and commit therefore resolve the
-same world for each item.
+same world for each item. A malformed top-level `world` is refused with
+`INVALID_VALUE` before any item runs, matching the single-target shape.
 
 ### PIE write semantics
 
@@ -63,9 +64,17 @@ same world for each item.
 - Write commands open an `FScopedTransaction` only for the editor world. PIE writes
   are transient and must not put PIE objects in the editor transaction buffer,
   because PIE teardown then resets that buffer and discards editor undo history.
-- `spawn_actor` sets `RF_Transactional` only for editor-world spawns.
+- `core.batch` opens one outer transaction for the whole batch, so PIE writes also
+  detach `GUndo` for their operation scope (`FCortexLevelPIETransactionScope`).
+  This covers engine setters such as `SetActorLabel` and `SetFolderPath`, not only
+  Cortex's explicit `Modify` calls.
+- `spawn_actor` sets `RF_Transactional` only for editor-world spawns;
+  `add_component` likewise only gives the new component `RF_Transactional` in the
+  editor world.
 - Actor labels and folders are editor metadata but remain legal on PIE actors; they
   are useful for identifying transient test actors.
+- `duplicate_actor` refuses `world: "pie"` in both single and batched forms before
+  any write; the batch reports `preflight_failed`.
 
 ### `set_pie_view`
 

@@ -52,19 +52,10 @@ UWorld* FCortexLevelUtils::GetEditorWorld(FCortexCommandResult& OutError)
 
 UWorld* FCortexLevelUtils::ResolveWorld(const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)
 {
-    FString WorldMode = TEXT("editor");
-    if (Params.IsValid() && Params->HasField(TEXT("world")))
+    FString WorldMode;
+    if (!ParseWorldMode(Params, WorldMode, OutError))
     {
-        FString RequestedWorld;
-        if (!Params->TryGetStringField(TEXT("world"), RequestedWorld) || RequestedWorld.IsEmpty())
-        {
-            OutError = FCortexCommandRouter::Error(
-                CortexErrorCodes::InvalidValue,
-                TEXT("world must be 'editor' or 'pie'")
-            );
-            return nullptr;
-        }
-        WorldMode = RequestedWorld;
+        return nullptr;
     }
 
     if (WorldMode.Equals(TEXT("editor"), ESearchCase::IgnoreCase))
@@ -72,22 +63,48 @@ UWorld* FCortexLevelUtils::ResolveWorld(const TSharedPtr<FJsonObject>& Params, F
         return GetEditorWorld(OutError);
     }
 
-    if (WorldMode.Equals(TEXT("pie"), ESearchCase::IgnoreCase))
+    UWorld* PlayWorld = FCortexPIEUtils::GetPIEWorld();
+    if (PlayWorld == nullptr)
     {
-        UWorld* PlayWorld = FCortexPIEUtils::GetPIEWorld();
-        if (PlayWorld == nullptr)
-        {
-            OutError = FCortexPIEUtils::PIENotActiveError();
-            return nullptr;
-        }
-        return PlayWorld;
+        OutError = FCortexPIEUtils::PIENotActiveError();
+        return nullptr;
+    }
+    return PlayWorld;
+}
+
+bool FCortexLevelUtils::ParseWorldMode(
+    const TSharedPtr<FJsonObject>& Params,
+    FString& OutWorldMode,
+    FCortexCommandResult& OutError)
+{
+    OutWorldMode = TEXT("editor");
+    if (!Params.IsValid() || !Params->HasField(TEXT("world")))
+    {
+        return true;
     }
 
-    OutError = FCortexCommandRouter::Error(
-        CortexErrorCodes::InvalidValue,
-        FString::Printf(TEXT("world must be 'editor' or 'pie', got '%s'"), *WorldMode)
-    );
-    return nullptr;
+    FString RequestedWorld;
+    if (!Params->TryGetStringField(TEXT("world"), RequestedWorld) || RequestedWorld.IsEmpty())
+    {
+        OutError = FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidValue,
+            TEXT("world must be 'editor' or 'pie'")
+        );
+        return false;
+    }
+
+    if (!RequestedWorld.Equals(TEXT("editor"), ESearchCase::IgnoreCase)
+        && !RequestedWorld.Equals(TEXT("pie"), ESearchCase::IgnoreCase))
+    {
+        OutError = FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidValue,
+            FString::Printf(TEXT("world must be 'editor' or 'pie', got '%s'"), *RequestedWorld)
+        );
+        return false;
+    }
+
+    OutWorldMode = RequestedWorld;
+    return true;
 }
 
 bool FCortexLevelUtils::ShouldTransact(UWorld* World)
@@ -95,14 +112,20 @@ bool FCortexLevelUtils::ShouldTransact(UWorld* World)
     return World != nullptr && World->WorldType != EWorldType::PIE;
 }
 
-void FCortexLevelUtils::ApplyWorldToBatchRequest(
+bool FCortexLevelUtils::ApplyWorldToBatchRequest(
     const TSharedPtr<FJsonObject>& Params,
-    FCortexBatchMutationRequest& Request)
+    FCortexBatchMutationRequest& Request,
+    FCortexCommandResult& OutError)
 {
     FString WorldMode;
-    if (!Params.IsValid() || !Params->TryGetStringField(TEXT("world"), WorldMode) || WorldMode.IsEmpty())
+    if (!ParseWorldMode(Params, WorldMode, OutError))
     {
-        return;
+        return false;
+    }
+
+    if (!Params.IsValid() || !Params->HasField(TEXT("world")))
+    {
+        return true;
     }
 
     for (FCortexBatchMutationItem& Item : Request.Items)
@@ -111,6 +134,25 @@ void FCortexLevelUtils::ApplyWorldToBatchRequest(
         {
             Item.Params->SetStringField(TEXT("world"), WorldMode);
         }
+    }
+    return true;
+}
+
+FCortexLevelPIETransactionScope::FCortexLevelPIETransactionScope(UWorld* World)
+    : bActive(World != nullptr && World->WorldType == EWorldType::PIE)
+    , PreviousUndo(GUndo)
+{
+    if (bActive)
+    {
+        GUndo = nullptr;
+    }
+}
+
+FCortexLevelPIETransactionScope::~FCortexLevelPIETransactionScope()
+{
+    if (bActive)
+    {
+        GUndo = PreviousUndo;
     }
 }
 

@@ -9,6 +9,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/PlayerController.h"
@@ -184,6 +185,59 @@ bool FCortexLevelPIEWorldValidationTest::RunTest(const FString& Parameters)
     TestNull(
         TEXT("a refused PIE spawn creates no editor-world actor"),
         FCortexLevelUtils::FindActorByLabelOrPath(EditorWorld, Label, FindError));
+
+    TSharedPtr<FJsonObject> ViewWithoutPIEParams = MakeShared<FJsonObject>();
+    ViewWithoutPIEParams->SetArrayField(TEXT("location"), MakeLevelPIEVector(0.0, 0.0, 100.0));
+    ViewWithoutPIEParams->SetArrayField(TEXT("rotation"), MakeLevelPIEVector(0.0, 0.0, 0.0));
+    const FCortexCommandResult ViewWithoutPIE =
+        Router.Execute(TEXT("level.set_pie_view"), ViewWithoutPIEParams);
+    TestFalse(TEXT("set_pie_view without PIE is refused"), ViewWithoutPIE.bSuccess);
+    TestEqual(TEXT("set_pie_view without PIE reports PIE_NOT_ACTIVE"), ViewWithoutPIE.ErrorCode,
+        FString(CortexErrorCodes::PIENotActive));
+
+    // A malformed top-level batch world must refuse before any editor-world write, not fall
+    // back to the editor world and delete the target.
+    const FString GuardLabel = MakeLevelPIETestLabel(TEXT("CortexPIEBatchGuard"));
+    TSharedPtr<FJsonObject> GuardSpawnParams = MakeShared<FJsonObject>();
+    GuardSpawnParams->SetStringField(TEXT("class_name"), TEXT("TargetPoint"));
+    GuardSpawnParams->SetArrayField(TEXT("location"), MakeLevelPIEVector(10.0, 20.0, 30.0));
+    GuardSpawnParams->SetStringField(TEXT("label"), GuardLabel);
+    const FCortexCommandResult GuardSpawn =
+        Router.Execute(TEXT("level.spawn_actor"), GuardSpawnParams);
+    TestTrue(TEXT("the batch guard actor spawns in the editor world"), GuardSpawn.bSuccess);
+
+    FCortexCommandResult GuardFindError;
+    AActor* GuardActor = FCortexLevelUtils::FindActorByLabelOrPath(EditorWorld, GuardLabel, GuardFindError);
+    TestNotNull(TEXT("the batch guard actor exists"), GuardActor);
+
+    const FString GuardName = GuardSpawn.Data.IsValid()
+        ? GuardSpawn.Data->GetStringField(TEXT("name"))
+        : FString();
+    if (!GuardName.IsEmpty())
+    {
+        TArray<TSharedPtr<FJsonValue>> GuardItems;
+        TSharedPtr<FJsonObject> GuardItem = MakeShared<FJsonObject>();
+        GuardItem->SetStringField(TEXT("target"), GuardName);
+        GuardItems.Add(MakeShared<FJsonValueObject>(GuardItem));
+
+        TSharedPtr<FJsonObject> BadBatchParams = MakeShared<FJsonObject>();
+        BadBatchParams->SetArrayField(TEXT("items"), GuardItems);
+        BadBatchParams->SetNumberField(TEXT("world"), 123.0);
+        const FCortexCommandResult BadBatch =
+            Router.Execute(TEXT("level.delete_actor"), BadBatchParams);
+        TestFalse(TEXT("a malformed batched world is refused"), BadBatch.bSuccess);
+        TestEqual(TEXT("a malformed batched world reports INVALID_VALUE"), BadBatch.ErrorCode,
+            FString(CortexErrorCodes::InvalidValue));
+        TestNotNull(
+            TEXT("a malformed batched world does not delete the editor actor"),
+            FCortexLevelUtils::FindActorByLabelOrPath(EditorWorld, GuardLabel, GuardFindError));
+
+        TSharedPtr<FJsonObject> GuardCleanupParams = MakeShared<FJsonObject>();
+        GuardCleanupParams->SetStringField(TEXT("actor"), GuardName);
+        const FCortexCommandResult GuardCleanup =
+            Router.Execute(TEXT("level.delete_actor"), GuardCleanupParams);
+        TestTrue(TEXT("the batch guard actor is cleaned up"), GuardCleanup.bSuccess);
+    }
 
     return true;
 }
@@ -369,13 +423,26 @@ bool FCortexLevelPIEActorCommandsTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("PIE duplicate is an invalid operation"), DuplicateResult.ErrorCode,
             FString(CortexErrorCodes::InvalidOperation));
 
-        TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
-        DeleteParams->SetStringField(TEXT("actor"), ActorName);
-        DeleteParams->SetStringField(TEXT("world"), TEXT("pie"));
-        const FCortexCommandResult DeleteResult = Router.Execute(TEXT("level.delete_actor"), DeleteParams);
-        TestTrue(TEXT("delete_actor world=pie succeeds"), DeleteResult.bSuccess);
-        TestNull(TEXT("the PIE actor is gone after delete"),
-            FCortexLevelUtils::FindActorByLabelOrPath(PlayWorld, ActorName, FindError));
+        TArray<TSharedPtr<FJsonValue>> DuplicateItems;
+        TSharedPtr<FJsonObject> DuplicateItem = MakeShared<FJsonObject>();
+        DuplicateItem->SetStringField(TEXT("target"), ActorName);
+        DuplicateItems.Add(MakeShared<FJsonValueObject>(DuplicateItem));
+
+        TSharedPtr<FJsonObject> DuplicateBatchParams = MakeShared<FJsonObject>();
+        DuplicateBatchParams->SetArrayField(TEXT("items"), DuplicateItems);
+        DuplicateBatchParams->SetStringField(TEXT("world"), TEXT("pie"));
+        const FCortexCommandResult DuplicateBatchResult =
+            Router.Execute(TEXT("level.duplicate_actor"), DuplicateBatchParams);
+        TestFalse(TEXT("a batched PIE duplicate is refused"), DuplicateBatchResult.bSuccess);
+        TestEqual(TEXT("a batched PIE duplicate is an invalid operation"), DuplicateBatchResult.ErrorCode,
+            FString(CortexErrorCodes::InvalidOperation));
+        FString DuplicateBatchStatus;
+        if (DuplicateBatchResult.ErrorDetails.IsValid())
+        {
+            DuplicateBatchResult.ErrorDetails->TryGetStringField(TEXT("status"), DuplicateBatchStatus);
+        }
+        TestEqual(TEXT("a batched PIE duplicate fails preflight, not commit"),
+            DuplicateBatchStatus, FString(TEXT("preflight_failed")));
 
         const FString EditorLabel = MakeLevelPIETestLabel(TEXT("CortexPIEEditor"));
         TSharedPtr<FJsonObject> EditorSpawnParams = MakeShared<FJsonObject>();
@@ -394,6 +461,76 @@ bool FCortexLevelPIEActorCommandsTest::RunTest(const FString& Parameters)
         {
             *EditorActorName = EditorSpawn.Data->GetStringField(TEXT("name"));
         }
+
+        // PIE world clones of editor actors retain RF_Transactional. Mark the spawned actor the
+        // same way so this batch would journal it if GUndo were not detached for the PIE step.
+        if (PIEActor != nullptr)
+        {
+            PIEActor->SetFlags(RF_Transactional);
+        }
+        if (GEditor->Trans != nullptr)
+        {
+            // Clear prior undo entries so the batch's editor-world write is the only source of a
+            // committed transaction in this assertion; this test process owns its undo history.
+            GEditor->Trans->Reset(FText::FromString(TEXT("Cortex PIE batch transaction test")));
+        }
+
+        TArray<TSharedPtr<FJsonValue>> BatchCommands;
+
+        TSharedPtr<FJsonObject> PIEBatchStepParams = MakeShared<FJsonObject>();
+        PIEBatchStepParams->SetStringField(TEXT("actor"), ActorName);
+        PIEBatchStepParams->SetStringField(TEXT("world"), TEXT("pie"));
+        PIEBatchStepParams->SetArrayField(TEXT("location"), MakeLevelPIEVector(1400.0, 2400.0, 450.0));
+        TSharedPtr<FJsonObject> PIEBatchStep = MakeShared<FJsonObject>();
+        PIEBatchStep->SetStringField(TEXT("command"), TEXT("level.set_transform"));
+        PIEBatchStep->SetObjectField(TEXT("params"), PIEBatchStepParams);
+        BatchCommands.Add(MakeShared<FJsonValueObject>(PIEBatchStep));
+
+        TSharedPtr<FJsonObject> EditorBatchStepParams = MakeShared<FJsonObject>();
+        EditorBatchStepParams->SetStringField(TEXT("actor"), *EditorActorName);
+        EditorBatchStepParams->SetArrayField(TEXT("location"), MakeLevelPIEVector(11.0, 21.0, 31.0));
+        TSharedPtr<FJsonObject> EditorBatchStep = MakeShared<FJsonObject>();
+        EditorBatchStep->SetStringField(TEXT("command"), TEXT("level.set_transform"));
+        EditorBatchStep->SetObjectField(TEXT("params"), EditorBatchStepParams);
+        BatchCommands.Add(MakeShared<FJsonValueObject>(EditorBatchStep));
+
+        TSharedPtr<FJsonObject> BatchParams = MakeShared<FJsonObject>();
+        BatchParams->SetArrayField(TEXT("commands"), BatchCommands);
+        const FGuid UndoBefore = GEditor->Trans != nullptr
+            ? GEditor->Trans->GetUndoContext(false).TransactionId
+            : FGuid();
+        const FCortexCommandResult BatchResult = Router.Execute(TEXT("batch"), BatchParams);
+        const FGuid UndoAfter = GEditor->Trans != nullptr
+            ? GEditor->Trans->GetUndoContext(false).TransactionId
+            : FGuid();
+        TestTrue(TEXT("a PIE level write inside core.batch succeeds"), BatchResult.bSuccess);
+        TestNotNull(TEXT("the editor transaction buffer is available"), GEditor->Trans.Get());
+        if (GEditor->Trans != nullptr)
+        {
+            if (EditorActor != nullptr)
+            {
+                TestTrue(
+                    TEXT("the editor-world batch write is journaled"),
+                    GEditor->Trans->IsObjectInTransactionBuffer(EditorActor));
+            }
+            if (PIEActor != nullptr)
+            {
+                TestFalse(
+                    TEXT("the PIE actor is not in the editor transaction buffer"),
+                    GEditor->Trans->IsObjectInTransactionBuffer(PIEActor));
+            }
+            TestTrue(
+                TEXT("the batch commits an undo entry"),
+                UndoAfter != UndoBefore);
+        }
+
+        TSharedPtr<FJsonObject> DeleteParams = MakeShared<FJsonObject>();
+        DeleteParams->SetStringField(TEXT("actor"), ActorName);
+        DeleteParams->SetStringField(TEXT("world"), TEXT("pie"));
+        const FCortexCommandResult DeleteResult = Router.Execute(TEXT("level.delete_actor"), DeleteParams);
+        TestTrue(TEXT("delete_actor world=pie succeeds"), DeleteResult.bSuccess);
+        TestNull(TEXT("the PIE actor is gone after delete"),
+            FCortexLevelUtils::FindActorByLabelOrPath(PlayWorld, ActorName, FindError));
 
         return true;
     }));
@@ -456,6 +593,15 @@ bool FCortexLevelPIESetViewTest::RunTest(const FString& Parameters)
 
         FCortexCommandRouter Router = CreateLevelPIERouter();
         FCortexCommandResult FindError;
+
+        TSharedPtr<FJsonObject> BadFovParams = MakeShared<FJsonObject>();
+        BadFovParams->SetArrayField(TEXT("location"), MakeLevelPIEVector(500.0, 600.0, 700.0));
+        BadFovParams->SetArrayField(TEXT("rotation"), MakeLevelPIEVector(-10.0, 45.0, 0.0));
+        BadFovParams->SetNumberField(TEXT("fov"), 200.0);
+        const FCortexCommandResult BadFov = Router.Execute(TEXT("level.set_pie_view"), BadFovParams);
+        TestFalse(TEXT("an out-of-range set_pie_view FOV is refused"), BadFov.bSuccess);
+        TestEqual(TEXT("an out-of-range FOV reports INVALID_VALUE"), BadFov.ErrorCode,
+            FString(CortexErrorCodes::InvalidValue));
 
         TSharedPtr<FJsonObject> FirstParams = MakeShared<FJsonObject>();
         FirstParams->SetArrayField(TEXT("location"), MakeLevelPIEVector(500.0, 600.0, 700.0));

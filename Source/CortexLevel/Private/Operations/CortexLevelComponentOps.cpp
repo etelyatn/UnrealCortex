@@ -412,12 +412,16 @@ FCortexCommandResult FCortexLevelComponentOps::AddComponent(const TSharedPtr<FJs
         }
     }
 
+    FCortexLevelPIETransactionScope PIEScope(World);
+
     FScopedTransaction Transaction(
         FText::FromString(TEXT("Cortex: Add Component")),
         FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
 
-    UActorComponent* NewComponent = NewObject<UActorComponent>(Actor, ComponentClass, NewName, RF_Transactional);
+    const EObjectFlags NewComponentFlags =
+        FCortexLevelUtils::ShouldTransact(World) ? RF_Transactional : RF_NoFlags;
+    UActorComponent* NewComponent = NewObject<UActorComponent>(Actor, ComponentClass, NewName, NewComponentFlags);
     if (!NewComponent)
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to allocate component"));
@@ -492,6 +496,8 @@ FCortexCommandResult FCortexLevelComponentOps::RemoveComponent(const TSharedPtr<
     }
 
     const FString RemovedName = Component->GetName();
+
+    FCortexLevelPIETransactionScope PIEScope(World);
 
     FScopedTransaction Transaction(
         FText::FromString(TEXT("Cortex: Remove Component")),
@@ -579,7 +585,11 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
         {
             return ParseError;
         }
-        FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request);
+        FCortexCommandResult WorldError;
+        if (!FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request, WorldError))
+        {
+            return WorldError;
+        }
 
         return MakeLevelComponentBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -645,6 +655,8 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
         return FCortexCommandRouter::Error(CortexErrorCodes::PropertyNotFound,
             FString::Printf(TEXT("Property not found: %s"), *PropertyName));
     }
+
+    FCortexLevelPIETransactionScope PIEScope(World);
 
     FScopedTransaction Transaction(
         FText::FromString(TEXT("Cortex: Set Component Property")),
