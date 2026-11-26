@@ -814,7 +814,7 @@ def test_core_names_view_never_truncates_the_saved_capabilities_cache(tmp_path, 
     assert names_view.get("_error") is None, names_view
     assert sorted(names_view["domains"]) == sorted(capabilities["domains"])
     assert all(
-        "params" not in command
+        isinstance(command, str)
         for domain in names_view["domains"].values()
         for command in domain["commands"]
     )
