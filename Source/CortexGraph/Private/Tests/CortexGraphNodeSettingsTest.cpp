@@ -36,6 +36,7 @@ namespace CortexGraphNodeSettingsTest
 	constexpr const TCHAR* ModifyBoneClass = TEXT("/Script/AnimGraph.AnimGraphNode_ModifyBone");
 	constexpr const TCHAR* LayeredBoneBlendClass = TEXT("/Script/AnimGraph.AnimGraphNode_LayeredBoneBlend");
 	constexpr const TCHAR* AnimDynamicsClass = TEXT("/Script/AnimGraph.AnimGraphNode_AnimDynamics");
+	constexpr const TCHAR* TrailClass = TEXT("/Script/AnimGraph.AnimGraphNode_Trail");
 	constexpr const TCHAR* LocalToComponentClass = TEXT("/Script/AnimGraph.AnimGraphNode_LocalToComponentSpace");
 	constexpr const TCHAR* ComponentToLocalClass = TEXT("/Script/AnimGraph.AnimGraphNode_ComponentToLocalSpace");
 	constexpr const TCHAR* RootNodeClass = TEXT("/Script/AnimGraph.AnimGraphNode_Root");
@@ -550,7 +551,7 @@ bool FCortexGraphNodeSettingsReconstructTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	FKismetEditorUtilities::CompileBlueprint(Fixture.AnimBlueprint);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.AnimBlueprint, EBlueprintCompileOptions::SkipSave);
 	FGraphNodeCreator<UK2Node_VariableGet> GetterCreator(*AnimGraph);
 	UK2Node_VariableGet* Getter = GetterCreator.CreateNode();
 	Getter->VariableReference.SetSelfMember(VariableName);
@@ -558,7 +559,7 @@ bool FCortexGraphNodeSettingsReconstructTest::RunTest(const FString& Parameters)
 	BoolPin = ModifyBone->FindPin(TEXT("bAlphaBoolEnabled"), EGPD_Input);
 	TestTrue(TEXT("variable linked to bAlphaBoolEnabled"), Schema->TryCreateConnection(Getter->GetValuePin(), BoolPin));
 
-	FKismetEditorUtilities::CompileBlueprint(Fixture.AnimBlueprint);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.AnimBlueprint, EBlueprintCompileOptions::SkipSave);
 	TestEqual(TEXT("AnimBP compiles cleanly"), static_cast<int32>(Fixture.AnimBlueprint->Status), static_cast<int32>(BS_UpToDate));
 	UAnimBlueprintGeneratedClass* GeneratedClass = Cast<UAnimBlueprintGeneratedClass>(Fixture.AnimBlueprint->GeneratedClass);
 	const FAnimNode_Base* Compiled = GeneratedClass != nullptr
@@ -685,6 +686,15 @@ bool FCortexGraphNodeSettingsRefusalTest::RunTest(const FString& Parameters)
 		TestEqual(FString::Printf(TEXT("%s error code"), Case.What), Result.ErrorCode, FString(Case.Code));
 	}
 
+	// The same value addressed twice (a struct value and one of its members, names in another case) is refused.
+	TSharedPtr<FJsonObject> Blend = MakeShared<FJsonObject>();
+	Blend->SetNumberField(TEXT("BlendInTime"), 0.2);
+	TSharedPtr<FJsonObject> Overlapping = Values(TEXT("AlphaBoolBlend"), MakeShared<FJsonValueObject>(Blend));
+	Overlapping->SetNumberField(TEXT("alphaboolblend.blendintime"), 0.4);
+	const FCortexCommandResult OverlapResult = Router.Execute(TEXT("graph.set_node_settings"), SetParams(Fixture, ModifyBone, Overlapping));
+	TestFalse(TEXT("overlapping paths are refused"), OverlapResult.bSuccess);
+	TestEqual(TEXT("overlapping paths error code"), OverlapResult.ErrorCode, FString(TEXT("INVALID_FIELD")));
+
 	TSharedPtr<FJsonObject> Empty = SetParams(Fixture, ModifyBone, MakeShared<FJsonObject>());
 	const FCortexCommandResult EmptyResult = Router.Execute(TEXT("graph.set_node_settings"), Empty);
 	TestFalse(TEXT("empty values are refused"), EmptyResult.bSuccess);
@@ -725,6 +735,19 @@ bool FCortexGraphNodeSettingsRefusalTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("a token from before an unsaved settings edit is refused"), ReplayedResult.bSuccess);
 		TestEqual(TEXT("replayed token error code"), ReplayedResult.ErrorCode, FString(TEXT("STALE_PRECONDITION")));
 		TestEqual(TEXT("the replayed request writes nothing"), NativeText(ModifyBone, TEXT("RotationSpace")), FString(TEXT("BCS_WorldSpace")));
+
+		// A float change the text export would round away (0.25 -> 0.2500001) still invalidates an older token.
+		TSharedPtr<FJsonObject> Quarter = MakeShared<FJsonObject>();
+		Quarter->SetNumberField(TEXT("AlphaBoolBlend.BlendInTime"), 0.25);
+		TestTrue(TEXT("blend-in time set to 0.25"), Router.Execute(TEXT("graph.set_node_settings"), SetParams(Fixture, ModifyBone, Quarter)).bSuccess);
+		const FCortexCommandResult AtQuarter = Router.Execute(TEXT("graph.get_node_settings"), NodeParams(Fixture, ModifyBone));
+		TSharedPtr<FJsonObject> Nudge = MakeShared<FJsonObject>();
+		Nudge->SetNumberField(TEXT("AlphaBoolBlend.BlendInTime"), 0.2500001);
+		TestTrue(TEXT("blend-in time nudged"), Router.Execute(TEXT("graph.set_node_settings"), SetParams(Fixture, ModifyBone, Nudge)).bSuccess);
+		TSharedPtr<FJsonObject> AfterNudge = SetParams(Fixture, ModifyBone, Values(TEXT("RotationSpace"), MakeShared<FJsonValueString>(TEXT("BCS_ParentBoneSpace"))));
+		AfterNudge->SetObjectField(TEXT("expected_fingerprint"), AtQuarter.Data->GetObjectField(TEXT("fingerprint")));
+		TestEqual(TEXT("a token from before a sub-precision float edit is refused"),
+			Router.Execute(TEXT("graph.set_node_settings"), AfterNudge).ErrorCode, FString(TEXT("STALE_PRECONDITION")));
 	}
 	return true;
 }
@@ -782,6 +805,29 @@ bool FCortexGraphNodeSettingsArrayTest::RunTest(const FString& Parameters)
 	const FCortexCommandResult Refused = Router.Execute(TEXT("graph.set_node_settings"), SetParams(Fixture, Layered, OutOfRange));
 	TestFalse(TEXT("an out-of-range index is refused"), Refused.bSuccess);
 	TestEqual(TEXT("out-of-range error code"), Refused.ErrorCode, FString(TEXT("INVALID_PROPERTY_PATH")));
+
+	// Clearing a large array is a small request: its readback stays deliverable and the write is reported as applied.
+	TArray<TSharedPtr<FJsonValue>> ManyFilters;
+	for (int32 Index = 0; Index < 400; ++Index)
+	{
+		TSharedPtr<FJsonObject> Many = MakeShared<FJsonObject>();
+		Many->SetStringField(TEXT("BoneName"), FString::Printf(TEXT("filter_bone_%03d"), Index));
+		Many->SetNumberField(TEXT("BlendDepth"), 1.0);
+		ManyFilters.Add(MakeShared<FJsonValueObject>(Many));
+	}
+	TSharedPtr<FJsonObject> Large = MakeShared<FJsonObject>();
+	Large->SetArrayField(TEXT("LayerSetup[0].BranchFilters"), ManyFilters);
+	TestTrue(TEXT("a large filter array is written"), Router.Execute(TEXT("graph.set_node_settings"), SetParams(Fixture, Layered, Large)).bSuccess);
+	TSharedPtr<FJsonObject> Clear = MakeShared<FJsonObject>();
+	Clear->SetArrayField(TEXT("LayerSetup[0].BranchFilters"), TArray<TSharedPtr<FJsonValue>>());
+	const FCortexCommandResult Cleared = Router.Execute(TEXT("graph.set_node_settings"), SetParams(Fixture, Layered, Clear));
+	if (TestTrue(FString::Printf(TEXT("clearing the large array succeeds: %s"), *Cleared.ErrorMessage), Cleared.bSuccess))
+	{
+		const TSharedPtr<FJsonObject> Change = Cleared.Data->GetArrayField(TEXT("changes"))[0]->AsObject();
+		TestTrue(TEXT("the oversized before value is omitted"), Change->HasTypedField<EJson::Null>(TEXT("before")));
+		TestTrue(TEXT("the omitted size is reported"), Change->GetNumberField(TEXT("before_omitted_chars")) > 8192);
+		TestEqual(TEXT("the array is cleared"), NativeText(Layered, TEXT("LayerSetup[0].BranchFilters[0]")), FString(TEXT("<unresolved>")));
+	}
 	return true;
 }
 
@@ -815,7 +861,7 @@ bool FCortexGraphNodeSettingsUndoLinksTest::RunTest(const FString& Parameters)
 	{
 		return false;
 	}
-	FKismetEditorUtilities::CompileBlueprint(Fixture.AnimBlueprint);
+	FKismetEditorUtilities::CompileBlueprint(Fixture.AnimBlueprint, EBlueprintCompileOptions::SkipSave);
 	FGraphNodeCreator<UK2Node_VariableGet> GetterCreator(*AnimGraph);
 	UK2Node_VariableGet* Getter = GetterCreator.CreateNode();
 	Getter->VariableReference.SetSelfMember(VariableName);
@@ -913,6 +959,50 @@ bool FCortexGraphNodeSettingsAggregateRestrictionsTest::RunTest(const FString& P
 	TestEqual(TEXT("fixed-size error code"), ResizedResult.ErrorCode, FString(TEXT("INVALID_VALUE")));
 
 	TestEqual(TEXT("no refused request changed the bodies"), NativeText(Dynamics, TEXT("PhysicsBodyDefinitions")), BodiesBefore);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphNodeSettingsNumericClampsTest,
+	"Cortex.Graph.NodeSettings.NumericClamps",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexGraphNodeSettingsNumericClampsTest::RunTest(const FString& Parameters)
+{
+	using namespace CortexGraphNodeSettingsTest;
+
+	FFixture Fixture;
+	if (!TestTrue(TEXT("AnimBP fixture created"), Fixture.Create()))
+	{
+		return false;
+	}
+	FCortexCommandRouter Router = MakeRouter();
+	UEdGraphNode* Trail = AddAnimNode(*this, Router, Fixture, TrailClass);
+	if (!TestNotNull(TEXT("Trail node"), Trail))
+	{
+		return false;
+	}
+	const FString LengthBefore = NativeText(Trail, TEXT("ChainLength"));
+
+	// ChainLength declares ClampMin=2; the node's edit reaction sizes arrays from it (a negative size is fatal).
+	TSharedPtr<FJsonObject> Negative = MakeShared<FJsonObject>();
+	Negative->SetNumberField(TEXT("ChainLength"), -1.0);
+	TSharedPtr<FJsonObject> Preview = SetParams(Fixture, Trail, Negative);
+	Preview->SetBoolField(TEXT("dry_run"), true);
+	const FCortexCommandResult PreviewResult = Router.Execute(TEXT("graph.set_node_settings"), Preview);
+	TestFalse(TEXT("a preview of an out-of-range value is refused"), PreviewResult.bSuccess);
+	TestEqual(TEXT("out-of-range preview error code"), PreviewResult.ErrorCode, FString(TEXT("INVALID_VALUE")));
+	const FCortexCommandResult ApplyResult = Router.Execute(TEXT("graph.set_node_settings"), SetParams(Fixture, Trail, Negative));
+	TestFalse(TEXT("an out-of-range value is refused"), ApplyResult.bSuccess);
+	TestEqual(TEXT("out-of-range error code"), ApplyResult.ErrorCode, FString(TEXT("INVALID_VALUE")));
+	TestEqual(TEXT("the refused value is not written"), NativeText(Trail, TEXT("ChainLength")), LengthBefore);
+
+	TSharedPtr<FJsonObject> InRange = MakeShared<FJsonObject>();
+	InRange->SetNumberField(TEXT("ChainLength"), 3.0);
+	const FCortexCommandResult InRangeResult = Router.Execute(TEXT("graph.set_node_settings"), SetParams(Fixture, Trail, InRange));
+	TestTrue(FString::Printf(TEXT("an in-range value is accepted: %s"), *InRangeResult.ErrorMessage), InRangeResult.bSuccess);
+	TestEqual(TEXT("the in-range value is written"), NativeText(Trail, TEXT("ChainLength")), FString(TEXT("3")));
 	return true;
 }
 

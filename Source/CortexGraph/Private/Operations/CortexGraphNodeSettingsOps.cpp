@@ -19,6 +19,9 @@
 #include "Engine/Blueprint.h"
 #include "K2Node.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "Misc/SecureHash.h"
 #include "ScopedTransaction.h"
 #include "UObject/StructOnScope.h"
@@ -36,6 +39,8 @@ namespace
 		void* LeafValue = nullptr;
 		/** The outermost FBoneReference on the path (an ancestor or the leaf itself), when there is one. */
 		FBoneReference* BoneReference = nullptr;
+		/** The path with canonical member names (FName lookup is case-insensitive), for overlap detection. */
+		FString Canonical;
 	};
 
 	/** A refusal: the error code and message of the command result. */
@@ -58,19 +63,42 @@ namespace
 		return nullptr;
 	}
 
-	/** The asset fingerprint graph.set_pin_value uses, plus a digest of the node settings: unsaved edits of a dirty asset leave the former unchanged. */
+	bool IsEditableSetting(const FProperty* Property)
+	{
+		return Property->HasAnyPropertyFlags(CPF_Edit) && !Property->HasAnyPropertyFlags(CPF_EditConst);
+	}
+
+	/** The node's editable settings as JSON: the `settings` read output and the basis of the settings digest. */
+	TSharedPtr<FJsonObject> SettingsJson(const UScriptStruct* NodeStruct, const void* NodeValue)
+	{
+		TSharedPtr<FJsonObject> Settings = MakeShared<FJsonObject>();
+		for (TFieldIterator<FProperty> It(NodeStruct); It; ++It)
+		{
+			if (IsEditableSetting(*It))
+			{
+				Settings->SetField(It->GetName(), FCortexSerializer::PropertyToJson(*It, It->ContainerPtrToValuePtr<void>(NodeValue)));
+			}
+		}
+		return Settings;
+	}
+
+	/**
+	 * The asset fingerprint graph.set_pin_value uses, plus a digest of the node settings: unsaved edits of a dirty asset
+	 * leave the former unchanged. The digest hashes the UTF-8 JSON of the settings (numbers at full precision).
+	 */
 	TSharedPtr<FJsonObject> CurrentFingerprint(UBlueprint* Blueprint, const UEdGraphNode* Node, const FStructProperty* NodeProperty)
 	{
 		TSharedPtr<FJsonObject> Fingerprint = MakeObjectAssetFingerprint(Blueprint, GetTypeHash(static_cast<uint32>(Blueprint->Status))).ToJson();
 		FString SettingsText;
-		NodeProperty->Struct->ExportText(SettingsText, NodeProperty->ContainerPtrToValuePtr<void>(Node), nullptr, nullptr, PPF_None, nullptr);
-		Fingerprint->SetStringField(TEXT("node_settings_hash"), FMD5::HashAnsiString(*SettingsText));
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&SettingsText);
+		FJsonSerializer::Serialize(SettingsJson(NodeProperty->Struct, NodeProperty->ContainerPtrToValuePtr<void>(Node)).ToSharedRef(), Writer);
+		const FTCHARToUTF8 Utf8(*SettingsText);
+		FMD5 Md5;
+		Md5.Update(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
+		uint8 Digest[16];
+		Md5.Final(Digest);
+		Fingerprint->SetStringField(TEXT("node_settings_hash"), BytesToHex(Digest, UE_ARRAY_COUNT(Digest)));
 		return Fingerprint;
-	}
-
-	bool IsEditableSetting(const FProperty* Property)
-	{
-		return Property->HasAnyPropertyFlags(CPF_Edit) && !Property->HasAnyPropertyFlags(CPF_EditConst);
 	}
 
 	bool ParseSegment(const FString& Segment, FString& OutName, int32& OutIndex)
@@ -140,6 +168,11 @@ namespace
 			{
 				Out.Member = Property;
 			}
+			Out.Canonical += (SegmentIndex == 0 ? TEXT("") : TEXT(".")) + Property->GetName();
+			if (ElementIndex != INDEX_NONE)
+			{
+				Out.Canonical += FString::Printf(TEXT("[%d]"), ElementIndex);
+			}
 
 			void* Value = Property->ContainerPtrToValuePtr<void>(Container);
 			if (ElementIndex != INDEX_NONE)
@@ -186,7 +219,8 @@ namespace
 	/**
 	 * The write restrictions of a path, applied inside an aggregate JSON value too: every named struct field must exist
 	 * and be editable, a fixed-size array keeps its length, and instanced sub-objects (which the scratch copy shares with
-	 * the live node) are never replaced by value. Value is the current value when known (null for a new element).
+	 * the live node) are never replaced by value. Maps and sets are refused: their entries cannot be checked the same way.
+	 * Value is the current value when known (null for a new element).
 	 */
 	bool PreflightJsonValue(const FProperty* Property, const void* Value, const TSharedPtr<FJsonValue>& Json, const FString& Path, FSettingsRefusal& OutRefusal)
 	{
@@ -194,6 +228,12 @@ namespace
 		{
 			OutRefusal = { CortexErrorCodes::InvalidOperation,
 				FString::Printf(TEXT("'%s' holds instanced sub-objects and cannot be written by value"), *Path) };
+			return false;
+		}
+		if (Property->IsA<FMapProperty>() || Property->IsA<FSetProperty>())
+		{
+			OutRefusal = { CortexErrorCodes::InvalidOperation,
+				FString::Printf(TEXT("'%s' is a map or set; set_node_settings writes structs, arrays and scalars only"), *Path) };
 			return false;
 		}
 
@@ -281,12 +321,24 @@ namespace
 		}
 	}
 
+	/** One changed property, with the property chain and array indices the details panel reports for it. */
+	struct FChangedLeaf
+	{
+		/** From the node struct's member down to the changed property; an array element adds the array and its Inner. */
+		TArray<FProperty*> Chain;
+		/** Element index per array (or static array) property name on the chain. */
+		TMap<FString, int32> ArrayIndices;
+		/** The changed value in the scratch copy. */
+		const void* NewValue = nullptr;
+	};
+
 	/**
 	 * The properties an edit changed, at the granularity the details panel notifies: the innermost changed member of a
-	 * struct, an array whose length changed, otherwise the changed element's members.
+	 * struct, an array whose length changed, otherwise the changed element's members, each changed element separately.
 	 */
-	void CollectChangedLeaves(const FProperty* Property, const void* Old, const void* New, TArray<const FProperty*>& OutLeaves)
+	void CollectChangedLeaves(const FProperty* Property, const void* Old, const void* New, TArray<FProperty*>& Chain, TMap<FString, int32>& Indices, TArray<FChangedLeaf>& OutLeaves)
 	{
+		Chain.Push(const_cast<FProperty*>(Property));
 		for (int32 Dim = 0; Dim < Property->ArrayDim; ++Dim)
 		{
 			const void* OldElement = static_cast<const uint8*>(Old) + Dim * Property->GetElementSize();
@@ -295,11 +347,15 @@ namespace
 			{
 				continue;
 			}
+			if (Property->ArrayDim > 1)
+			{
+				Indices.Add(Property->GetName(), Dim);
+			}
 			if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
 			{
 				for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
 				{
-					CollectChangedLeaves(*It, It->ContainerPtrToValuePtr<void>(OldElement), It->ContainerPtrToValuePtr<void>(NewElement), OutLeaves);
+					CollectChangedLeaves(*It, It->ContainerPtrToValuePtr<void>(OldElement), It->ContainerPtrToValuePtr<void>(NewElement), Chain, Indices, OutLeaves);
 				}
 			}
 			else if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
@@ -308,19 +364,93 @@ namespace
 				FScriptArrayHelper NewHelper(ArrayProperty, NewElement);
 				if (OldHelper.Num() != NewHelper.Num())
 				{
-					OutLeaves.AddUnique(Property);
-					continue;
+					OutLeaves.Add({ Chain, Indices, NewElement });
 				}
-				for (int32 Index = 0; Index < NewHelper.Num(); ++Index)
+				else
 				{
-					CollectChangedLeaves(ArrayProperty->Inner, OldHelper.GetRawPtr(Index), NewHelper.GetRawPtr(Index), OutLeaves);
+					for (int32 Index = 0; Index < NewHelper.Num(); ++Index)
+					{
+						Indices.Add(ArrayProperty->GetName(), Index);
+						CollectChangedLeaves(ArrayProperty->Inner, OldHelper.GetRawPtr(Index), NewHelper.GetRawPtr(Index), Chain, Indices, OutLeaves);
+					}
+					Indices.Remove(ArrayProperty->GetName());
 				}
 			}
 			else
 			{
-				OutLeaves.AddUnique(Property);
+				OutLeaves.Add({ Chain, Indices, NewElement });
+			}
+			if (Property->ArrayDim > 1)
+			{
+				Indices.Remove(Property->GetName());
 			}
 		}
+		Chain.Pop();
+	}
+
+	/**
+	 * Numeric ClampMin/ClampMax metadata, which the details panel enforces and node edit reactions rely on (an
+	 * out-of-range AnimNode_Trail ChainLength reaches TArray::SetNum with a negative size). MetaSource carries the
+	 * metadata of an array's elements.
+	 */
+	bool CheckNumericClamps(const FProperty* Property, const FProperty* MetaSource, const void* Value, const FString& Name, FString& OutError)
+	{
+		for (int32 Dim = 0; Dim < Property->ArrayDim; ++Dim)
+		{
+			const void* Element = static_cast<const uint8*>(Value) + Dim * Property->GetElementSize();
+			if (const FNumericProperty* Numeric = CastField<FNumericProperty>(Property))
+			{
+				if (Numeric->IsEnum())
+				{
+					continue;
+				}
+				const double Number = Numeric->IsFloatingPoint()
+					? Numeric->GetFloatingPointPropertyValue(Element)
+					: static_cast<double>(Numeric->GetSignedIntPropertyValue(Element));
+				const FString& Min = MetaSource->GetMetaData(TEXT("ClampMin"));
+				const FString& Max = MetaSource->GetMetaData(TEXT("ClampMax"));
+				if ((!Min.IsEmpty() && Number < FCString::Atod(*Min)) || (!Max.IsEmpty() && Number > FCString::Atod(*Max)))
+				{
+					OutError = FString::Printf(TEXT("'%s' = %s is outside its allowed range [%s, %s]"), *Name,
+						*FString::SanitizeFloat(Number), Min.IsEmpty() ? TEXT("-inf") : *Min, Max.IsEmpty() ? TEXT("inf") : *Max);
+					return false;
+				}
+			}
+			else if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+			{
+				for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
+				{
+					if (!CheckNumericClamps(*It, *It, It->ContainerPtrToValuePtr<void>(Element), It->GetName(), OutError))
+					{
+						return false;
+					}
+				}
+			}
+			else if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+			{
+				FScriptArrayHelper Helper(ArrayProperty, Element);
+				for (int32 Index = 0; Index < Helper.Num(); ++Index)
+				{
+					if (!CheckNumericClamps(ArrayProperty->Inner, ArrayProperty, Helper.GetRawPtr(Index), FString::Printf(TEXT("%s[%d]"), *Name, Index), OutError))
+					{
+						return false;
+					}
+				}
+			}
+		}
+		return true;
+	}
+
+	/** The details panel's property chain for a changed leaf: the node struct property, then the leaf's chain. */
+	void BuildEditChain(FProperty* NodeProperty, const FChangedLeaf& Leaf, FEditPropertyChain& OutChain)
+	{
+		OutChain.AddTail(NodeProperty);
+		for (FProperty* Link : Leaf.Chain)
+		{
+			OutChain.AddTail(Link);
+		}
+		OutChain.SetActiveMemberPropertyNode(NodeProperty);
+		OutChain.SetActivePropertyNode(Leaf.Chain.Last());
 	}
 
 	/**
@@ -387,6 +517,25 @@ namespace
 			}
 		}
 		return Names;
+	}
+
+	/**
+	 * Sets one value of a change record, or, when its JSON is larger than MaxChars, null plus `<field>_omitted_chars`: a
+	 * small write that replaces a large array must not produce a response too large for the MCP layer to deliver.
+	 */
+	void SetBoundedChangeValue(const TSharedPtr<FJsonObject>& Change, const FString& Field, const TSharedPtr<FJsonValue>& Value)
+	{
+		constexpr int32 MaxChars = 8192;
+		FString Text;
+		const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Text);
+		FJsonSerializer::Serialize(Value, FString(), Writer);
+		if (Text.Len() <= MaxChars)
+		{
+			Change->SetField(Field, Value);
+			return;
+		}
+		Change->SetField(Field, MakeShared<FJsonValueNull>());
+		Change->SetNumberField(Field + TEXT("_omitted_chars"), Text.Len());
 	}
 
 	TArray<TSharedPtr<FJsonValue>> SortedNames(const TSet<FString>& Names)
@@ -539,15 +688,7 @@ FCortexCommandResult FCortexGraphNodeSettingsOps::GetNodeSettings(const TSharedP
 	}
 	else
 	{
-		TSharedPtr<FJsonObject> Settings = MakeShared<FJsonObject>();
-		for (TFieldIterator<FProperty> It(NodeStruct); It; ++It)
-		{
-			if (IsEditableSetting(*It))
-			{
-				Settings->SetField(It->GetName(), FCortexSerializer::PropertyToJson(*It, It->ContainerPtrToValuePtr<void>(NodeValue)));
-			}
-		}
-		Data->SetObjectField(TEXT("settings"), Settings);
+		Data->SetObjectField(TEXT("settings"), SettingsJson(NodeStruct, NodeValue));
 	}
 
 	TArray<TSharedPtr<FJsonValue>> PinProperties;
@@ -621,6 +762,7 @@ FCortexCommandResult FCortexGraphNodeSettingsOps::SetNodeSettings(const TSharedP
 	const bool bTemplate = IsTemplateAnimBlueprint(Target.Blueprint);
 	bool bWroteUnvalidatedBones = false;
 	TArray<FString> Paths;
+	TArray<FString> CanonicalPaths;
 	TArray<TSharedPtr<FJsonValue>> BeforeValues;
 	for (const auto& Pair : (*Values)->Values)
 	{
@@ -704,7 +846,46 @@ FCortexCommandResult FCortexGraphNodeSettingsOps::SetNodeSettings(const TSharedP
 			}
 		}
 		Paths.Add(Path);
+		CanonicalPaths.Add(Resolved.Canonical);
 	}
+
+	// Two paths that address the same value would make the outcome depend on JSON key order.
+	for (int32 First = 0; First < CanonicalPaths.Num(); ++First)
+	{
+		for (int32 Second = 0; Second < CanonicalPaths.Num(); ++Second)
+		{
+			const FString& Outer = CanonicalPaths[First];
+			const FString& Inner = CanonicalPaths[Second];
+			if (First != Second && Inner.StartsWith(Outer) && (Inner.Len() == Outer.Len() || Inner[Outer.Len()] == TEXT('.') || Inner[Outer.Len()] == TEXT('[')))
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("Paths '%s' and '%s' overlap; write each value once"), *Paths[First], *Paths[Second]));
+			}
+		}
+	}
+
+	TArray<FChangedLeaf> ChangedLeaves;
+	{
+		TArray<FProperty*> Chain;
+		TMap<FString, int32> Indices;
+		for (TFieldIterator<FProperty> It(NodeStruct); It; ++It)
+		{
+			CollectChangedLeaves(*It, It->ContainerPtrToValuePtr<void>(LiveValue), It->ContainerPtrToValuePtr<void>(Scratch.GetStructMemory()), Chain, Indices, ChangedLeaves);
+		}
+	}
+	for (const FChangedLeaf& Leaf : ChangedLeaves)
+	{
+		const FProperty* Changed = Leaf.Chain.Last();
+		const FArrayProperty* Owner = Leaf.Chain.Num() > 1 ? CastField<FArrayProperty>(Leaf.Chain[Leaf.Chain.Num() - 2]) : nullptr;
+		const FProperty* MetaSource = Owner != nullptr && Owner->Inner == Changed ? Owner : Changed;
+		FString ClampError;
+		if (!CheckNumericClamps(Changed, MetaSource, Leaf.NewValue, MetaSource->GetName(), ClampError))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidValue, ClampError);
+		}
+	}
+	const bool bChanged = ChangedLeaves.Num() > 0;
 
 	TArray<TSharedPtr<FJsonValue>> ResultWarnings;
 	if (bWroteUnvalidatedBones)
@@ -712,13 +893,6 @@ FCortexCommandResult FCortexGraphNodeSettingsOps::SetNodeSettings(const TSharedP
 		ResultWarnings.Add(MakeShared<FJsonValueString>(
 			TEXT("The template Anim Blueprint has no target skeleton; written bone names were not validated")));
 	}
-
-	TArray<const FProperty*> ChangedLeaves;
-	for (TFieldIterator<FProperty> It(NodeStruct); It; ++It)
-	{
-		CollectChangedLeaves(*It, It->ContainerPtrToValuePtr<void>(LiveValue), It->ContainerPtrToValuePtr<void>(Scratch.GetStructMemory()), ChangedLeaves);
-	}
-	const bool bChanged = ChangedLeaves.Num() > 0;
 
 	TSet<FString> PinsAdded;
 	TSet<FString> PinsRemoved;
@@ -750,14 +924,25 @@ FCortexCommandResult FCortexGraphNodeSettingsOps::SetNodeSettings(const TSharedP
 
 			FProperty* EditedMember = const_cast<FStructProperty*>(NodeProperty);
 			const TArray<UEdGraphPin*> PinsBeforeEdit = Node->Pins;
-			Node->PreEditChange(EditedMember);
-			NodeStruct->CopyScriptStruct(LiveValue, Scratch.GetStructMemory());
-			// The details panel's notification per changed property, with the node struct as member: node classes react here.
-			for (const FProperty* Leaf : ChangedLeaves)
+			for (const FChangedLeaf& Leaf : ChangedLeaves)
 			{
-				FPropertyChangedEvent Event(const_cast<FProperty*>(Leaf), EPropertyChangeType::ValueSet);
-				Event.SetActiveMemberProperty(EditedMember);
-				Node->PostEditChangeProperty(Event);
+				FEditPropertyChain Chain;
+				BuildEditChain(EditedMember, Leaf, Chain);
+				Node->PreEditChange(Chain);
+			}
+			NodeStruct->CopyScriptStruct(LiveValue, Scratch.GetStructMemory());
+			// The details panel's notification per changed property (chain, member = node struct, element indices):
+			// node classes react here.
+			for (const FChangedLeaf& Leaf : ChangedLeaves)
+			{
+				FEditPropertyChain Chain;
+				BuildEditChain(EditedMember, Leaf, Chain);
+				FPropertyChangedEvent Event(Leaf.Chain.Last(), EPropertyChangeType::ValueSet);
+				const TArray<TMap<FString, int32>> IndicesPerObject = { Leaf.ArrayIndices };
+				Event.SetArrayIndexPerObject(IndicesPerObject);
+				Event.ObjectIteratorIndex = 0;
+				FPropertyChangedChainEvent ChainEvent(Chain, Event);
+				Node->PostEditChangeChainProperty(ChainEvent);
 			}
 			// Reconstruct unless a reaction already did (it replaces the pin objects).
 			if (Node->Pins == PinsBeforeEdit)
@@ -784,13 +969,13 @@ FCortexCommandResult FCortexGraphNodeSettingsOps::SetNodeSettings(const TSharedP
 		const TSharedPtr<FJsonValue> After = bDryRun ? Requested : PathValueJson(NodeStruct, LiveValue, Paths[Index]);
 		TSharedPtr<FJsonObject> Change = MakeShared<FJsonObject>();
 		Change->SetStringField(TEXT("path"), Paths[Index]);
-		Change->SetField(TEXT("before"), BeforeValues[Index]);
-		Change->SetField(TEXT("after"), After);
+		SetBoundedChangeValue(Change, TEXT("before"), BeforeValues[Index]);
+		SetBoundedChangeValue(Change, TEXT("after"), After);
 		if (!FJsonValue::CompareEqual(*Requested, *After))
 		{
 			// The node's own edit reaction changed the value, as it would for an edit in the details panel.
 			Change->SetBoolField(TEXT("adjusted"), true);
-			Change->SetField(TEXT("requested"), Requested);
+			SetBoundedChangeValue(Change, TEXT("requested"), Requested);
 			ResultWarnings.Add(MakeShared<FJsonValueString>(
 				FString::Printf(TEXT("The node adjusted '%s' after the edit; 'after' is the node's value"), *Paths[Index])));
 		}
