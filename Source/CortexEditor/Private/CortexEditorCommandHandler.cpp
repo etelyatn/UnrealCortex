@@ -118,6 +118,10 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorViewportOps::CaptureScreenshot(Params);
 	}
+	if (Command == TEXT("capture_editor_panel"))
+	{
+		return FCortexEditorViewportOps::CaptureEditorPanel(Params);
+	}
 	if (Command == TEXT("set_viewport_camera"))
 	{
 		return FCortexEditorViewportOps::SetViewportCamera(Params);
@@ -185,6 +189,11 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Required(TEXT("steps"), TEXT("array"), TEXT("Timed input steps to execute")),
 		FCortexCommandInfo{ TEXT("capture_screenshot"), TEXT("Redraw and capture the active viewport with explicit camera provenance") }
 			.Optional(TEXT("output_path"), TEXT("string"), TEXT("Optional screenshot output path")),
+		FCortexCommandInfo{ TEXT("capture_editor_panel"), TEXT("Render an Editor panel to PNG through Slate (no OS screen-capture permission): an asset editor, its Details panel or graph, or a top-level window") }
+			.Optional(TEXT("asset_path"), TEXT("string"), TEXT("Asset whose editor is opened or focused and captured; maps are refused. Without it the active top-level window (main frame when the editor is in the background) is the root"))
+			.Optional(TEXT("panel"), TEXT("string"), TEXT("editor (default with asset_path; asset editor tab content), window (default without; whole top-level window), details (largest visible Details panel), graph (largest visible graph editor)"))
+			.Optional(TEXT("output_path"), TEXT("string"), TEXT("PNG path; default Saved/CortexScreenshots/cortex_panel_<timestamp>.png"))
+			.StrictParams(),
 		FCortexCommandInfo{ TEXT("get_viewport_info"), TEXT("Get viewport state") },
 		FCortexCommandInfo{ TEXT("set_viewport_camera"), TEXT("Position editor viewport camera; possessed PIE requires explicit transient override") }
 			.Required(TEXT("location"), TEXT("object"), TEXT("Camera location with numeric x/y/z"))

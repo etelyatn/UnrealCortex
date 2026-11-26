@@ -4,6 +4,7 @@
 #include "CortexTypes.h"
 
 class FJsonObject;
+class UObject;
 
 /**
  * Editor turnaround commands: trigger a Live Coding patch and wait until the editor is usable again.
@@ -41,4 +42,12 @@ public:
 
 	/** Production readiness probe. */
 	static bool IsEditorReady(FString& OutBlocker);
+
+	/**
+	 * Opens (or focuses) the asset editor for Path: an object path or a package path (/Game/Foo means /Game/Foo.Foo).
+	 * Loads from disk only after the package is known to exist; maps are refused before any load, because opening
+	 * one switches the editor world. Returns the opened asset, or null with OutErrorCode (ASSET_NOT_FOUND,
+	 * INVALID_OPERATION for a map, EDITOR_NOT_AVAILABLE) and OutFailure set.
+	 */
+	static UObject* OpenAssetInEditor(const FString& Path, FString& OutErrorCode, FString& OutFailure);
 };

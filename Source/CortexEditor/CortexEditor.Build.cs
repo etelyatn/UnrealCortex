@@ -30,6 +30,7 @@ public class CortexEditor : ModuleRules
 			"PythonScriptPlugin",
 			"AssetRegistry",
 			"Kismet",
+			"GraphEditor",
 		});
 
 		// LiveCoding lives in Developer/Windows and only exists where Live Coding is supported, so an
