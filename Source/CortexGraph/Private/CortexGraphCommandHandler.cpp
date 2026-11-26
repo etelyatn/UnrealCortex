@@ -5,6 +5,7 @@
 #include "CortexCommandRouter.h"
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphConnectionOps.h"
+#include "Operations/CortexGraphNodeSettingsOps.h"
 #include "Operations/CortexGraphTraceOps.h"
 #include "Operations/CortexGraphAuthoringContext.h"
 #include "Operations/CortexGraphPatchOps.h"
@@ -422,7 +423,7 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	}
 	if (Command == TEXT("add_node") || Command == TEXT("remove_node") || Command == TEXT("connect")
 		|| Command == TEXT("disconnect") || Command == TEXT("set_pin_value") || Command == TEXT("auto_layout")
-		|| Command == TEXT("apply_patch"))
+		|| Command == TEXT("apply_patch") || Command == TEXT("set_node_settings"))
 	{
 		FCortexCommandResult GuardError;
 		if (RejectBlockedGraphMutation(Params, GuardError))
@@ -489,6 +490,14 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	if (Command == TEXT("set_pin_value"))
 	{
 		return FCortexGraphNodeOps::SetPinValue(Params);
+	}
+	if (Command == TEXT("get_node_settings"))
+	{
+		return FCortexGraphNodeSettingsOps::GetNodeSettings(Params);
+	}
+	if (Command == TEXT("set_node_settings"))
+	{
+		return FCortexGraphNodeSettingsOps::SetNodeSettings(Params);
 	}
 	if (Command == TEXT("auto_layout"))
 	{
@@ -630,6 +639,22 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("owning_interface"), TEXT("string"), TEXT("Interface owner disambiguator for interface implementation graphs"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
 			.Optional(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Optional stale-write guard")),
+		FCortexCommandInfo{ TEXT("get_node_settings"), TEXT("Read an animation graph node's settings: the editable members of its runtime node struct (e.g. BoneToModify, RotationMode, AlphaInputType, AlphaBoolBlend), or one value by property_path. Also returns pin_properties (members whose value comes from a pin or binding: write those with set_pin_value), target_skeleton and the fingerprint set_node_settings accepts as expected_fingerprint") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Anim Blueprint"))
+			.Required(TEXT("node_id"), TEXT("string"), TEXT("Anim graph node to read"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node, e.g. AnimGraph (default EventGraph)"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path"))
+			.Optional(TEXT("property_path"), TEXT("string"), TEXT("Path relative to the node struct: dot-separated members, each optionally indexed, e.g. AlphaBoolBlend.BlendInTime or LayerSetup[0].BranchFilters"))
+			.RollbackSafe().StrictParams(),
+		FCortexCommandInfo{ TEXT("set_node_settings"), TEXT("Write an animation graph node's settings by property path in one undoable step, as an edit in the details panel would: node-class reactions run and the node is reconstructed, so pins whose visibility the edit changes (e.g. AlphaInputType Float -> Bool shows bAlphaBoolEnabled) are current at once; links on surviving pins are kept. All paths are validated before anything changes; FBoneReference names are checked against the target skeleton. Members whose value comes from a pin or binding are refused (use set_pin_value). Compile and save stay explicit") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Anim Blueprint"))
+			.Required(TEXT("node_id"), TEXT("string"), TEXT("Anim graph node to modify"))
+			.Required(TEXT("values"), TEXT("object"), TEXT("Non-empty object of property path -> JSON value, e.g. {\"BoneToModify.BoneName\": \"spine_01\", \"AlphaInputType\": \"Bool\", \"AlphaBoolBlend.BlendInTime\": 0.2}. Paths are relative to the node struct; indices address existing array elements; a struct value updates only the fields it names"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node, e.g. AnimGraph (default EventGraph); nested Anim Blueprint graphs are read-only"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview before/after values and validation without changing or dirtying the asset (default: false); pin changes are only reported by an apply"))
+			.Optional(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Optional stale-write guard: the fingerprint returned by get_node_settings or a previous set_node_settings"))
+			.StrictParams(),
 		FCortexCommandInfo{ TEXT("auto_layout"), TEXT("Auto-arrange node bodies in mutable Blueprint graphs using execution-first left-to-right flow. Layout only: saving is explicit. Returns node_count, graphs_processed, changed_node_count and unchanged; an unchanged layout does not dirty the asset. Delegate graphs are readable but not mutable.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Specific graph to layout"))
