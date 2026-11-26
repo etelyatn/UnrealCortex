@@ -1,11 +1,19 @@
 #include "Operations/CortexMaterialGraphOps.h"
 #include "Operations/CortexMaterialAssetOps.h"
+#include "Operations/CortexMaterialGraphTarget.h"
 #include "Operations/CortexMaterialInputUtils.h"
 #include "CortexMaterialModule.h"
 #include "CortexPropertyUtils.h"
 #include "Misc/EngineVersionComparison.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialFunction.h"
+#include "Materials/MaterialFunctionInstance.h"
 #include "Materials/MaterialExpression.h"
+#include "Materials/MaterialExpressionFunctionInput.h"
+#include "Materials/MaterialExpressionFunctionOutput.h"
+#include "Materials/MaterialParameters.h"
+#include "Engine/Font.h"
+#include "Engine/TextureCollection.h"
 #include "MaterialDomain.h"
 #include "Misc/MemStack.h"
 #include "Misc/ScopeExit.h"
@@ -47,24 +55,214 @@ struct FExpressionInputIterator
 #include "CortexGraphLayoutOps.h"
 #include "UObject/UnrealType.h"
 
-
-UMaterialExpression* FCortexMaterialGraphOps::FindExpression(UMaterial* Material, const FString& NodeId)
+namespace
 {
-	if (Material == nullptr || !Material->GetEditorOnlyData())
+/** Pin name for an expression input; falls back to the reflected FExpressionInput property name.
+ *  Function outputs override GetInputName with NAME_None, while their single input is A. */
+FName CortexMaterialInputPinName(const UMaterialExpression* Expression, int32 InputIndex)
+{
+	if (Expression == nullptr)
 	{
-		return nullptr;
+		return NAME_None;
+	}
+	const FName InputName = Expression->GetInputName(InputIndex);
+	if (!InputName.IsNone())
+	{
+		return InputName;
 	}
 
-	for (UMaterialExpression* Expression : Material->GetEditorOnlyData()->ExpressionCollection.Expressions)
+	int32 Index = 0;
+	for (TFieldIterator<FStructProperty> It(Expression->GetClass(),
+		EFieldIteratorFlags::IncludeSuper, EFieldIteratorFlags::ExcludeDeprecated); It; ++It)
 	{
-		if (Expression && Expression->GetName() == NodeId)
+		FStructProperty* StructProperty = *It;
+		if (StructProperty->Struct->GetFName() != NAME_ExpressionInput)
 		{
-			return Expression;
+			continue;
+		}
+		for (int32 ArrayIndex = 0; ArrayIndex < StructProperty->ArrayDim; ++ArrayIndex)
+		{
+			if (Index == InputIndex)
+			{
+				return StructProperty->GetFName();
+			}
+			++Index;
 		}
 	}
-
-	return nullptr;
+	return NAME_None;
 }
+
+const TCHAR* CortexMaterialParameterTypeName(EMaterialParameterType Type)
+{
+	switch (Type)
+	{
+	case EMaterialParameterType::Scalar: return TEXT("scalar");
+	case EMaterialParameterType::Vector: return TEXT("vector");
+	case EMaterialParameterType::DoubleVector: return TEXT("double_vector");
+	case EMaterialParameterType::Texture: return TEXT("texture");
+	case EMaterialParameterType::TextureCollection: return TEXT("texture_collection");
+	case EMaterialParameterType::Font: return TEXT("font");
+	case EMaterialParameterType::RuntimeVirtualTexture: return TEXT("runtime_virtual_texture");
+	case EMaterialParameterType::SparseVolumeTexture: return TEXT("sparse_volume_texture");
+	case EMaterialParameterType::StaticSwitch: return TEXT("static_switch");
+	case EMaterialParameterType::ParameterCollection: return TEXT("parameter_collection");
+	case EMaterialParameterType::StaticComponentMask: return TEXT("static_component_mask");
+	default: return TEXT("unknown");
+	}
+}
+
+TSharedPtr<FJsonValue> CortexMaterialParameterValueJson(const FMaterialParameterValue& Value)
+{
+	auto ObjectPath = [](const UObject* Object)
+	{
+		return MakeShared<FJsonValueString>(Object ? Object->GetPathName() : FString());
+	};
+
+	switch (Value.Type)
+	{
+	case EMaterialParameterType::Scalar:
+		return MakeShared<FJsonValueNumber>(Value.AsScalar());
+	case EMaterialParameterType::Vector:
+	{
+		const FLinearColor Color = Value.AsLinearColor();
+		auto Result = MakeShared<FJsonObject>();
+		Result->SetNumberField(TEXT("r"), Color.R);
+		Result->SetNumberField(TEXT("g"), Color.G);
+		Result->SetNumberField(TEXT("b"), Color.B);
+		Result->SetNumberField(TEXT("a"), Color.A);
+		return MakeShared<FJsonValueObject>(Result);
+	}
+	case EMaterialParameterType::DoubleVector:
+	{
+		const FVector4d Vector = Value.AsVector4d();
+		auto Result = MakeShared<FJsonObject>();
+		Result->SetNumberField(TEXT("x"), Vector.X);
+		Result->SetNumberField(TEXT("y"), Vector.Y);
+		Result->SetNumberField(TEXT("z"), Vector.Z);
+		Result->SetNumberField(TEXT("w"), Vector.W);
+		return MakeShared<FJsonValueObject>(Result);
+	}
+	case EMaterialParameterType::Texture:
+		return ObjectPath(Value.Texture);
+	case EMaterialParameterType::TextureCollection:
+		return ObjectPath(Value.TextureCollection);
+	case EMaterialParameterType::RuntimeVirtualTexture:
+		return ObjectPath(Value.AsTextureObject());
+	case EMaterialParameterType::SparseVolumeTexture:
+		return ObjectPath(Value.AsTextureObject());
+	case EMaterialParameterType::ParameterCollection:
+		return ObjectPath(Value.ParameterCollection);
+	case EMaterialParameterType::StaticSwitch:
+		return MakeShared<FJsonValueBoolean>(Value.AsStaticSwitch());
+	case EMaterialParameterType::StaticComponentMask:
+	{
+		const FStaticComponentMaskValue Mask = Value.AsStaticComponentMask();
+		auto Result = MakeShared<FJsonObject>();
+		Result->SetBoolField(TEXT("r"), Mask.R);
+		Result->SetBoolField(TEXT("g"), Mask.G);
+		Result->SetBoolField(TEXT("b"), Mask.B);
+		Result->SetBoolField(TEXT("a"), Mask.A);
+		return MakeShared<FJsonValueObject>(Result);
+	}
+	case EMaterialParameterType::Font:
+	{
+		auto Result = MakeShared<FJsonObject>();
+		Result->SetStringField(TEXT("font"), Value.Font.Value ? Value.Font.Value->GetPathName() : FString());
+		Result->SetNumberField(TEXT("page"), Value.Font.Page);
+		return MakeShared<FJsonValueObject>(Result);
+	}
+	default:
+		return MakeShared<FJsonValueNull>();
+	}
+}
+
+void CortexAddParameterOverride(const UMaterialFunctionInstance* Instance, UMaterialExpression* Expression,
+	const TSharedPtr<FJsonObject>& Data)
+{
+	if (Instance == nullptr || Expression == nullptr || !Data.IsValid())
+	{
+		return;
+	}
+	FMaterialParameterMetadata BaseMetadata;
+	if (!Expression->HasAParameterName() || !Expression->GetParameterValue(BaseMetadata)
+		|| BaseMetadata.Value.Type == EMaterialParameterType::None)
+	{
+		return;
+	}
+
+	const FName ParameterName = Expression->GetParameterName();
+	FMaterialParameterMetadata OverrideMetadata;
+	if (!Instance->GetParameterOverrideValue(BaseMetadata.Value.Type, ParameterName, OverrideMetadata))
+	{
+		return;
+	}
+
+	auto Override = MakeShared<FJsonObject>();
+	Override->SetStringField(TEXT("name"), ParameterName.ToString());
+	Override->SetStringField(TEXT("type"), CortexMaterialParameterTypeName(BaseMetadata.Value.Type));
+	Override->SetField(TEXT("value"), CortexMaterialParameterValueJson(OverrideMetadata.Value));
+	Data->SetObjectField(TEXT("parameter_override"), Override);
+}
+
+FCortexCommandResult MaterialFunctionReadOnly(const FCortexMaterialGraphTarget& Target)
+{
+	return FCortexCommandRouter::Error(
+		CortexErrorCodes::InvalidOperation,
+		FString::Printf(
+			TEXT("Material function instances are read-only; edit the base function: %s"),
+			*Target.GetBaseFunctionPath()));
+}
+
+bool CortexFunctionSignatureNameTaken(const FCortexMaterialGraphTarget& Target,
+	const UMaterialExpression* Exclude, bool bInput, FName Name)
+{
+	for (UMaterialExpression* Expression : Target.GetExpressions())
+	{
+		if (Expression == nullptr || Expression == Exclude)
+		{
+			continue;
+		}
+		if (bInput)
+		{
+			const UMaterialExpressionFunctionInput* Other = Cast<UMaterialExpressionFunctionInput>(Expression);
+			if (Other && Other->InputName == Name)
+			{
+				return true;
+			}
+		}
+		else
+		{
+			const UMaterialExpressionFunctionOutput* Other = Cast<UMaterialExpressionFunctionOutput>(Expression);
+			if (Other && Other->OutputName == Name)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+/** Mirrors the editor's ValidateName suffixing; ValidateName itself only scans a UMaterial's
+ *  expressions, so function-owned inputs/outputs must be uniquified against the function. */
+FName CortexUniqueFunctionSignatureName(const FCortexMaterialGraphTarget& Target,
+	const UMaterialExpression* Exclude, bool bInput, FName Desired)
+{
+	FName Candidate = Desired;
+	for (int32 Index = 1; ; ++Index)
+	{
+		if (Index != 1)
+		{
+			Candidate = Desired;
+			Candidate.SetNumber(Index);
+		}
+		if (!CortexFunctionSignatureNameTaken(Target, Exclude, bInput, Candidate))
+		{
+			return Candidate;
+		}
+	}
+}
+}
+
 
 FCortexCommandResult FCortexMaterialGraphOps::ListNodes(const TSharedPtr<FJsonObject>& Params)
 {
@@ -76,41 +274,42 @@ FCortexCommandResult FCortexMaterialGraphOps::ListNodes(const TSharedPtr<FJsonOb
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
 
 	TArray<TSharedPtr<FJsonValue>> NodesArray;
 
-	if (Material->GetEditorOnlyData())
+	for (UMaterialExpression* Expression : Target.GetExpressions())
 	{
-		for (UMaterialExpression* Expression : Material->GetEditorOnlyData()->ExpressionCollection.Expressions)
+		if (Expression)
 		{
-			if (Expression)
-			{
-				TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-				Entry->SetStringField(TEXT("node_id"), Expression->GetName());
-				Entry->SetStringField(TEXT("expression_class"), Expression->GetClass()->GetName());
+			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("node_id"), Expression->GetName());
+			Entry->SetStringField(TEXT("expression_class"), Expression->GetClass()->GetName());
 
-				TSharedPtr<FJsonObject> Position = MakeShared<FJsonObject>();
-				Position->SetNumberField(TEXT("x"), Expression->MaterialExpressionEditorX);
-				Position->SetNumberField(TEXT("y"), Expression->MaterialExpressionEditorY);
-				Entry->SetObjectField(TEXT("position"), Position);
+			TSharedPtr<FJsonObject> Position = MakeShared<FJsonObject>();
+			Position->SetNumberField(TEXT("x"), Expression->MaterialExpressionEditorX);
+			Position->SetNumberField(TEXT("y"), Expression->MaterialExpressionEditorY);
+			Entry->SetObjectField(TEXT("position"), Position);
 
-				NodesArray.Add(MakeShared<FJsonValueObject>(Entry));
-			}
+			NodesArray.Add(MakeShared<FJsonValueObject>(Entry));
 		}
 	}
 
-	// Add virtual MaterialResult node
-	TSharedRef<FJsonObject> MaterialResultNode = MakeShared<FJsonObject>();
-	MaterialResultNode->SetStringField(TEXT("node_id"), TEXT("MaterialResult"));
-	MaterialResultNode->SetStringField(TEXT("expression_class"), TEXT("MaterialResult"));
-	NodesArray.Add(MakeShared<FJsonValueObject>(MaterialResultNode));
+	if (Target.IsMaterial())
+	{
+		// Materials have a virtual MaterialResult sink; a function's outputs are real expressions.
+		TSharedRef<FJsonObject> MaterialResultNode = MakeShared<FJsonObject>();
+		MaterialResultNode->SetStringField(TEXT("node_id"), TEXT("MaterialResult"));
+		MaterialResultNode->SetStringField(TEXT("expression_class"), TEXT("MaterialResult"));
+		NodesArray.Add(MakeShared<FJsonValueObject>(MaterialResultNode));
+	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_kind"), Target.GetKindName());
 	Data->SetArrayField(TEXT("nodes"), NodesArray);
 	Data->SetNumberField(TEXT("count"), NodesArray.Num());
 
@@ -129,13 +328,13 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNode(const TSharedPtr<FJsonObje
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
 
-	UMaterialExpression* Expression = FindExpression(Material, NodeId);
+	UMaterialExpression* Expression = Target.FindExpression(NodeId);
 	if (Expression == nullptr)
 	{
 		return FCortexCommandRouter::Error(
@@ -145,6 +344,7 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNode(const TSharedPtr<FJsonObje
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_kind"), Target.GetKindName());
 	Data->SetStringField(TEXT("node_id"), Expression->GetName());
 	Data->SetStringField(TEXT("expression_class"), Expression->GetClass()->GetName());
 
@@ -268,6 +468,11 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNode(const TSharedPtr<FJsonObje
 		}
 	}
 
+	if (Target.GetKind() == ECortexMaterialGraphTargetKind::FunctionInstance)
+	{
+		CortexAddParameterOverride(Cast<UMaterialFunctionInstance>(Target.GetFunction()), Expression, Data);
+	}
+
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -292,13 +497,16 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
-
-	if (!Material->GetEditorOnlyData())
+	if (Target.IsReadOnly())
+	{
+		return MaterialFunctionReadOnly(Target);
+	}
+	if (Target.IsMaterial() && !Target.GetMaterial()->GetEditorOnlyData())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::SerializationError,
@@ -319,10 +527,20 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 			FString::Printf(TEXT("Invalid expression class: %s"), *ExpressionClass));
 	}
 
-	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Add Material Expression Node")), !FCortexCommandRouter::IsInBatch());
-	CortexMaterialInputUtils::BeginEdit(Material);
+	const UMaterialExpression* ClassDefault = Cast<UMaterialExpression>(ExpClass->GetDefaultObject());
+	if (ClassDefault == nullptr || !ClassDefault->IsAllowedIn(Target.GetAsset()))
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("Expression class %s is not allowed in this graph: %s"),
+				*ExpClass->GetName(), *AssetPath));
+	}
 
-	UMaterialExpression* NewExpression = NewObject<UMaterialExpression>(Material, ExpClass, NAME_None, RF_Transactional);
+	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Add Material Expression Node")), !FCortexCommandRouter::IsInBatch());
+	Target.BeginEdit();
+
+	UMaterialExpression* NewExpression = NewObject<UMaterialExpression>(
+		Target.GetAsset(), ExpClass, NAME_None, RF_Transactional);
 	NewExpression->bCollapsed = false;
 
 	// Set position if provided
@@ -336,8 +554,31 @@ FCortexCommandResult FCortexMaterialGraphOps::AddNode(const TSharedPtr<FJsonObje
 		NewExpression->MaterialExpressionEditorY = static_cast<int32>(Y);
 	}
 
-	Material->GetEditorOnlyData()->ExpressionCollection.Expressions.Add(NewExpression);
-	CortexMaterialInputUtils::EndEdit(Material);
+	if (Target.IsMaterial())
+	{
+		Target.GetMaterial()->GetEditorOnlyData()->ExpressionCollection.Expressions.Add(NewExpression);
+	}
+	else
+	{
+		Target.GetBaseFunction()->GetExpressionCollection().AddExpression(NewExpression);
+	}
+
+	// The material editor generates expression ids when creating function inputs/outputs; do the same
+	// so a new function signature entry keeps a stable identity through later renames. ValidateName
+	// only dedupes against a UMaterial, so function-owned names are made unique here.
+	if (UMaterialExpressionFunctionInput* FunctionInput = Cast<UMaterialExpressionFunctionInput>(NewExpression))
+	{
+		FunctionInput->ConditionallyGenerateId(true);
+		FunctionInput->InputName = CortexUniqueFunctionSignatureName(
+			Target, FunctionInput, true, FunctionInput->InputName);
+	}
+	if (UMaterialExpressionFunctionOutput* FunctionOutput = Cast<UMaterialExpressionFunctionOutput>(NewExpression))
+	{
+		FunctionOutput->ConditionallyGenerateId(true);
+		FunctionOutput->OutputName = CortexUniqueFunctionSignatureName(
+			Target, FunctionOutput, false, FunctionOutput->OutputName);
+	}
+	Target.EndEdit();
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("node_id"), NewExpression->GetName());
@@ -360,20 +601,23 @@ FCortexCommandResult FCortexMaterialGraphOps::RemoveNode(const TSharedPtr<FJsonO
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
-
-	if (!Material->GetEditorOnlyData())
+	if (Target.IsReadOnly())
+	{
+		return MaterialFunctionReadOnly(Target);
+	}
+	if (Target.IsMaterial() && !Target.GetMaterial()->GetEditorOnlyData())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::SerializationError,
 			TEXT("Material has no editor data"));
 	}
 
-	UMaterialExpression* Expression = FindExpression(Material, NodeId);
+	UMaterialExpression* Expression = Target.FindExpression(NodeId);
 	if (Expression == nullptr)
 	{
 		return FCortexCommandRouter::Error(
@@ -385,11 +629,10 @@ FCortexCommandResult FCortexMaterialGraphOps::RemoveNode(const TSharedPtr<FJsonO
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex: Remove Material Expression Node %s"), *NodeId)
 	), !FCortexCommandRouter::IsInBatch());
-	CortexMaterialInputUtils::BeginEdit(Material);
+	Target.BeginEdit();
 
 	// Break every link that points at the removed expression, as the material editor does on delete.
-	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
-	for (UMaterialExpression* Other : EditorData->ExpressionCollection.Expressions)
+	for (UMaterialExpression* Other : Target.GetExpressions())
 	{
 		if (Other == nullptr || Other == Expression)
 		{
@@ -405,22 +648,31 @@ FCortexCommandResult FCortexMaterialGraphOps::RemoveNode(const TSharedPtr<FJsonO
 			}
 		}
 	}
-	for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
+
+	if (Target.IsMaterial())
 	{
-		const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
-		FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
-		if (Input && Input->Expression == Expression)
+		UMaterial* Material = Target.GetMaterial();
+		for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
 		{
-			Input->Expression = nullptr;
-			Input->OutputIndex = 0;
-			CortexMaterialInputUtils::UpdateUseConstant(Material, Property, true);
+			const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
+			FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
+			if (Input && Input->Expression == Expression)
+			{
+				Input->Expression = nullptr;
+				Input->OutputIndex = 0;
+				CortexMaterialInputUtils::UpdateUseConstant(Material, Property, true);
+			}
 		}
+		Material->RemoveExpressionParameter(Expression);
+		Material->GetEditorOnlyData()->ExpressionCollection.Expressions.Remove(Expression);
+	}
+	else
+	{
+		Target.GetBaseFunction()->GetExpressionCollection().RemoveExpression(Expression);
 	}
 
 	CortexMaterialInputUtils::ModifyExpression(Expression);
-	Material->RemoveExpressionParameter(Expression);
-	EditorData->ExpressionCollection.Expressions.Remove(Expression);
-	CortexMaterialInputUtils::EndEdit(Material);
+	Target.EndEdit();
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("node_id"), NodeId);
@@ -439,13 +691,12 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
-
-	if (!Material->GetEditorOnlyData())
+	if (Target.IsMaterial() && !Target.GetMaterial()->GetEditorOnlyData())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::SerializationError,
@@ -454,26 +705,28 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 
 	TArray<TSharedPtr<FJsonValue>> ConnectionsArray;
 
-	UMaterialEditorOnlyData* EditorData = Material->GetEditorOnlyData();
-
-	// Enumerate all MaterialResult inputs via property API.
-	for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
+	if (Target.IsMaterial())
 	{
-		const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
-		FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
-		if (Input && Input->Expression != nullptr)
+		UMaterial* Material = Target.GetMaterial();
+		// Enumerate all MaterialResult inputs via property API.
+		for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
 		{
-			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
-			Entry->SetStringField(TEXT("source_node"), Input->Expression->GetName());
-			Entry->SetNumberField(TEXT("source_output"), Input->OutputIndex);
-			Entry->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
-			Entry->SetStringField(TEXT("target_input"), CortexMaterialInputUtils::InputName(Property));
-			ConnectionsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			const EMaterialProperty Property = static_cast<EMaterialProperty>(Prop);
+			FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
+			if (Input && Input->Expression != nullptr)
+			{
+				TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+				Entry->SetStringField(TEXT("source_node"), Input->Expression->GetName());
+				Entry->SetNumberField(TEXT("source_output"), Input->OutputIndex);
+				Entry->SetStringField(TEXT("target_node"), TEXT("MaterialResult"));
+				Entry->SetStringField(TEXT("target_input"), CortexMaterialInputUtils::InputName(Property));
+				ConnectionsArray.Add(MakeShared<FJsonValueObject>(Entry));
+			}
 		}
 	}
 
 	// Check expression-to-expression connections
-	for (UMaterialExpression* Expression : EditorData->ExpressionCollection.Expressions)
+	for (UMaterialExpression* Expression : Target.GetExpressions())
 	{
 		if (Expression == nullptr)
 		{
@@ -488,13 +741,14 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 				Entry->SetStringField(TEXT("source_node"), It.Input->Expression->GetName());
 				Entry->SetNumberField(TEXT("source_output"), It.Input->OutputIndex);
 				Entry->SetStringField(TEXT("target_node"), Expression->GetName());
-				Entry->SetStringField(TEXT("target_input"), Expression->GetInputName(It.Index).ToString());
+				Entry->SetStringField(TEXT("target_input"), CortexMaterialInputPinName(Expression, It.Index).ToString());
 				ConnectionsArray.Add(MakeShared<FJsonValueObject>(Entry));
 			}
 		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_kind"), Target.GetKindName());
 	Data->SetArrayField(TEXT("connections"), ConnectionsArray);
 	Data->SetNumberField(TEXT("count"), ConnectionsArray.Num());
 	bool bIncludeInputState = false;
@@ -504,7 +758,13 @@ FCortexCommandResult FCortexMaterialGraphOps::ListConnections(const TSharedPtr<F
 	}
 	if (bIncludeInputState)
 	{
-		Data->SetArrayField(TEXT("root_inputs"), CortexMaterialInputUtils::SerializeInputs(Material));
+		if (!Target.IsMaterial())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidOperation,
+				TEXT("include_input_state is only available for materials; function inputs are expressions"));
+		}
+		Data->SetArrayField(TEXT("root_inputs"), CortexMaterialInputUtils::SerializeInputs(Target.GetMaterial()));
 	}
 
 	return FCortexCommandRouter::Success(Data);
@@ -534,12 +794,16 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing source_node, target_node or target_input"));
 	}
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (!Material)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
-	UMaterialExpression* Source = FindExpression(Material, SourceNode);
+	if (Target.IsReadOnly())
+	{
+		return MaterialFunctionReadOnly(Target);
+	}
+	UMaterialExpression* Source = Target.FindExpression(SourceNode);
 	if (!Source)
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::NodeNotFound, TEXT("Source material node not found"));
@@ -571,10 +835,12 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 	}
 	FExpressionInput* Input = nullptr;
 	EMaterialProperty Property = MP_MAX;
-	UMaterialExpression* Target = nullptr;
-	const bool bRoot = TargetNode == TEXT("MaterialResult") || TargetNode == TEXT("Material");
+	UMaterialExpression* TargetExpression = nullptr;
+	const bool bRoot = Target.IsMaterial()
+		&& (TargetNode == TEXT("MaterialResult") || TargetNode == TEXT("Material"));
 	if (bRoot)
 	{
+		UMaterial* Material = Target.GetMaterial();
 		if (!CortexMaterialInputUtils::ResolveInput(Material, TargetInput, Property, Input) || !Material->IsPropertySupported(Property))
 		{
 			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Unknown or unsupported MaterialResult input"));
@@ -582,14 +848,14 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 	}
 	else
 	{
-		Target = FindExpression(Material, TargetNode);
-		if (!Target)
+		TargetExpression = Target.FindExpression(TargetNode);
+		if (!TargetExpression)
 		{
 			return FCortexCommandRouter::Error(CortexErrorCodes::NodeNotFound, TEXT("Target material node not found"));
 		}
-		for (FExpressionInputIterator It(Target); It; ++It)
+		for (FExpressionInputIterator It(TargetExpression); It; ++It)
 		{
-			if (Target->GetInputName(It.Index).ToString() == TargetInput)
+			if (CortexMaterialInputPinName(TargetExpression, It.Index).ToString() == TargetInput)
 			{
 				Input = It.Input;
 				break;
@@ -601,17 +867,17 @@ FCortexCommandResult FCortexMaterialGraphOps::Connect(const TSharedPtr<FJsonObje
 		}
 	}
 	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Connect Material Nodes")), !FCortexCommandRouter::IsInBatch());
-	CortexMaterialInputUtils::BeginEdit(Material);
-	if (Target)
+	Target.BeginEdit();
+	if (TargetExpression)
 	{
-		CortexMaterialInputUtils::ModifyExpression(Target);
+		CortexMaterialInputUtils::ModifyExpression(TargetExpression);
 	}
 	Input->Connect(OutputIndex, Source);
 	if (bRoot)
 	{
-		CortexMaterialInputUtils::UpdateUseConstant(Material, Property, false);
+		CortexMaterialInputUtils::UpdateUseConstant(Target.GetMaterial(), Property, false);
 	}
-	CortexMaterialInputUtils::EndEdit(Material);
+	Target.EndEdit();
 	auto Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("source_node"), SourceNode);
 	Data->SetNumberField(TEXT("source_output"), OutputIndex);
@@ -631,27 +897,66 @@ FCortexCommandResult FCortexMaterialGraphOps::Disconnect(const TSharedPtr<FJsonO
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing asset_path, target_node or target_input"));
 	}
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (!Material)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
-	if (TargetNode != TEXT("MaterialResult") && TargetNode != TEXT("Material"))
+	if (Target.IsReadOnly())
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Expression-to-expression disconnections not yet implemented"));
+		return MaterialFunctionReadOnly(Target);
 	}
+
+	const bool bRoot = Target.IsMaterial()
+		&& (TargetNode == TEXT("MaterialResult") || TargetNode == TEXT("Material"));
 	EMaterialProperty Property = MP_MAX;
 	FExpressionInput* Input = nullptr;
-	if (!CortexMaterialInputUtils::ResolveInput(Material, TargetInput, Property, Input))
+	UMaterialExpression* TargetExpression = nullptr;
+	if (bRoot)
 	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Unknown or unavailable MaterialResult input"));
+		if (!CortexMaterialInputUtils::ResolveInput(Target.GetMaterial(), TargetInput, Property, Input))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Unknown or unavailable MaterialResult input"));
+		}
 	}
+	else
+	{
+		TargetExpression = Target.FindExpression(TargetNode);
+		if (!TargetExpression)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::NodeNotFound, TEXT("Target material node not found"));
+		}
+		for (FExpressionInputIterator It(TargetExpression); It; ++It)
+		{
+			if (CortexMaterialInputPinName(TargetExpression, It.Index).ToString() == TargetInput)
+			{
+				Input = It.Input;
+				break;
+			}
+		}
+		if (!Input)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Target input not found"));
+		}
+		if (!Input->Expression)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidConnection, TEXT("Target input is not connected"));
+		}
+	}
+
 	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Disconnect Material Nodes")), !FCortexCommandRouter::IsInBatch());
-	CortexMaterialInputUtils::BeginEdit(Material);
+	Target.BeginEdit();
+	if (TargetExpression)
+	{
+		CortexMaterialInputUtils::ModifyExpression(TargetExpression);
+	}
 	Input->Expression = nullptr;
 	Input->OutputIndex = 0;
-	CortexMaterialInputUtils::UpdateUseConstant(Material, Property, true);
-	CortexMaterialInputUtils::EndEdit(Material);
+	if (bRoot)
+	{
+		CortexMaterialInputUtils::UpdateUseConstant(Target.GetMaterial(), Property, true);
+	}
+	Target.EndEdit();
 	auto Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("target_node"), TargetNode);
 	Data->SetStringField(TEXT("target_input"), TargetInput);
@@ -668,11 +973,18 @@ FCortexCommandResult FCortexMaterialGraphOps::SetMaterialInput(const TSharedPtr<
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing asset_path or input"));
 	}
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (!Material)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
+	if (!Target.IsMaterial())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidOperation,
+			FString::Printf(TEXT("set_material_input requires a material asset: %s"), *AssetPath));
+	}
+	UMaterial* Material = Target.GetMaterial();
 	EMaterialProperty Property = MP_MAX;
 	FExpressionInput* Input = nullptr;
 	if (!CortexMaterialInputUtils::ResolveInput(Material, Name, Property, Input))
@@ -692,16 +1004,24 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr) return LoadError;
-
-	if (!Material->GetEditorOnlyData())
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
+	{
+		return LoadError;
+	}
+	if (Target.IsReadOnly())
+	{
+		return MaterialFunctionReadOnly(Target);
+	}
+	if (Target.IsMaterial() && !Target.GetMaterial()->GetEditorOnlyData())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::SerializationError, TEXT("Material has no editor data"));
 	}
 
-	const TArray<UMaterialExpression*>& Expressions = Material->GetEditorOnlyData()->ExpressionCollection.Expressions;
+	UMaterial* Material = Target.GetMaterial();
+	const bool bMaterial = Target.IsMaterial();
+	const TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions = Target.GetExpressions();
 
 	if (Expressions.Num() == 0)
 	{
@@ -723,16 +1043,19 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 	// Enumerate all material property inputs via UE API.
 	// Replaces hardcoded 8-input check to include all EMaterialProperty values.
 	TSet<FString> MaterialResultInputIds;
-	for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
+	if (bMaterial)
 	{
-		FExpressionInput* Input = Material->GetExpressionInputForProperty(
-			static_cast<EMaterialProperty>(Prop));
-		if (Input && Input->Expression)
+		for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
 		{
-			const FString* Id = ExprToId.Find(Input->Expression);
-			if (Id)
+			FExpressionInput* Input = Material->GetExpressionInputForProperty(
+				static_cast<EMaterialProperty>(Prop));
+			if (Input && Input->Expression)
 			{
-				MaterialResultInputIds.Add(*Id);
+				const FString* Id = ExprToId.Find(Input->Expression);
+				if (Id)
+				{
+					MaterialResultInputIds.Add(*Id);
+				}
 			}
 		}
 	}
@@ -757,9 +1080,12 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 	// Without this, expressions that only connect to MaterialResult (not to other expressions)
 	// have empty DataOutputs and collapse to layer 0, making all nodes overlap at x=0.
 	const FString MaterialResultId = TEXT("__MaterialResult__");
-	for (const FString& Id : MaterialResultInputIds)
+	if (bMaterial)
 	{
-		ForwardEdges.FindOrAdd(Id).AddUnique(MaterialResultId);
+		for (const FString& Id : MaterialResultInputIds)
+		{
+			ForwardEdges.FindOrAdd(Id).AddUnique(MaterialResultId);
+		}
 	}
 
 	// Build layout nodes with connectivity
@@ -792,6 +1118,7 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 	// Add virtual MaterialResult sink — gives the layout engine a concrete rightmost anchor.
 	// Sized to match visible Material Output pins for more accurate spacing.
 	// Removed from positions after layout; not written back to any expression.
+	if (bMaterial)
 	{
 		int32 VisiblePinCount = 0;
 		for (int32 Prop = 0; Prop < MP_MAX; ++Prop)
@@ -841,7 +1168,7 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 
 	// Apply positions back to Material expressions
 	FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Auto-Layout Material Graph")), !FCortexCommandRouter::IsInBatch());
-	CortexMaterialInputUtils::BeginEdit(Material);
+	Target.BeginEdit();
 
 	TMap<FString, UMaterialExpression*> IdToExpr;
 	for (UMaterialExpression* Expr : Expressions)
@@ -859,7 +1186,7 @@ FCortexCommandResult FCortexMaterialGraphOps::AutoLayout(const TSharedPtr<FJsonO
 			(*ExprPtr)->MaterialExpressionEditorY = Pair.Value.Y;
 		}
 	}
-	CortexMaterialInputUtils::EndEdit(Material);
+	Target.EndEdit(false);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("asset_path"), AssetPath);
@@ -890,20 +1217,23 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
-
-	if (!Material->GetEditorOnlyData())
+	if (Target.IsReadOnly())
+	{
+		return MaterialFunctionReadOnly(Target);
+	}
+	if (Target.IsMaterial() && !Target.GetMaterial()->GetEditorOnlyData())
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::SerializationError,
 			TEXT("Material has no editor data"));
 	}
 
-	UMaterialExpression* Expression = FindExpression(Material, NodeId);
+	UMaterialExpression* Expression = Target.FindExpression(NodeId);
 	if (Expression == nullptr)
 	{
 		return FCortexCommandRouter::Error(
@@ -929,6 +1259,27 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
 			TEXT("Missing required param: value"));
+	}
+
+	// The function editor refuses duplicate signature names with a modal dialog. Refuse here instead,
+	// before staging, so the asset is untouched and no dialog can block an unattended editor.
+	if (!Target.IsMaterial() && Value->Type == EJson::String)
+	{
+		const FName Requested(*Value->AsString());
+		if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(UMaterialExpressionFunctionInput, InputName)
+			&& CortexFunctionSignatureNameTaken(Target, Expression, true, Requested))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidValue,
+				FString::Printf(TEXT("Function input name must be unique: %s"), *Requested.ToString()));
+		}
+		if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(UMaterialExpressionFunctionOutput, OutputName)
+			&& CortexFunctionSignatureNameTaken(Target, Expression, false, Requested))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidValue,
+				FString::Printf(TEXT("Function output name must be unique: %s"), *Requested.ToString()));
+		}
 	}
 
 	// Stage the value first so a refused value never leaves the expression half-edited.
@@ -977,7 +1328,7 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 	FScopedTransaction Transaction(FText::FromString(
 		FString::Printf(TEXT("Cortex: Set Node Property %s"), *PropertyName)
 	), !FCortexCommandRouter::IsInBatch());
-	CortexMaterialInputUtils::BeginEdit(Material);
+	Target.BeginEdit();
 	CortexMaterialInputUtils::ModifyExpression(Expression);
 	for (UObject* SubObject : Retired)
 	{
@@ -995,7 +1346,7 @@ FCortexCommandResult FCortexMaterialGraphOps::SetNodeProperty(const TSharedPtr<F
 		FPropertyChangedEvent Event(Property);
 		Expression->PostEditChangeProperty(Event);
 	}
-	CortexMaterialInputUtils::EndEdit(Material);
+	Target.EndEdit();
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("node_id"), NodeId);
@@ -1018,13 +1369,13 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNodePins(const TSharedPtr<FJson
 	}
 
 	FCortexCommandResult LoadError;
-	UMaterial* Material = FCortexMaterialAssetOps::LoadMaterial(AssetPath, LoadError);
-	if (Material == nullptr)
+	FCortexMaterialGraphTarget Target;
+	if (!FCortexMaterialGraphTarget::Load(AssetPath, Target, LoadError))
 	{
 		return LoadError;
 	}
 
-	UMaterialExpression* Expression = FindExpression(Material, NodeId);
+	UMaterialExpression* Expression = Target.FindExpression(NodeId);
 	if (Expression == nullptr)
 	{
 		return FCortexCommandRouter::Error(
@@ -1051,7 +1402,7 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNodePins(const TSharedPtr<FJson
 	{
 		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetNumberField(TEXT("index"), It.Index);
-		Entry->SetStringField(TEXT("name"), Expression->GetInputName(It.Index).ToString());
+		Entry->SetStringField(TEXT("name"), CortexMaterialInputPinName(Expression, It.Index).ToString());
 		// Report if this input is currently connected
 		if (It.Input && It.Input->Expression)
 		{
@@ -1061,6 +1412,7 @@ FCortexCommandResult FCortexMaterialGraphOps::GetNodePins(const TSharedPtr<FJson
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_kind"), Target.GetKindName());
 	Data->SetStringField(TEXT("node_id"), NodeId);
 	Data->SetStringField(TEXT("expression_class"), Expression->GetClass()->GetName());
 	Data->SetArrayField(TEXT("inputs"), InputsArray);
