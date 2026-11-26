@@ -14,7 +14,7 @@ struct FCortexCommandResult;
  * template properties and implemented interfaces. It deliberately excludes the dirty flag so a dry run and the apply
  * that follows it compare equal.
  *
- * Shape: {graph_authoring_version, graph_authoring_hash, migration_state_hash}.
+ * Shape: {graph_authoring_version, migration_state_version, graph_authoring_hash, migration_state_hash}; every field is required.
  */
 class FCortexBPMigrationGuard
 {
