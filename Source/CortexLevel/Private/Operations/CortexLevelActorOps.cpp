@@ -1,16 +1,21 @@
 #include "Operations/CortexLevelActorOps.h"
 
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexLevelModule.h"
 #include "CortexLevelUtils.h"
+#include "CortexPIEUtils.h"
 #include "CortexTypes.h"
 #include "Components/StaticMeshComponent.h"
 #include "Dom/JsonValue.h"
 #include "Editor.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInterface.h"
 #include "ScopedTransaction.h"
 #include "Subsystems/EditorActorSubsystem.h"
@@ -127,7 +132,7 @@ namespace
     FCortexBatchPreflightResult PreflightLevelActor(const FCortexBatchMutationItem& Item)
     {
         FCortexCommandResult Error;
-        UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+        UWorld* World = FCortexLevelUtils::ResolveWorld(Item.Params, Error);
         if (!World)
         {
             return FCortexBatchPreflightResult::Error(Error.ErrorCode, Error.ErrorMessage, Error.ErrorDetails);
@@ -178,7 +183,7 @@ FCortexCommandResult FCortexLevelActorOps::SpawnActor(const TSharedPtr<FJsonObje
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -210,10 +215,14 @@ FCortexCommandResult FCortexLevelActorOps::SpawnActor(const TSharedPtr<FJsonObje
 
     const FRotator Rotation(RotationValues.X, RotationValues.Y, RotationValues.Z);
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Spawn Actor")));
+    const bool bTransact = FCortexLevelUtils::ShouldTransact(World);
+    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Spawn Actor")), bTransact);
 
     FActorSpawnParameters SpawnParameters;
-    SpawnParameters.ObjectFlags |= RF_Transactional;
+    if (bTransact)
+    {
+        SpawnParameters.ObjectFlags |= RF_Transactional;
+    }
 
     FString LevelName;
     if (Params->TryGetStringField(TEXT("level"), LevelName) && !LevelName.IsEmpty())
@@ -235,7 +244,10 @@ FCortexCommandResult FCortexLevelActorOps::SpawnActor(const TSharedPtr<FJsonObje
         );
     }
 
-    SpawnedActor->Modify();
+    if (bTransact)
+    {
+        SpawnedActor->Modify();
+    }
 
     FString Label;
     if (Params->TryGetStringField(TEXT("label"), Label) && !Label.IsEmpty())
@@ -313,6 +325,7 @@ FCortexCommandResult FCortexLevelActorOps::DeleteActor(const TSharedPtr<FJsonObj
         {
             return ParseError;
         }
+        FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request);
 
         return MakeLevelActorBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -332,7 +345,7 @@ FCortexCommandResult FCortexLevelActorOps::DeleteActor(const TSharedPtr<FJsonObj
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -360,14 +373,24 @@ FCortexCommandResult FCortexLevelActorOps::DeleteActor(const TSharedPtr<FJsonObj
     FString ActorLabel = Actor->GetActorLabel();
     FString ActorClass = Actor->GetClass()->GetName();
 
-    UEditorActorSubsystem* ActorSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorActorSubsystem>() : nullptr;
-    if (!ActorSubsystem)
+    bool bDeleted = false;
+    if (FCortexLevelUtils::ShouldTransact(World))
     {
-        return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("EditorActorSubsystem unavailable"));
+        UEditorActorSubsystem* ActorSubsystem = GEditor ? GEditor->GetEditorSubsystem<UEditorActorSubsystem>() : nullptr;
+        if (!ActorSubsystem)
+        {
+            return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotReady, TEXT("EditorActorSubsystem unavailable"));
+        }
+
+        FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Delete Actor")));
+        bDeleted = ActorSubsystem->DestroyActor(Actor);
+    }
+    else
+    {
+        // UEditorActorSubsystem::DestroyActor refuses non-editor worlds.
+        bDeleted = World->DestroyActor(Actor, /*bNetForce=*/false, /*bShouldModifyLevel=*/false);
     }
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Delete Actor")));
-    const bool bDeleted = ActorSubsystem->DestroyActor(Actor);
     if (!bDeleted)
     {
         return FCortexCommandRouter::Error(
@@ -393,6 +416,7 @@ FCortexCommandResult FCortexLevelActorOps::DuplicateActor(const TSharedPtr<FJson
         {
             return ParseError;
         }
+        FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request);
 
         return MakeLevelActorBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -412,7 +436,7 @@ FCortexCommandResult FCortexLevelActorOps::DuplicateActor(const TSharedPtr<FJson
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -422,6 +446,13 @@ FCortexCommandResult FCortexLevelActorOps::DuplicateActor(const TSharedPtr<FJson
     if (!SourceActor)
     {
         return Error;
+    }
+
+    if (!FCortexLevelUtils::ShouldTransact(World))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidOperation,
+            TEXT("duplicate_actor does not support world 'pie'; use level.spawn_actor to create a runtime actor"));
     }
 
     FVector Offset;
@@ -465,6 +496,7 @@ FCortexCommandResult FCortexLevelActorOps::RenameActor(const TSharedPtr<FJsonObj
         {
             return ParseError;
         }
+        FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request);
 
         return MakeLevelActorBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -490,7 +522,7 @@ FCortexCommandResult FCortexLevelActorOps::RenameActor(const TSharedPtr<FJsonObj
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -502,7 +534,9 @@ FCortexCommandResult FCortexLevelActorOps::RenameActor(const TSharedPtr<FJsonObj
         return Error;
     }
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Rename Actor")));
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Rename Actor")),
+        FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
     Actor->SetActorLabel(Label);
 
@@ -510,5 +544,124 @@ FCortexCommandResult FCortexLevelActorOps::RenameActor(const TSharedPtr<FJsonObj
     Data->SetStringField(TEXT("name"), Actor->GetName());
     Data->SetStringField(TEXT("label"), Actor->GetActorLabel());
     Data->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
+    return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexLevelActorOps::SetPIEView(const TSharedPtr<FJsonObject>& Params)
+{
+    if (!Params.IsValid())
+    {
+        return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing params"));
+    }
+
+    UWorld* PlayWorld = FCortexPIEUtils::GetPIEWorld();
+    if (PlayWorld == nullptr)
+    {
+        return FCortexPIEUtils::PIENotActiveError();
+    }
+
+    APlayerController* PlayerController = PlayWorld->GetFirstPlayerController();
+    if (PlayerController == nullptr)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidOperation,
+            TEXT("PIE world has no player controller; start PIE with a local player"));
+    }
+
+    FVector Location;
+    if (!FCortexLevelUtils::ParseVectorField(Params, TEXT("location"), Location))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidValue,
+            TEXT("location must be [x,y,z]"));
+    }
+
+    FVector RotationValues;
+    if (!FCortexLevelUtils::ParseVectorField(Params, TEXT("rotation"), RotationValues))
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidValue,
+            TEXT("rotation must be [pitch,yaw,roll]"));
+    }
+
+    double FovValue = 90.0;
+    if (Params->HasField(TEXT("fov")))
+    {
+        if (!Params->TryGetNumberField(TEXT("fov"), FovValue)
+            || !FMath::IsFinite(FovValue)
+            || FovValue <= 0.0
+            || FovValue >= 180.0)
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::InvalidValue,
+                TEXT("fov must be a number greater than 0 and less than 180"));
+        }
+    }
+
+    const FRotator Rotation(RotationValues.X, RotationValues.Y, RotationValues.Z);
+
+    static const FName CameraTag(TEXT("CortexPIEViewCamera"));
+    ACameraActor* Camera = nullptr;
+    for (TActorIterator<ACameraActor> It(PlayWorld); It; ++It)
+    {
+        if (IsValid(*It) && It->ActorHasTag(CameraTag))
+        {
+            Camera = *It;
+            break;
+        }
+    }
+
+    const bool bReused = Camera != nullptr;
+    if (Camera == nullptr)
+    {
+        FActorSpawnParameters SpawnParameters;
+        SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        SpawnParameters.ObjectFlags |= RF_Transient;
+        Camera = PlayWorld->SpawnActor<ACameraActor>(
+            ACameraActor::StaticClass(),
+            FTransform(Rotation, Location),
+            SpawnParameters);
+        if (Camera == nullptr)
+        {
+            return FCortexCommandRouter::Error(
+                CortexErrorCodes::SpawnFailed,
+                TEXT("Failed to spawn the PIE view camera"));
+        }
+
+        Camera->Tags.AddUnique(CameraTag);
+        Camera->SetActorLabel(TEXT("CortexPIEViewCamera"));
+    }
+    else
+    {
+        Camera->SetActorLocationAndRotation(Location, Rotation);
+    }
+
+    UCameraComponent* CameraComponent = Camera->GetCameraComponent();
+    if (CameraComponent == nullptr)
+    {
+        return FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidOperation,
+            TEXT("The PIE view camera has no camera component"));
+    }
+    CameraComponent->SetFieldOfView(static_cast<float>(FovValue));
+
+    PlayerController->SetViewTargetWithBlend(Camera, 0.0f);
+    if (PlayerController->PlayerCameraManager != nullptr)
+    {
+        PlayerController->PlayerCameraManager->UpdateCamera(0.0f);
+    }
+
+    TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+    Data->SetStringField(TEXT("camera"), Camera->GetName());
+    Data->SetStringField(TEXT("label"), Camera->GetActorLabel());
+    Data->SetBoolField(TEXT("reused"), bReused);
+    FCortexLevelUtils::SetVectorArray(Data, TEXT("location"), Camera->GetActorLocation());
+    const FRotator CameraRotation = Camera->GetActorRotation();
+    FCortexLevelUtils::SetVectorArray(
+        Data,
+        TEXT("rotation"),
+        FVector(CameraRotation.Pitch, CameraRotation.Yaw, CameraRotation.Roll));
+    Data->SetNumberField(TEXT("fov"), CameraComponent->FieldOfView);
+    Data->SetBoolField(TEXT("view_target_set"), PlayerController->GetViewTarget() == Camera);
     return FCortexCommandRouter::Success(Data);
 }

@@ -34,6 +34,10 @@ FCortexCommandResult FCortexLevelCommandHandler::Execute(
     {
         return FCortexLevelActorOps::RenameActor(Params);
     }
+    if (Command == TEXT("set_pie_view"))
+    {
+        return FCortexLevelActorOps::SetPIEView(Params);
+    }
     if (Command == TEXT("get_actor"))
     {
         return FCortexLevelTransformOps::GetActor(Params);
@@ -209,57 +213,70 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .Optional(TEXT("folder"), TEXT("string"), TEXT("World outliner folder"))
             .Optional(TEXT("level"), TEXT("string"), TEXT("Optional sublevel to spawn into"))
             .Optional(TEXT("mesh"), TEXT("string"), TEXT("Optional mesh asset"))
-            .Optional(TEXT("material"), TEXT("string"), TEXT("Optional material override")),
+            .Optional(TEXT("material"), TEXT("string"), TEXT("Optional material override"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("delete_actor"), TEXT("Delete actor by name/label") }
             .OptionalBatchItems(TEXT("Batch items with target, confirm_class, expected_fingerprint"))
             .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
-            .Optional(TEXT("confirm_class"), TEXT("string"), TEXT("Expected actor class guard")),
+            .Optional(TEXT("confirm_class"), TEXT("string"), TEXT("Expected actor class guard"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("duplicate_actor"), TEXT("Duplicate an existing actor") }
             .OptionalBatchItems(TEXT("Batch items with target, offset, expected_fingerprint"))
             .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
-            .Optional(TEXT("offset"), TEXT("array"), TEXT("Optional world offset")),
+            .Optional(TEXT("offset"), TEXT("array"), TEXT("Optional world offset"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default); 'pie' is refused because runtime duplication is not equivalent to editor copy/paste")),
         FCortexCommandInfo{ TEXT("rename_actor"), TEXT("Change actor label") }
             .OptionalBatchItems(TEXT("Batch items with target, label, expected_fingerprint"))
             .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
-            .Required(TEXT("label"), TEXT("string"), TEXT("New actor label")),
+            .Required(TEXT("label"), TEXT("string"), TEXT("New actor label"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("get_actor"), TEXT("Get full actor details") }
-            .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier")),
+            .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("set_transform"), TEXT("Set actor location/rotation/scale") }
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Optional(TEXT("location"), TEXT("array"), TEXT("World location"))
             .Optional(TEXT("rotation"), TEXT("array"), TEXT("World rotation"))
-            .Optional(TEXT("scale"), TEXT("array"), TEXT("World scale")),
+            .Optional(TEXT("scale"), TEXT("array"), TEXT("World scale"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("set_actor_property"), TEXT("Set actor UPROPERTY value") }
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Required(TEXT("property"), TEXT("string"), TEXT("Property path"))
-            .Required(TEXT("value"), TEXT("object"), TEXT("Property value")),
+            .Required(TEXT("value"), TEXT("object"), TEXT("Property value"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("get_actor_property"), TEXT("Read actor UPROPERTY value") }
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
-            .Required(TEXT("property"), TEXT("string"), TEXT("Property path")),
+            .Required(TEXT("property"), TEXT("string"), TEXT("Property path"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("list_components"), TEXT("List actor components") }
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
-            .Optional(TEXT("include_properties"), TEXT("boolean"), TEXT("Include editor-visible component property values (first 20 with total/returned counts and a completeness flag; default false)")),
+            .Optional(TEXT("include_properties"), TEXT("boolean"), TEXT("Include editor-visible component property values (first 20 with total/returned counts and a completeness flag; default false)"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("add_component"), TEXT("Add component instance to actor") }
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Required(TEXT("class"), TEXT("string"), TEXT("Component class name"))
-            .Optional(TEXT("name"), TEXT("string"), TEXT("Component instance name")),
+            .Optional(TEXT("name"), TEXT("string"), TEXT("Component instance name"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("remove_component"), TEXT("Remove actor component instance") }
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
-            .Required(TEXT("component"), TEXT("string"), TEXT("Component instance name")),
+            .Required(TEXT("component"), TEXT("string"), TEXT("Component instance name"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("get_component_property"), TEXT("Read component property value") }
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Required(TEXT("component"), TEXT("string"), TEXT("Component instance name"))
-            .Required(TEXT("property"), TEXT("string"), TEXT("Property path")),
+            .Required(TEXT("property"), TEXT("string"), TEXT("Property path"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("set_component_property"), TEXT("Set component property value") }
             .OptionalBatchItems(TEXT("Batch items with target, component, property, value, expected_fingerprint"))
             .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Required(TEXT("component"), TEXT("string"), TEXT("Component instance name"))
             .Required(TEXT("property"), TEXT("string"), TEXT("Property path"))
-            .Required(TEXT("value"), TEXT("object"), TEXT("Property value")),
+            .Required(TEXT("value"), TEXT("object"), TEXT("Property value"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("list_actor_classes"), TEXT("List curated actor classes by category") }
             .Optional(TEXT("category"), TEXT("string"), TEXT("Class category filter")),
         FCortexCommandInfo{ TEXT("list_component_classes"), TEXT("List curated component classes by category") }
@@ -272,15 +289,18 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .Optional(TEXT("folder"), TEXT("string"), TEXT("World outliner folder"))
             .Optional(TEXT("region"), TEXT("object"), TEXT("World-space region filter"))
             .Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum actors to return"))
-            .Optional(TEXT("offset"), TEXT("number"), TEXT("Pagination offset")),
+            .Optional(TEXT("offset"), TEXT("number"), TEXT("Pagination offset"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("find_actors"), TEXT("Find actors by pattern (auto-wildcards plain keywords)") }
             .Required(TEXT("pattern"), TEXT("string"), TEXT("Search pattern — plain keywords auto-wrapped as *keyword*"))
-            .Optional(TEXT("include_components"), TEXT("boolean"), TEXT("Include component list per match")),
+            .Optional(TEXT("include_components"), TEXT("boolean"), TEXT("Include component list per match"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("get_bounds"), TEXT("Compute bounds for filtered actors; response carries scan_truncated=true when the 10,000-actor scan cap cut the scan") }
             .Optional(TEXT("class"), TEXT("string"), TEXT("Actor class filter"))
             .Optional(TEXT("tags"), TEXT("array"), TEXT("Required actor tags"))
             .Optional(TEXT("folder"), TEXT("string"), TEXT("World outliner folder"))
-            .Optional(TEXT("region"), TEXT("object"), TEXT("World-space region filter")),
+            .Optional(TEXT("region"), TEXT("object"), TEXT("World-space region filter"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("select_actors"), TEXT("Select actors in editor") }
             .Required(TEXT("actors"), TEXT("array"), TEXT("Actors to select"))
             .Optional(TEXT("add"), TEXT("boolean"), TEXT("Add to current selection")),
@@ -290,26 +310,35 @@ TArray<FCortexCommandInfo> FCortexLevelCommandHandler::GetSupportedCommands() co
             .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Child actor"))
             .Required(TEXT("parent"), TEXT("string"), TEXT("Parent actor"))
-            .Optional(TEXT("socket"), TEXT("string"), TEXT("Optional parent socket")),
+            .Optional(TEXT("socket"), TEXT("string"), TEXT("Optional parent socket"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("detach_actor"), TEXT("Detach actor from parent") }
             .OptionalBatchItems(TEXT("Batch items with target, expected_fingerprint"))
             .OptionalExpectedFingerprint()
-            .Required(TEXT("actor"), TEXT("string"), TEXT("Actor to detach")),
+            .Required(TEXT("actor"), TEXT("string"), TEXT("Actor to detach"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("set_tags"), TEXT("Replace actor tags") }
             .OptionalBatchItems(TEXT("Batch items with target, tags, expected_fingerprint"))
             .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
-            .Required(TEXT("tags"), TEXT("array"), TEXT("Replacement actor tags")),
+            .Required(TEXT("tags"), TEXT("array"), TEXT("Replacement actor tags"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("set_folder"), TEXT("Set actor outliner folder") }
             .OptionalBatchItems(TEXT("Batch items with target, folder, expected_fingerprint"))
             .OptionalExpectedFingerprint()
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
-            .Optional(TEXT("folder"), TEXT("string"), TEXT("Destination folder path")),
+            .Optional(TEXT("folder"), TEXT("string"), TEXT("Destination folder path"))
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
         FCortexCommandInfo{ TEXT("group_actors"), TEXT("Group multiple actors") }
             .Required(TEXT("actors"), TEXT("array"), TEXT("Actors to group")),
         FCortexCommandInfo{ TEXT("ungroup_actors"), TEXT("Ungroup grouped actors") }
             .Required(TEXT("group"), TEXT("string"), TEXT("Group actor identifier")),
-        FCortexCommandInfo{ TEXT("get_info"), TEXT("Get current level/world info") },
+        FCortexCommandInfo{ TEXT("get_info"), TEXT("Get current level/world info") }
+            .Optional(TEXT("world"), TEXT("string"), TEXT("Target world: 'editor' (default) or 'pie' (requires an active PIE session)")),
+        FCortexCommandInfo{ TEXT("set_pie_view"), TEXT("Spawn or move a transient camera in the PIE world and make it the player view target") }
+            .Required(TEXT("location"), TEXT("array"), TEXT("World location [x,y,z]"))
+            .Required(TEXT("rotation"), TEXT("array"), TEXT("World rotation [pitch,yaw,roll]"))
+            .Optional(TEXT("fov"), TEXT("number"), TEXT("Camera field of view in degrees (default 90)")),
         FCortexCommandInfo{ TEXT("list_sublevels"), TEXT("List streaming sublevels") },
         FCortexCommandInfo{ TEXT("load_sublevel"), TEXT("Mark sublevel to load") }
             .Required(TEXT("sublevel"), TEXT("string"), TEXT("Sublevel package name")),

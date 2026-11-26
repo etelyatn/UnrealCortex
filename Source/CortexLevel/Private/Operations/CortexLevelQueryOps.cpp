@@ -202,7 +202,7 @@ FCortexCommandResult FCortexLevelQueryOps::ListActors(const TSharedPtr<FJsonObje
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -262,7 +262,7 @@ FCortexCommandResult FCortexLevelQueryOps::FindActors(const TSharedPtr<FJsonObje
     Params->TryGetBoolField(TEXT("include_components"), bIncludeComponents);
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -300,7 +300,7 @@ FCortexCommandResult FCortexLevelQueryOps::FindActors(const TSharedPtr<FJsonObje
 FCortexCommandResult FCortexLevelQueryOps::GetBounds(const TSharedPtr<FJsonObject>& Params)
 {
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;

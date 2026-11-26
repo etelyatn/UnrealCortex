@@ -93,7 +93,7 @@ FCortexCommandResult FCortexLevelTransformOps::GetActor(const TSharedPtr<FJsonOb
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -122,7 +122,7 @@ FCortexCommandResult FCortexLevelTransformOps::SetTransform(const TSharedPtr<FJs
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -154,7 +154,9 @@ FCortexCommandResult FCortexLevelTransformOps::SetTransform(const TSharedPtr<FJs
             FString::Printf(TEXT("%s must be a [x,y,z] array of numbers"), FieldName));
     }
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Actor Transform")));
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Set Actor Transform")),
+        FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
 
     if (bHasLocation)
@@ -194,7 +196,7 @@ FCortexCommandResult FCortexLevelTransformOps::SetActorProperty(const TSharedPtr
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -222,7 +224,9 @@ FCortexCommandResult FCortexLevelTransformOps::SetActorProperty(const TSharedPtr
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required parameter: value"));
     }
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Actor Property")));
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Set Actor Property")),
+        FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
 
     TArray<FString> Warnings;
@@ -264,7 +268,7 @@ FCortexCommandResult FCortexLevelTransformOps::GetActorProperty(const TSharedPtr
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;

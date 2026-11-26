@@ -11,6 +11,19 @@ class FCortexLevelUtils
 {
 public:
     static UWorld* GetEditorWorld(FCortexCommandResult& OutError);
+
+    /** Resolve the optional `world` param: absent or "editor" targets the editor world,
+     *  "pie" targets GEditor->PlayWorld (PIE_NOT_ACTIVE when PIE is not running), and any
+     *  other value is refused with INVALID_VALUE. */
+    static UWorld* ResolveWorld(const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError);
+
+    /** Editor-world writes are transactable; PIE writes are transient and must not enter the
+     *  editor transaction buffer (PIE teardown resets it and discards editor undo history). */
+    static bool ShouldTransact(UWorld* World);
+
+    /** Copy a top-level `world` into every batch item whose params do not already set one. */
+    static void ApplyWorldToBatchRequest(const TSharedPtr<FJsonObject>& Params, FCortexBatchMutationRequest& Request);
+
     static AActor* FindActorByLabelOrPath(UWorld* World, const FString& ActorIdentifier, FCortexCommandResult& OutError);
     static UClass* ResolveActorClass(const FString& ClassIdentifier, FCortexCommandResult& OutError);
     static TSharedPtr<FJsonObject> SerializeActorSummary(AActor* Actor);
