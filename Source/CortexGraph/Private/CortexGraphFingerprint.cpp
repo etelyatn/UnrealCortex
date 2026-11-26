@@ -1,6 +1,7 @@
 #include "CortexGraphFingerprint.h"
 #include "Operations/CortexGraphNodeOps.h"
 #include "Operations/CortexGraphPinDefaults.h"
+#include "Operations/CortexGraphPropertyAccess.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexEngineCompat.h"
 #include "Dom/JsonObject.h"
@@ -256,6 +257,14 @@ TSharedPtr<FJsonObject> FCortexGraphFingerprint::Compute(UBlueprint* Blueprint)
 			{
 				Buffer += FString::Printf(TEXT("   FuncEntry: CustomName=%s\n"),
 					*EntryNode->CustomGeneratedFunctionName.ToString());
+			}
+			else if (FCortexGraphPropertyAccess::IsPropertyAccessNode(Node))
+			{
+				TArray<FString> AccessPath;
+				FCortexGraphPropertyAccess::ReadPath(Node, AccessPath);
+				Buffer += FString::Printf(TEXT("   PropertyAccess: Path=%s Context=%s\n"),
+					*FString::Join(AccessPath, TEXT("|")),
+					*FCortexGraphPropertyAccess::ReadContextId(Node).ToString());
 			}
 
 			// Sort pins by Direction then PinName

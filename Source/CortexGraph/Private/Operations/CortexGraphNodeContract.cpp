@@ -1,5 +1,6 @@
 #include "Operations/CortexGraphNodeContract.h"
 #include "Operations/CortexGraphSymbolResolver.h"
+#include "Operations/CortexGraphPropertyAccess.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_IfThenElse.h"
 #include "K2Node_Variable.h"
@@ -250,6 +251,12 @@ bool FCortexGraphNodeContract::ResolveFamily(
 			TEXT("K2Node_GenericCreateObject"),
 			[]() -> UClass* { return UK2Node_GenericCreateObject::StaticClass(); },
 			{ TEXT("ConstructObject"), TEXT("GenericCreateObject"), TEXT("UK2Node_GenericCreateObject"), TEXT("K2Node_GenericCreateObject"), TEXT("/Script/BlueprintGraph.K2Node_GenericCreateObject") }
+		},
+		{
+			FName("PropertyAccess"),
+			TEXT("K2Node_PropertyAccess"),
+			[]() -> UClass* { return FCortexGraphPropertyAccess::GetNodeClass(); },
+			{ TEXT("PropertyAccess"), TEXT("UK2Node_PropertyAccess"), TEXT("K2Node_PropertyAccess"), TEXT("/Script/PropertyAccessNode.K2Node_PropertyAccess") }
 		}
 	};
 
@@ -259,8 +266,14 @@ bool FCortexGraphNodeContract::ResolveFamily(
 		{
 			if (Alias.Equals(NodeClassOrAlias, ESearchCase::IgnoreCase))
 			{
+				// A family whose class lives in an optional plugin that is not loaded does not resolve.
+				UClass* MappedClass = Mapping.GetClassFunc();
+				if (MappedClass == nullptr)
+				{
+					return false;
+				}
 				OutFamilyName = Mapping.FamilyName;
-				OutNodeClass = Mapping.GetClassFunc();
+				OutNodeClass = MappedClass;
 				return true;
 			}
 		}
@@ -467,6 +480,13 @@ FCortexNodeConstructionContract FCortexGraphNodeContract::Describe(const FString
 	else if (FamilyName == FName("Composite"))
 	{
 		Set(TEXT("K2Node_Composite"));
+	}
+	else if (FamilyName == FName("PropertyAccess"))
+	{
+		Set(TEXT("K2Node_PropertyAccess"));
+		Contract.RequiredParams.Add({ TEXT("path"), TEXT("array"), true, TEXT("Property access path segments (strings) from the Anim Blueprint class, e.g. [\"GetOwningActor\", \"bHidden\"]; a segment is a property (optionally Name[N] for an array element) or a getter function with one return value and no parameters") });
+		Contract.Prerequisites = TEXT("Animation Blueprints only (not child Anim Blueprints). The path is resolved from the Blueprint's class; compile the Blueprint after adding new member variables the path reads.");
+		Contract.NonRetryableErrors = TEXT("INVALID_FIELD, INVALID_OPERATION");
 	}
 	else
 	{
@@ -689,6 +709,23 @@ bool FCortexGraphNodeContract::Validate(
 			{
 				return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Function '%s' cannot be placed as an event"), *Symbol.MemberName.ToString()));
 			}
+		}
+	}
+	else if (FamilyName == FName("PropertyAccess"))
+	{
+		if (!FCortexGraphPropertyAccess::ValidateBlueprint(Blueprint, OutError))
+		{
+			return FailWithError(TEXT(""), OutError);
+		}
+		TArray<FString> Path;
+		FString PathError;
+		if (!FCortexGraphPropertyAccess::ParsePathParam(NodeParams, Path, PathError))
+		{
+			return Fail(TEXT("params.path"), PathError);
+		}
+		if (!FCortexGraphPropertyAccess::ValidatePath(Blueprint, Path, OutError))
+		{
+			return FailWithError(TEXT("params.path"), OutError);
 		}
 	}
 
@@ -923,6 +960,21 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 			{
 				MacroNode->SetMacroGraph(MacroGraph);
 			}
+		}
+	}
+
+	if (FCortexGraphPropertyAccess::IsPropertyAccessNode(NewNode))
+	{
+		TArray<FString> Path;
+		if (!FCortexGraphPropertyAccess::ParsePathParam(NodeParams, Path, OutError))
+		{
+			return false;
+		}
+		// Pins are allocated by the caller afterwards; AllocatePins resolves Path, sets TextPath and types Value.
+		if (!FCortexGraphPropertyAccess::WritePath(NewNode, Path))
+		{
+			OutError = TEXT("Property Access node has no writable Path property in this engine version");
+			return false;
 		}
 	}
 
