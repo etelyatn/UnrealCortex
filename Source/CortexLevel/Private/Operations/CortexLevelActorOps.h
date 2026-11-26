@@ -10,4 +10,7 @@ public:
     static FCortexCommandResult DeleteActor(const TSharedPtr<FJsonObject>& Params);
     static FCortexCommandResult DuplicateActor(const TSharedPtr<FJsonObject>& Params);
     static FCortexCommandResult RenameActor(const TSharedPtr<FJsonObject>& Params);
+
+    /** Spawn or move a transient camera in the PIE world and make it the player view target. */
+    static FCortexCommandResult SetPIEView(const TSharedPtr<FJsonObject>& Params);
 };

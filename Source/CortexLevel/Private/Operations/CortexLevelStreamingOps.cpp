@@ -59,10 +59,8 @@ namespace
 
 FCortexCommandResult FCortexLevelStreamingOps::GetInfo(const TSharedPtr<FJsonObject>& Params)
 {
-    (void)Params;
-
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -94,9 +92,9 @@ FCortexCommandResult FCortexLevelStreamingOps::GetInfo(const TSharedPtr<FJsonObj
     Data->SetObjectField(TEXT("world_settings"), WorldSettings);
 
     FCortexCommandResult Result = FCortexCommandRouter::Success(Data);
-    if (GEditor && GEditor->IsPlaySessionInProgress())
+    if (World->WorldType == EWorldType::Editor && GEditor && GEditor->IsPlaySessionInProgress())
     {
-        Result.Warnings.Add(TEXT("PIE is active; level state may be transient"));
+        Result.Warnings.Add(TEXT("PIE is active; this reports the editor world. Pass world 'pie' to read the play world."));
     }
 
     return Result;

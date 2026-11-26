@@ -1,11 +1,14 @@
 #include "CortexLevelUtils.h"
 
 #include "Components/ActorComponent.h"
+#include "CortexPIEUtils.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
+#include "Editor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/Engine.h"
 #include "Engine/LevelStreaming.h"
+#include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "Misc/PackageName.h"
@@ -45,6 +48,112 @@ UWorld* FCortexLevelUtils::GetEditorWorld(FCortexCommandResult& OutError)
         TEXT("No editor world available")
     );
     return nullptr;
+}
+
+UWorld* FCortexLevelUtils::ResolveWorld(const TSharedPtr<FJsonObject>& Params, FCortexCommandResult& OutError)
+{
+    FString WorldMode;
+    if (!ParseWorldMode(Params, WorldMode, OutError))
+    {
+        return nullptr;
+    }
+
+    if (WorldMode.Equals(TEXT("editor"), ESearchCase::IgnoreCase))
+    {
+        return GetEditorWorld(OutError);
+    }
+
+    UWorld* PlayWorld = FCortexPIEUtils::GetPIEWorld();
+    if (PlayWorld == nullptr)
+    {
+        OutError = FCortexPIEUtils::PIENotActiveError();
+        return nullptr;
+    }
+    return PlayWorld;
+}
+
+bool FCortexLevelUtils::ParseWorldMode(
+    const TSharedPtr<FJsonObject>& Params,
+    FString& OutWorldMode,
+    FCortexCommandResult& OutError)
+{
+    OutWorldMode = TEXT("editor");
+    if (!Params.IsValid() || !Params->HasField(TEXT("world")))
+    {
+        return true;
+    }
+
+    FString RequestedWorld;
+    if (!Params->TryGetStringField(TEXT("world"), RequestedWorld) || RequestedWorld.IsEmpty())
+    {
+        OutError = FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidValue,
+            TEXT("world must be 'editor' or 'pie'")
+        );
+        return false;
+    }
+
+    if (!RequestedWorld.Equals(TEXT("editor"), ESearchCase::IgnoreCase)
+        && !RequestedWorld.Equals(TEXT("pie"), ESearchCase::IgnoreCase))
+    {
+        OutError = FCortexCommandRouter::Error(
+            CortexErrorCodes::InvalidValue,
+            FString::Printf(TEXT("world must be 'editor' or 'pie', got '%s'"), *RequestedWorld)
+        );
+        return false;
+    }
+
+    OutWorldMode = RequestedWorld;
+    return true;
+}
+
+bool FCortexLevelUtils::ShouldTransact(UWorld* World)
+{
+    return World != nullptr && World->WorldType != EWorldType::PIE;
+}
+
+bool FCortexLevelUtils::ApplyWorldToBatchRequest(
+    const TSharedPtr<FJsonObject>& Params,
+    FCortexBatchMutationRequest& Request,
+    FCortexCommandResult& OutError)
+{
+    FString WorldMode;
+    if (!ParseWorldMode(Params, WorldMode, OutError))
+    {
+        return false;
+    }
+
+    if (!Params.IsValid() || !Params->HasField(TEXT("world")))
+    {
+        return true;
+    }
+
+    for (FCortexBatchMutationItem& Item : Request.Items)
+    {
+        if (Item.Params.IsValid() && !Item.Params->HasField(TEXT("world")))
+        {
+            Item.Params->SetStringField(TEXT("world"), WorldMode);
+        }
+    }
+    return true;
+}
+
+FCortexLevelPIETransactionScope::FCortexLevelPIETransactionScope(UWorld* World)
+    : bActive(World != nullptr && World->WorldType == EWorldType::PIE)
+    , PreviousUndo(GUndo)
+{
+    if (bActive)
+    {
+        GUndo = nullptr;
+    }
+}
+
+FCortexLevelPIETransactionScope::~FCortexLevelPIETransactionScope()
+{
+    if (bActive)
+    {
+        GUndo = PreviousUndo;
+    }
 }
 
 AActor* FCortexLevelUtils::FindActorByLabelOrPath(UWorld* World, const FString& ActorIdentifier, FCortexCommandResult& OutError)

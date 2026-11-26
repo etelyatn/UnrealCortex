@@ -232,7 +232,7 @@ namespace
     FCortexBatchPreflightResult PreflightSetComponentProperty(const FCortexBatchMutationItem& Item)
     {
         FCortexCommandResult Error;
-        UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+        UWorld* World = FCortexLevelUtils::ResolveWorld(Item.Params, Error);
         if (!World)
         {
             return FCortexBatchPreflightResult::Error(Error.ErrorCode, Error.ErrorMessage, Error.ErrorDetails);
@@ -306,7 +306,7 @@ FCortexCommandResult FCortexLevelComponentOps::ListComponents(const TSharedPtr<F
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -363,7 +363,7 @@ FCortexCommandResult FCortexLevelComponentOps::AddComponent(const TSharedPtr<FJs
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -412,10 +412,16 @@ FCortexCommandResult FCortexLevelComponentOps::AddComponent(const TSharedPtr<FJs
         }
     }
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Add Component")));
+    FCortexLevelPIETransactionScope PIEScope(World);
+
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Add Component")),
+        FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
 
-    UActorComponent* NewComponent = NewObject<UActorComponent>(Actor, ComponentClass, NewName, RF_Transactional);
+    const EObjectFlags NewComponentFlags =
+        FCortexLevelUtils::ShouldTransact(World) ? RF_Transactional : RF_NoFlags;
+    UActorComponent* NewComponent = NewObject<UActorComponent>(Actor, ComponentClass, NewName, NewComponentFlags);
     if (!NewComponent)
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Failed to allocate component"));
@@ -458,7 +464,7 @@ FCortexCommandResult FCortexLevelComponentOps::RemoveComponent(const TSharedPtr<
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -491,7 +497,11 @@ FCortexCommandResult FCortexLevelComponentOps::RemoveComponent(const TSharedPtr<
 
     const FString RemovedName = Component->GetName();
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Remove Component")));
+    FCortexLevelPIETransactionScope PIEScope(World);
+
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Remove Component")),
+        FCortexLevelUtils::ShouldTransact(World));
     Actor->Modify();
     Component->Modify();
 
@@ -528,7 +538,7 @@ FCortexCommandResult FCortexLevelComponentOps::GetComponentProperty(const TShare
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -575,6 +585,11 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
         {
             return ParseError;
         }
+        FCortexCommandResult WorldError;
+        if (!FCortexLevelUtils::ApplyWorldToBatchRequest(Params, Request, WorldError))
+        {
+            return WorldError;
+        }
 
         return MakeLevelComponentBatchCommandResult(FCortexBatchMutation::Run(
             Request,
@@ -610,7 +625,7 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
     }
 
     FCortexCommandResult Error;
-    UWorld* World = FCortexLevelUtils::GetEditorWorld(Error);
+    UWorld* World = FCortexLevelUtils::ResolveWorld(Params, Error);
     if (!World)
     {
         return Error;
@@ -641,7 +656,11 @@ FCortexCommandResult FCortexLevelComponentOps::SetComponentProperty(const TShare
             FString::Printf(TEXT("Property not found: %s"), *PropertyName));
     }
 
-    FScopedTransaction Transaction(FText::FromString(TEXT("Cortex: Set Component Property")));
+    FCortexLevelPIETransactionScope PIEScope(World);
+
+    FScopedTransaction Transaction(
+        FText::FromString(TEXT("Cortex: Set Component Property")),
+        FCortexLevelUtils::ShouldTransact(World));
     Component->Modify();
 
     // PreEditChange before any write (mirrors Details Panel pattern)
