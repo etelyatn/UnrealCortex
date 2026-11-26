@@ -1434,6 +1434,7 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 						FString::Printf(TEXT("Graph kind mismatch: specified '%s' but graph is '%s'"), *TargetKind, *Resolved->Kind));
 				}
 
+				ResolvedTargetGraph = Resolved->Graph;
 				ResolvedTargetObj = MakeShared<FJsonObject>();
 				ResolvedTargetObj->SetStringField(TEXT("graph_guid"), Resolved->Graph->GraphGuid.ToString());
 				ResolvedTargetObj->SetStringField(TEXT("graph_name"), Resolved->Graph->GetName());
