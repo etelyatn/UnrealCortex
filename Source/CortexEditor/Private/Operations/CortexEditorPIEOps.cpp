@@ -87,6 +87,7 @@ FCortexCommandResult FCortexEditorPIEOps::StartPIE(
 		RequestParams.DestinationSlateViewport = LevelEditorModule.GetFirstActiveViewport();
 	}
 
+	PIEState.HoldCPUThrottleBypass();
 	PIEState.SetState(ECortexPIEState::Starting);
 	GEditor->RequestPlaySession(RequestParams);
 

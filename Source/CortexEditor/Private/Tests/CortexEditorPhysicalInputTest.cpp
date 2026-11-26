@@ -13,6 +13,7 @@
 #include "CortexEditorPhysicalInput.h"
 #include "CortexEditorPhysicalInputGuards.h"
 #include "CortexEditorPhysicalInputSession.h"
+#include "CortexEditorCPUThrottleTestUtils.h"
 #include "CortexEditorPhysicalInputSelfCursorMove.h"
 #include "CortexEditorPhysicalInputUserActivity.h"
 #include "Misc/ScopeExit.h"
@@ -1743,6 +1744,49 @@ bool FCortexPhysicalInputOwnedMapTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("PIE preparation admitted"), Accepted.bSuccess);
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Owned PIE vetoes the editor's background CPU throttle until its teardown resolves (issue 245)
+// ---------------------------------------------------------------------------
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexPhysicalInputOwnedCPUThrottleBypassTest,
+	"Cortex.Editor.PhysicalInputOwnedCPUThrottleBypass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FCortexPhysicalInputOwnedCPUThrottleBypassTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (!GEditor) { AddError(TEXT("GEditor missing")); return false; }
+	const auto Fixture = MakeShared<FCortexEditorPhysicalInputTestFixture>();
+	if (!Fixture->EditorWorldBefore.IsValid()) { AddError(TEXT("Editor world missing")); return false; }
+	const int32 BaselineVetoes = CortexCountEditorCPUThrottleVetoes();
+	TestTrue(TEXT("PIE preparation admitted"),
+		Fixture->Session->BeginOwnedPIE(Fixture->RequestedMap, 0, MakeFixtureReadyCallback(Fixture)).bSuccess);
+	TestEqual(TEXT("Owned PIE vetoes the background throttle from admission"),
+		CortexCountEditorCPUThrottleVetoes(), BaselineVetoes + 1);
+
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexWaitOwnedInputReady(this, Fixture));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexRunWhenOwnedInputReady(this, Fixture, TEXT("ThrottleBypass"),
+		[BaselineVetoes](FAutomationTestBase& Test)
+		{
+			Test.TestEqual(TEXT("Ready owned PIE vetoes the background throttle"),
+				CortexCountEditorCPUThrottleVetoes(), BaselineVetoes + 1);
+		}));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexEndOwnedInputFixture(this, Fixture));
+	// The session latches its resolved teardown on its own ticker, at most a frame after the owned
+	// context disappears; wait for that, bounded by the teardown watchdog.
+	const TSharedRef<double> Deadline = MakeShared<double>(0.0);
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Fixture, BaselineVetoes, Deadline]()
+	{
+		if (*Deadline == 0.0) { *Deadline = FPlatformTime::Seconds() + CortexPhysicalInputTeardownWatchdogSeconds; }
+		if (CortexCountEditorCPUThrottleVetoes() != BaselineVetoes && FPlatformTime::Seconds() <= *Deadline)
+		{
+			return false;
+		}
+		TestEqual(TEXT("Resolved owned teardown releases the throttle veto"),
+			CortexCountEditorCPUThrottleVetoes(), BaselineVetoes);
+		return true;
+	}));
 	return true;
 }
 

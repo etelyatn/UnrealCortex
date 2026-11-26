@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CortexEngineCompat.h"
+#include "CortexEditorCPUThrottleBypass.h"
 #include "CortexTypes.h"
 #include "Containers/Ticker.h"
 #include "HAL/ThreadSafeBool.h"
@@ -29,7 +30,11 @@ public:
 
 	ECortexPIEState GetState() const { return State; }
 	// Entering Starting is the boundary of a new play request and advances PlayRequestGeneration.
+	// Entering Stopped releases the CPU throttle bypass held for a Cortex-started session.
 	void SetState(ECortexPIEState NewState);
+	// Marks the play request this tracker is about to start as Cortex-started: the editor's
+	// background CPU throttle stays off until the tracker returns to Stopped.
+	void HoldCPUThrottleBypass();
 
 	bool IsInTransition() const;
 	bool IsActive() const;
@@ -146,4 +151,7 @@ private:
 	TMap<TWeakObjectPtr<const UInputAction>, FContinuousInputRun> ContinuousInputRuns;
 	uint32 ContinuousInputRunGeneration = 0;
 	bool bInputAdmissionBlocked = false;
+
+	/** Held from a Cortex start_pie admission until this tracker returns to Stopped. */
+	TUniquePtr<FCortexEditorCPUThrottleBypassLease> CPUThrottleBypass;
 };
