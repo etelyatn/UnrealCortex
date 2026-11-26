@@ -1,7 +1,7 @@
 # Issue 266 — PIE world targeting verification
 
 **Issue:** https://github.com/etelyatn/UnrealCortex/issues/266
-**Candidate:** `TBD` on `feat/266-pie-world-targeting` (feature `9820618c`, verification/fixes follow)
+**Candidate:** `06eca308a82fb3a3e02cf18dd0713556df6d44b9` on `feat/266-pie-world-targeting` (feature `9820618c`, merged base `d59839f9`, review fixes `06eca30`)
 **Base:** `2df9a88c98ca6d31d408a7aacf9752f3ef8ca240` (`main` after PR #270; merged into the branch as `d59839f9`)
 **Version:** plugin 0.4.27 (MCP 0.2.21)
 **Date:** 2026-11-26
