@@ -799,6 +799,18 @@ class TestAnalyzeForMigrationResponsePolicy:
         assert payload["asset_path"] == "/Game/BP_HugeLogic"
         assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
 
+    def test_get_subgraph_oversized_refusal_names_out_path(self):
+        nodes = [{"node_id": f"K2Node_{i}", "title": "N" * 400} for i in range(300)]
+        data = {"asset_path": "/Game/BP_HugeGraph", "graph_name": "EventGraph", "nodes": nodes, "node_count": 300}
+        router, _ = _router_with_mock("graph", data)
+        payload = json.loads(router("get_subgraph", {"asset_path": "/Game/BP_HugeGraph", "graph_name": "EventGraph"}))
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert payload["reader_complete"] is False
+        assert "nodes" not in payload
+        assert "_truncated" not in payload
+        assert "'out_path'" in payload["_suggestion"]
+        assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+
     def test_unfiltered_search_nodes_pages_completely_via_limit_and_cursor(self):
         results = [
             {"node_id": f"node_{i}", "graph_name": "EventGraph", "title": "T" * 120}

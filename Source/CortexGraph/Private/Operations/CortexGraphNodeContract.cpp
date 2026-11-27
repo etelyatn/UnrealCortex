@@ -11,6 +11,7 @@
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Self.h"
 #include "K2Node_Knot.h"
+#include "K2Node_Message.h"
 #include "K2Node_MakeArray.h"
 #include "K2Node_Timeline.h"
 #include "K2Node_SpawnActorFromClass.h"
@@ -241,6 +242,12 @@ bool FCortexGraphNodeContract::ResolveFamily(
 			{ TEXT("CreateDelegate"), TEXT("UK2Node_CreateDelegate"), TEXT("K2Node_CreateDelegate"), TEXT("CreateEvent"), TEXT("/Script/BlueprintGraph.K2Node_CreateDelegate") }
 		},
 		{
+			FName("Message"),
+			TEXT("K2Node_Message"),
+			[]() -> UClass* { return UK2Node_Message::StaticClass(); },
+			{ TEXT("Message"), TEXT("InterfaceMessage"), TEXT("UK2Node_Message"), TEXT("K2Node_Message"), TEXT("/Script/BlueprintGraph.K2Node_Message") }
+		},
+		{
 			FName("Composite"),
 			TEXT("K2Node_Composite"),
 			[]() -> UClass* { return UK2Node_Composite::StaticClass(); },
@@ -376,6 +383,15 @@ FCortexNodeConstructionContract FCortexGraphNodeContract::Describe(const FString
 		Contract.OptionalParams.Add({ TEXT("owner_class"), TEXT("string"), false, TEXT("Canonical owner class path, e.g. /Script/Engine.KismetSystemLibrary") });
 		Contract.OptionalParams.Add({ TEXT("call_kind"), TEXT("string"), false, TEXT("Call kind: ordinary, interface_message") });
 		Contract.Prerequisites = TEXT("Resolve the function selector with describe_node before wiring pins.");
+		Contract.NonRetryableErrors = CallFunctionNonRetryable;
+	}
+	else if (FamilyName == FName("Message"))
+	{
+		Set(TEXT("K2Node_Message"));
+		Contract.RequiredParams.Add({ TEXT("function_name"), TEXT("string"), true, TEXT("Interface function selector in InterfaceName.FunctionName format, or separate owner_class + function_name; the function must be declared by a Blueprint interface") });
+		Contract.OptionalParams.Add({ TEXT("owner_class"), TEXT("string"), false, TEXT("Canonical owner interface class path") });
+		Contract.OptionalParams.Add({ TEXT("call_kind"), TEXT("string"), false, TEXT("Call kind: interface_message (the only accepted value for a message node)") });
+		Contract.Prerequisites = TEXT("Resolve the interface function selector with describe_node before wiring pins.");
 		Contract.NonRetryableErrors = CallFunctionNonRetryable;
 	}
 	else if (FamilyName == FName("IfThenElse"))
@@ -568,6 +584,22 @@ bool FCortexGraphNodeContract::Validate(
 			return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Function '%s' on class '%s' is not callable in Blueprints"), *Symbol.MemberName.ToString(), *Symbol.ContextClass->GetName()));
 		}
 	}
+	else if (FamilyName == FName("Message"))
+	{
+		FCortexResolvedSymbol Symbol;
+		if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, NodeParams, Symbol, OutError))
+		{
+			return FailWithError(TEXT("params.function_name"), OutError);
+		}
+		if (Symbol.CallKind != ECortexCallKind::InterfaceMessage)
+		{
+			return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Function '%s' on class '%s' is not declared by an interface; a message node needs an interface function"), *Symbol.MemberName.ToString(), *Symbol.ContextClass->GetName()));
+		}
+		if (!UEdGraphSchema_K2::CanUserKismetCallFunction(Symbol.Function))
+		{
+			return Fail(TEXT("params.function_name"), FString::Printf(TEXT("Function '%s' on class '%s' is not callable in Blueprints"), *Symbol.MemberName.ToString(), *Symbol.ContextClass->GetName()));
+		}
+	}
 	else if (FamilyName == FName("VariableSet") || FamilyName == FName("VariableGet"))
 	{
 		const bool bIsWrite = (FamilyName == FName("VariableSet"));
@@ -732,6 +764,25 @@ bool FCortexGraphNodeContract::Validate(
 	return true;
 }
 
+UClass* FCortexGraphNodeContract::ResolveConstructionClass(
+	UClass* FamilyClass,
+	const TSharedPtr<FJsonObject>& NodeParams)
+{
+	if (FamilyClass != UK2Node_CallFunction::StaticClass() || !NodeParams.IsValid())
+	{
+		return FamilyClass;
+	}
+	FString CallKindText;
+	ECortexCallKind CallKind = ECortexCallKind::Ordinary;
+	if (NodeParams->TryGetStringField(TEXT("call_kind"), CallKindText)
+		&& FCortexGraphSymbolResolver::TryParseCallKind(CallKindText, CallKind)
+		&& CallKind == ECortexCallKind::InterfaceMessage)
+	{
+		return UK2Node_Message::StaticClass();
+	}
+	return FamilyClass;
+}
+
 bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 	UEdGraph* Graph,
 	UEdGraphNode* NewNode,
@@ -745,7 +796,26 @@ bool FCortexGraphNodeContract::ApplyNodeConstructionParams(
 		return true;
 	}
 
-	if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(NewNode))
+	if (UK2Node_Message* MessageNode = Cast<UK2Node_Message>(NewNode))
+	{
+		// Same wiring as the editor's message spawner: the interface function is an external
+		// member (never a self-context reference). UK2Node_Message derives from UK2Node_CallFunction,
+		// so this branch must precede the ordinary call branch.
+		FCortexResolvedSymbol Symbol;
+		FCortexCommandResult Error;
+		if (!FCortexGraphSymbolResolver::ResolveFunction(Blueprint, NodeParams, Symbol, Error))
+		{
+			OutError = Error.ErrorMessage;
+			return false;
+		}
+		if (Symbol.CallKind != ECortexCallKind::InterfaceMessage)
+		{
+			OutError = FString::Printf(TEXT("Function '%s' is not declared by an interface; a message node needs an interface function"), *Symbol.MemberName.ToString());
+			return false;
+		}
+		MessageNode->FunctionReference.SetFromField<UFunction>(Symbol.Function, false);
+	}
+	else if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(NewNode))
 	{
 		FCortexResolvedSymbol Symbol;
 		FCortexCommandResult Error;

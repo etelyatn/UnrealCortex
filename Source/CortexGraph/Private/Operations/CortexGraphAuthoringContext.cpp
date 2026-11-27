@@ -382,6 +382,7 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 	Families.Add(MakeShared<FJsonValueString>(TEXT("ConstructObject")));
 	Families.Add(MakeShared<FJsonValueString>(TEXT("Event")));
 	Families.Add(MakeShared<FJsonValueString>(TEXT("PropertyAccess")));
+	Families.Add(MakeShared<FJsonValueString>(TEXT("Message")));
 	Data->SetArrayField(TEXT("supported_families"), Families);
 
 	TArray<TSharedPtr<FJsonValue>> Modes;

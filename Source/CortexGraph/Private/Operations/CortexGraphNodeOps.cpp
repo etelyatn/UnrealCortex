@@ -6,6 +6,9 @@
 #include "CortexAssetFingerprint.h"
 #include "CortexBatchMutation.h"
 #include "CortexGraphModule.h"
+#include "CortexGraphNodeVariation.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 #include "CortexSerializer.h"
 #include "CortexGraphBindingStorage.h"
 #include "CortexEditorUtils.h"
@@ -301,7 +304,7 @@ TSharedPtr<FJsonObject> AllocateProbePins(
 	// K2 nodes dereference the graph schema during AllocateDefaultPins/ReconstructNode; a null
 	// schema here would crash describe_node when construction params are provided.
 	ProbeGraph->Schema = UEdGraphSchema_K2::StaticClass();
-	UEdGraphNode* ProbeNode = NewObject<UEdGraphNode>(ProbeGraph, NodeClass, NAME_None, RF_Transient);
+	UEdGraphNode* ProbeNode = NewObject<UEdGraphNode>(ProbeGraph, FCortexGraphNodeContract::ResolveConstructionClass(NodeClass, NodeParams), NAME_None, RF_Transient);
 	FString ApplyError;
 	FCortexGraphNodeContract::ApplyNodeConstructionParams(ProbeGraph, ProbeNode, Blueprint, NodeParams, ApplyError);
 	if (ProbeNode->Pins.Num() == 0)
@@ -1086,7 +1089,7 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 
 	Graph->Modify();
 
-	UEdGraphNode* NewNode = NewObject<UEdGraphNode>(Graph, NodeClass);
+	UEdGraphNode* NewNode = NewObject<UEdGraphNode>(Graph, FCortexGraphNodeContract::ResolveConstructionClass(NodeClass, NodeConstructionParams));
 	NewNode->CreateNewGuid();
 	NewNode->NodePosX = PosX;
 	NewNode->NodePosY = PosY;
@@ -1487,7 +1490,7 @@ FCortexCommandResult FCortexGraphNodeOps::DescribeNode(const TSharedPtr<FJsonObj
 	UClass* DummyClass = nullptr;
 	FCortexGraphNodeContract::ResolveFamily(NodeClassName, FamilyName, DummyClass);
 
-	if (FamilyName == FName("CallFunction") || FamilyName == FName("Event"))
+	if (FamilyName == FName("CallFunction") || FamilyName == FName("Message") || FamilyName == FName("Event"))
 	{
 		FCortexResolvedSymbol Symbol;
 		FCortexCommandResult SymError;
@@ -1859,6 +1862,22 @@ TSharedRef<FJsonObject> FCortexGraphNodeOps::SerializeNode(const UEdGraphNode* N
 		Entry->SetObjectField(TEXT("property_access"), PropertyAccess);
 	}
 
+	// The bound function of a Create Event node is not part of its title ("Create Event"), so it is
+	// published as a field; the scope class is the class the function is looked up on.
+	if (const UK2Node_CreateDelegate* CreateDelegate = Cast<UK2Node_CreateDelegate>(Node))
+	{
+		Entry->SetStringField(TEXT("function_name"), CreateDelegate->GetFunctionName().ToString());
+		const UClass* ScopeClass = CreateDelegate->GetScopeClass();
+		Entry->SetStringField(TEXT("scope_class"), ScopeClass ? ScopeClass->GetPathName() : FString());
+	}
+
+	// A Variable Get node is pure, or executes as a branch / validated-object check; the title and
+	// the pure-looking class name do not tell which.
+	if (Cast<UK2Node_VariableGet>(Node))
+	{
+		Entry->SetStringField(TEXT("variation"), FCortexGraphNodeVariation::GetVariableGetVariation(Node));
+	}
+
 	if (bIncludePins)
 	{
 		TArray<TSharedPtr<FJsonValue>> PinsArray;
@@ -1967,6 +1986,191 @@ FCortexCommandResult FCortexGraphNodeOps::RemoveNode(const TSharedPtr<FJsonObjec
 	UE_LOG(LogCortexGraph, Log, TEXT("Removed node %s from graph %s (%d pins disconnected)"),
 		*NodeId, *Graph->GetName(), DisconnectedPins);
 
+	return FCortexCommandRouter::Success(Data);
+}
+
+FCortexCommandResult FCortexGraphNodeOps::RemoveNodes(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
+	}
+
+	const bool bHasNodeIds = Params->HasField(TEXT("node_ids"));
+	const bool bHasKeepIds = Params->HasField(TEXT("keep_node_ids"));
+	if (bHasNodeIds == bHasKeepIds)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Exactly one of node_ids (remove these nodes) or keep_node_ids (remove every other node) is required"));
+	}
+
+	const TCHAR* const IdField = bHasNodeIds ? TEXT("node_ids") : TEXT("keep_node_ids");
+	const TArray<TSharedPtr<FJsonValue>>* IdValues = nullptr;
+	if (!Params->TryGetArrayField(IdField, IdValues) || IdValues == nullptr || IdValues->Num() == 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("%s must be a non-empty array of node identifiers"), IdField));
+	}
+	TArray<FString> RequestedIds;
+	for (const TSharedPtr<FJsonValue>& Value : *IdValues)
+	{
+		FString Id;
+		if (!Value.IsValid() || !Value->TryGetString(Id) || Id.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("%s entries must be non-empty node identifier strings"), IdField));
+		}
+		RequestedIds.AddUnique(Id);
+	}
+
+	bool bDryRun = false;
+	if (Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), bDryRun))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("dry_run must be a boolean"));
+	}
+
+	FCortexCommandResult LoadError;
+	if (!ValidateWritableGraphNodeBlueprintAssetPath(AssetPath, LoadError))
+	{
+		return LoadError;
+	}
+
+	UBlueprint* Blueprint = LoadBlueprint(AssetPath, LoadError);
+	if (Blueprint == nullptr)
+	{
+		return LoadError;
+	}
+
+	FString GraphName;
+	Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+	UEdGraph* Graph = nullptr;
+	if (!ResolveMutableNodeGraph(Blueprint, GraphName, Graph, LoadError))
+	{
+		return LoadError;
+	}
+
+	FString SubgraphPath;
+	Params->TryGetStringField(TEXT("subgraph_path"), SubgraphPath);
+	if (!SubgraphPath.IsEmpty())
+	{
+		Graph = ResolveSubgraph(Graph, SubgraphPath, LoadError);
+		if (Graph == nullptr)
+		{
+			return LoadError;
+		}
+	}
+
+	// A node is addressed by its node_id (object name) or by its node_guid. Every identifier must resolve
+	// before anything is removed, so a typo can never turn a keep set into a larger removal.
+	TSet<const UEdGraphNode*> Selected;
+	TArray<FString> Missing;
+	for (const FString& Id : RequestedIds)
+	{
+		FGuid IdGuid;
+		const bool bIsGuid = FGuid::Parse(Id, IdGuid);
+		const UEdGraphNode* Match = nullptr;
+		for (const UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node && (Node->GetName() == Id || (bIsGuid && Node->NodeGuid == IdGuid)))
+			{
+				Match = Node;
+				break;
+			}
+		}
+		if (Match == nullptr)
+		{
+			Missing.Add(Id);
+			continue;
+		}
+		Selected.Add(Match);
+	}
+	if (Missing.Num() > 0)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::NodeNotFound,
+			FString::Printf(TEXT("Node(s) not found in the resolved graph: %s"), *FString::Join(Missing, TEXT(", "))));
+	}
+
+	TArray<UEdGraphNode*> ToRemove;
+	TArray<TSharedPtr<FJsonValue>> KeptJson;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node == nullptr || Selected.Contains(Node) != bHasNodeIds)
+		{
+			continue;
+		}
+		// Terminators own the graph's signature and are never removed; the same goes for any node the editor
+		// itself refuses to delete.
+		FString KeptReason;
+		if (Node->IsA<UK2Node_FunctionEntry>())
+		{
+			KeptReason = TEXT("function entry node");
+		}
+		else if (Node->IsA<UK2Node_FunctionResult>())
+		{
+			KeptReason = TEXT("function result node");
+		}
+		else if (!Node->CanUserDeleteNode())
+		{
+			KeptReason = TEXT("node cannot be deleted");
+		}
+		if (!KeptReason.IsEmpty())
+		{
+			TSharedPtr<FJsonObject> Kept = MakeShared<FJsonObject>();
+			Kept->SetStringField(TEXT("node_id"), Node->GetName());
+			Kept->SetStringField(TEXT("node_guid"), Node->NodeGuid.ToString());
+			Kept->SetStringField(TEXT("reason"), KeptReason);
+			KeptJson.Add(MakeShared<FJsonValueObject>(Kept));
+			continue;
+		}
+		ToRemove.Add(Node);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> RemovedJson;
+	int32 DisconnectedPins = 0;
+	for (const UEdGraphNode* Node : ToRemove)
+	{
+		RemovedJson.Add(MakeShared<FJsonValueString>(Node->GetName()));
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin != nullptr && Pin->LinkedTo.Num() > 0)
+			{
+				++DisconnectedPins;
+			}
+		}
+	}
+	const int32 RetainedCount = Graph->Nodes.Num() - ToRemove.Num();
+
+	if (!bDryRun && ToRemove.Num() > 0)
+	{
+		FScopedTransaction Transaction(FText::FromString(
+			FString::Printf(TEXT("Cortex:Remove %d nodes"), ToRemove.Num())));
+		Graph->Modify();
+		for (UEdGraphNode* Node : ToRemove)
+		{
+			FBlueprintEditorUtils::RemoveNode(Blueprint, Node, /*bDontRecompile=*/true);
+		}
+		Graph->NotifyGraphChanged();
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		UE_LOG(LogCortexGraph, Log, TEXT("Removed %d nodes from graph %s (%d pins disconnected)"),
+			ToRemove.Num(), *Graph->GetName(), DisconnectedPins);
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetStringField(TEXT("graph_name"), Graph->GetName());
+	Data->SetStringField(TEXT("mode"), bHasNodeIds ? TEXT("node_ids") : TEXT("keep_node_ids"));
+	Data->SetBoolField(TEXT("dry_run"), bDryRun);
+	Data->SetArrayField(TEXT("removed_node_ids"), RemovedJson);
+	Data->SetNumberField(TEXT("removed_count"), ToRemove.Num());
+	Data->SetArrayField(TEXT("kept"), KeptJson);
+	Data->SetNumberField(TEXT("remaining_node_count"), RetainedCount);
+	Data->SetNumberField(TEXT("disconnected_pins"), DisconnectedPins);
 	return FCortexCommandRouter::Success(Data);
 }
 

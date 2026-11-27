@@ -2,6 +2,7 @@
 
 #include "Operations/CortexGraphNodeOps.h"
 #include "CortexCommandRouter.h"
+#include "CortexSafeFileContract.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
@@ -347,6 +348,20 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: asset_path"));
 	}
 
+	// An unusable out_path is refused before any graph work.
+	FString OutPath;
+	FCortexResolvedFilePath ResolvedOutPath;
+	const bool bFileOutput = Params->TryGetStringField(TEXT("out_path"), OutPath);
+	if (bFileOutput)
+	{
+		FString PathErrorCode;
+		FString PathErrorMessage;
+		if (!FCortexSafeFileContract::ResolveWritePath(OutPath, ResolvedOutPath, PathErrorCode, PathErrorMessage))
+		{
+			return FCortexCommandRouter::Error(PathErrorCode, PathErrorMessage);
+		}
+	}
+
 	FCortexCommandResult LoadError;
 	UBlueprint* Blueprint = FCortexGraphNodeOps::LoadBlueprint(AssetPath, LoadError);
 	if (!Blueprint)
@@ -381,6 +396,34 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 	Params->TryGetBoolField(TEXT("include_edges"), bIncludeEdges);
 	bool bCompact = true;
 	Params->TryGetBoolField(TEXT("compact"), bCompact);
+
+	// The complete response is returned inline, or written to out_path with a summary reply.
+	// edge_count is reported only when the written response carries an edges array.
+	auto Finish = [&](const TSharedRef<FJsonObject>& Full, const int32 NodeCount, const TOptional<int32> EdgeCount) -> FCortexCommandResult
+	{
+		if (!bFileOutput)
+		{
+			return FCortexCommandRouter::Success(Full);
+		}
+		const FCortexJsonFileWriteResult WriteResult = FCortexSafeFileContract::WriteJsonReportAtomic(ResolvedOutPath, Full);
+		if (!WriteResult.bWritten)
+		{
+			return FCortexCommandRouter::Error(
+				WriteResult.ErrorCode.IsEmpty() ? CortexErrorCodes::SaveFailed : WriteResult.ErrorCode,
+				WriteResult.ErrorMessage);
+		}
+		TSharedPtr<FJsonObject> Summary = MakeShared<FJsonObject>();
+		Summary->SetStringField(TEXT("asset_path"), AssetPath);
+		Summary->SetStringField(TEXT("graph_name"), Graph->GetName());
+		Summary->SetStringField(TEXT("out_path"), ResolvedOutPath.AbsolutePath);
+		Summary->SetNumberField(TEXT("node_count"), NodeCount);
+		if (EdgeCount.IsSet())
+		{
+			Summary->SetNumberField(TEXT("edge_count"), EdgeCount.GetValue());
+		}
+		Summary->SetNumberField(TEXT("bytes"), static_cast<double>(WriteResult.BytesWritten));
+		return FCortexCommandRouter::Success(Summary);
+	};
 
 	TSet<FString> RequestedNodeIds;
 	FString SingleNodeId;
@@ -437,7 +480,7 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 				(*SingleNode)->SetStringField(TEXT("graph_guid"), Graph->GraphGuid.ToString());
 				(*SingleNode)->SetStringField(TEXT("graph_kind"), Target.Kind);
 			}
-			return FCortexCommandRouter::Success(*SingleNode);
+			return Finish(SingleNode->ToSharedRef(), 1, TOptional<int32>());
 		}
 	}
 
@@ -491,7 +534,7 @@ FCortexCommandResult FCortexGraphTraceOps::GetSubgraph(const TSharedPtr<FJsonObj
 	{
 		Data->SetArrayField(TEXT("edges"), EdgesArray);
 	}
-	return FCortexCommandRouter::Success(Data);
+	return Finish(Data.ToSharedRef(), NodesArray.Num(), bIncludeEdges ? TOptional<int32>(EdgesArray.Num()) : TOptional<int32>());
 }
 
 FCortexCommandResult FCortexGraphTraceOps::ListEventHandlers(const TSharedPtr<FJsonObject>& Params)

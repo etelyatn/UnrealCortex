@@ -71,8 +71,9 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
         "hierarchy, or inspect one widget with umg.get_widget."
     ),
     "graph.get_subgraph": (
-        "Select fewer 'node_ids' (a smaller subgraph never pages the whole edge topology), or "
-        "pass include_edges=false to read the node identities alone."
+        "Pass 'out_path' to write the complete response to a file and get a summary (out_path, "
+        "node_count, edge_count with include_edges=true, bytes), select fewer 'node_ids' (a smaller subgraph never pages "
+        "the whole edge topology), or pass include_edges=false to read the node identities alone."
     ),
     "blueprint.get_class_defaults": _PROPERTIES_DISCOVERY_SELECTOR,
     "blueprint.list_settable_defaults": _PROPERTIES_DISCOVERY_SELECTOR,

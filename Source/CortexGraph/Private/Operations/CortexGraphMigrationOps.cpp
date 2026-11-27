@@ -5408,6 +5408,37 @@ struct FPrunePartition
 	FPruneScan Scan;
 };
 
+/** The engine's reroute knot itself, never a subclass: it declares no state and only infers its pins from its links. */
+bool IsExactRerouteKnot(const UEdGraphNode* Node)
+{
+	return Node && Node->GetClass() == UK2Node_Knot::StaticClass();
+}
+
+/** A node that only carries data: a pure K2 node, or a reroute knot without an execution pin. */
+bool IsPureDataNode(const UEdGraphNode* Node)
+{
+	if (!Node) return false;
+	if (IsExactRerouteKnot(Node))
+	{
+		return !Node->Pins.ContainsByPredicate(
+			[](const UEdGraphPin* Pin) { return Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec; });
+	}
+	const UK2Node* const K2Node = Cast<UK2Node>(Node);
+	return K2Node && K2Node->IsNodePure();
+}
+
+/**
+ * True when a data link runs from a pure producer into a function result node. With `include_result_producers`
+ * such a consumer does not keep the producer: the producer is removed with the island, the result pin keeps its
+ * stored default and the severed link is an approved, journaled boundary edge.
+ */
+bool IsResultProducerLink(const UEdGraphNode* Producer, const UEdGraphPin* ProducerPin, const UEdGraphNode* Consumer)
+{
+	if (!Producer || !ProducerPin || !Consumer || !Consumer->IsA<UK2Node_FunctionResult>()) return false;
+	if (ProducerPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) return false;
+	return IsPureDataNode(Producer);
+}
+
 /** Only an explicitly named, impure call may join the island as a disconnected dead-end consumer.
  * It cannot execute, cannot feed a retained consumer, and every linked input belongs to the island. */
 bool IsDisconnectedCallConsumer(const UEdGraphNode* Node, const UEdGraph* Graph, const TSet<FGuid>& Island)
@@ -5472,10 +5503,14 @@ bool ComputeOwnedIslandPartition(
 	const bool bSelectedEntriesRemovable,
 	FPrunePartition& OutPartition,
 	FCortexCommandResult& OutError,
-	const TSet<FGuid>* RequestedAdditionalGuids = nullptr)
+	const TSet<FGuid>* RequestedAdditionalGuids = nullptr,
+	const bool bIncludeResultProducers = false)
 {
 	OutPartition = FPrunePartition();
 	OutError = FCortexCommandResult();
+	// Only a prune (the selected entries are retained) admits reroute knots without a reviewed request; a
+	// retirement keeps them behind `additional_node_guids`.
+	const bool bAdmitReroutes = !bSelectedEntriesRemovable;
 	if (!Blueprint || !Graph || SeedEntries.IsEmpty()
 		|| SeedEntries.ContainsByPredicate([](const UEdGraphNode* Node) { return Node == nullptr; }))
 	{
@@ -5626,7 +5661,8 @@ bool ComputeOwnedIslandPartition(
 			continue;
 		}
 		if (!bSelectedEntry && PruneClassBlockedReason(Node, Reason)
-			&& !(RequestedAdditionalGuids && RequestedAdditionalGuids->Contains(Node->NodeGuid)))
+			&& !(RequestedAdditionalGuids && RequestedAdditionalGuids->Contains(Node->NodeGuid))
+			&& !(bAdmitReroutes && IsExactRerouteKnot(Node)))
 		{
 			BlockedReasons.Add(Node->NodeGuid, Reason);
 			continue;
@@ -5692,6 +5728,7 @@ bool ComputeOwnedIslandPartition(
 				OutPartition.Scan.ExamineLink();
 				UEdGraphNode* Consumer = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
 				if (Consumer && Candidates.Contains(Consumer->NodeGuid)) continue;
+				if (bIncludeResultProducers && IsResultProducerLink(Node, Pin, Consumer)) continue;
 				ConsumingReason = Consumer
 					? (bSelectedEntriesRemovable
 						? FString::Printf(TEXT("consumed by retained consumer '%s'"), *Consumer->NodeGuid.ToString())
@@ -5721,6 +5758,7 @@ bool ComputeOwnedIslandPartition(
 				OutPartition.Scan.ExamineLink();
 				UEdGraphNode* Producer = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
 				if (!Producer || !Candidates.Contains(Producer->NodeGuid)) continue;
+				if (bIncludeResultProducers && IsResultProducerLink(Producer, LinkedPin, RetainedNode)) continue;
 				Candidates.Remove(Producer->NodeGuid);
 				const FString Reason = bSelectedEntriesRemovable
 					? FString::Printf(TEXT("produced for retained consumer '%s'"), *RetainedNode->NodeGuid.ToString())
@@ -5728,6 +5766,27 @@ bool ComputeOwnedIslandPartition(
 				(bSelectedEntriesRemovable && Selected.Contains(Producer->NodeGuid) ? BlockedReasons : RetainedReasons)
 					.Add(Producer->NodeGuid, Reason);
 				RetainedWorklist.Add(Producer);
+			}
+		}
+		// A reroute knot is admitted to a prune island only while every link it has stays inside the removed set:
+		// a knot that touches a retained node (other than the entry whose island is pruned) is retained with it.
+		if (bAdmitReroutes && !Selected.Contains(RetainedNode->NodeGuid))
+		{
+			for (UEdGraphPin* Pin : RetainedNode->Pins)
+			{
+				if (!Pin) continue;
+				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				{
+					OutPartition.Scan.ExamineLink();
+					UEdGraphNode* Neighbor = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+					if (!Neighbor || !Candidates.Contains(Neighbor->NodeGuid) || !IsExactRerouteKnot(Neighbor)) continue;
+					if (bIncludeResultProducers && RetainedNode->IsA<UK2Node_FunctionResult>()
+						&& Pin->Direction == EGPD_Input && IsPureDataNode(Neighbor)) continue;
+					Candidates.Remove(Neighbor->NodeGuid);
+					RetainedReasons.Add(Neighbor->NodeGuid, FString::Printf(
+						TEXT("reroute knot linked to retained node '%s'"), *RetainedNode->NodeGuid.ToString()));
+					RetainedWorklist.Add(Neighbor);
+				}
 			}
 		}
 		// A retirement may never sever an execution edge it retains, so a candidate execution consumer of
@@ -5808,9 +5867,10 @@ bool ComputePrunePartition(
 	UEdGraph* Graph,
 	UEdGraphNode* Entry,
 	FPrunePartition& OutPartition,
-	FCortexCommandResult& OutError)
+	FCortexCommandResult& OutError,
+	const bool bIncludeResultProducers = false)
 {
-	return ComputeOwnedIslandPartition(Blueprint, Graph, { Entry }, false, OutPartition, OutError);
+	return ComputeOwnedIslandPartition(Blueprint, Graph, { Entry }, false, OutPartition, OutError, nullptr, bIncludeResultProducers);
 }
 
 
@@ -5833,6 +5893,10 @@ TSharedPtr<FJsonObject> FCortexGraphMigrationPrunePlan::ToJson() const
 	Out->SetBoolField(TEXT("complete"), bComplete);
 	Out->SetBoolField(TEXT("awaiting_approval"), bAwaitingApproval);
 	Out->SetBoolField(TEXT("reused"), bReused);
+	if (bIncludeResultProducers)
+	{
+		Out->SetBoolField(TEXT("include_result_producers"), true);
+	}
 	Out->SetNumberField(TEXT("scanned_nodes"), ScannedNodes);
 	Out->SetNumberField(TEXT("scanned_links"), ScannedLinks);
 
@@ -5907,6 +5971,7 @@ bool FCortexGraphMigrationPrunePlan::FromJson(
 	Source->TryGetBoolField(TEXT("complete"), OutPlan.bComplete);
 	Source->TryGetBoolField(TEXT("awaiting_approval"), OutPlan.bAwaitingApproval);
 	Source->TryGetBoolField(TEXT("reused"), OutPlan.bReused);
+	Source->TryGetBoolField(TEXT("include_result_producers"), OutPlan.bIncludeResultProducers);
 	int32 Number = 0;
 	if (Source->TryGetNumberField(TEXT("scanned_nodes"), Number)) OutPlan.ScannedNodes = Number;
 	if (Source->TryGetNumberField(TEXT("scanned_links"), Number)) OutPlan.ScannedLinks = Number;
@@ -5999,10 +6064,12 @@ bool FCortexGraphMigrationOps::PlanPrune(
 		return false;
 	}
 	if (!FCortexGraphPatchOps::HasOnlyFields(Migration,
-		{ TEXT("op"), TEXT("source"), TEXT("approved_node_guids") }, OutError, TEXT("migration")))
+		{ TEXT("op"), TEXT("source"), TEXT("approved_node_guids"), TEXT("include_result_producers") }, OutError, TEXT("migration")))
 	{
 		return false;
 	}
+	bool bIncludeResultProducers = false;
+	if (!FCortexGraphPatchOps::ReadStrictBool(Migration, TEXT("include_result_producers"), false, bIncludeResultProducers, OutError)) return false;
 	FString Op;
 	if (!FCortexGraphPatchOps::ReadRequiredString(Migration, TEXT("op"), Op, OutError)) return false;
 	if (Op != PruneOp)
@@ -6142,6 +6209,7 @@ bool FCortexGraphMigrationOps::PlanPrune(
 	}
 
 	OutPlan.Op = Op;
+	OutPlan.bIncludeResultProducers = bIncludeResultProducers;
 	OutPlan.GraphGuid = GraphGuid.ToString();
 	OutPlan.SubgraphPath = SubgraphPath;
 	OutPlan.EntryNodeGuid = EntryGuid.ToString();
@@ -6184,7 +6252,7 @@ bool FCortexGraphMigrationOps::PlanPrune(
 
 	// The fresh island: the bounded graph-wide partition of the entry's island.
 	FPrunePartition Partition;
-	if (!ComputePrunePartition(Blueprint, Graph, Entry, Partition, OutError)) return false;
+	if (!ComputePrunePartition(Blueprint, Graph, Entry, Partition, OutError, bIncludeResultProducers)) return false;
 	OutPlan.ScannedNodes = Partition.Scan.Nodes;
 	OutPlan.ScannedLinks = Partition.Scan.Links;
 	OutPlan.bComplete = !Partition.Scan.bExhausted;
