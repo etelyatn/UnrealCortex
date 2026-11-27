@@ -98,4 +98,14 @@ namespace CortexEngineCompat
 		::ForEachObjectWithPackage(Outer, Operation, bIncludeNestedObjects ? EGetObjectsFlags::IncludeNestedObjects : EGetObjectsFlags::None);
 #endif
 	}
+
+	/** Invoke every binding of a multicast script delegate. UE 5.8 renamed ProcessMulticastDelegate to ProcessDelegate. */
+	inline void ProcessMulticastScriptDelegate(const FMulticastScriptDelegate& Delegate, void* Parameters)
+	{
+#if UE_VERSION_OLDER_THAN(5, 8, 0)
+		Delegate.ProcessMulticastDelegate<UObject>(Parameters);
+#else
+		Delegate.ProcessDelegate<UObject>(Parameters);
+#endif
+	}
 }

@@ -213,6 +213,37 @@ class TestNativeOwnership:
         assert "bindings" not in payload
         assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
 
+    @pytest.mark.parametrize(
+        ("command", "params", "data"),
+        [
+            (
+                "get_live_widgets",
+                {"widget_class": "/Game/UI/WBP_Test"},
+                {"count": 100, "truncated": False, "instances": [{"index": i, "blob": "x" * 900} for i in range(100)]},
+            ),
+            (
+                "diff_live_widgets",
+                {"label": "before"},
+                {
+                    "summary": "200 of 400 entries differ",
+                    "differences_truncated": False,
+                    "differences": [{"key": f"[0].k{i}", "before": "x" * 450, "after": "y"} for i in range(200)],
+                },
+            ),
+        ],
+    )
+    def test_umg_live_widget_reads_are_complete_or_refuse(self, command, params, data):
+        """Live-widget counts and truncation flags describe the whole native result, so an
+        oversized reply refuses instead of being silently sliced."""
+        router, _ = _router("umg", data)
+
+        payload = json.loads(router(command, params))
+
+        assert payload["_error"] == "RESPONSE_TOO_LARGE"
+        assert "_truncated" not in payload
+        assert "instances" not in payload and "differences" not in payload
+        assert len(compact_json(payload)) <= MAX_RESPONSE_CHARS
+
     def test_umg_animation_bindings_detail_read_keeps_the_detailed_envelope(self):
         """The dedicated detailed-read handling must survive the summary-path change."""
         bindings = [
@@ -940,6 +971,20 @@ class TestBatchQueryPagination:
         payload = json.loads(router("batch_query", {"commands": [], "limit": 5}))
 
         assert payload["_error"] == "INVALID_INVOCATION_SHAPE"
+        assert connection.sends == []
+        assert "at least one command" in payload["_message"]
+
+    def test_missing_container_key_names_expected_and_received_keys(self):
+        connection = _CountingConnection(1)
+        router = _core_router(connection)
+
+        payload = json.loads(router("batch_query", {"list": [{"command": "get_status"}]}))
+
+        assert payload["_error"] == "INVALID_INVOCATION_SHAPE"
+        assert "params.commands" in payload["_message"]
+        assert "'steps'" in payload["_message"]
+        assert "['list']" in payload["_message"]
+        assert "at least one command" not in payload["_message"]
         assert connection.sends == []
 
     def test_limit_preserves_apply_patch_refusal(self):

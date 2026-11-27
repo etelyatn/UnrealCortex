@@ -5,9 +5,11 @@
 #include "CortexEditorLogCapture.h"
 #include "Operations/CortexEditorPIEOps.h"
 #include "Operations/CortexEditorInputOps.h"
+#include "Operations/CortexEditorCursorOps.h"
 #include "Operations/CortexEditorTurnaroundOps.h"
 #include "Operations/CortexEditorUtilityOps.h"
 #include "Operations/CortexEditorViewportOps.h"
+#include "Operations/CortexEditorStatsOps.h"
 
 FCortexEditorCommandHandler::FCortexEditorCommandHandler()
 {
@@ -65,13 +67,17 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorInputOps::InjectMouse(*PIEState, Params);
 	}
+	if (Command == TEXT("set_pie_cursor"))
+	{
+		return FCortexEditorCursorOps::SetPIECursor(Params);
+	}
 	if (PIEState.IsValid() && Command == TEXT("inject_input_action"))
 	{
 		return FCortexEditorInputOps::InjectInputAction(*PIEState, Params);
 	}
 	if (PIEState.IsValid() && Command == TEXT("inject_input_continuous"))
 	{
-		return FCortexEditorInputOps::InjectInputContinuous(PIEState, Params, MoveTemp(DeferredCallback));
+		return FCortexEditorInputOps::InjectInputContinuous(PIEState, Params);
 	}
 	if (PIEState.IsValid() && Command == TEXT("inject_input_sequence"))
 	{
@@ -150,6 +156,10 @@ FCortexCommandResult FCortexEditorCommandHandler::Execute(
 	{
 		return FCortexEditorTurnaroundOps::WaitReady(Params, MoveTemp(DeferredCallback));
 	}
+	if (Command == TEXT("capture_stats"))
+	{
+		return FCortexEditorStatsOps::CaptureStats(Params, MoveTemp(DeferredCallback));
+	}
 
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::UnknownCommand,
@@ -177,14 +187,18 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("x"), TEXT("number"), TEXT("Screen-space X coordinate; defaults to current cursor X"))
 			.Optional(TEXT("y"), TEXT("number"), TEXT("Screen-space Y coordinate; defaults to current cursor Y"))
 			.Optional(TEXT("delta"), TEXT("number"), TEXT("Scroll delta; required for scroll")),
+		FCortexCommandInfo{ TEXT("set_pie_cursor"), TEXT("Place the real OS cursor, and the PIE viewport's cached cursor position, at a PIE viewport pixel so APlayerController::GetMousePosition (and deprojection from it) keeps reporting it; inject_mouse moves are Slate events that the next tick's real-cursor re-sample discards. The real cursor moves, as during absolute Replay, and the override lasts until the real mouse moves. The first call of a PIE session records the OS cursor and it is restored one tick after PIE ends, only if it is still where this command put it. Replies x, y (applied pixels), viewport_size and player_mouse_position (the player controller's GetMousePosition readback, null when unavailable). PIE_NOT_ACTIVE without a PIE player viewport; INVALID_FIELD for a position outside the viewport; INVALID_OPERATION while the viewport holds hidden-cursor mouse capture; NOT_AVAILABLE without a platform cursor") }
+			.Required(TEXT("x"), TEXT("number"), TEXT("PIE viewport pixel X, 0 <= x < viewport width; not DPI-scaled"))
+			.Required(TEXT("y"), TEXT("number"), TEXT("PIE viewport pixel Y, 0 <= y < viewport height; not DPI-scaled"))
+			.StrictParams(),
 		FCortexCommandInfo{ TEXT("inject_input_action"), TEXT("Inject one frame of Enhanced Input into active PIE") }
-			.Required(TEXT("action_name"), TEXT("string"), TEXT("Input action asset path or loaded name"))
+			.Required(TEXT("action_name"), TEXT("string"), TEXT("Input action: object path (/Game/Input/IA_Jump.IA_Jump), package path (/Game/Input/IA_Jump), or the name of a loaded action"))
 			.Optional(TEXT("value"), TEXT("any"), TEXT("Number or x/y/z numeric object; action type determines axes; defaults to 1")),
 		FCortexCommandInfo{ TEXT("inject_input_continuous"), TEXT("Start, update, or stop session-owned Enhanced Input in active PIE") }
-			.Required(TEXT("action_name"), TEXT("string"), TEXT("Input action asset path or loaded name"))
+			.Required(TEXT("action_name"), TEXT("string"), TEXT("Input action: object path (/Game/Input/IA_Jump.IA_Jump), package path (/Game/Input/IA_Jump), or the name of a loaded action"))
 			.Optional(TEXT("value"), TEXT("any"), TEXT("Number or x/y/z numeric object; defaults to 1; unused for stop"))
 			.Optional(TEXT("mode"), TEXT("string"), TEXT("start (default), update, or stop; update requires an owned run"))
-			.Optional(TEXT("duration_ms"), TEXT("number"), TEXT("Finite positive start duration; omitted runs until stop or session cancellation")),
+			.Optional(TEXT("duration_ms"), TEXT("number"), TEXT("Finite positive start duration; the start replies at once with injecting:true and the run stops itself after this time (a later stop reports owned:false). Omitted runs until stop or session cancellation")),
 		FCortexCommandInfo{ TEXT("inject_input_sequence"), TEXT("Execute timed input sequence") }
 			.Required(TEXT("steps"), TEXT("array"), TEXT("Timed input steps to execute")),
 		FCortexCommandInfo{ TEXT("capture_screenshot"), TEXT("Capture a viewport to PNG with explicit camera provenance. PIE source reads the PIE viewport through Slate, so UMG is included (includes_ui true); editor source redraws the active level viewport, scene only (includes_ui false)") }
@@ -243,6 +257,12 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("reopen_assets"), TEXT("array"), TEXT("Asset paths to open in their asset editors once the editor is ready"))
 			.Optional(TEXT("timeout"), TEXT("number"), TEXT("Seconds to wait for readiness, greater than 0 and at most 3600 (default 120)"))
 			.StrictParams(),
+		FCortexCommandInfo{ TEXT("capture_stats"), TEXT("Average the engine stats call tree over N frames and answer once when done (deferred). Per-function cost: Blueprint and native UFunction scopes appear as stats named after the function or its asset. Reply: frame_count, first_frame, last_frame, frame_time_ms {avg, max}, nodes (trees of {name, description, inclusive_ms, exclusive_ms, calls_per_frame, children}, per-frame averages; calls_per_frame is fractional) and truncated. Only one capture runs at a time (INVALID_OPERATION otherwise, also when stats are compiled out). Reaching the deadline answers TIMEOUT and releases the capture. Does not toggle stat groups or Blueprint verbose stats; PIE is not required. MCP callers pass a timeout_s of at least timeout_seconds plus a few seconds") }
+			.Optional(TEXT("frames"), TEXT("number"), TEXT("Frames to average, integer 1 to 600 (default 60)"))
+			.Optional(TEXT("filter"), TEXT("array"), TEXT("Case-insensitive substrings matched against each stat's short name and description; the reply holds the matching subtrees as roots. Without a filter the roots are the thread nodes"))
+			.Optional(TEXT("max_depth"), TEXT("number"), TEXT("Maximum tree depth per root, integer 1 to 64 (default 6); deeper nodes set truncated"))
+			.Optional(TEXT("min_ms"), TEXT("number"), TEXT("Drop nodes whose averaged inclusive time per frame is below this many milliseconds, 0 or more (default 0)"))
+			.Optional(TEXT("timeout_seconds"), TEXT("number"), TEXT("Capture deadline in seconds, 1 to 300 (default 30); also extends the transport wait. TIMEOUT when fewer than frames frames arrived by then")),
 	};
 }
 

@@ -56,14 +56,11 @@ public:
 	// The PIE session owns each Cortex-started continuous Enhanced Input injection by weak
 	// subsystem/action identity plus a monotone run generation. The owner is the only actor that
 	// stops them, so replace/stop/teardown invalidation can never touch a successor run or a
-	// game-managed injection.
+	// game-managed injection. A timed run is answered at start; its stop timer only ends the run.
 	//
-	// InvalidateContinuousInputRun stops the owned native injection, cancels its stop timer and
-	// completes its pending deferred caller once as a cancellation. Safe when the action is unowned.
-	// Returns true when a pending caller was invoked (the caller must then revalidate its target and
-	// context before mutating). bCancelledDuringCallback is set true when the session was cancelled
-	// (InputCancelToken flipped) by that callback, e.g. a disconnect from inside it.
-	bool InvalidateContinuousInputRun(const UInputAction* Action, bool& bCancelledDuringCallback);
+	// InvalidateContinuousInputRun stops the owned native injection and cancels its stop timer.
+	// Safe when the action is unowned.
+	void InvalidateContinuousInputRun(const UInputAction* Action);
 	// True when this session owns a live continuous run for the exact weak subsystem/action pair.
 	bool OwnsContinuousInputRunForSubsystem(
 		const UInputAction* Action,
@@ -76,9 +73,7 @@ public:
 		UEnhancedInputLocalPlayerSubsystem* Subsystem,
 		const UInputAction* Action,
 		bool bTimed,
-		float DelaySeconds,
-		bool bHasCallback,
-		uint32 CallbackId);
+		float DelaySeconds);
 
 	// True while owned runs/tickers are being torn down; new input admission is rejected so a
 	// cancellation callback can never install a successor run the cleanup would not own.
@@ -90,9 +85,9 @@ public:
 	// Public entry point so the engine capability's scoped lifecycle (and its tests) can drive it by
 	// exact identity instead of the targetless global PIE events.
 	void HandleScopedPIELifecycle(const FCortexScopedPIESnapshot& Snapshot);
-	// Stops only this session's owned continuous injections/tickers and completes their own pending
-	// callers. Deliberately neither flips InputCancelToken nor calls CompletePendingInputCallbacks:
-	// those are session-wide and may belong to a surviving foreign owner.
+	// Stops only this session's owned continuous injections/tickers. Deliberately neither flips
+	// InputCancelToken nor calls CompletePendingInputCallbacks: those are session-wide and may
+	// belong to a surviving foreign owner.
 	void CancelOwnedInputForScopedEnd();
 
 private:
@@ -101,8 +96,6 @@ private:
 		TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> Subsystem;
 		TWeakObjectPtr<const UInputAction> Action;
 		uint32 Generation = 0;
-		bool bHasCallback = false;
-		uint32 CallbackId = 0;
 		FTSTicker::FDelegateHandle TimerHandle;
 	};
 
