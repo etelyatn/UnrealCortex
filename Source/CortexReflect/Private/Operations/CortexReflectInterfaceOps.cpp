@@ -109,6 +109,18 @@ namespace CortexReflectInterfacePrivate
 			});
 		return Result;
 	}
+
+	/** True when Blueprint itself implements Function without declaring the interface: an event node on it or an override function graph. */
+	bool ImplementsOwn(UBlueprint* Blueprint, const UFunction* Function, const UClass* InterfaceAuthority)
+	{
+		const FBPInterfaceDescription NoDescription;
+		if (Analyze(Blueprint, NoDescription, Function, InterfaceAuthority).Implementation != TEXT("none"))
+		{
+			return true;
+		}
+		return Blueprint->FunctionGraphs.ContainsByPredicate(
+			[Function](const UEdGraph* Graph) { return Graph && Graph->GetFName() == Function->GetFName(); });
+	}
 }
 
 TArray<FString> FCortexReflectInterfaceOps::GetImplementedInterfacePaths(const FAssetData& Asset)
@@ -384,6 +396,22 @@ TSharedRef<FJsonObject> FCortexInterfaceCaller::ToJson() const
 
 namespace CortexReflectInterfacePrivate
 {
+	/** Packages that hard-reference a content interface's package; empty for a native interface (it has no content package). */
+	TSet<FName> HardReferencerPackages(const UClass* InterfaceAuthority)
+	{
+		TSet<FName> Packages;
+		if (InterfaceAuthority->ClassGeneratedBy == nullptr)
+		{
+			return Packages;
+		}
+		IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+		TArray<FName> ReferencerNames;
+		Registry.GetReferencers(InterfaceAuthority->GetOutermost()->GetFName(), ReferencerNames,
+			UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::FDependencyQuery(UE::AssetRegistry::EDependencyQuery::Hard));
+		Packages.Append(ReferencerNames);
+		return Packages;
+	}
+
 	struct FCallerScan
 	{
 		const UClass* InterfaceAuthority = nullptr;
@@ -489,16 +517,8 @@ void FCortexReflectInterfaceOps::CollectCallers(
 
 	// A content interface is referenced (hard) by every Blueprint that holds a node on it; a native interface has no
 	// content package, so every candidate has to be loaded.
-	TSet<FName> Referencers;
 	const bool bNarrow = Scan.InterfaceAuthority->ClassGeneratedBy != nullptr;
-	if (bNarrow)
-	{
-		IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
-		TArray<FName> ReferencerNames;
-		Registry.GetReferencers(Scan.InterfaceAuthority->GetOutermost()->GetFName(), ReferencerNames,
-			UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::FDependencyQuery(UE::AssetRegistry::EDependencyQuery::Hard));
-		Referencers.Append(ReferencerNames);
-	}
+	const TSet<FName> Referencers = HardReferencerPackages(Scan.InterfaceAuthority);
 
 	for (const FAssetData& Asset : Candidates)
 	{
@@ -562,6 +582,104 @@ namespace CortexReflectInterfacePrivate
 		}
 		return Values;
 	}
+
+	bool IsInAnyPrefix(const FString& PackageName, const TArray<FString>& Prefixes)
+	{
+		return Prefixes.ContainsByPredicate(
+			[&PackageName](const FString& Prefix)
+			{
+				return PackageName == Prefix || (PackageName.StartsWith(Prefix) && PackageName.Len() > Prefix.Len() && PackageName[Prefix.Len()] == TEXT('/'));
+			});
+	}
+
+	/**
+	 * `referencers`: {implements, calls_or_messages, other} asset paths, each sorted. A content interface's universe is the hard
+	 * registry referencers of its package under Prefixes, classified by the implementer tag (a direct implementer in Implementers)
+	 * and by the resolved caller sites in Callers (an asset can be in both). A native interface has no content package, so
+	 * the buckets hold only the implementers and caller assets found and `other` is empty.
+	 */
+	TSharedRef<FJsonObject> ReferencersJson(
+		const UClass* InterfaceAuthority,
+		const TArray<FString>& Prefixes,
+		const TArray<FCortexInterfaceImplementer>& Implementers,
+		const TArray<FCortexInterfaceCaller>& Callers)
+	{
+		// Evidence grouped by package: a package can hold several top-level assets, and each proven asset goes to its own bucket.
+		TMap<FName, TArray<FString>> ImplementsByPackage;
+		TMap<FName, TArray<FString>> CallsByPackage;
+		const auto AddEvidence = [](TMap<FName, TArray<FString>>& ByPackage, const FString& AssetPath)
+		{
+			ByPackage.FindOrAdd(FName(*FPackageName::ObjectPathToPackageName(AssetPath))).AddUnique(AssetPath);
+		};
+		for (const FCortexInterfaceImplementer& Implementer : Implementers)
+		{
+			if (Implementer.bDirect)
+			{
+				AddEvidence(ImplementsByPackage, Implementer.AssetPath);
+			}
+		}
+		for (const FCortexInterfaceCaller& Site : Callers)
+		{
+			AddEvidence(CallsByPackage, Site.AssetPath);
+		}
+
+		TArray<FString> Implements;
+		TArray<FString> CallsOrMessages;
+		TArray<FString> Other;
+		if (InterfaceAuthority->ClassGeneratedBy != nullptr)
+		{
+			IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+			const FName InterfacePackage = InterfaceAuthority->GetOutermost()->GetFName();
+			for (const FName Package : HardReferencerPackages(InterfaceAuthority))
+			{
+				const FString PackageName = Package.ToString();
+				if (Package == InterfacePackage || !IsInAnyPrefix(PackageName, Prefixes))
+				{
+					continue;
+				}
+				const TArray<FString>* ImplementsHere = ImplementsByPackage.Find(Package);
+				const TArray<FString>* CallsHere = CallsByPackage.Find(Package);
+				if (ImplementsHere)
+				{
+					Implements.Append(*ImplementsHere);
+				}
+				if (CallsHere)
+				{
+					CallsOrMessages.Append(*CallsHere);
+				}
+				if (!ImplementsHere && !CallsHere)
+				{
+					// No evidence names an asset of this package: the package's primary asset is the unclassified referencer.
+					TArray<FAssetData> Assets;
+					Registry.GetAssetsByPackageName(Package, Assets);
+					const FAssetData* Primary = Assets.FindByPredicate([](const FAssetData& Asset) { return Asset.IsTopLevelAsset(); });
+					Other.Add(Primary ? Primary->GetObjectPathString() : PackageName);
+				}
+			}
+		}
+		else
+		{
+			for (const TPair<FName, TArray<FString>>& Entry : ImplementsByPackage)
+			{
+				Implements.Append(Entry.Value);
+			}
+			for (const TPair<FName, TArray<FString>>& Entry : CallsByPackage)
+			{
+				CallsOrMessages.Append(Entry.Value);
+			}
+		}
+
+		const auto PathLess = [](const FString& A, const FString& B) { return A.Compare(B, ESearchCase::CaseSensitive) < 0; };
+		Algo::Sort(Implements, PathLess);
+		Algo::Sort(CallsOrMessages, PathLess);
+		Algo::Sort(Other, PathLess);
+
+		TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+		Json->SetArrayField(TEXT("implements"), CortexReflectAssetEnumeration::StringValues(Implements));
+		Json->SetArrayField(TEXT("calls_or_messages"), CortexReflectAssetEnumeration::StringValues(CallsOrMessages));
+		Json->SetArrayField(TEXT("other"), CortexReflectAssetEnumeration::StringValues(Other));
+		return Json;
+	}
 }
 
 UClass* FCortexReflectInterfaceOps::ResolveInterface(const FString& Name, FCortexCommandResult& OutError)
@@ -601,6 +719,13 @@ FCortexCommandResult FCortexReflectInterfaceOps::FindInterfaceImplementers(const
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("function must be a non-empty string"));
 	}
+	FString ImplementerFilter;
+	const bool bHasImplementer = Params->HasField(TEXT("implementer"));
+	if (bHasImplementer
+		&& (!Params->HasTypedField<EJson::String>(TEXT("implementer")) || !Params->TryGetStringField(TEXT("implementer"), ImplementerFilter) || ImplementerFilter.IsEmpty()))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("implementer must be a non-empty Blueprint asset path string"));
+	}
 	bool bIncludeCallers = true;
 	if (Params->HasField(TEXT("include_callers")) && !Params->TryGetBoolField(TEXT("include_callers"), bIncludeCallers))
 	{
@@ -633,16 +758,142 @@ FCortexCommandResult FCortexReflectInterfaceOps::FindInterfaceImplementers(const
 	TArray<FString> LoadFailures;
 	CollectImplementers(Interface, Enumeration.Assets, Implementers, LoadFailures);
 
+	// The implementer parameter narrows the listing only; the referencers split classifies against every implementer.
+	TArray<FCortexInterfaceImplementer> Listed = Implementers;
+	if (bHasImplementer)
+	{
+		Listed.RemoveAll([&ImplementerFilter](const FCortexInterfaceImplementer& Implementer)
+			{
+				return !Implementer.AssetPath.Equals(ImplementerFilter, ESearchCase::IgnoreCase);
+			});
+	}
+
 	TSharedRef<FJsonObject> Result = InterfaceDescriptionJson(Interface);
 	Result->SetStringField(TEXT("interface"), InterfaceName);
-	Result->SetArrayField(TEXT("implementers"), ImplementerValues(Implementers, FunctionFilter));
-	Result->SetNumberField(TEXT("implementer_count"), Implementers.Num());
+	Result->SetArrayField(TEXT("implementers"), ImplementerValues(Listed, FunctionFilter));
+	Result->SetNumberField(TEXT("implementer_count"), Listed.Num());
+	if (bHasImplementer && Listed.Num() == 1)
+	{
+		// Per interface function: does the implementer handle it (a function graph or an event node) or leave it unimplemented.
+		// An inherited implementer is resolved child first, then up its parent chain to the declaring ancestor (via): any level
+		// that implements the function means the child executes an implementation. A proven positive is always reported true;
+		// a negative needs every level inspected, so when a level could not be loaded or found the function is unknown and the
+		// field is omitted. Levels that could not be inspected are listed in load_failures.
+		TSet<FName> Handled;
+		bool bChainInspected = true;
+		const auto AddHandled = [&Handled](const TArray<FCortexInterfaceFunctionImplementation>& Functions)
+		{
+			for (const FCortexInterfaceFunctionImplementation& Function : Functions)
+			{
+				if (Function.Implementation != TEXT("none"))
+				{
+					Handled.Add(Function.Function);
+				}
+			}
+		};
+		TArray<FCortexInterfaceImplementer> ViaOutsideScope;
+		if (Listed[0].bDirect)
+		{
+			AddHandled(Listed[0].Functions);
+		}
+		else
+		{
+			IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+			const UClass* Authority = Interface->GetAuthoritativeClass();
+			const TArray<const UFunction*> InterfaceFunctions = GetInterfaceFunctions(Authority);
+
+			// The declaring ancestor: its interface description decides what it implements.
+			const FCortexInterfaceImplementer* Via = Implementers.FindByPredicate(
+				[&Listed](const FCortexInterfaceImplementer& Implementer) { return Implementer.bDirect && Implementer.AssetPath == Listed[0].Via; });
+			if (!Via)
+			{
+				// The declaring ancestor lives outside path_prefixes: analyse it on its own.
+				const FAssetData ViaAsset = Registry.GetAssetByObjectPath(FSoftObjectPath(Listed[0].Via));
+				if (ViaAsset.IsValid())
+				{
+					CollectImplementers(Interface, {ViaAsset}, ViaOutsideScope, LoadFailures);
+					Via = ViaOutsideScope.FindByPredicate([](const FCortexInterfaceImplementer& Implementer) { return Implementer.bDirect; });
+				}
+			}
+			if (Via)
+			{
+				AddHandled(Via->Functions);
+			}
+			else
+			{
+				bChainInspected = false;
+				LoadFailures.Add(FString::Printf(TEXT("%s: the declaring ancestor could not be analysed"), *Listed[0].Via));
+			}
+
+			// Every Blueprint below the declaring ancestor, the child first, may implement a function itself.
+			FAssetData Level = Registry.GetAssetByObjectPath(FSoftObjectPath(Listed[0].AssetPath));
+			bool bReachedVia = false;
+			for (int32 Depth = 0; Depth < MaxAncestorDepth && Level.IsValid(); ++Depth)
+			{
+				if (Level.GetObjectPathString() == Listed[0].Via)
+				{
+					bReachedVia = true;
+					break;
+				}
+				FString LoadError;
+				if (UBlueprint* Blueprint = LoadBlueprint(Level, LoadError))
+				{
+					for (const UFunction* Function : InterfaceFunctions)
+					{
+						if (!Handled.Contains(Function->GetFName()) && ImplementsOwn(Blueprint, Function, Authority))
+						{
+							Handled.Add(Function->GetFName());
+						}
+					}
+				}
+				else
+				{
+					bChainInspected = false;
+					LoadFailures.Add(LoadError);
+				}
+				const FTopLevelAssetPath ParentPath = ClassPathFromTag(Level, FBlueprintTags::ParentClassPath);
+				Level = ParentPath.IsValid() ? FindAssetOfGeneratedClass(Registry, ParentPath) : FAssetData();
+			}
+			// The walk can end exactly on the declaring ancestor after its last allowed step.
+			bReachedVia = bReachedVia || (Level.IsValid() && Level.GetObjectPathString() == Listed[0].Via);
+			if (!bReachedVia)
+			{
+				// The registry lost a level on the way up (or the chain is implausibly deep): the levels above it are unseen.
+				bChainInspected = false;
+				LoadFailures.Add(FString::Printf(TEXT("%s: the parent chain could not be followed up to %s"), *Listed[0].AssetPath, *Listed[0].Via));
+			}
+		}
+		const TArray<TSharedPtr<FJsonValue>>* FunctionValues = nullptr;
+		if (Result->TryGetArrayField(TEXT("functions"), FunctionValues))
+		{
+			for (const TSharedPtr<FJsonValue>& FunctionValue : *FunctionValues)
+			{
+				const TSharedPtr<FJsonObject> FunctionJson = FunctionValue->AsObject();
+				const bool bHandled = Handled.Contains(FName(*FunctionJson->GetStringField(TEXT("name"))));
+				if (bHandled || bChainInspected)
+				{
+					FunctionJson->SetBoolField(TEXT("implementer_handles"), bHandled);
+				}
+			}
+		}
+	}
 	if (bIncludeCallers)
 	{
+		// Always scanned unfiltered: the referencers split classifies by every caller site; the function filter narrows the lists below.
 		TArray<FCortexInterfaceCaller> Callers;
 		TArray<FCortexInterfaceCaller> Unresolved;
 		int32 ScannedAssets = 0;
-		CollectCallers(Interface, Enumeration.Assets, FunctionFilter, Callers, Unresolved, ScannedAssets, LoadFailures);
+		CollectCallers(Interface, Enumeration.Assets, FString(), Callers, Unresolved, ScannedAssets, LoadFailures);
+		Result->SetObjectField(TEXT("referencers"), ReferencersJson(Interface->GetAuthoritativeClass(), Prefixes, Implementers, Callers));
+		if (!FunctionFilter.IsEmpty())
+		{
+			const auto NotWanted = [&FunctionFilter](const FCortexInterfaceCaller& Site)
+			{
+				return Site.Kind != TEXT("interface_cast") && Site.Function != FunctionFilter;
+			};
+			Callers.RemoveAll(NotWanted);
+			Unresolved.RemoveAll(NotWanted);
+		}
 		const auto ToValues = [](const TArray<FCortexInterfaceCaller>& Sites)
 		{
 			TArray<TSharedPtr<FJsonValue>> Values;
@@ -662,7 +913,25 @@ FCortexCommandResult FCortexReflectInterfaceOps::FindInterfaceImplementers(const
 
 	if (bHasOutPath)
 	{
-		return CortexReflectAssetEnumeration::WriteReportWithSummary(OutPath, Result, {TEXT("implementers"), TEXT("callers"), TEXT("unresolved_callers")});
+		// The file keeps the full referencer buckets; the inline summary carries their counts (the lists can exceed the response budget).
+		TSharedPtr<FJsonObject> Counts;
+		const TSharedPtr<FJsonObject>* Buckets = nullptr;
+		if (Result->TryGetObjectField(TEXT("referencers"), Buckets) && Buckets && Buckets->IsValid())
+		{
+			Counts = MakeShared<FJsonObject>();
+			for (const TCHAR* Name : {TEXT("implements"), TEXT("calls_or_messages"), TEXT("other")})
+			{
+				const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+				(*Buckets)->TryGetArrayField(Name, Values);
+				Counts->SetNumberField(FString(Name) + TEXT("_count"), Values ? Values->Num() : 0);
+			}
+		}
+		FCortexCommandResult Written = CortexReflectAssetEnumeration::WriteReportWithSummary(OutPath, Result, {TEXT("implementers"), TEXT("callers"), TEXT("unresolved_callers")});
+		if (Written.bSuccess && Written.Data.IsValid() && Counts.IsValid())
+		{
+			Written.Data->SetObjectField(TEXT("referencers"), Counts);
+		}
+		return Written;
 	}
 	return FCortexCommandRouter::Success(Result);
 }
