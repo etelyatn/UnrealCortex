@@ -9,6 +9,8 @@
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
+#include "K2Node_VariableGet.h"
+#include "K2Node_VariableSet.h"
 #include "Internationalization/Text.h"
 #include "UObject/TextProperty.h"
 #include "UObject/UnrealType.h"
@@ -205,6 +207,25 @@ void FCortexBPSearchOps::SearchGraphPins(
 			}
 
 			const FString NodeId = Node->GetName();
+
+			// A variable get/set node matches by its member name (#277): the member is not a pin default, so the pin scan never saw it.
+			const bool bIsGet = Node->IsA<UK2Node_VariableGet>();
+			if (bIsGet || Node->IsA<UK2Node_VariableSet>())
+			{
+				const FString MemberName = CastChecked<UK2Node_Variable>(Node)->VariableReference.GetMemberName().ToString();
+				if (MatchesQuery(MemberName, Query, bCaseSensitive))
+				{
+					FSearchMatch Match;
+					Match.Location = FString::Printf(TEXT("%s/%s"), *LocationGraph, *NodeId);
+					Match.NodeId = NodeId;
+					Match.GraphName = GraphName;
+					Match.GraphGuid = GraphGuid;
+					Match.Property = MemberName;
+					Match.Type = bIsGet ? TEXT("variable_get") : TEXT("variable_set");
+					Match.Value = MemberName;
+					OutMatches.Add(Match);
+				}
+			}
 			for (UEdGraphPin* Pin : Node->Pins)
 			{
 				if (!Pin || OutMatches.Num() >= MaxResults)

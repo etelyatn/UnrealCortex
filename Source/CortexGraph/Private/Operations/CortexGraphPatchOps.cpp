@@ -1518,7 +1518,7 @@ bool FCortexGraphPatchOps::Preflight(
 				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
 				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 				Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
-				Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+				Normalized->SetObjectField(TEXT("expected_fingerprint"), OutPrepared.FingerprintBefore);
 				Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
@@ -1600,7 +1600,7 @@ bool FCortexGraphPatchOps::Preflight(
 				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
 				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 				Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
-				Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+				Normalized->SetObjectField(TEXT("expected_fingerprint"), OutPrepared.FingerprintBefore);
 				Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
@@ -1668,7 +1668,7 @@ bool FCortexGraphPatchOps::Preflight(
 				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
 				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 				Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
-				Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+				Normalized->SetObjectField(TEXT("expected_fingerprint"), OutPrepared.FingerprintBefore);
 				Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
@@ -1739,7 +1739,7 @@ bool FCortexGraphPatchOps::Preflight(
 				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
 				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 				Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
-				Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+				Normalized->SetObjectField(TEXT("expected_fingerprint"), OutPrepared.FingerprintBefore);
 				Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
@@ -1812,7 +1812,7 @@ bool FCortexGraphPatchOps::Preflight(
 				TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
 				Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 				Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
-				Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+				Normalized->SetObjectField(TEXT("expected_fingerprint"), OutPrepared.FingerprintBefore);
 				Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
 				Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
@@ -1890,7 +1890,7 @@ bool FCortexGraphPatchOps::Preflight(
 			TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
 			Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 			Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
-			Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+			Normalized->SetObjectField(TEXT("expected_fingerprint"), OutPrepared.FingerprintBefore);
 			Normalized->SetArrayField(TEXT("nodes"), TArray<TSharedPtr<FJsonValue>>());
 			Normalized->SetArrayField(TEXT("connections"), TArray<TSharedPtr<FJsonValue>>());
 			Normalized->SetArrayField(TEXT("pin_updates"), TArray<TSharedPtr<FJsonValue>>());
@@ -1982,7 +1982,7 @@ bool FCortexGraphPatchOps::Preflight(
 		Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 		Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
 		Normalized->SetObjectField(TEXT("target"), MigrationTarget);
-		Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+		Normalized->SetObjectField(TEXT("expected_fingerprint"), OutPrepared.FingerprintBefore);
 		TArray<TSharedPtr<FJsonValue>> NormalizedNodes;
 		if (MigrationPlan.NormalizedNode.IsValid())
 		{
@@ -2122,7 +2122,7 @@ bool FCortexGraphPatchOps::Preflight(
 	Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
 	Normalized->SetStringField(TEXT("patch_id"), OutPrepared.PatchId);
 	Normalized->SetObjectField(TEXT("target"), Target);
-	Normalized->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+	Normalized->SetObjectField(TEXT("expected_fingerprint"), OutPrepared.FingerprintBefore);
 	TArray<TSharedPtr<FJsonValue>> NormalizedNodes;
 	TSet<FString> ClientIds;
 	/** Owner of every derived GUID in this request, used to refuse intra-request collisions. */

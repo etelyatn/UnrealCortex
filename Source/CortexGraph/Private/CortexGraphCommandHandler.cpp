@@ -9,6 +9,7 @@
 #include "Operations/CortexGraphTraceOps.h"
 #include "Operations/CortexGraphAuthoringContext.h"
 #include "Operations/CortexGraphPatchOps.h"
+#include "Operations/CortexGraphSplitGetter.h"
 #include "Operations/CortexGraphPatchState.h"
 #include "CortexAssetMutationGuard.h"
 #include "Engine/Blueprint.h"
@@ -423,7 +424,7 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	}
 	if (Command == TEXT("add_node") || Command == TEXT("remove_node") || Command == TEXT("remove_nodes") || Command == TEXT("connect")
 		|| Command == TEXT("disconnect") || Command == TEXT("set_pin_value") || Command == TEXT("auto_layout")
-		|| Command == TEXT("apply_patch") || Command == TEXT("set_node_settings"))
+		|| Command == TEXT("apply_patch") || Command == TEXT("set_node_settings") || Command == TEXT("split_getter"))
 	{
 		FCortexCommandResult GuardError;
 		if (RejectBlockedGraphMutation(Params, GuardError))
@@ -483,6 +484,10 @@ FCortexCommandResult FCortexGraphCommandHandler::Execute(
 	{
 		return FCortexGraphNodeOps::RemoveNodes(Params);
 	}
+	if (Command == TEXT("split_getter"))
+	{
+		return FCortexGraphSplitGetter::Execute(Params);
+	}
 	if (Command == TEXT("connect"))
 	{
 		return FCortexGraphConnectionOps::Connect(Params);
@@ -530,7 +535,8 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 	return {
 		FCortexCommandInfo{ TEXT("get_authoring_context"), TEXT("Inspect Blueprint authoring context, candidate graphs, and current authoring fingerprint") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
-			.Optional(TEXT("target"), TEXT("object"), TEXT("Optional target graph locator (graph_ref). A nested graph (Animation Blueprint state, transition or conduit graph, or any graph a node publishes) resolves read-only: graph_kind is its nested kind, is_mutable is false, and apply_patch still refuses it")).RollbackSafe(),
+			.Optional(TEXT("target"), TEXT("object"), TEXT("Optional target graph locator: graph_ref, or graph_name without graph_ref (resolved like graph_name). A nested graph (Animation Blueprint state, transition or conduit graph, or any graph a node publishes) resolves read-only: graph_kind is its nested kind, is_mutable is false, and apply_patch still refuses it"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Optional graph to resolve as the target, like graph_name on the other graph reads (also accepted as target.graph_name when target has no graph_ref; graph_ref keeps precedence). A name carried by several graphs fails with INVALID_FIELD and details.candidates [{graph_guid, graph_name, graph_kind, subgraph_path}]; a name carried only by nested graphs fails with GRAPH_NOT_FOUND and nested_candidates")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("list_graphs"), TEXT("List user-visible Blueprint graphs with kind metadata, a stable graph_guid and root-relative path per graph, and owning_interface for interface_impl graphs. Nested graphs (composite bodies, Animation Blueprint state machine, state, transition and conduit graphs) are listed with include_subgraphs, are read-only and are addressed by graph_guid (or graph_path when graph_guid_unique is false)") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("include_subgraphs"), TEXT("boolean"), TEXT("Also list nested graphs below the root graphs with kind, parent_graph_guid, owner_node_guid and path; composite children keep parent_graph and subgraph_path. A tree deeper than 8 levels reports truncated and truncated_parent_graph_guids"))
@@ -564,7 +570,7 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path"))
 			.Optional(TEXT("max_depth"), TEXT("number"), TEXT("Maximum traversal depth"))
 			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include traced edge list")).RollbackSafe(),
-		FCortexCommandInfo{ TEXT("get_subgraph"), TEXT("Read a graph or selected node subset with optional edges; nested graphs (including Animation Blueprint state, transition and conduit graphs, read-only) are addressed by graph_guid or graph_path. An oversized response is refused inline: select fewer node_ids, drop include_edges, or pass out_path to write the complete response to a file") }
+		FCortexCommandInfo{ TEXT("get_subgraph"), TEXT("Read a graph or selected node subset with optional edges; nested graphs (including Animation Blueprint state, transition and conduit graphs, read-only) are addressed by graph_guid or graph_path. Pass compact:false to also get each node's position {x, y} (compact, the default, omits positions). An oversized response is refused inline: select fewer node_ids, drop include_edges, or pass out_path to write the complete response to a file") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Root graph to inspect, defaults to EventGraph; a name that matches only nested graphs fails with GRAPH_NOT_FOUND and nested_candidates. With graph_guid/graph_path it must name the resolved graph"))
 			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("GraphGuid of any graph in the tree (list_graphs include_subgraphs); GRAPH_NOT_FOUND when unknown, INVALID_FIELD when shared by several graphs (use graph_path)"))
@@ -573,7 +579,7 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("node_id"), TEXT("string"), TEXT("Optional single node identifier; combined with node_ids when both are given"))
 			.Optional(TEXT("node_ids"), TEXT("array"), TEXT("Optional subset of node identifiers"))
 			.Optional(TEXT("include_edges"), TEXT("boolean"), TEXT("Include edges between returned nodes"))
-			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Compact node serialization (default: true)"))
+			.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Compact node serialization (default: true); compact:false adds each node's position {x, y}, node_class and pin_count"))
 			.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the complete response to this file with the safe-file contract (a path inside the project or an allowed output root) and reply with a summary: out_path, node_count, bytes, and edge_count when include_edges=true. Use it when the graph is too large for an inline response"))
 			.RollbackSafe(),
 		FCortexCommandInfo{ TEXT("list_event_handlers"), TEXT("List event entry nodes across Blueprint graphs, nested graphs included; results carry graph_guid") }
@@ -596,13 +602,14 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Only with graph_guid/graph_path: must name the resolved graph; never a scope on its own"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Only with graph_guid/graph_path: must equal the resolved graph's own subgraph_path; never a scope on its own"))
 			.Optional(TEXT("graph_path"), TEXT("string"), TEXT("Restrict to the graph at this root-relative path (list_graphs) and the graphs nested below it")).RollbackSafe(),
-		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add a node to a mutable graph. Delegate graphs are readable but not mutable.") }
+		FCortexCommandInfo{ TEXT("add_node"), TEXT("Add a node to a mutable graph. Delegate graphs are readable but not mutable. The response reports the final position; use position for absolute coordinates or placement to put the node beside an existing node.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("node_class"), TEXT("string"), TEXT("Node class to create"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Target graph, defaults to EventGraph"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
 			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("Never accepted: addressing is graph_name/subgraph_path. A graph_guid is refused (INVALID_OPERATION for a nested read-only graph, INVALID_FIELD otherwise, GRAPH_NOT_FOUND when unknown) instead of silently targeting the default graph"))
-			.Optional(TEXT("position"), TEXT("object"), TEXT("Optional node placement coordinates"))
+			.Optional(TEXT("position"), TEXT("object"), TEXT("Optional node placement coordinates {x, y}; exclusive with placement"))
+			.Optional(TEXT("placement"), TEXT("object"), TEXT("Optional placement relative to an anchor node: {relative_to: node_id or node_guid of the anchor, side: left|right|above|below, gap?: pixels (default 80)}. The node is placed beside the anchor's body (estimated size, as auto_layout measures it), aligned with its top edge (left/right) or left edge (above/below). Exclusive with position; an unknown anchor fails with NODE_NOT_FOUND and adds nothing"))
 			.Optional(TEXT("params"), TEXT("object"), TEXT("Node-specific creation parameters")).RollbackSafe(),
 		FCortexCommandInfo{ TEXT("describe_node"), TEXT("Return the typed construction contract for a supported node class") }
 			.Required(TEXT("node_class"), TEXT("string"), TEXT("Node class to describe"))
@@ -614,13 +621,19 @@ TArray<FCortexCommandInfo> FCortexGraphCommandHandler::GetSupportedCommands() co
 			.Required(TEXT("node_id"), TEXT("string"), TEXT("Identifier of the node to remove"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')")),
-		FCortexCommandInfo{ TEXT("remove_nodes"), TEXT("Remove several nodes from a mutable graph in one transaction and clean up their connections. Pass exactly one of node_ids (remove exactly these nodes) or keep_node_ids (remove every other node). Function entry and function result nodes and nodes the editor refuses to delete are never removed; they are reported in kept. Every identifier must resolve or nothing is removed. dry_run previews the removal without changing the graph. Delegate graphs are readable but not mutable.") }
+		FCortexCommandInfo{ TEXT("remove_nodes"), TEXT("Remove several nodes from a mutable graph in one transaction and clean up their connections. Pass exactly one of node_ids (remove exactly these nodes) or keep_node_ids (remove every other node). Function entry and function result nodes and nodes the editor refuses to delete are never removed; they are reported in kept. Every identifier must resolve or nothing is removed. dry_run previews the removal without changing the graph. Preview and apply report override_events for each override event (K2Node_Event with bOverrideFunction) in the removal set: function, declared_in, native_declaration, has_native_default (removing the override falls back to the native _Implementation), blueprint_callers (call nodes in this and other loaded Blueprints that resolve to that function: asset_path, graph_name, node_guid), blueprint_callers_complete with unloaded_referencers, and native_callers \"not_enumerable\" (C++ call sites cannot be found from the editor; a BlueprintImplementableEvent or BlueprintNativeEvent declared in C++ exists to be called by native code). Informational: never blocks the removal. Delegate graphs are readable but not mutable.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Optional(TEXT("node_ids"), TEXT("array"), TEXT("Non-empty array of node identifiers (node_id or node_guid) to remove; mutually exclusive with keep_node_ids"))
 			.Optional(TEXT("keep_node_ids"), TEXT("array"), TEXT("Non-empty array of node identifiers (node_id or node_guid) to keep: every other removable node of the graph is removed; mutually exclusive with node_ids"))
 			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the nodes, defaults to EventGraph"))
 			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
 			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview only: report removed_node_ids, kept and the counts without changing the graph (default: false)")),
+		FCortexCommandInfo{ TEXT("split_getter"), TEXT("Split a pure Variable Get node whose output feeds several distinct consumer nodes: the first consumer (by link order) keeps the original node and every other consumer gets its own get node (same variable reference and self/target wiring) placed left of that consumer. One transaction; dry_run previews. Impure variations (branch, validated_object) are refused with INVALID_OPERATION; a getter with fewer than two consumers is reported unchanged. Returns original_node_id, created [{node_id, node_guid, consumer_node_guid}] and consumer_count. Delegate graphs are readable but not mutable.") }
+			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
+			.Required(TEXT("node_id"), TEXT("string"), TEXT("Identifier (node_id or node_guid) of the Variable Get node to split"))
+			.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Graph containing the node, defaults to EventGraph"))
+			.Optional(TEXT("subgraph_path"), TEXT("string"), TEXT("Dot-separated composite subgraph path (e.g. 'BeginPlay.Inner')"))
+			.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("Preview only: report consumer_count and the getters that would be created without changing the graph (default: false)")),
 		FCortexCommandInfo{ TEXT("connect"), TEXT("Connect two pins in a mutable graph. Delegate graphs are readable but not mutable.") }
 			.Required(TEXT("asset_path"), TEXT("string"), TEXT("Full asset path to the Blueprint asset"))
 			.Required(TEXT("source_node"), TEXT("string"), TEXT("Node ID of the output node"))

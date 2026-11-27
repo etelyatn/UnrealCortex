@@ -4,6 +4,7 @@
 #include "Operations/CortexBPAnalysisOps.h"
 #include "Operations/CortexBPCleanupOps.h"
 #include "Operations/CortexBPClassDefaultsOps.h"
+#include "Operations/CortexBPVariableReferencesOps.h"
 #include "Operations/CortexBPCompileAllOps.h"
 #include "Operations/CortexBPMigrationExportOps.h"
 #include "Operations/CortexBPCompareOps.h"
@@ -60,7 +61,7 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		|| Command == TEXT("get_class_defaults") || Command == TEXT("list_inherited_properties")
 		|| Command == TEXT("list_settable_defaults") || Command == TEXT("list_scs_components")
 		|| Command == TEXT("analyze_for_migration") || Command == TEXT("compare_blueprints")
-		|| Command == TEXT("search") || Command == TEXT("graph_metrics") || Command == TEXT("export_text_inventory")
+		|| Command == TEXT("search") || Command == TEXT("find_variable_references") || Command == TEXT("graph_metrics") || Command == TEXT("export_text_inventory")
 		|| Command == TEXT("export_snapshot") || Command == TEXT("compare_snapshots");
 	if (!bReadOnly)
 	{
@@ -218,6 +219,11 @@ FCortexCommandResult FCortexBPCommandHandler::Execute(
 		return FCortexBPSearchOps::Search(Params);
 	}
 
+	if (Command == TEXT("find_variable_references"))
+	{
+		return FCortexBPVariableReferencesOps::FindVariableReferences(Params);
+	}
+
 	if (Command == TEXT("export_text_inventory"))
 	{
 		return FCortexBPTextInventoryOps::ExportTextInventory(Params);
@@ -315,7 +321,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 			TEXT("Optional Blueprint type filter (case-insensitive): Interface, FunctionLibrary, MacroLibrary, AnimBlueprint, EditorUtility, Widget, Component, Actor, Object, Unknown"))
 		.Optional(TEXT("exclude_types"), TEXT("array"),
 			TEXT("Optional array of Blueprint types to omit (same vocabulary as type); combines with type")));
-	Commands.Add(FCortexCommandInfo{TEXT("get_info"), TEXT("Get Blueprint info")}
+	Commands.Add(FCortexCommandInfo{TEXT("get_info"), TEXT("Get Blueprint info: variables, functions, graphs and interfaces (the interfaces this Blueprint itself implements: {name, path, is_blueprint, implementation_graphs}; interfaces inherited from the parent are not listed)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("include_inherited"), TEXT("boolean"), TEXT("Include inherited C++ functions (default: false)"))
 		.Optional(TEXT("compact"), TEXT("boolean"), TEXT("Omit empty inputs/outputs arrays (default: true); source is emitted when inherited functions are listed")));
@@ -362,7 +368,7 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Optional(TEXT("outputs"), TEXT("array"), TEXT("Output parameter definitions")));
 	Commands.Add(FCortexCommandInfo{
 		TEXT("remove_graph"),
-		TEXT("Preview or remove graphs/custom events with explicit compile/save lifecycle. Pass name for one target or names for a set: the preview lists every graph and returns one fingerprint and one validation hash over the whole set, and apply removes all of them or none (one transaction, one compile, fail-closed readback and rollback). The set response lists removed_graphs, targets and deletions; the single-name response keeps removed, removed_nodes, target and deletion. A custom event cannot be listed together with the graph that contains it.") }
+		TEXT("Preview or remove graphs/custom events with explicit compile/save lifecycle. Pass name for one target or names for a set: the preview lists every graph and returns one fingerprint and one validation hash over the whole set, and apply removes all of them or none (one transaction, one compile, fail-closed readback and rollback). Apply needs only expected_validation_hash (the dry run's validation_hash field), which already commits to the live fingerprint; expected_fingerprint is optional and is still checked when supplied. A missing hash is STALE_PRECONDITION. The set response lists removed_graphs, targets and deletions; the single-name response keeps removed, removed_nodes, target and deletion. A custom event cannot be listed together with the graph that contains it.") }
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("name"), TEXT("string"), TEXT("Graph or custom-event name selector; exactly one of name or names is required"))
 		.Optional(TEXT("names"), TEXT("array"), TEXT("Non-empty array of unique graph or custom-event names removed as one atomic set; exactly one of name or names is required"))
@@ -370,8 +376,8 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("compile"), TEXT("boolean"), TEXT("Compile after apply"))
 		.Required(TEXT("save"), TEXT("boolean"), TEXT("Persist the verified result after compile/readback"))
 		.Optional(TEXT("cascade_exec_chain"), TEXT("boolean"), TEXT("Custom-event exec cascade, default false"))
-		.OptionalExpectedFingerprint()
-		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Validation hash returned by preview")));
+		.OptionalExpectedFingerprint(TEXT("Optional stale-write guard: the dry run's fingerprint_before; checked when supplied (expected_validation_hash alone authorizes apply)"))
+		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash: the dry run's validation_hash field")));
 	Commands.Add(FCortexCommandInfo{TEXT("get_class_defaults"), TEXT("Read a Blueprint CDO's default properties (metadata-only discovery unless values requested)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("properties"), TEXT("array"), TEXT("Specific property paths to read; nonempty defaults to effective values"))
@@ -439,8 +445,9 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 				"named_slots, widget_animations, widget_bindings, referenced_user_types, cdo_overrides, "
 				"instanced_subobjects, widget_dependencies, entity_summary, complexity_metrics")));
 	Commands.Add(FCortexCommandInfo{TEXT("graph_metrics"),
-		TEXT("Reachability-aware logic metrics per entry node (events, custom/bound/input events, functions): functional node count, conditionals, variable getter fan-out, unreachable nodes (inner macro/collapsed-graph orphans carry a subgraph field), disabled nodes (disabled_nodes), ghost entries (unlinked or disabled), has_tick for live Tick events, and threshold violations. Graphs nested below a function or event graph (nodes that publish graphs through GetSubGraphs, except composite bodies and animation graphs) are measured too and carry graph_guid in entries, ghost entries, violations and unreachable/disabled rows")}
-		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		TEXT("Reachability-aware logic metrics per entry node (events, custom/bound/input events, functions): functional node count, conditionals, variable getter fan-out, unreachable nodes (inner macro/collapsed-graph orphans carry a subgraph field), disabled nodes (disabled_nodes), ghost entries (unlinked or disabled), has_tick for live Tick events, and threshold violations. totals carries functional_nodes (expanded: macro and collapsed bodies are counted where an instance reaches them) plus entry_nodes (enabled entry nodes), result_nodes (reached function result nodes) and all_nodes (the unique authored nodes of the Blueprint's own graphs, collapsed bodies and their tunnels included, never comments or reroute knots; independent of functional_nodes). Graphs nested below a function or event graph (nodes that publish graphs through GetSubGraphs, except composite bodies and animation graphs) are measured too and carry graph_guid in entries, ghost entries, violations and unreachable/disabled rows. Pass asset_paths (exclusive with asset_path) to measure several Blueprints in one call: the response is {assets: [per-asset payload identical to the single-asset response | {asset_path, error: {code, message}}], count}, in request order")}
+		.Optional(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path (exactly one of asset_path or asset_paths)"))
+		.Optional(TEXT("asset_paths"), TEXT("array"), TEXT("Blueprint asset paths measured in one call (exactly one of asset_path or asset_paths); an asset that cannot be loaded becomes an error row"))
 		.Optional(TEXT("thresholds"), TEXT("object"), TEXT("{max_nodes_per_entry: int=10, max_nodes_per_blueprint: int=30}; positive integers")));
 	Commands.Add(FCortexCommandInfo{TEXT("cleanup_migration"),
 		TEXT("Clean up a Blueprint after C++ migration on the guarded-run skeleton: the reparent preflight, engine adoption of variables a native member replaces (adopted_by_engine, cdo_readback {before, after, preserved}, fail closed with READBACK_MISMATCH), explicit removals by the pre-captured variable GUID, a dry_run, the editor's reparent compile flags, and a finalize-only call that verifies the stage's cdo_expectations through expected_cdo_values and saves only after a clean compile. Refuses blocking collisions (NAME_COLLISION) and unacknowledged collisions or SaveGame losses (POTENTIAL_DATA_LOSS); a removal whose nodes would be destroyed refuses MEMBER_REFERENCED until remove_referencing_nodes is set")}
@@ -481,12 +488,15 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("graph_name"), TEXT("string"), TEXT("Optional graph name"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after cleanup")));
-	Commands.Add(FCortexCommandInfo{TEXT("search"), TEXT("Search a Blueprint for values across graphs (including graphs nested below them; a match inside a nested graph carries graph_guid), class defaults, and widget tree")}
+	Commands.Add(FCortexCommandInfo{TEXT("search"), TEXT("Search a Blueprint for values across graphs (including graphs nested below them; a match inside a nested graph carries graph_guid), class defaults, and widget tree. In the pins area a variable get/set node also matches by its variable (member) name: type variable_get or variable_set, property = member name, location = <graph>/<node>, node_id")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("query"), TEXT("string"), TEXT("Search text"))
 		.Optional(TEXT("search_in"), TEXT("array"), TEXT("Search scopes"))
 		.Optional(TEXT("case_sensitive"), TEXT("boolean"), TEXT("Case-sensitive matching"))
 		.Optional(TEXT("max_results"), TEXT("number"), TEXT("Maximum matches to return")));
+	Commands.Add(FCortexCommandInfo{TEXT("find_variable_references"), TEXT("List every get and set node of one variable (a Blueprint variable or an inherited native property), matched by resolved member owner, not by name alone (a function-local variable of the same name is not this member). Response: variable, declared_in (owner class path, or the Blueprint), is_native, get_count, set_count and references [{kind get|set, node_id, node_guid, graph_name, graph_guid, subgraph_path, entries: [{name, node_guid}] (the live entries that reach the node, same reachability as graph_metrics), consumers: [{node_guid, node_class, title, pin}] (distinct nodes on the node's output links, through reroutes)}]. An unknown variable is INVALID_FIELD. Read-only")}
+		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
+		.Required(TEXT("variable"), TEXT("string"), TEXT("Blueprint variable or inherited native property name")));
 	Commands.Add(FCortexCommandInfo{TEXT("export_text_inventory"), TEXT("Export every FText of a Blueprint (class defaults, widgets, text pin defaults) as a sorted inventory with source kind and string table identity (read-only)")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Optional(TEXT("out_path"), TEXT("string"), TEXT("Write the full inventory JSON to this file (under Project Saved, Content or Config) and return only asset_path, out_path and counts; required when the inline response would exceed 40000 characters"))
@@ -573,25 +583,25 @@ TArray<FCortexCommandInfo> FCortexBPCommandHandler::GetSupportedCommands() const
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after adding (default: true)")));
-	Commands.Add(FCortexCommandInfo{TEXT("remove_interface"), TEXT("Preview or remove an interface implementation from a Blueprint. preserve_implementations is required and states whether loss is accepted: true keeps interface function graphs as ordinary function graphs and turns interface events into same-named custom events with their pin links (engine bPreserveFunctions); false deletes the graphs and leaves event bodies orphaned. dry_run:true changes nothing and returns per function {implementation, node_count, disposition (promoted_to_function|converted_to_custom_event|deleted|orphaned_nodes), in_asset_callers}, validation_hash and fingerprint_before; apply (dry_run false) requires expected_fingerprint (= fingerprint_before) and expected_validation_hash from the dry run (STALE_PRECONDITION otherwise), verifies the predicted disposition on the live graphs before compiling and restores the verified pre-state on a mismatch (READBACK_MISMATCH). A compile error also restores (COMPILE_FAILED).")}
+	Commands.Add(FCortexCommandInfo{TEXT("remove_interface"), TEXT("Preview or remove an interface implementation from a Blueprint. preserve_implementations is required and states whether loss is accepted: true keeps interface function graphs as ordinary function graphs and turns interface events into same-named custom events with their pin links (engine bPreserveFunctions); false deletes the graphs and removes each interface event's island with it in the same guarded run: the exec chain driven by the event plus the pure/data nodes that only feed it. Conservative by design: a node that another live entry (an event, a function entry, an interface event that stays) also reaches, a node that a staying node still drives or consumes, a collapsed graph node, a macro instance, a timeline and an Add Component node are kept, and nothing behind a kept node is deleted; an event inside a collapsed graph deletes nothing (its body is kept). dry_run:true changes nothing and returns per function {implementation, node_count, disposition (promoted_to_function|converted_to_custom_event|deleted|removed_with_body), in_asset_callers; for an event removed with preserve_implementations false also removed_node_guids and retained_node_guids [{node_guid, reason: shared|collapsed_graph|macro_instance|timeline|component_template}], exactly what apply deletes and keeps}, validation_hash (it commits to the plan and the live fingerprint) and fingerprint_before; apply (dry_run false) requires expected_validation_hash from the dry run (the validation_hash field; STALE_PRECONDITION otherwise); expected_fingerprint (= fingerprint_before) is optional and is still checked when supplied. Apply verifies the predicted disposition on the live graphs before compiling and restores the verified pre-state on a mismatch (READBACK_MISMATCH). A compile error also restores (COMPILE_FAILED). One editor undo restores the removed nodes and their links.")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path"))
 		.Required(TEXT("interface_path"), TEXT("string"), TEXT("Interface class name or path"))
-		.Required(TEXT("preserve_implementations"), TEXT("boolean"), TEXT("true=keep implementations as functions/custom events, false=delete them (event bodies are orphaned)"))
+		.Required(TEXT("preserve_implementations"), TEXT("boolean"), TEXT("true=keep implementations as functions/custom events, false=delete them (an event is removed together with its island; nodes another live entry also reaches are kept)"))
 		.Optional(TEXT("dry_run"), TEXT("boolean"), TEXT("true=preview only (default false)"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile after removing (default: true)"))
-		.OptionalExpectedFingerprint(TEXT("Apply-required stale-write guard {graph_authoring_version, migration_state_version, graph_authoring_hash, migration_state_hash}: the dry run's fingerprint_before as returned"))
-		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash returned by the dry run"))
+		.OptionalExpectedFingerprint(TEXT("Optional stale-write guard {graph_authoring_version, migration_state_version, graph_authoring_hash, migration_state_hash}: the dry run's fingerprint_before as returned; checked when supplied (expected_validation_hash alone authorizes apply)"))
+		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash: the dry run's validation_hash field"))
 		.StrictParams());
-	Commands.Add(FCortexCommandInfo{TEXT("replace_interface"), TEXT("Move a Blueprint from an old interface to a new one in one guarded transaction (the issue-named thin entry over the graph.apply_patch replace_interface migration; both produce the same outcome for the same request). The graphs of the mapped function-style functions are adopted by a new description of the new interface so every body node keeps its GUID, each stale entry/terminator is replaced through the replace_entry path (pin_map is fail-closed, exactly as replace_entry), the old description and its unimplemented stubs are removed, and the Blueprint is compiled once with journaled recovery. It refuses an old interface that is not implemented, a new interface that is already implemented, an implemented old function missing from function_map, a to that is not a function of the new interface, an incomplete pin_map, an in-asset caller of the old interface (retarget it first) and a derived Blueprint that overrides a mapped function. dry_run is required: true returns the plan (functions, dropped_stubs, new_stubs), validation_hash and fingerprint_before and changes nothing; apply (false) requires expected_fingerprint (= fingerprint_before) and expected_validation_hash. An omitted patch_id is derived from the canonical request, so replaying an identical request is an unchanged no-op. Mutating: refused for an asset blocked after a failed recovery.")}
+	Commands.Add(FCortexCommandInfo{TEXT("replace_interface"), TEXT("Move a Blueprint from an old interface to a new one in one guarded transaction (the issue-named thin entry over the graph.apply_patch replace_interface migration; both produce the same outcome for the same request). The graphs of the mapped function-style functions are adopted by a new description of the new interface so every body node keeps its GUID, each stale entry/terminator is replaced through the replace_entry path (pin_map is fail-closed, exactly as replace_entry), the old description and its unimplemented stubs are removed, and the Blueprint is compiled once with journaled recovery. It refuses an old interface that is not implemented, a new interface that is already implemented, an implemented old function missing from function_map, a to that is not a function of the new interface, an incomplete pin_map, an in-asset caller of the old interface (retarget it first) and a derived Blueprint that overrides a mapped function. dry_run is required: true returns the plan (functions, dropped_stubs, new_stubs), validation_hash and fingerprint_before and changes nothing; apply (false) requires expected_validation_hash (the dry run's validation_hash field, which commits to the live graph state; STALE_PRECONDITION when missing or stale); expected_fingerprint (= fingerprint_before) is optional and is still checked when supplied. An omitted patch_id is derived from the canonical request, so replaying an identical request is an unchanged no-op. Mutating: refused for an asset blocked after a failed recovery.")}
 		.Required(TEXT("asset_path"), TEXT("string"), TEXT("Blueprint asset path: the package path (/Game/X/BP_A) or the object path (/Game/X/BP_A.BP_A)"))
 		.Required(TEXT("old_interface"), TEXT("string"), TEXT("The implemented interface to leave: Blueprint interface asset path or class path"))
 		.Required(TEXT("new_interface"), TEXT("string"), TEXT("The interface to implement instead: class path (native /Script/Module.Name or Blueprint interface class)"))
 		.Required(TEXT("function_map"), TEXT("array"), TEXT("One entry per implemented old function: {from, to (default = from), pin_map: [{entry: input|output, from_pin, to_pin}]}; every replacement pin is mapped exactly once. pin_map must cover every mappable pin of both replacement terminators, exec pins included: the entry's then (entry output, from_pin then, to_pin then) and the result's execute (entry input, from_pin execute, to_pin execute); a result value maps with entry \"input\", from_pin the old result parameter and to_pin \"ReturnValue\", so a one-value function needs three entries."))
-		.Required(TEXT("dry_run"), TEXT("boolean"), TEXT("true=preview only; false=apply (needs expected_fingerprint and expected_validation_hash)"))
+		.Required(TEXT("dry_run"), TEXT("boolean"), TEXT("true=preview only; false=apply (needs expected_validation_hash)"))
 		.Optional(TEXT("compile"), TEXT("boolean"), TEXT("Compile once after the swap (default: true; required for save)"))
 		.Optional(TEXT("save"), TEXT("boolean"), TEXT("Save the package after a verified result (default: false; requires compile and a clean starting package)"))
-		.OptionalExpectedFingerprint(TEXT("Apply-required stale-write guard: the dry run's fingerprint_before"))
-		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash returned by the dry run"))
+		.OptionalExpectedFingerprint(TEXT("Optional stale-write guard: the dry run's fingerprint_before; checked when supplied (expected_validation_hash alone authorizes apply)"))
+		.Optional(TEXT("expected_validation_hash"), TEXT("string"), TEXT("Apply-required validation hash: the dry run's validation_hash field"))
 		.Optional(TEXT("patch_id"), TEXT("string"), TEXT("Optional UUID; derived from the canonical request when omitted"))
 		.StrictParams());
 	Commands.Add(FCortexCommandInfo{TEXT("set_tick_settings"), TEXT("Set Actor tick settings on a Blueprint CDO")}

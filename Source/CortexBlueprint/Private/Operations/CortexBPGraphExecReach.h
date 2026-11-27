@@ -41,6 +41,26 @@ namespace CortexBPGraphReachability
 		void AddNode(UEdGraphNode* Node);
 
 		/**
+		 * Continues execution OUT of an expandable instance whose inner graph an entry already reached: follows only the named exec
+		 * output pins (the instance outputs matching the inner exit tunnel pins that were reached). The instance is not marked
+		 * reached, so the data closure never reads its other inputs.
+		 */
+		void SeedFromInstanceOutputs(UEdGraphNode* InstanceNode, const TArray<FName>& OutputPinNames);
+
+		/**
+		 * Marks the enabled producers linked to the given input pins reached (an expandable producer is expanded from its exit
+		 * tunnels). When a producer is this graph's entry tunnel, the linked tunnel OUTPUT pin name is recorded: a node reading it
+		 * directly (an inner instance input fed by the tunnel) leaves no input pin of a reached node to find it by.
+		 */
+		void SeedDataProducers(const TArray<const UEdGraphPin*>& InputPins);
+
+		/** Entry tunnel output pin names that SeedDataProducers reached directly. */
+		const TSet<FName>& GetSeededEntryTunnelPins() const { return SeededEntryTunnelPins; }
+
+		/** Exec input pin names of this graph's exit tunnels that execution reached. */
+		const TSet<FName>& GetReachedExitPins() const { return ReachedExitPins; }
+
+		/**
 		 * Adds the enabled producers feeding the reached nodes' non-exec inputs, transitively, in this context and in every child.
 		 * A macro or composite producer reached only by data is expanded from its exit tunnels.
 		 */
@@ -73,6 +93,7 @@ namespace CortexBPGraphReachability
 		TArray<UEdGraphNode*> ExitTunnels;
 		/** Exec input pins of this graph's exit tunnels that execution reached, by pin name. */
 		TSet<FName> ReachedExitPins;
+		TSet<FName> SeededEntryTunnelPins;
 		TArray<const UEdGraphPin*> Pending;
 		TSet<const UEdGraphPin*> VisitedInputs;
 		TSet<const UEdGraphPin*> FollowedOutputs;

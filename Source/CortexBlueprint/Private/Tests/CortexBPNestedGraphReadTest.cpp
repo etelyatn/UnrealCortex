@@ -349,6 +349,11 @@ bool FCortexBPNestedGraphReadPlainOutputTest::RunTest(const FString& Parameters)
 			Totals->SetNumberField(TEXT("disabled_nodes"), 3);
 			Totals->SetNumberField(TEXT("ghost_entries"), 3);
 			Totals->SetNumberField(TEXT("entries"), 4);
+			// Issue 277: the enabled construction-script entry, no result node, and every authored node
+			// (three disabled default events, the unreachable call, the construction entry).
+			Totals->SetNumberField(TEXT("entry_nodes"), 1);
+			Totals->SetNumberField(TEXT("result_nodes"), 0);
+			Totals->SetNumberField(TEXT("all_nodes"), 5);
 
 			TSharedPtr<FJsonObject> Thresholds = MakeShared<FJsonObject>();
 			Thresholds->SetNumberField(TEXT("max_nodes_per_entry"), 10);

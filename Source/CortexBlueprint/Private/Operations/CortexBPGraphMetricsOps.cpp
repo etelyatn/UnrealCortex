@@ -13,6 +13,7 @@
 #include "EdGraphNode_Comment.h"
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
+#include "K2Node_Composite.h"
 #include "K2Node_ComponentBoundEvent.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_DynamicCast.h"
@@ -366,16 +367,127 @@ namespace
 			CollectInnerGraphs(Child, OutInnerGraphs);
 		}
 	}
+
+	/**
+	 * Seeds one entry exactly as graph_metrics measures it: a disabled entry seeds nothing, a function entry also seeds its results
+	 * when the function is pure or its single result is unwired (the pure feeders then compute the return value), and the data
+	 * closure is expanded.
+	 */
+	void SeedEntryForMetrics(const UEdGraph* Graph, UEdGraphNode* Node, const TArray<UEdGraphNode*>& FunctionResults, FReachContext& Root)
+	{
+		(void)Graph;
+		Root.SeedEntry(Node);
+		const UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node);
+		if (FunctionEntry && Root.Reached.Contains(Node))
+		{
+			// A result with no exec wire from the entry is logic only for a pure function or a function whose single
+			// result is simply unwired. Any other exec-unreachable result is dead code and is reported as unreachable.
+			const bool bPure = (FunctionEntry->GetExtraFlags() & FUNC_BlueprintPure) != 0;
+			const bool bSoleUnwiredResult = FunctionResults.Num() == 1 && !HasLinkedExecOutput(Node);
+			if (bPure || bSoleUnwiredResult)
+			{
+				for (UEdGraphNode* ResultNode : FunctionResults)
+				{
+					Root.AddNode(ResultNode);
+				}
+			}
+		}
+		Root.ExpandDataClosure();
+	}
+
+	/** Every node a context and the contexts of the macro/composite instances it expanded reached. */
+	void AppendContextNodes(const FReachContext& Context, TSet<const UEdGraphNode*>& OutNodes)
+	{
+		for (const UEdGraphNode* Node : Context.Reached)
+		{
+			OutNodes.Add(Node);
+		}
+		for (const TPair<const UEdGraphNode*, TUniquePtr<FReachContext>>& Pair : Context.Children)
+		{
+			AppendContextNodes(*Pair.Value, OutNodes);
+		}
+	}
+
+	/**
+	 * The data input pins of the owning composite that the nodes a context reached read through the body's entry tunnel: an inner
+	 * entry depends on exactly those outer producers, never on the composite's other data inputs.
+	 */
+	void CollectCompositeDataInputs(const FReachContext& Context, const UK2Node_Composite* Owner, TArray<const UEdGraphPin*>& OutInputPins)
+	{
+		// Entry tunnel outputs a previous crossing fed straight into this graph (no reached node reads them through an input pin).
+		for (const FName TunnelPin : Context.GetSeededEntryTunnelPins())
+		{
+			const UEdGraphPin* InstanceInput = Owner->FindPin(TunnelPin, EGPD_Input);
+			if (InstanceInput && InstanceInput->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+			{
+				OutInputPins.AddUnique(InstanceInput);
+			}
+		}
+		for (const UEdGraphNode* Node : Context.Reached)
+		{
+			if (!Node)
+			{
+				continue;
+			}
+			for (const UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin || Pin->Direction != EGPD_Input || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+				{
+					continue;
+				}
+				for (const UEdGraphPin* Linked : Pin->LinkedTo)
+				{
+					const UEdGraphNode* Producer = Linked ? Linked->GetOwningNodeUnchecked() : nullptr;
+					const UK2Node_Tunnel* Tunnel = IsStructuralTunnel(Producer) ? Cast<UK2Node_Tunnel>(Producer) : nullptr;
+					if (!Tunnel || !Tunnel->bCanHaveOutputs || Tunnel->bCanHaveInputs)
+					{
+						continue;
+					}
+					const UEdGraphPin* InstanceInput = Owner->FindPin(Linked->PinName, EGPD_Input);
+					if (InstanceInput && InstanceInput->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+					{
+						OutInputPins.AddUnique(InstanceInput);
+					}
+				}
+			}
+		}
+	}
 }
 
 FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJsonObject>& Params)
 {
-	FString AssetPath;
-	if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
+	const bool bHasAssetPath = Params.IsValid() && Params->HasField(TEXT("asset_path"));
+	const bool bHasAssetPaths = Params.IsValid() && Params->HasField(TEXT("asset_paths"));
+	if (bHasAssetPath && bHasAssetPaths)
 	{
 		return FCortexCommandRouter::Error(
 			CortexErrorCodes::InvalidField,
-			TEXT("Missing required param: asset_path"));
+			TEXT("asset_path and asset_paths are exclusive: pass one Blueprint or a list"));
+	}
+	FString AssetPath;
+	TArray<FString> AssetPaths;
+	if (bHasAssetPaths)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* PathValues = nullptr;
+		if (!Params->TryGetArrayField(TEXT("asset_paths"), PathValues) || PathValues == nullptr || PathValues->IsEmpty())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("asset_paths must be a non-empty array of asset path strings"));
+		}
+		for (const TSharedPtr<FJsonValue>& PathValue : *PathValues)
+		{
+			FString Entry;
+			if (!PathValue.IsValid() || PathValue->Type != EJson::String || !PathValue->TryGetString(Entry) || Entry.IsEmpty())
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("asset_paths entries must be non-empty strings"));
+			}
+			AssetPaths.Add(Entry);
+		}
+	}
+	else if (!Params.IsValid() || !Params->TryGetStringField(TEXT("asset_path"), AssetPath) || AssetPath.IsEmpty())
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("Missing required param: asset_path (or asset_paths for several Blueprints)"));
 	}
 
 	FThresholds Thresholds;
@@ -404,6 +516,33 @@ FCortexCommandResult FCortexBPGraphMetricsOps::GraphMetrics(const TSharedPtr<FJs
 		{
 			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, ThresholdError);
 		}
+	}
+
+	if (bHasAssetPaths)
+	{
+		// One per-asset payload identical to the single-asset response; an asset that cannot be loaded is an error row, not a failure.
+		TArray<TSharedPtr<FJsonValue>> Assets;
+		for (const FString& BatchPath : AssetPaths)
+		{
+			FString BatchLoadError;
+			const UBlueprint* BatchBlueprint = FCortexBPAssetOps::LoadBlueprint(BatchPath, BatchLoadError);
+			if (BatchBlueprint != nullptr)
+			{
+				Assets.Add(MakeShared<FJsonValueObject>(BuildGraphMetrics(BatchBlueprint, BatchPath, Thresholds)));
+				continue;
+			}
+			TSharedPtr<FJsonObject> ErrorBody = MakeShared<FJsonObject>();
+			ErrorBody->SetStringField(TEXT("code"), CortexErrorCodes::BlueprintNotFound);
+			ErrorBody->SetStringField(TEXT("message"), BatchLoadError);
+			TSharedPtr<FJsonObject> Row = MakeShared<FJsonObject>();
+			Row->SetStringField(TEXT("asset_path"), BatchPath);
+			Row->SetObjectField(TEXT("error"), ErrorBody);
+			Assets.Add(MakeShared<FJsonValueObject>(Row));
+		}
+		TSharedPtr<FJsonObject> Batch = MakeShared<FJsonObject>();
+		Batch->SetNumberField(TEXT("count"), Assets.Num());
+		Batch->SetArrayField(TEXT("assets"), Assets);
+		return FCortexCommandRouter::Success(Batch);
 	}
 
 	FString LoadError;
@@ -452,6 +591,9 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 		}
 	}
 
+	// Every authored node of the Blueprint's own graphs (root graphs and the graphs nested below them, collapsed bodies and their
+	// tunnels included; comments and reroute knots never), counted once each and independently of the expanded functional count.
+	TSet<const UEdGraphNode*> AuthoredNodes;
 	// Graphs nested below a measured root graph that a node publishes through GetSubGraphs(). Composite bodies are skipped: the
 	// reachability walk already follows a composite instance into its body.
 	TSet<const UEdGraph*> NestedGraphs;
@@ -462,6 +604,26 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 		FCortexGraphTree::Collect(Blueprint, Tree);
 		for (const FCortexGraphTreeEntry& TreeEntry : Tree)
 		{
+			const UEdGraph* TreeGraph = TreeEntry.Graph;
+			if ((TreeEntry.RootKind == ECortexGraphKind::Ubergraph || TreeEntry.RootKind == ECortexGraphKind::Function
+					|| TreeEntry.RootKind == ECortexGraphKind::Macro || TreeEntry.RootKind == ECortexGraphKind::InterfaceImpl)
+				&& TreeGraph && TreeGraph->Schema && TreeGraph->Schema->IsChildOf(UEdGraphSchema_K2::StaticClass())
+				&& !CortexBPGraphReachability::IsAnimationOrStateMachineGraph(TreeGraph)
+				&& TreeGraph->GetTypedOuter<UBlueprint>() == Blueprint)
+			{
+				for (const UEdGraphNode* AuthoredNode : TreeGraph->Nodes)
+				{
+					if (AuthoredNode && !IsCommentOrKnot(AuthoredNode))
+					{
+						AuthoredNodes.Add(AuthoredNode);
+					}
+				}
+				// A macro graph is counted here but never measured below: its truncation is reported here so an undercount is not silent.
+				if (TreeEntry.RootKind == ECortexGraphKind::Macro && TreeEntry.bChildrenTruncated)
+				{
+					CutEntries.Add(TreeEntry);
+				}
+			}
 			if (TreeEntry.RootKind != ECortexGraphKind::Ubergraph && TreeEntry.RootKind != ECortexGraphKind::Function
 				&& TreeEntry.RootKind != ECortexGraphKind::InterfaceImpl)
 			{
@@ -489,6 +651,8 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 	TArray<TSharedPtr<FJsonValue>> DisabledArray;
 	int32 TotalUnreachable = 0;
 	int32 TotalDisabled = 0;
+	int32 TotalEntryNodes = 0;
+	int32 TotalResultNodes = 0;
 
 	for (const UEdGraph* Graph : Graphs)
 	{
@@ -511,24 +675,7 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 
 			// A disabled entry seeds nothing: the compiler prunes it and everything only it reaches.
 			FReachContext Root(Graph, nullptr, nullptr);
-			Root.SeedEntry(Node);
-			const UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Node);
-			if (FunctionEntry && Root.Reached.Contains(Node))
-			{
-				// A result with no exec wire from the entry is logic only for a pure function or a function whose single
-				// result is simply unwired (its pure feeders then compute the return value). Any other exec-unreachable
-				// result is dead code and is reported as unreachable together with its feeders.
-				const bool bPure = (FunctionEntry->GetExtraFlags() & FUNC_BlueprintPure) != 0;
-				const bool bSoleUnwiredResult = FunctionResults.Num() == 1 && !HasLinkedExecOutput(Node);
-				if (bPure || bSoleUnwiredResult)
-				{
-					for (UEdGraphNode* ResultNode : FunctionResults)
-					{
-						Root.AddNode(ResultNode);
-					}
-				}
-			}
-			Root.ExpandDataClosure();
+			SeedEntryForMetrics(Graph, Node, FunctionResults, Root);
 			GraphReachable.Append(Root.Reached);
 
 			FEntryMetrics Metrics;
@@ -562,9 +709,17 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 			{
 				DisabledNodes.Add(Node);
 			}
-			else if (!CortexBPGraphReachability::IsEntryNode(Node) && !GraphReachable.Contains(const_cast<UEdGraphNode*>(Node)))
+			else if (CortexBPGraphReachability::IsEntryNode(Node))
+			{
+				++TotalEntryNodes;
+			}
+			else if (!GraphReachable.Contains(const_cast<UEdGraphNode*>(Node)))
 			{
 				UnreachableNodes.Add(Node);
+			}
+			else if (Node->IsA<UK2Node_FunctionResult>())
+			{
+				++TotalResultNodes;
 			}
 		}
 		AddNodeRow(UnreachableArray, TotalUnreachable, Graph, nullptr, NestedGraphs, UnreachableNodes);
@@ -696,6 +851,10 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 	Totals->SetNumberField(TEXT("disabled_nodes"), TotalDisabled);
 	Totals->SetNumberField(TEXT("ghost_entries"), GhostCount);
 	Totals->SetNumberField(TEXT("entries"), Entries.Num());
+	Totals->SetNumberField(TEXT("entry_nodes"), TotalEntryNodes);
+	Totals->SetNumberField(TEXT("result_nodes"), TotalResultNodes);
+	// Unique authored nodes of the Blueprint's own graphs, never the expanded functional count.
+	Totals->SetNumberField(TEXT("all_nodes"), AuthoredNodes.Num());
 
 	TSharedPtr<FJsonObject> ThresholdsOut = MakeShared<FJsonObject>();
 	ThresholdsOut->SetNumberField(TEXT("max_nodes_per_entry"), MaxNodesPerEntry);
@@ -713,4 +872,69 @@ TSharedPtr<FJsonObject> FCortexBPGraphMetricsOps::BuildGraphMetrics(
 	Data->SetArrayField(TEXT("violations"), ViolationArray);
 	FCortexGraphTree::AppendTruncation(CutEntries, Data);
 	return Data;
+}
+
+FString FCortexBPGraphMetricsOps::EntryName(const UEdGraph* Graph, const UEdGraphNode* Node)
+{
+	return GetEntryName(Graph, Node, ClassifyEntry(Node));
+}
+
+void FCortexBPGraphMetricsOps::CollectLiveEntryReaches(const UEdGraph* Graph, TArray<FLiveEntryReach>& OutEntries)
+{
+	TArray<UEdGraphNode*> FunctionResults;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node && Node->IsA<UK2Node_FunctionResult>() && Node->IsNodeEnabled())
+		{
+			FunctionResults.Add(Node);
+		}
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		// An inner graph's entry tunnel is a boundary, and so is a collapsed graph or macro instance seeded without an exec input
+		// (an output-only gateway): the events inside its body are the entries, reached through the instance below.
+		if (!Node || !CortexBPGraphReachability::IsEntryNode(Node) || IsStructuralTunnel(Node) || IsExpandableNode(Node)
+			|| !CortexBPGraphReachability::IsLiveEntry(Node))
+		{
+			continue;
+		}
+		FReachContext Root(Graph, nullptr, nullptr);
+		SeedEntryForMetrics(Graph, Node, FunctionResults, Root);
+		FLiveEntryReach& Entry = OutEntries.AddDefaulted_GetRef();
+		Entry.Name = GetEntryName(Graph, Node, ClassifyEntry(Node));
+		Entry.NodeGuid = Node->NodeGuid;
+		AppendContextNodes(Root, Entry.Reached);
+
+		// An entry inside a collapsed graph continues out of the body, up through every enclosing collapsed graph, and the outer
+		// nodes it reaches carry this entry's identity. Only what this entry actually uses crosses: the composite outputs matching
+		// the exit tunnel pins it reached (exec), and the producers of the composite data inputs its reached nodes read through the
+		// entry tunnel (data). The composite itself is never a blanket data source.
+		const UEdGraph* CurrentGraph = Graph;
+		const FReachContext* CurrentContext = &Root;
+		TUniquePtr<FReachContext> OuterHolder;
+		while (true)
+		{
+			const UK2Node_Composite* Owner = Cast<UK2Node_Composite>(CurrentGraph->GetOuter());
+			const UEdGraph* OuterGraph = Owner != nullptr ? Owner->GetGraph() : nullptr;
+			if (Owner == nullptr || Owner->BoundGraph != CurrentGraph || OuterGraph == nullptr)
+			{
+				break;
+			}
+			TArray<const UEdGraphPin*> DataInputs;
+			CollectCompositeDataInputs(*CurrentContext, Owner, DataInputs);
+			const TArray<FName> ExitPins = CurrentContext->GetReachedExitPins().Array();
+			if (ExitPins.IsEmpty() && DataInputs.IsEmpty())
+			{
+				break;
+			}
+			TUniquePtr<FReachContext> Next = MakeUnique<FReachContext>(OuterGraph, nullptr, nullptr);
+			Next->SeedFromInstanceOutputs(const_cast<UK2Node_Composite*>(Owner), ExitPins);
+			Next->SeedDataProducers(DataInputs);
+			Next->ExpandDataClosure();
+			AppendContextNodes(*Next, Entry.Reached);
+			OuterHolder = MoveTemp(Next);
+			CurrentContext = OuterHolder.Get();
+			CurrentGraph = OuterGraph;
+		}
+	}
 }

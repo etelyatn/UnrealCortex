@@ -239,26 +239,28 @@ bool FCortexGraphAuthoringContextFailingCasesTest::RunTest(const FString& Parame
 	}
 	FBlueprintEditorUtils::AddUbergraphPage(WidgetBP, EventGraph);
 
-	// Case 1: Ambiguous flat name
+	// Case 1: A flat graph_name resolves like the other graph reads (issue 277), so a name that names no graph is
+	// GRAPH_NOT_FOUND instead of the former unconditional flat-name refusal. Ambiguous names have their own test
+	// (Cortex.Graph.Issue277.AuthoringContext.AmbiguousGraphName).
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), WidgetBP->GetPathName());
-		Params->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+		Params->SetStringField(TEXT("graph_name"), TEXT("NoSuchGraph"));
 
 		FCortexCommandResult Result = FCortexGraphAuthoringContext::Read(Params);
-		TestFalse(TEXT("ambiguous top-level flat graph_name fails"), Result.bSuccess);
-		TestEqual(TEXT("ambiguous flat name error code"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+		TestFalse(TEXT("unknown top-level flat graph_name fails"), Result.bSuccess);
+		TestEqual(TEXT("unknown flat name error code"), Result.ErrorCode, CortexErrorCodes::GraphNotFound);
 	}
 	{
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("asset_path"), WidgetBP->GetPathName());
 		TSharedPtr<FJsonObject> FlatTarget = MakeShared<FJsonObject>();
-		FlatTarget->SetStringField(TEXT("graph_name"), TEXT("EventGraph"));
+		FlatTarget->SetStringField(TEXT("graph_name"), TEXT("NoSuchGraph"));
 		Params->SetObjectField(TEXT("target"), FlatTarget);
 
 		FCortexCommandResult Result = FCortexGraphAuthoringContext::Read(Params);
-		TestFalse(TEXT("ambiguous flat graph_name in target fails"), Result.bSuccess);
-		TestEqual(TEXT("ambiguous flat name in target error code"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+		TestFalse(TEXT("unknown flat graph_name in target fails"), Result.bSuccess);
+		TestEqual(TEXT("unknown flat name in target error code"), Result.ErrorCode, CortexErrorCodes::GraphNotFound);
 	}
 
 	// Case 2: Wrong GUID / kind

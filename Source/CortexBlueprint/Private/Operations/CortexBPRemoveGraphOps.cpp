@@ -1627,10 +1627,12 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 		return ReturnErrorWithOutcome(FCortexCommandRouter::Error(
 			CortexErrorCodes::DirtyEditorState, TEXT("save=true requires a clean starting package")));
 	}
-	if (!Prepared.bDryRun && (!ExpectedFingerprint.IsValid() || ExpectedValidationHash.IsEmpty()))
+	// expected_validation_hash alone authorizes apply (#277): it commits to the live fingerprint at preview time.
+	// expected_fingerprint stays optional and is still checked when supplied.
+	if (!Prepared.bDryRun && ExpectedValidationHash.IsEmpty())
 	{
 		return ReturnErrorWithOutcome(FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
-			TEXT("Apply requires expected_fingerprint and expected_validation_hash from preview")));
+			TEXT("Apply requires expected_validation_hash (= the validation_hash field of a dry_run preview); expected_fingerprint (= fingerprint_before) is optional")));
 	}
 
 	for (const FString& Name : Prepared.Names)
@@ -1677,11 +1679,14 @@ FCortexCommandResult FCortexBPRemoveGraphOps::Execute(const TSharedPtr<FJsonObje
 			return ReturnErrorWithOutcome(FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 				FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason)));
 		}
-		const TSharedPtr<FJsonObject> CurrentFingerprint = FCortexGraphFingerprint::Compute(Blueprint);
-		FCortexCommandResult FingerprintError;
-		if (!FCortexGraphFingerprint::ValidatePrecondition(ExpectedFingerprint, CurrentFingerprint, FingerprintError))
+		if (ExpectedFingerprint.IsValid())
 		{
-			return ReturnErrorWithOutcome(FingerprintError);
+			const TSharedPtr<FJsonObject> CurrentFingerprint = FCortexGraphFingerprint::Compute(Blueprint);
+			FCortexCommandResult FingerprintError;
+			if (!FCortexGraphFingerprint::ValidatePrecondition(ExpectedFingerprint, CurrentFingerprint, FingerprintError))
+			{
+				return ReturnErrorWithOutcome(FingerprintError);
+			}
 		}
 		if (ExpectedValidationHash != Prepared.ValidationHash)
 		{

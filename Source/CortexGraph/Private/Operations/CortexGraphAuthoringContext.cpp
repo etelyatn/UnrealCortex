@@ -76,34 +76,51 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 		);
 	}
 
-	// Reject ambiguous flat name at top-level
-	if (Params->HasField(TEXT("graph_name")))
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidField,
-			TEXT("Flat graph_name is ambiguous; use target.graph_ref with canonical graph_guid")
-		);
-	}
-
-	// Check target object if provided
+	// Check target object if provided. A flat target.graph_name (no graph_ref) is a name lookup resolved after the load.
 	const TSharedPtr<FJsonObject>* TargetObjPtr = nullptr;
 	const bool bHasTarget = Params->TryGetObjectField(TEXT("target"), TargetObjPtr);
 	if (bHasTarget && TargetObjPtr && TargetObjPtr->IsValid())
 	{
 		const TSharedPtr<FJsonObject>& TargetObj = *TargetObjPtr;
-		if (TargetObj->HasField(TEXT("graph_name")) && !TargetObj->HasField(TEXT("graph_ref")))
+		if (!TargetObj->HasField(TEXT("graph_ref")) && !TargetObj->HasField(TEXT("implementation")) && !TargetObj->HasField(TEXT("graph_name")))
 		{
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
-				TEXT("Ambiguous flat name: target requires graph_ref with canonical graph_guid or implementation")
+				TEXT("Target must specify graph_ref, graph_name or implementation")
 			);
 		}
-		if (!TargetObj->HasField(TEXT("graph_ref")) && !TargetObj->HasField(TEXT("implementation")))
+	}
+
+	// A supplied name must be a non-empty string unless a graph_ref (or implementation) takes precedence over it: a null,
+	// empty or mistyped name is never treated as omitted, which would return the context without the requested target.
+	{
+		const bool bNameSuperseded = bHasTarget && TargetObjPtr && TargetObjPtr->IsValid()
+			&& ((*TargetObjPtr)->HasField(TEXT("graph_ref")) || (*TargetObjPtr)->HasField(TEXT("implementation")));
+		if (!bNameSuperseded)
 		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidField,
-				TEXT("Target must specify either graph_ref or implementation")
-			);
+			auto CheckGraphNameShape = [](const TSharedPtr<FJsonObject>& Object, const TCHAR* Where, FCortexCommandResult& OutError) -> bool
+			{
+				if (!Object->HasField(TEXT("graph_name")))
+				{
+					return true;
+				}
+				// TryGetStringField would coerce a number or boolean into text, so the JSON type is checked directly.
+				const TSharedPtr<FJsonValue> Field = Object->TryGetField(TEXT("graph_name"));
+				if (Field.IsValid() && Field->Type == EJson::String && !Field->AsString().IsEmpty())
+				{
+					return true;
+				}
+				OutError = FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("%sgraph_name must be a non-empty string"), Where));
+				return false;
+			};
+			FCortexCommandResult NameShapeError;
+			if (!CheckGraphNameShape(Params, TEXT(""), NameShapeError)
+				|| (bHasTarget && TargetObjPtr && TargetObjPtr->IsValid() && !CheckGraphNameShape(*TargetObjPtr, TEXT("target."), NameShapeError)))
+			{
+				return NameShapeError;
+			}
 		}
 	}
 
@@ -355,6 +372,92 @@ FCortexCommandResult FCortexGraphAuthoringContext::Read(const TSharedPtr<FJsonOb
 				{
 					ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), FoundChoice->SubgraphPath);
 				}
+			}
+		}
+	}
+
+	// A graph name (top-level graph_name, or target.graph_name without graph_ref) resolves like the other graph reads.
+	// graph_ref keeps precedence; an implementation target was already refused above.
+	{
+		const bool bTargetHasRefOrImplementation = bHasTarget && TargetObjPtr && TargetObjPtr->IsValid()
+			&& ((*TargetObjPtr)->HasField(TEXT("graph_ref")) || (*TargetObjPtr)->HasField(TEXT("implementation")));
+		FString RequestedGraphName;
+		Params->TryGetStringField(TEXT("graph_name"), RequestedGraphName);
+		if (RequestedGraphName.IsEmpty() && bHasTarget && TargetObjPtr && TargetObjPtr->IsValid())
+		{
+			(*TargetObjPtr)->TryGetStringField(TEXT("graph_name"), RequestedGraphName);
+		}
+
+		if (!bTargetHasRefOrImplementation && !RequestedGraphName.IsEmpty())
+		{
+			TArray<FCortexGraphTreeEntry> NameTree;
+			FCortexGraphTree::Collect(Blueprint, NameTree);
+
+			TArray<TSharedPtr<FJsonValue>> Candidates;
+			for (const FCortexGraphTreeEntry& TreeEntry : NameTree)
+			{
+				if (TreeEntry.bRoot && TreeEntry.Graph->GetName() == RequestedGraphName)
+				{
+					TSharedRef<FJsonObject> Candidate = MakeShared<FJsonObject>();
+					Candidate->SetStringField(TEXT("graph_guid"), TreeEntry.Graph->GraphGuid.ToString());
+					Candidate->SetStringField(TEXT("graph_name"), TreeEntry.Graph->GetName());
+					Candidate->SetStringField(TEXT("graph_kind"), TreeEntry.Kind);
+					Candidate->SetStringField(TEXT("subgraph_path"), TreeEntry.SubgraphPath);
+					Candidates.Add(MakeShared<FJsonValueObject>(Candidate));
+				}
+			}
+			if (Candidates.Num() > 1)
+			{
+				TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
+				const int32 CandidateCount = Candidates.Num();
+				Details->SetArrayField(TEXT("candidates"), MoveTemp(Candidates));
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidField,
+					FString::Printf(TEXT("graph_name '%s' matches %d graphs; address one with target.graph_ref and its graph_guid from details.candidates"),
+						*RequestedGraphName, CandidateCount),
+					Details);
+			}
+
+			TSharedPtr<FJsonObject> NameParams = MakeShared<FJsonObject>();
+			NameParams->SetStringField(TEXT("graph_name"), RequestedGraphName);
+			FCortexCommandResult NameError;
+			const FCortexGraphTreeEntry* NameResolved = FCortexGraphTree::ResolveInTree(NameTree, NameParams, NameError);
+			if (NameResolved == nullptr)
+			{
+				return NameError;
+			}
+
+			const FGraphChoiceEntry* NameChoice = nullptr;
+			for (const FGraphChoiceEntry& Choice : Choices)
+			{
+				if (Choice.Graph == NameResolved->Graph)
+				{
+					NameChoice = &Choice;
+					break;
+				}
+			}
+			if (NameChoice == nullptr)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::GraphNotFound,
+					FString::Printf(TEXT("Graph not found: %s"), *RequestedGraphName));
+			}
+			if (NameChoice->Kind == ECortexGraphKind::Delegate || !NameChoice->bIsMutable)
+			{
+				return FCortexCommandRouter::Error(
+					CortexErrorCodes::InvalidOperation,
+					TEXT("Delegate signature graphs are read-only and cannot be targeted for authoring")
+				);
+			}
+
+			ResolvedTargetObj = MakeShared<FJsonObject>();
+			ResolvedTargetObj->SetStringField(TEXT("graph_guid"), NameChoice->Graph->GraphGuid.ToString());
+			ResolvedTargetObj->SetStringField(TEXT("graph_name"), NameChoice->Graph->GetName());
+			ResolvedTargetObj->SetStringField(TEXT("graph_kind"), FCortexGraphNodeOps::GraphKindToString(NameChoice->Kind));
+			ResolvedTargetObj->SetBoolField(TEXT("is_mutable"), NameChoice->bIsMutable);
+			if (!NameChoice->SubgraphPath.IsEmpty())
+			{
+				ResolvedTargetObj->SetStringField(TEXT("subgraph_path"), NameChoice->SubgraphPath);
 			}
 		}
 	}

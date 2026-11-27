@@ -93,6 +93,60 @@ namespace CortexBPGraphReachability
 		Drain();
 	}
 
+	void FReachContext::SeedFromInstanceOutputs(UEdGraphNode* InstanceNode, const TArray<FName>& OutputPinNames)
+	{
+		// The instance itself is not marked reached: marking it would make the data closure read every one of its data inputs.
+		if (!InstanceNode || !InstanceNode->IsNodeEnabled())
+		{
+			return;
+		}
+		for (const FName PinName : OutputPinNames)
+		{
+			const UEdGraphPin* Output = InstanceNode->FindPin(PinName, EGPD_Output);
+			if (IsExecPin(Output))
+			{
+				FollowOutput(Output);
+			}
+		}
+		Drain();
+	}
+
+	void FReachContext::SeedDataProducers(const TArray<const UEdGraphPin*>& InputPins)
+	{
+		for (const UEdGraphPin* InputPin : InputPins)
+		{
+			if (!InputPin)
+			{
+				continue;
+			}
+			for (const UEdGraphPin* Linked : InputPin->LinkedTo)
+			{
+				UEdGraphNode* Producer = Linked ? Linked->GetOwningNode() : nullptr;
+				if (!Producer || !Producer->IsNodeEnabled())
+				{
+					continue;
+				}
+				if (IsEntryTunnel(Producer))
+				{
+					SeededEntryTunnelPins.Add(Linked->PinName);
+				}
+				if (Reached.Contains(Producer))
+				{
+					continue;
+				}
+				Reached.Add(Producer);
+				if (IsExpandableNode(Producer))
+				{
+					bool bCreated = false;
+					if (FReachContext* Child = GetOrCreateChild(Producer, bCreated); Child && bCreated)
+					{
+						Child->SeedExitTunnels();
+					}
+				}
+			}
+		}
+	}
+
 	void FReachContext::AddNode(UEdGraphNode* Node)
 	{
 		if (Node)

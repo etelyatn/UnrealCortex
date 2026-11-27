@@ -38,6 +38,8 @@ public:
 	static bool FindGraphEntry(UBlueprint* Blueprint, const FString& GraphName, FCortexGraphEntry& OutEntry);
 	static bool IsMutableGraphKind(ECortexGraphKind Kind);
 	static UEdGraph* FindGraph(UBlueprint* Blueprint, const FString& GraphName, FCortexCommandResult& OutError);
+	/** The estimated body size of a node (its Slate desired size, rounded up), as auto-layout and add_node placement measure it. False when no widget exists. */
+	static bool EstimateNodeBodySize(UEdGraphNode* Node, FIntPoint& OutSize);
 	static UEdGraphNode* FindNode(UEdGraph* Graph, const FString& NodeId, FCortexCommandResult& OutError);
 	static UEdGraphPin* FindPin(UEdGraphNode* Node, const FString& PinName, FCortexCommandResult& OutError);
 	/** Refuse an asset path outside the writable content roots (the check every graph mutator runs before loading). */
