@@ -2,6 +2,7 @@
 
 #include "Components/ActorComponent.h"
 #include "CortexCommandRouter.h"
+#include "CortexEngineCompat.h"
 #include "CortexQAUtils.h"
 #include "CortexSerializer.h"
 #include "CortexTypes.h"
@@ -67,7 +68,18 @@ FCortexCommandResult FCortexQADelegateOps::BroadcastDelegate(const TSharedPtr<FJ
     {
         return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Missing required param: delegate"));
     }
-    const bool bHasComponent = Params->TryGetStringField(TEXT("component"), ComponentName) && !ComponentName.IsEmpty();
+    // A supplied component must be a non-empty JSON string (TryGetStringField would coerce a number):
+    // silently ignoring a malformed value would broadcast the actor's own delegate of the same name.
+    const TSharedPtr<FJsonValue> ComponentValue = Params->TryGetField(TEXT("component"));
+    const bool bHasComponent = ComponentValue.IsValid();
+    if (ComponentValue.IsValid())
+    {
+        if (ComponentValue->Type != EJson::String || ComponentValue->AsString().IsEmpty())
+        {
+            return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("Param 'component' must be a non-empty string naming a component on the actor"));
+        }
+        ComponentName = ComponentValue->AsString();
+    }
 
     const TSharedPtr<FJsonObject>* ArgsObject = nullptr;
     if (Params->HasField(TEXT("args")) && !Params->TryGetObjectField(TEXT("args"), ArgsObject))
@@ -127,7 +139,9 @@ FCortexCommandResult FCortexQADelegateOps::BroadcastDelegate(const TSharedPtr<FJ
             FString::Printf(TEXT("Delegate '%s' has no signature function"), *DelegateName));
     }
 
-    // Signature parameters in declaration order. Out and return parameters cannot be supplied by a caller.
+    // Signature parameters in declaration order. Const-reference inputs carry CPF_OutParm | CPF_ReferenceParm |
+    // CPF_ConstParm (e.g. OnComponentHit's const FHitResult&) and are ordinary inputs. Only true outputs (an out
+    // parameter that is not const) and return values cannot be supplied by a caller.
     TArray<const FProperty*> ParamProperties;
     for (TFieldIterator<FProperty> It(SignatureFunction); It; ++It)
     {
@@ -136,7 +150,8 @@ FCortexCommandResult FCortexQADelegateOps::BroadcastDelegate(const TSharedPtr<FJ
         {
             continue;
         }
-        if (ParamProperty->HasAnyPropertyFlags(CPF_OutParm | CPF_ReturnParm))
+        if (ParamProperty->HasAnyPropertyFlags(CPF_ReturnParm)
+            || (ParamProperty->HasAnyPropertyFlags(CPF_OutParm) && !ParamProperty->HasAnyPropertyFlags(CPF_ConstParm)))
         {
             return FCortexCommandRouter::Error(
                 CortexErrorCodes::UnsupportedType,
@@ -224,7 +239,7 @@ FCortexCommandResult FCortexQADelegateOps::BroadcastDelegate(const TSharedPtr<FJ
             BoundCount = CountBindings(SharedDelegate.Get());
             if (SharedDelegate.IsValid() && BoundCount > 0)
             {
-                SharedDelegate->ProcessDelegate<UObject>(ParamsBuffer);
+                CortexEngineCompat::ProcessMulticastScriptDelegate(*SharedDelegate, ParamsBuffer);
             }
         }
     }
@@ -234,7 +249,7 @@ FCortexCommandResult FCortexQADelegateOps::BroadcastDelegate(const TSharedPtr<FJ
         BoundCount = CountBindings(Delegate);
         if (Delegate != nullptr && BoundCount > 0)
         {
-            Delegate->ProcessDelegate<UObject>(ParamsBuffer);
+            CortexEngineCompat::ProcessMulticastScriptDelegate(*Delegate, ParamsBuffer);
         }
     }
 

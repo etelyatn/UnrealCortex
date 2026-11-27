@@ -12,6 +12,8 @@ class UCortexQADelegateFixtureComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCortexQATestTargetChanged, AActor*, Target, int32, Code);
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams(FCortexQATestSparseChanged, UCortexQADelegateFixtureComponent, OnSparseChanged, AActor*, Target, int32, Code);
+// A const-reference input is exported with CPF_OutParm | CPF_ReferenceParm | CPF_ConstParm, like OnComponentHit's const FHitResult&.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCortexQATestConstRefChanged, const FVector&, Location, int32, Code);
 
 /**
  * Test-only component for qa.broadcast_delegate: one inline and one sparse dynamic multicast delegate with the same
@@ -30,6 +32,9 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FCortexQATestSparseChanged OnSparseChanged;
 
+	UPROPERTY(BlueprintAssignable)
+	FCortexQATestConstRefChanged OnConstRefChanged;
+
 	/** A plain, non-delegate property used to prove that other property types are refused. */
 	UPROPERTY()
 	int32 PlainValue = 3;
@@ -39,6 +44,8 @@ public:
 	int32 CallCount = 0;
 	int32 SparseRecordCount = 0;
 	int32 SparseSelfRemovingCount = 0;
+	FVector LastLocation = FVector::ZeroVector;
+	int32 ConstRefCallCount = 0;
 
 	UFUNCTION()
 	void HandleTargetChanged(AActor* Target, int32 Code)
@@ -46,6 +53,14 @@ public:
 		LastTarget = Target;
 		LastCode = Code;
 		++CallCount;
+	}
+
+	UFUNCTION()
+	void HandleConstRefChanged(const FVector& Location, int32 Code)
+	{
+		LastLocation = Location;
+		LastCode = Code;
+		++ConstRefCallCount;
 	}
 
 	UFUNCTION()

@@ -398,3 +398,90 @@ bool FCortexQABroadcastDelegateUnboundSparseReportsZeroTest::RunTest(const FStri
     });
     return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQABroadcastDelegateConstRefParamTest,
+    "Cortex.QA.BroadcastDelegate.ConstRefParamBroadcasts",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQABroadcastDelegateConstRefParamTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    RunInPIE(this, [this](UWorld* World)
+    {
+        const FBroadcastFixture Fixture = SpawnBroadcastFixture(this, World);
+        if (Fixture.Component == nullptr)
+        {
+            return;
+        }
+        Fixture.Component->OnConstRefChanged.AddDynamic(Fixture.Component, &UCortexQADelegateFixtureComponent::HandleConstRefChanged);
+
+        TSharedPtr<FJsonObject> Args = MakeShared<FJsonObject>();
+        Args->SetArrayField(TEXT("Location"), {
+            MakeShared<FJsonValueNumber>(1.0),
+            MakeShared<FJsonValueNumber>(2.0),
+            MakeShared<FJsonValueNumber>(3.0)
+        });
+        Args->SetNumberField(TEXT("Code"), 9);
+
+        const FCortexCommandResult Result = ExecuteBroadcast(Fixture, TEXT("OnConstRefChanged"), Args);
+        TestTrue(TEXT("a const-reference input parameter should be accepted and broadcast"), Result.bSuccess);
+        if (Result.bSuccess && Result.Data.IsValid())
+        {
+            TestEqual(TEXT("bound_count"), static_cast<int32>(Result.Data->GetNumberField(TEXT("bound_count"))), 1);
+        }
+        TestEqual(TEXT("handler ran once"), Fixture.Component->ConstRefCallCount, 1);
+        TestTrue(TEXT("handler received the const-ref Location"), Fixture.Component->LastLocation.Equals(FVector(1.0, 2.0, 3.0)));
+        TestEqual(TEXT("handler received Code"), Fixture.Component->LastCode, 9);
+
+        Fixture.Actor->Destroy();
+    });
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FCortexQABroadcastDelegateRejectsMalformedComponentTest,
+    "Cortex.QA.BroadcastDelegate.RejectsMalformedComponent",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexQABroadcastDelegateRejectsMalformedComponentTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+
+    RunInPIE(this, [this](UWorld* World)
+    {
+        const FBroadcastFixture Fixture = SpawnBroadcastFixture(this, World);
+        if (Fixture.Component == nullptr)
+        {
+            return;
+        }
+        Fixture.Component->OnTargetChanged.AddDynamic(Fixture.Component, &UCortexQADelegateFixtureComponent::HandleTargetChanged);
+
+        TArray<TSharedPtr<FJsonValue>> BadComponents;
+        BadComponents.Add(MakeShared<FJsonValueNumber>(5.0));
+        BadComponents.Add(MakeShared<FJsonValueString>(FString()));
+        BadComponents.Add(MakeShared<FJsonValueNull>());
+        BadComponents.Add(MakeShared<FJsonValueBoolean>(true));
+
+        for (const TSharedPtr<FJsonValue>& BadComponent : BadComponents)
+        {
+            TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+            Params->SetStringField(TEXT("actor"), Fixture.Actor->GetPathName());
+            Params->SetField(TEXT("component"), BadComponent);
+            Params->SetStringField(TEXT("delegate"), TEXT("OnTargetChanged"));
+            Params->SetObjectField(TEXT("args"), MakeBroadcastArgs(Fixture, 7));
+
+            FCortexCommandRouter Router = CreateBroadcastRouter();
+            const FCortexCommandResult Result = Router.Execute(TEXT("qa.broadcast_delegate"), Params);
+            TestFalse(TEXT("a malformed component param should be refused"), Result.bSuccess);
+            TestEqual(TEXT("error code"), Result.ErrorCode, CortexErrorCodes::InvalidField);
+        }
+        TestEqual(TEXT("no handler ran"), Fixture.Component->CallCount, 0);
+
+        Fixture.Actor->Destroy();
+    });
+    return true;
+}
