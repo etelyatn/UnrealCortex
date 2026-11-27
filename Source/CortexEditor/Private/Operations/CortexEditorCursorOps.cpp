@@ -204,10 +204,13 @@ FCortexCommandResult FCortexEditorCursorOps::SetPIECursor(const TSharedPtr<FJson
 	// only by mouse-up or the capture-mode tick; it has no public accessor (SceneViewport.h:459), and
 	// while it is latched FSceneViewport::OnMouseMove warps the OS cursor back on every move. Public
 	// queries that expose it, all evaluated only while the viewport holds mouse capture:
-	//  - OnCursorQuery (SceneViewport.h:252) answers EMouseCursor::None while the latch is set. The same
-	//    answer also comes from a player controller that hides its cursor (APlayerController::GetMouseCursor),
-	//    so it identifies the latch only while the controller shows the cursor. That holds even when
-	//    HideCursorDuringCapture or the input mode changed after the latch, which the current settings alone miss.
+	//  - OnCursorQuery (SceneViewport.h:252) answers EMouseCursor::None first while the latch is set
+	//    (SceneViewport.cpp:605-610); unlatched it answers ClientPtr->GetCursor(this, GetMouseX(), GetMouseY())
+	//    (SceneViewport.cpp:619-624), which can itself be None (APlayerController::GetMouseCursor returns
+	//    CurrentMouseCursor). The latch is therefore identified only when the query is None while the
+	//    client's own GetCursor is not: that holds even when HideCursorDuringCapture or the input mode
+	//    changed after the latch, which the current settings alone miss. A client cursor that is
+	//    legitimately None cannot be told apart and is not refused.
 	//  - Current settings that would latch on the next mouse-down: HideCursorDuringCapture
 	//    (ViewportClient.h:355) with a cursor-showing controller.
 	//  - IsCursorVisible (SceneViewport.h:79) is conservative extra: only editor viewport clients call
@@ -218,8 +221,8 @@ FCortexCommandResult FCortexEditorCursorOps::SetPIECursor(const TSharedPtr<FJson
 	if (Viewport->HasMouseCapture())
 	{
 		const bool bPlayerShowsCursor = PlayerController != nullptr && PlayerController->ShouldShowMouseCursor();
-		const bool bCursorQueryHidden = bPlayerShowsCursor
-			&& Viewport->OnCursorQuery(FGeometry(), FPointerEvent()).GetCursorType() == EMouseCursor::None;
+		const bool bCursorQueryHidden = Viewport->OnCursorQuery(FGeometry(), FPointerEvent()).GetCursorType() == EMouseCursor::None
+			&& ViewportClient->GetCursor(Viewport, Viewport->GetMouseX(), Viewport->GetMouseY()) != EMouseCursor::None;
 		if (!Viewport->IsCursorVisible()
 			|| (bPlayerShowsCursor && (ViewportClient->HideCursorDuringCapture() || bCursorQueryHidden)))
 		{

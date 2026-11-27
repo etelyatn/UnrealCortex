@@ -69,8 +69,6 @@ namespace CortexEditorStatsPrivate
 		double FrameMaxMs = 0.0;
 		TArray<FNodeResult> Nodes;
 		bool bTruncated = false;
-		/** Stats-pipe clock (FPlatformTime::Seconds) when the last requested frame arrived; the success deadline is judged against it. */
-		double CompletedAtSeconds = 0.0;
 		/** Non-empty: the capture was refused on the stats pipe (raw-stats mode) and completes with INVALID_OPERATION. */
 		FString Refusal;
 	};
@@ -455,11 +453,13 @@ namespace CortexEditorStatsPrivate
 
 	/**
 	 * Thread ownership:
-	 *  - Game thread: Callback, bCompleted, DeadlineSeconds, TickerHandle, GActiveCapture.
-	 *  - Immutable after construction (read on the pipe too): Params.
+	 *  - Game thread: Callback, bCompleted, TickerHandle, GActiveCapture.
+	 *  - Immutable once the Begin task is launched (read on the pipe too): Params, DeadlineSeconds.
 	 *  - Stats pipe (serialised, never concurrent with itself): Root, NumFrames, FirstFrame, LastFrame,
 	 *    FrameTime*, Handle, bSubscribed and every call into FStatsThreadState / FThreadStats.
-	 *  - Shared: Mailbox (guarded by MailboxLock) and FramesCaptured (atomic).
+	 *  - Shared: Mailbox (guarded by MailboxLock), FramesCaptured and State (atomics). State is the single
+	 *    arbiter of the deadline: Capturing -> NthFrameClaimed (pipe, last frame arrived by the deadline) or
+	 *    Capturing -> TimedOut (game-thread ticker, deadline passed first). Exactly one transition wins.
 	 * Lifetime: the game thread (GActiveCapture + ticker) and every queued pipe task hold a strong reference,
 	 * so the object outlives the delegate subscription, which the pipe removes before its last task ends.
 	 */
@@ -523,6 +523,14 @@ namespace CortexEditorStatsPrivate
 		TOptional<FCaptureResult> Mailbox;
 		std::atomic<int32> FramesCaptured{ 0 };
 
+		enum ECaptureState : int32
+		{
+			Capturing,
+			NthFrameClaimed,
+			TimedOut,
+		};
+		std::atomic<int32> State{ Capturing };
+
 		// Stats pipe.
 		FAccumNode Root;
 		FDelegateHandle Handle;
@@ -576,10 +584,34 @@ namespace CortexEditorStatsPrivate
 			{
 				return;
 			}
+			// The arrival time is taken before any work on the frame, so building the result cannot make an
+			// on-time frame late.
+			const double ArrivalSeconds = FPlatformTime::Seconds();
 			// Keeps this object alive until the function returns, including after the result reaches the game thread.
 			const TSharedRef<FCapture, ESPMode::ThreadSafe> Pin = AsShared();
-			FStatsThreadState& Stats = FStatsThreadState::GetLocalState();
 
+			if (State.load(std::memory_order_acquire) != Capturing)
+			{
+				// The ticker already timed the capture out.
+				EndOnStatsPipe();
+				return;
+			}
+
+			const bool bLastFrame = (NumFrames + 1) >= Params.Frames;
+			if (bLastFrame)
+			{
+				// Claim the success only if the last frame arrived by the deadline AND the ticker has not timed out
+				// first. Otherwise no result is produced and the ticker completes with TIMEOUT.
+				int32 Expected = Capturing;
+				if (ArrivalSeconds > DeadlineSeconds
+					|| !State.compare_exchange_strong(Expected, NthFrameClaimed, std::memory_order_acq_rel))
+				{
+					EndOnStatsPipe();
+					return;
+				}
+			}
+
+			FStatsThreadState& Stats = FStatsThreadState::GetLocalState();
 			{
 				FRawStatStackNode FrameRoot;
 				Stats.UncondenseStackStats(TargetFrame, FrameRoot);
@@ -604,13 +636,10 @@ namespace CortexEditorStatsPrivate
 			++NumFrames;
 			FramesCaptured.store(NumFrames, std::memory_order_relaxed);
 
-			if (NumFrames >= Params.Frames)
+			if (bLastFrame)
 			{
 				FCaptureResult Result = BuildResult();
 				EndOnStatsPipe();
-				// Stamped when the last frame arrived, not when the game thread notices, so a stalled ticker cannot
-				// turn a late capture into a success.
-				Result.CompletedAtSeconds = FPlatformTime::Seconds();
 				FScopeLock Lock(&MailboxLock);
 				Mailbox = MoveTemp(Result);
 			}
@@ -658,24 +687,29 @@ namespace CortexEditorStatsPrivate
 			}
 			if (Ready.IsSet())
 			{
-				if (Ready.GetValue().CompletedAtSeconds > DeadlineSeconds)
-				{
-					CompleteWithTimeout(FMath::Max(0, Ready.GetValue().FrameCount - 1));
-					return false;
-				}
 				Complete(ResultToCommandResult(Ready.GetValue()));
 				return false;
 			}
 
+			// The last frame arrived on time and its result is being built: wait for it, never time out.
+			if (State.load(std::memory_order_acquire) == NthFrameClaimed)
+			{
+				return true;
+			}
 			if (FPlatformTime::Seconds() >= DeadlineSeconds)
 			{
-				CompleteWithTimeout(FramesCaptured.load(std::memory_order_relaxed));
-				return false;
+				int32 Expected = Capturing;
+				if (State.compare_exchange_strong(Expected, TimedOut, std::memory_order_acq_rel))
+				{
+					CompleteWithTimeout(FramesCaptured.load(std::memory_order_relaxed));
+					return false;
+				}
+				// Lost the claim to an on-time last frame: its result is on the way.
 			}
 			return true;
 		}
 
-		/** Game thread. Deadline passed (or the last frame arrived after it): TIMEOUT, capture released. */
+		/** Game thread. The ticker won the deadline claim, or the last frame was late: TIMEOUT, capture released. */
 		void CompleteWithTimeout(int32 Captured)
 		{
 			FCortexCommandResult Timeout = FCortexCommandRouter::Error(
