@@ -1,6 +1,8 @@
 #include "CortexEditorModule.h"
 #include "CortexCoreModule.h"
 #include "CortexEditorCommandHandler.h"
+#include "Operations/CortexEditorCursorOps.h"
+#include "Operations/CortexEditorStatsOps.h"
 
 DEFINE_LOG_CATEGORY(LogCortexEditor);
 
@@ -31,6 +33,8 @@ void FCortexEditorModule::StartupModule()
 void FCortexEditorModule::ShutdownModule()
 {
 	UE_LOG(LogCortexEditor, Log, TEXT("CortexEditor module shutting down"));
+	FCortexEditorStatsOps::Shutdown();
+	FCortexEditorCursorOps::Shutdown();
 }
 
 IMPLEMENT_MODULE(FCortexEditorModule, CortexEditor)

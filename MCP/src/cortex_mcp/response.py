@@ -136,6 +136,14 @@ _COMPLETE_OR_REFUSE_POLICIES: dict[str, str] = {
     "reflect.class_hierarchy": (
         "Re-run with a smaller 'max_results' or a narrower 'root'; the hierarchy is never paged."
     ),
+    # Counts, `truncated`, `summary` and `differences_truncated` describe the whole native result.
+    "umg.get_live_widgets": (
+        "Request fewer 'widgets', set include_properties=false, or lower 'max_instances'."
+    ),
+    "umg.diff_live_widgets": (
+        "Diff a snapshot taken with fewer 'widgets' or include_properties=false; the differences "
+        "are never paged."
+    ),
 }
 
 

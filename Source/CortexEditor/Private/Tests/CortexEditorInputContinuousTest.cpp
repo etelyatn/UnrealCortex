@@ -66,12 +66,6 @@ struct FCortexContinuousInputFixture
 	}
 };
 
-struct FCortexContinuousInputDeferredCapture
-{
-	int32 Count = 0;
-	FCortexCommandResult Last;
-};
-
 // ---------------------------------------------------------------------------------------------
 // PIE helpers
 // ---------------------------------------------------------------------------------------------
@@ -670,8 +664,7 @@ bool FCortexEditorInputContinuousRejectedRequestPreservesRunTest::RunTest(const 
 		TestTrue(TEXT("baseline value reads back as (1,0,0)"), Value.Equals(FVector(1.0, 0.0, 0.0), 1e-4));
 	};
 
-	// Unsupported deferred duration (no deferred callback channel) must be rejected before any
-	// mutation, so it cannot tear down the existing run.
+	// Invalid durations are rejected before any mutation, so they cannot tear down the existing run.
 	TFunction<void()> RunBadDuration = [this, Handler, Fixture, DurationResult, StartResult]()
 	{
 		if (!StartResult->bSuccess)
@@ -679,10 +672,16 @@ bool FCortexEditorInputContinuousRejectedRequestPreservesRunTest::RunTest(const 
 			return;
 		}
 		const TSharedPtr<FJsonObject> Params = MakeContinuousInputActionParams(Fixture->ActionPath);
-		Params->SetNumberField(TEXT("duration_ms"), 100.0);
+		Params->SetNumberField(TEXT("duration_ms"), -100.0);
 		*DurationResult = Handler->Execute(CortexInputCommandContinuous, Params);
-		TestFalse(TEXT("duration_ms without a deferred callback is rejected"), DurationResult->bSuccess);
-		TestNotEqual(TEXT("rejection is a domain error, not the unregistered-command sentinel"), DurationResult->ErrorCode, FString(CortexInputErrorUnknownCommand));
+		TestFalse(TEXT("a non-positive duration_ms is rejected"), DurationResult->bSuccess);
+		TestEqual(TEXT("a non-positive duration_ms is INVALID_FIELD"), DurationResult->ErrorCode, FString(CortexInputErrorInvalidField));
+
+		Params->SetNumberField(TEXT("duration_ms"), 100.0);
+		Params->SetStringField(TEXT("mode"), TEXT("update"));
+		*DurationResult = Handler->Execute(CortexInputCommandContinuous, Params);
+		TestFalse(TEXT("duration_ms outside mode=start is rejected"), DurationResult->bSuccess);
+		TestEqual(TEXT("duration_ms outside mode=start is INVALID_FIELD"), DurationResult->ErrorCode, FString(CortexInputErrorInvalidField));
 	};
 
 	// Wrong field types are rejected before injection and likewise leave the live run alone.
@@ -831,27 +830,22 @@ bool FCortexEditorInputContinuousReplacementDeadlineTest::RunTest(const FString&
 	const TSharedRef<FCortexEditorCommandHandler> Handler = MakeShared<FCortexEditorCommandHandler>();
 	const TSharedPtr<FCortexContinuousInputFixture> Fixture = MakeShared<FCortexContinuousInputFixture>();
 	Fixture->Create(*this, EInputActionValueType::Axis3D);
-	const TSharedPtr<FCortexContinuousInputDeferredCapture> Capture = MakeShared<FCortexContinuousInputDeferredCapture>();
 	const TSharedPtr<FCortexCommandResult> TimedResult = MakeShared<FCortexCommandResult>();
 	const TSharedPtr<FCortexCommandResult> ReplacementResult = MakeShared<FCortexCommandResult>();
 
-	TFunction<void()> RunTimedStart = [this, Handler, Fixture, Capture, TimedResult]()
+	TFunction<void()> RunTimedStart = [this, Handler, Fixture, TimedResult]()
 	{
 		const TSharedPtr<FJsonObject> Params = MakeContinuousInputActionParams(Fixture->ActionPath);
 		SetContinuousInputVectorValue(Params, FVector(1.0, 0.0, 0.0));
 		Params->SetNumberField(TEXT("duration_ms"), 300.0);
-		FDeferredResponseCallback Callback = [Capture](FCortexCommandResult Result)
-		{
-			Capture->Count++;
-			Capture->Last = Result;
-		};
-		*TimedResult = Handler->Execute(CortexInputCommandContinuous, Params, MoveTemp(Callback));
-		TestTrue(TEXT("timed continuous start defers its response"), TimedResult->bIsDeferred);
+		*TimedResult = Handler->Execute(CortexInputCommandContinuous, Params);
+		TestTrue(TEXT("timed continuous start succeeds"), TimedResult->bSuccess);
+		TestFalse(TEXT("timed continuous start is not deferred"), TimedResult->bIsDeferred);
 	};
 
 	TFunction<void()> RunReplacement = [this, Handler, Fixture, ReplacementResult, TimedResult]()
 	{
-		if (!TimedResult->bIsDeferred)
+		if (!TimedResult->bSuccess)
 		{
 			return;
 		}
@@ -861,16 +855,11 @@ bool FCortexEditorInputContinuousReplacementDeadlineTest::RunTest(const FString&
 		TestTrue(TEXT("replacement continuous start succeeds"), ReplacementResult->bSuccess);
 	};
 
-	TFunction<void()> ObserveAfterDeadline = [this, Fixture, Capture, ReplacementResult, TimedResult]()
+	TFunction<void()> ObserveAfterDeadline = [this, Fixture, ReplacementResult]()
 	{
 		if (!ReplacementResult->bSuccess)
 		{
 			return;
-		}
-		if (TimedResult->bIsDeferred)
-		{
-			TestEqual(TEXT("replaced run's pending caller completed exactly once"), Capture->Count, 1);
-			TestFalse(TEXT("replaced run's caller completed as a cancellation, not success"), Capture->Last.bSuccess);
 		}
 		UEnhancedInputLocalPlayerSubsystem* Subsystem = nullptr;
 		UEnhancedPlayerInput* PlayerInput = nullptr;
@@ -900,38 +889,33 @@ bool FCortexEditorInputContinuousReplacementDeadlineTest::RunTest(const FString&
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexEditorInputContinuousStopCompletesPendingOnceTest,
-	"Cortex.Editor.Input.PIE.Continuous.StopCompletesPendingOnce",
+	FCortexEditorInputContinuousStopBeforeExpiryTest,
+	"Cortex.Editor.Input.PIE.Continuous.StopBeforeExpiryOwnsTimedRun",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FCortexEditorInputContinuousStopCompletesPendingOnceTest::RunTest(const FString& Parameters)
+bool FCortexEditorInputContinuousStopBeforeExpiryTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	const TSharedRef<FCortexEditorCommandHandler> Handler = MakeShared<FCortexEditorCommandHandler>();
 	const TSharedPtr<FCortexContinuousInputFixture> Fixture = MakeShared<FCortexContinuousInputFixture>();
 	Fixture->Create(*this, EInputActionValueType::Axis3D);
-	const TSharedPtr<FCortexContinuousInputDeferredCapture> Capture = MakeShared<FCortexContinuousInputDeferredCapture>();
 	const TSharedPtr<FCortexCommandResult> TimedResult = MakeShared<FCortexCommandResult>();
 	const TSharedPtr<FCortexCommandResult> StopResult = MakeShared<FCortexCommandResult>();
+	const TSharedPtr<FCortexCommandResult> SecondStopResult = MakeShared<FCortexCommandResult>();
 
-	TFunction<void()> RunTimedStart = [this, Handler, Fixture, Capture, TimedResult]()
+	TFunction<void()> RunTimedStart = [this, Handler, Fixture, TimedResult]()
 	{
 		const TSharedPtr<FJsonObject> Params = MakeContinuousInputActionParams(Fixture->ActionPath);
 		SetContinuousInputVectorValue(Params, FVector(1.0, 0.0, 0.0));
 		Params->SetNumberField(TEXT("duration_ms"), 400.0);
-		FDeferredResponseCallback Callback = [Capture](FCortexCommandResult Result)
-		{
-			Capture->Count++;
-			Capture->Last = Result;
-		};
-		*TimedResult = Handler->Execute(CortexInputCommandContinuous, Params, MoveTemp(Callback));
-		TestTrue(TEXT("timed continuous start defers its response"), TimedResult->bIsDeferred);
+		*TimedResult = Handler->Execute(CortexInputCommandContinuous, Params);
+		TestTrue(TEXT("timed continuous start succeeds"), TimedResult->bSuccess);
 	};
 
-	TFunction<void()> RunStop = [this, Handler, Fixture, Capture, StopResult, TimedResult]()
+	TFunction<void()> RunStop = [this, Handler, Fixture, StopResult, TimedResult]()
 	{
-		if (!TimedResult->bIsDeferred)
+		if (!TimedResult->bSuccess)
 		{
 			return;
 		}
@@ -939,17 +923,28 @@ bool FCortexEditorInputContinuousStopCompletesPendingOnceTest::RunTest(const FSt
 		Params->SetStringField(TEXT("mode"), TEXT("stop"));
 		*StopResult = Handler->Execute(CortexInputCommandContinuous, Params);
 		TestTrue(TEXT("explicit stop of a timed run succeeds"), StopResult->bSuccess);
-		TestEqual(TEXT("stop completes the timed run's pending caller exactly once"), Capture->Count, 1);
-		TestFalse(TEXT("stopped run completes as cancellation, not success"), Capture->Last.bSuccess);
+		if (StopResult->bSuccess && StopResult->Data.IsValid())
+		{
+			TestTrue(TEXT("a stop before expiry owns the timed run"), StopResult->Data->GetBoolField(TEXT("owned")));
+			TestFalse(TEXT("a stop before expiry reports not injecting"), StopResult->Data->GetBoolField(TEXT("injecting")));
+		}
+		UEnhancedInputLocalPlayerSubsystem* Subsystem = GetContinuousInputPIESubsystem();
+		if (Subsystem != nullptr)
+		{
+			TestFalse(TEXT("explicit stop removes the native injection at once"), Subsystem->HasContinuousInputInjectionForAction(Fixture->Action));
+		}
+		else
+		{
+			AddError(TEXT("PIE subsystem unavailable after stop"));
+		}
 	};
 
-	TFunction<void()> ObserveAfterDeadline = [this, Fixture, Capture, TimedResult]()
+	TFunction<void()> ObserveAfterDeadline = [this, Handler, Fixture, SecondStopResult, TimedResult]()
 	{
-		if (!TimedResult->bIsDeferred)
+		if (!TimedResult->bSuccess)
 		{
 			return;
 		}
-		TestEqual(TEXT("cancelled timer never completes the caller a second time"), Capture->Count, 1);
 		UEnhancedInputLocalPlayerSubsystem* Subsystem = nullptr;
 		UEnhancedPlayerInput* PlayerInput = nullptr;
 		FVector Value = FVector::ZeroVector;
@@ -958,7 +953,16 @@ bool FCortexEditorInputContinuousStopCompletesPendingOnceTest::RunTest(const FSt
 			TestTrue(TEXT("PIE enhanced input player available after stop deadline"), false);
 			return;
 		}
-		TestFalse(TEXT("stopped run is not left injecting"), Subsystem->HasContinuousInputInjectionForAction(Fixture->Action));
+		TestFalse(TEXT("stopped run is not left injecting after the old deadline"), Subsystem->HasContinuousInputInjectionForAction(Fixture->Action));
+
+		const TSharedPtr<FJsonObject> Params = MakeContinuousInputActionParams(Fixture->ActionPath);
+		Params->SetStringField(TEXT("mode"), TEXT("stop"));
+		*SecondStopResult = Handler->Execute(CortexInputCommandContinuous, Params);
+		TestTrue(TEXT("a second stop is not an error"), SecondStopResult->bSuccess);
+		if (SecondStopResult->bSuccess && SecondStopResult->Data.IsValid())
+		{
+			TestFalse(TEXT("a second stop no longer owns a run"), SecondStopResult->Data->GetBoolField(TEXT("owned")));
+		}
 	};
 
 	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
@@ -969,6 +973,92 @@ bool FCortexEditorInputContinuousStopCompletesPendingOnceTest::RunTest(const FSt
 	AddContinuousInputStep(RunStop);
 	ADD_LATENT_AUTOMATION_COMMAND(FEngineWaitLatentCommand(0.5f));
 	AddContinuousInputStep(ObserveAfterDeadline);
+	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEStopped(this));
+	TFunction<void()> Cleanup = [Handler, Fixture]() { Fixture->Reset(); };
+	AddContinuousInputStep(Cleanup);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorInputContinuousTimedStartRepliesImmediatelyTest,
+	"Cortex.Editor.Input.PIE.Continuous.TimedStartRepliesImmediately",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorInputContinuousTimedStartRepliesImmediatelyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const TSharedRef<FCortexEditorCommandHandler> Handler = MakeShared<FCortexEditorCommandHandler>();
+	const TSharedPtr<FCortexContinuousInputFixture> Fixture = MakeShared<FCortexContinuousInputFixture>();
+	Fixture->Create(*this, EInputActionValueType::Axis3D);
+	const TSharedPtr<FCortexCommandResult> TimedResult = MakeShared<FCortexCommandResult>();
+	const TSharedPtr<FCortexCommandResult> StopResult = MakeShared<FCortexCommandResult>();
+
+	TFunction<void()> RunTimedStart = [this, Handler, Fixture, TimedResult]()
+	{
+		const TSharedPtr<FJsonObject> Params = MakeContinuousInputActionParams(Fixture->ActionPath);
+		SetContinuousInputVectorValue(Params, FVector(1.0, 0.0, 0.0));
+		Params->SetNumberField(TEXT("duration_ms"), 400.0);
+		*TimedResult = Handler->Execute(CortexInputCommandContinuous, Params);
+		TestTrue(TEXT("timed continuous start succeeds"), TimedResult->bSuccess);
+		TestFalse(TEXT("timed continuous start is not deferred"), TimedResult->bIsDeferred);
+		if (TimedResult->bSuccess && TimedResult->Data.IsValid())
+		{
+			TestTrue(TEXT("timed start reports it is injecting"), TimedResult->Data->GetBoolField(TEXT("injecting")));
+			TestEqual(TEXT("timed start echoes the duration"), TimedResult->Data->GetNumberField(TEXT("duration_ms")), 400.0);
+			TestEqual(TEXT("timed start echoes the mode"), TimedResult->Data->GetStringField(TEXT("mode")), FString(TEXT("start")));
+		}
+	};
+
+	TFunction<void()> ObserveHeld = [this, Fixture, TimedResult]()
+	{
+		if (!TimedResult->bSuccess)
+		{
+			return;
+		}
+		UEnhancedInputLocalPlayerSubsystem* Subsystem = nullptr;
+		UEnhancedPlayerInput* PlayerInput = nullptr;
+		FVector Value = FVector::ZeroVector;
+		if (!TryReadContinuousInputActionValue(PlayerInput, Subsystem, Fixture->Action, Value))
+		{
+			TestTrue(TEXT("PIE enhanced input player available while held"), false);
+			return;
+		}
+		TestTrue(TEXT("timed run is injecting while held"), Subsystem->HasContinuousInputInjectionForAction(Fixture->Action));
+		TestFalse(TEXT("held action value is non-zero"), Value.Equals(FVector::ZeroVector, 1e-4));
+	};
+
+	TFunction<void()> ObserveExpired = [this, Handler, Fixture, StopResult, TimedResult]()
+	{
+		if (!TimedResult->bSuccess)
+		{
+			return;
+		}
+		UEnhancedInputLocalPlayerSubsystem* Subsystem = GetContinuousInputPIESubsystem();
+		if (Subsystem == nullptr)
+		{
+			TestTrue(TEXT("PIE enhanced input subsystem available after expiry"), false);
+			return;
+		}
+		TestFalse(TEXT("the stop timer ended the run"), Subsystem->HasContinuousInputInjectionForAction(Fixture->Action));
+
+		const TSharedPtr<FJsonObject> Params = MakeContinuousInputActionParams(Fixture->ActionPath);
+		Params->SetStringField(TEXT("mode"), TEXT("stop"));
+		*StopResult = Handler->Execute(CortexInputCommandContinuous, Params);
+		TestTrue(TEXT("stop after expiry is not an error"), StopResult->bSuccess);
+		if (StopResult->bSuccess && StopResult->Data.IsValid())
+		{
+			TestFalse(TEXT("stop after expiry no longer owns a run"), StopResult->Data->GetBoolField(TEXT("owned")));
+		}
+	};
+
+	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
+	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEPlaying(this));
+	ADD_LATENT_AUTOMATION_COMMAND(FEngineWaitLatentCommand(0.5f));
+	AddContinuousInputRunThenObserve(RunTimedStart, ObserveHeld, 2);
+	ADD_LATENT_AUTOMATION_COMMAND(FEngineWaitLatentCommand(0.8f));
+	AddContinuousInputStep(ObserveExpired);
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEStopped(this));
 	TFunction<void()> Cleanup = [Handler, Fixture]() { Fixture->Reset(); };
@@ -1047,42 +1137,69 @@ bool FCortexEditorInputContinuousTcpDisconnectTest::RunTest(const FString& Param
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexEditorInputContinuousPIEEndCompletesPendingOnceTest,
-	"Cortex.Editor.Input.PIE.Continuous.PIEEndCompletesPendingOnce",
+	FCortexEditorInputContinuousPIEEndStopsTimedRunTest,
+	"Cortex.Editor.Input.PIE.Continuous.PIEEndStopsTimedRun",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FCortexEditorInputContinuousPIEEndCompletesPendingOnceTest::RunTest(const FString& Parameters)
+bool FCortexEditorInputContinuousPIEEndStopsTimedRunTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
 	const TSharedRef<FCortexEditorCommandHandler> Handler = MakeShared<FCortexEditorCommandHandler>();
 	const TSharedPtr<FCortexContinuousInputFixture> Fixture = MakeShared<FCortexContinuousInputFixture>();
 	Fixture->Create(*this, EInputActionValueType::Axis3D);
-	const TSharedPtr<FCortexContinuousInputDeferredCapture> Capture = MakeShared<FCortexContinuousInputDeferredCapture>();
 	const TSharedPtr<FCortexCommandResult> TimedResult = MakeShared<FCortexCommandResult>();
+	const TSharedPtr<FCortexCommandResult> StaleStopResult = MakeShared<FCortexCommandResult>();
+	const TSharedPtr<FCortexCommandResult> SuccessorResult = MakeShared<FCortexCommandResult>();
 
-	TFunction<void()> RunTimedStart = [this, Handler, Fixture, Capture, TimedResult]()
+	TFunction<void()> RunTimedStart = [this, Handler, Fixture, TimedResult]()
 	{
 		const TSharedPtr<FJsonObject> Params = MakeContinuousInputActionParams(Fixture->ActionPath);
 		SetContinuousInputVectorValue(Params, FVector(1.0, 0.0, 0.0));
-		Params->SetNumberField(TEXT("duration_ms"), 5000.0);
-		FDeferredResponseCallback Callback = [Capture](FCortexCommandResult Result)
-		{
-			Capture->Count++;
-			Capture->Last = Result;
-		};
-		*TimedResult = Handler->Execute(CortexInputCommandContinuous, Params, MoveTemp(Callback));
-		TestTrue(TEXT("long timed continuous start defers its response"), TimedResult->bIsDeferred);
+		Params->SetNumberField(TEXT("duration_ms"), 600.0);
+		*TimedResult = Handler->Execute(CortexInputCommandContinuous, Params);
+		TestTrue(TEXT("timed continuous start succeeds before PIE ends"), TimedResult->bSuccess);
 	};
 
-	TFunction<void()> ObserveAfterPIEEnd = [this, Capture, TimedResult]()
+	// The first session's run died with its PIE session: the next session owns nothing, and its own
+	// run of the same action is unaffected by the first session's deadline.
+	TFunction<void()> RunStaleStopAndSuccessor = [this, Handler, Fixture, StaleStopResult, SuccessorResult, TimedResult]()
 	{
-		if (!TimedResult->bIsDeferred)
+		if (!TimedResult->bSuccess)
 		{
 			return;
 		}
-		TestEqual(TEXT("PIE teardown completed the pending caller exactly once"), Capture->Count, 1);
-		TestFalse(TEXT("PIE teardown completes the caller as cancellation, not success"), Capture->Last.bSuccess);
+		const TSharedPtr<FJsonObject> StopParams = MakeContinuousInputActionParams(Fixture->ActionPath);
+		StopParams->SetStringField(TEXT("mode"), TEXT("stop"));
+		*StaleStopResult = Handler->Execute(CortexInputCommandContinuous, StopParams);
+		TestTrue(TEXT("stop in the next session is not an error"), StaleStopResult->bSuccess);
+		if (StaleStopResult->bSuccess && StaleStopResult->Data.IsValid())
+		{
+			TestFalse(TEXT("PIE end released ownership of the timed run"), StaleStopResult->Data->GetBoolField(TEXT("owned")));
+		}
+
+		const TSharedPtr<FJsonObject> StartParams = MakeContinuousInputActionParams(Fixture->ActionPath);
+		SetContinuousInputVectorValue(StartParams, FVector(0.0, 1.0, 0.0));
+		*SuccessorResult = Handler->Execute(CortexInputCommandContinuous, StartParams);
+		TestTrue(TEXT("a later run of the same action starts"), SuccessorResult->bSuccess);
+	};
+
+	TFunction<void()> ObserveSuccessor = [this, Fixture, SuccessorResult]()
+	{
+		if (!SuccessorResult->bSuccess)
+		{
+			return;
+		}
+		UEnhancedInputLocalPlayerSubsystem* Subsystem = nullptr;
+		UEnhancedPlayerInput* PlayerInput = nullptr;
+		FVector Value = FVector::ZeroVector;
+		if (!TryReadContinuousInputActionValue(PlayerInput, Subsystem, Fixture->Action, Value))
+		{
+			TestTrue(TEXT("PIE enhanced input player available in the next session"), false);
+			return;
+		}
+		TestTrue(TEXT("the earlier session's deadline did not stop the later run"), Subsystem->HasContinuousInputInjectionForAction(Fixture->Action));
+		TestTrue(TEXT("the later run still injects its own value (0,1,0)"), Value.Equals(FVector(0.0, 1.0, 0.0), 1e-4));
 	};
 
 	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
@@ -1091,65 +1208,16 @@ bool FCortexEditorInputContinuousPIEEndCompletesPendingOnceTest::RunTest(const F
 	AddContinuousInputStep(RunTimedStart);
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEStopped(this));
-	AddContinuousInputStep(ObserveAfterPIEEnd);
-	TFunction<void()> Cleanup = [Handler, Fixture]() { Fixture->Reset(); };
-	AddContinuousInputStep(Cleanup);
-	return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexEditorInputContinuousCancellationReentryTest,
-	"Cortex.Editor.Input.PIE.Continuous.CancellationRejectsReentrantStart",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
-)
-
-bool FCortexEditorInputContinuousCancellationReentryTest::RunTest(const FString& Parameters)
-{
-	(void)Parameters;
-	const TSharedRef<FCortexEditorCommandHandler> Handler = MakeShared<FCortexEditorCommandHandler>();
-	const TSharedPtr<FCortexContinuousInputFixture> Fixture = MakeShared<FCortexContinuousInputFixture>();
-	Fixture->Create(*this, EInputActionValueType::Axis3D);
-	const TSharedPtr<FCortexContinuousInputDeferredCapture> Capture = MakeShared<FCortexContinuousInputDeferredCapture>();
-	const TSharedPtr<FCortexCommandResult> ReentryResult = MakeShared<FCortexCommandResult>();
-
 	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEPlaying(this));
 	ADD_LATENT_AUTOMATION_COMMAND(FEngineWaitLatentCommand(0.5f));
-	AddContinuousInputStep([this, Handler, Fixture, Capture, ReentryResult]()
-	{
-		TSharedPtr<FJsonObject> Params = MakeContinuousInputActionParams(Fixture->ActionPath);
-		Params->SetNumberField(TEXT("duration_ms"), 5000.0);
-		const FCortexCommandResult Start = Handler->Execute(
-			CortexInputCommandContinuous, Params,
-			[Handler, Fixture, Capture, ReentryResult](FCortexCommandResult Result)
-			{
-				++Capture->Count;
-				Capture->Last = Result;
-				*ReentryResult = Handler->Execute(
-					CortexInputCommandContinuous, MakeContinuousInputActionParams(Fixture->ActionPath));
-			});
-		TestTrue(TEXT("original timed run is pending"), Start.bIsDeferred);
-		Handler->OnTcpClientDisconnected();
-		TestEqual(TEXT("cancellation completes original caller once"), Capture->Count, 1);
-		TestFalse(TEXT("cancellation callback cannot create a successor while cleanup is active"), ReentryResult->bSuccess);
-		UEnhancedInputLocalPlayerSubsystem* Subsystem = GetContinuousInputPIESubsystem();
-		if (Subsystem != nullptr)
-		{
-			TestFalse(TEXT("disconnect leaves no native injection after callback reentry"),
-				Subsystem->HasContinuousInputInjectionForAction(Fixture->Action));
-		}
-		else
-		{
-			AddError(TEXT("PIE subsystem unavailable for cancellation observation"));
-		}
-		// Keep the failing candidate isolated: remove any successor accepted during cancellation.
-		TSharedPtr<FJsonObject> Stop = MakeContinuousInputActionParams(Fixture->ActionPath);
-		Stop->SetStringField(TEXT("mode"), TEXT("stop"));
-		Handler->Execute(CortexInputCommandContinuous, Stop);
-	});
+	AddContinuousInputRunThenObserve(RunStaleStopAndSuccessor, ObserveSuccessor, 2);
+	ADD_LATENT_AUTOMATION_COMMAND(FEngineWaitLatentCommand(0.8f));
+	AddContinuousInputStep(ObserveSuccessor);
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEStopped(this));
-	AddContinuousInputStep([Handler, Fixture]() { Fixture->Reset(); });
+	TFunction<void()> Cleanup = [Handler, Fixture]() { Fixture->Reset(); };
+	AddContinuousInputStep(Cleanup);
 	return true;
 }
 
@@ -1165,39 +1233,30 @@ bool FCortexEditorInputContinuousReplacementDisconnectTest::RunTest(const FStrin
 	const TSharedRef<FCortexEditorCommandHandler> Handler = MakeShared<FCortexEditorCommandHandler>();
 	const TSharedPtr<FCortexContinuousInputFixture> Fixture = MakeShared<FCortexContinuousInputFixture>();
 	Fixture->Create(*this, EInputActionValueType::Axis3D);
-	const TSharedPtr<FCortexContinuousInputDeferredCapture> Capture = MakeShared<FCortexContinuousInputDeferredCapture>();
 
 	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEPlaying(this));
 	ADD_LATENT_AUTOMATION_COMMAND(FEngineWaitLatentCommand(0.5f));
-	AddContinuousInputStep([this, Handler, Fixture, Capture]()
+	AddContinuousInputStep([this, Handler, Fixture]()
 	{
 		TSharedPtr<FJsonObject> Original = MakeContinuousInputActionParams(Fixture->ActionPath);
 		Original->SetNumberField(TEXT("duration_ms"), 5000.0);
-		const FCortexCommandResult Start = Handler->Execute(
-			CortexInputCommandContinuous, Original,
-			[Handler, Capture](FCortexCommandResult Result)
-			{
-				++Capture->Count;
-				Capture->Last = Result;
-				Handler->OnTcpClientDisconnected();
-			});
-		TestTrue(TEXT("predecessor is deferred before replacement"), Start.bIsDeferred);
+		const FCortexCommandResult Start = Handler->Execute(CortexInputCommandContinuous, Original);
+		TestTrue(TEXT("timed predecessor starts"), Start.bSuccess);
 		const FCortexCommandResult Replacement = Handler->Execute(
 			CortexInputCommandContinuous, MakeContinuousInputActionParams(Fixture->ActionPath));
-		TestEqual(TEXT("predecessor completes once"), Capture->Count, 1);
-		TestFalse(TEXT("already-admitted replacement cannot survive callback disconnect"), Replacement.bSuccess);
+		TestTrue(TEXT("indefinite replacement starts"), Replacement.bSuccess);
+		Handler->OnTcpClientDisconnected();
 		UEnhancedInputLocalPlayerSubsystem* Subsystem = GetContinuousInputPIESubsystem();
 		if (Subsystem != nullptr)
 		{
-			TestFalse(TEXT("disconnect during replacement leaves no native injection"),
+			TestFalse(TEXT("disconnect after replacement leaves no native injection"),
 				Subsystem->HasContinuousInputInjectionForAction(Fixture->Action));
 		}
 		else
 		{
 			AddError(TEXT("PIE subsystem unavailable for replacement observation"));
 		}
-		Handler->OnTcpClientDisconnected();
 	});
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEStopped(this));
@@ -1217,22 +1276,20 @@ bool FCortexEditorInputContinuousDurationOverflowTest::RunTest(const FString& Pa
 	const TSharedRef<FCortexEditorCommandHandler> Handler = MakeShared<FCortexEditorCommandHandler>();
 	const TSharedPtr<FCortexContinuousInputFixture> Fixture = MakeShared<FCortexContinuousInputFixture>();
 	Fixture->Create(*this, EInputActionValueType::Axis3D);
-	const TSharedPtr<FCortexContinuousInputDeferredCapture> Capture = MakeShared<FCortexContinuousInputDeferredCapture>();
 	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEPlaying(this));
 	ADD_LATENT_AUTOMATION_COMMAND(FEngineWaitLatentCommand(0.5f));
-	AddContinuousInputRunThenObserve([this, Handler, Fixture, Capture]()
+	AddContinuousInputRunThenObserve([this, Handler, Fixture]()
 	{
 		TSharedPtr<FJsonObject> Start = MakeContinuousInputActionParams(Fixture->ActionPath);
 		SetContinuousInputVectorValue(Start, FVector(0.0, 0.75, 0.0));
 		TestTrue(TEXT("baseline run starts"), Handler->Execute(CortexInputCommandContinuous, Start).bSuccess);
 		TSharedPtr<FJsonObject> Overflow = MakeContinuousInputActionParams(Fixture->ActionPath);
 		Overflow->SetNumberField(TEXT("duration_ms"), 1.0e300);
-		const FCortexCommandResult Result = Handler->Execute(CortexInputCommandContinuous, Overflow,
-			[Capture](FCortexCommandResult Completion) { ++Capture->Count; Capture->Last = Completion; });
-		TestFalse(TEXT("finite double duration that overflows native ticker delay is rejected"), Result.bIsDeferred);
+		const FCortexCommandResult Result = Handler->Execute(CortexInputCommandContinuous, Overflow);
 		TestFalse(TEXT("unrepresentable duration cannot report success"), Result.bSuccess);
-	}, [this, Fixture, Capture]()
+		TestEqual(TEXT("unrepresentable duration is INVALID_FIELD"), Result.ErrorCode, FString(CortexInputErrorInvalidField));
+	}, [this, Fixture]()
 	{
 		UEnhancedInputLocalPlayerSubsystem* Subsystem = nullptr;
 		UEnhancedPlayerInput* PlayerInput = nullptr;
@@ -1246,7 +1303,6 @@ bool FCortexEditorInputContinuousDurationOverflowTest::RunTest(const FString& Pa
 		{
 			AddError(TEXT("PIE input unavailable after duration rejection"));
 		}
-		TestEqual(TEXT("rejected duration owns no deferred caller"), Capture->Count, 0);
 	});
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FCortexContinuousWaitForPIEStopped(this));

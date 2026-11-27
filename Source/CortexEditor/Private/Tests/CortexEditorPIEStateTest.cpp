@@ -451,24 +451,14 @@ bool FCortexEditorPIEStateScopedEndPreservesForeignInputTest::RunTest(const FStr
 		SessionInputErrorCode = Result.ErrorCode;
 	});
 
-	// An owned continuous run whose own deferred caller is provably this session's.
-	bool bOwnedRunCallbackFired = false;
-	FString OwnedRunErrorCode;
-	const uint32 OwnedRunCallbackId = PIEState.RegisterPendingInputCallback([&bOwnedRunCallbackFired, &OwnedRunErrorCode](FCortexCommandResult Result)
-	{
-		bOwnedRunCallbackFired = true;
-		OwnedRunErrorCode = Result.ErrorCode;
-	});
-	PIEState.TrackContinuousInputRun(nullptr, nullptr, /*bTimed=*/true, 0.5f, /*bHasCallback=*/true, OwnedRunCallbackId);
+	// An owned timed continuous run; a scoped end retires it without touching session-wide state.
+	PIEState.TrackContinuousInputRun(nullptr, nullptr, /*bTimed=*/true, 0.5f);
 
 	FCortexScopedPIESnapshot ScopedEnding;
 	ScopedEnding.Phase = ECortexScopedPIEPhase::Ending;
 	ScopedEnding.RequestSerial = 7;
 	ScopedEnding.bScopedEndQueued = true;
 	PIEState.HandleScopedPIELifecycle(ScopedEnding);
-
-	TestTrue(TEXT("A scoped owned end completes the owned run's own pending caller"), bOwnedRunCallbackFired);
-	TestEqual(TEXT("The owned run caller reports OperationCancelled"), OwnedRunErrorCode, FString(TEXT("OperationCancelled")));
 
 	TestFalse(TEXT("A scoped owned end must NOT flip the session-wide cancel token"), *TokenBefore);
 	TestTrue(TEXT("The session-wide cancel token identity must be unchanged"),

@@ -840,6 +840,8 @@ struct FCortexUMGAnimationBindingFixture
             {
                 Pkg->ClearDirtyFlag();
             }
+            // A surviving dirty test Blueprint is recompiled by the next PIE start (ResolveDirtyBlueprints).
+            WBP->MarkAsGarbage();
             Blueprint.Reset();
         }
     }

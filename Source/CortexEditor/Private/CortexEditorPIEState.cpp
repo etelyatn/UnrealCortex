@@ -216,15 +216,8 @@ void FCortexEditorPIEState::CancelAllInputTickers()
 		}
 	}
 
-	// Complete each owned timed run's pending caller exactly once with a single shared cancellation.
+	// Session-wide pending input callbacks (inject_input_sequence) share one cancellation result.
 	const FCortexCommandResult Cancellation = MakeContinuousInputCancellationResult();
-	for (TPair<TWeakObjectPtr<const UInputAction>, FContinuousInputRun>& Pair : RunsToStop)
-	{
-		if (Pair.Value.bHasCallback)
-		{
-			CompletePendingInputCallback(Pair.Value.CallbackId, Cancellation);
-		}
-	}
 
 	// Any still-pending input callback belongs to a session that is being cancelled: complete it
 	// exactly once, even when its owned tickers/runs were already retired by an earlier scoped end
@@ -245,24 +238,18 @@ void FCortexEditorPIEState::StopNativeContinuousInjection(const FContinuousInput
 	}
 }
 
-bool FCortexEditorPIEState::InvalidateContinuousInputRun(const UInputAction* Action, bool& bCancelledDuringCallback)
+void FCortexEditorPIEState::InvalidateContinuousInputRun(const UInputAction* Action)
 {
-	bCancelledDuringCallback = false;
-
-	// The predecessor's cancellation callback runs inside this function; block new admission so it
-	// cannot install an intervening run before the caller's successor is tracked.
-	TGuardValue<bool> AdmissionBlock(bInputAdmissionBlocked, true);
-
 	if (Action == nullptr)
 	{
-		return false;
+		return;
 	}
 
 	const TWeakObjectPtr<const UInputAction> Key(Action);
 	FContinuousInputRun* Existing = ContinuousInputRuns.Find(Key);
 	if (Existing == nullptr)
 	{
-		return false;
+		return;
 	}
 
 	FContinuousInputRun Run = MoveTemp(*Existing);
@@ -276,18 +263,6 @@ bool FCortexEditorPIEState::InvalidateContinuousInputRun(const UInputAction* Act
 		FTSTicker::GetCoreTicker().RemoveTicker(Run.TimerHandle);
 		InputTickerHandles.Remove(Run.TimerHandle);
 	}
-
-	if (!Run.bHasCallback)
-	{
-		return false;
-	}
-
-	// The callback may synchronously disconnect or end PIE, which cancels the session by flipping
-	// the token this shared ref still points at; the caller revalidates before mutating.
-	const TSharedRef<FThreadSafeBool> TokenBeforeCallback = InputCancelToken;
-	CompletePendingInputCallback(Run.CallbackId, MakeContinuousInputCancellationResult());
-	bCancelledDuringCallback = *TokenBeforeCallback;
-	return true;
 }
 
 bool FCortexEditorPIEState::OwnsContinuousInputRunForSubsystem(
@@ -310,8 +285,7 @@ bool FCortexEditorPIEState::StopOwnedContinuousInputRun(const UInputAction* Acti
 		return false;
 	}
 
-	bool bCancelledDuringCallback = false;
-	InvalidateContinuousInputRun(Action, bCancelledDuringCallback);
+	InvalidateContinuousInputRun(Action);
 	return true;
 }
 
@@ -319,17 +293,13 @@ uint32 FCortexEditorPIEState::TrackContinuousInputRun(
 	UEnhancedInputLocalPlayerSubsystem* Subsystem,
 	const UInputAction* Action,
 	bool bTimed,
-	float DelaySeconds,
-	bool bHasCallback,
-	uint32 CallbackId)
+	float DelaySeconds)
 {
 	const TWeakObjectPtr<const UInputAction> Key(Action);
 	FContinuousInputRun& Run = ContinuousInputRuns.FindOrAdd(Key);
 	Run.Subsystem = Subsystem;
 	Run.Action = Action;
 	Run.Generation = ++ContinuousInputRunGeneration;
-	Run.bHasCallback = bHasCallback && bTimed;
-	Run.CallbackId = CallbackId;
 	Run.TimerHandle.Reset();
 
 	if (bTimed)
@@ -364,18 +334,10 @@ void FCortexEditorPIEState::HandleContinuousInputTimerElapsed(
 	ContinuousInputRuns.Remove(ActionKey);
 
 	// One-shot ticker is being removed by the ticker system as we run; drop our bookkeeping
-	// handle and stop the injection the timer was guarding.
+	// handle and stop the injection the timer was guarding. The start request was already
+	// answered, so no caller is notified.
 	InputTickerHandles.Remove(Run.TimerHandle);
 	StopNativeContinuousInjection(Run);
-
-	if (Run.bHasCallback)
-	{
-		FCortexCommandResult Result;
-		Result.bSuccess = true;
-		Result.Data = MakeShared<FJsonObject>();
-		Result.Data->SetBoolField(TEXT("injecting"), false);
-		CompletePendingInputCallback(Run.CallbackId, Result);
-	}
 }
 
 void FCortexEditorPIEState::OnPIEEnded()
@@ -532,13 +494,5 @@ void FCortexEditorPIEState::CancelOwnedInputForScopedEnd()
 		}
 	}
 
-	// Each owned timed run's pending caller completes exactly once with a shared cancellation.
-	const FCortexCommandResult Cancellation = MakeContinuousInputCancellationResult();
-	for (TPair<TWeakObjectPtr<const UInputAction>, FContinuousInputRun>& Pair : RunsToStop)
-	{
-		if (Pair.Value.bHasCallback)
-		{
-			CompletePendingInputCallback(Pair.Value.CallbackId, Cancellation);
-		}
-	}
+	// Session-wide pending callers (inject_input_sequence) are deliberately left to the global end.
 }

@@ -48,9 +48,11 @@ _CACHED_READ_TTL = 300
 # statetree.replace_node and anim.rebind_function compile (and on failure recompile) the tree or AnimBP they migrate,
 # which scales with the asset; statetree.get_runtime_state reads the running PIE world, so it gets the same window.
 # anim.sample_runtime_pose samples a PIE pose over game time and answers when done or when its own real-time
-# budget `timeout_seconds` (default 60 s) is spent.
+# budget `timeout_seconds` (default 60 s) is spent. editor.capture_stats answers after its frames or its own
+# `timeout_seconds` deadline (default 30 s).
 _WAIT_READY_DEFAULT_SECONDS = 120.0
 _SAMPLE_RUNTIME_POSE_DEFAULT_SECONDS = 60.0
+_CAPTURE_STATS_DEFAULT_SECONDS = 30.0
 _DEFERRED_TIMEOUT_MARGIN = 30.0
 _LIVE_CODING_COMPILE_WINDOW = 1830.0
 _LONG_SYNCHRONOUS_WINDOW = 1800.0
@@ -82,6 +84,11 @@ def _dispatch_timeout(qualified: str, params: dict) -> float | None:
     if qualified == "anim.sample_runtime_pose":
         return (
             _requested_seconds(params.get("timeout_seconds"), _SAMPLE_RUNTIME_POSE_DEFAULT_SECONDS)
+            + _DEFERRED_TIMEOUT_MARGIN
+        )
+    if qualified == "editor.capture_stats":
+        return (
+            _requested_seconds(params.get("timeout_seconds"), _CAPTURE_STATS_DEFAULT_SECONDS)
             + _DEFERRED_TIMEOUT_MARGIN
         )
     return None
@@ -633,17 +640,26 @@ def _invalid_invocation_shape(
     return json.dumps(payload)
 
 
-def _batch_has_zero_commands(params) -> bool:
+_ZERO_COMMAND_BATCH = "batch_query requires at least one command; zero-command batches are never successful."
+
+
+def _batch_shape_error(params) -> str | None:
+    """Refusal message for a batch without a usable command list, else None."""
     if not isinstance(params, dict):
-        return True
+        return _ZERO_COMMAND_BATCH
     if params.get("cursor") is not None:
-        return False  # a cursor page is served from its snapshot and carries no commands
+        return None  # a cursor page is served from its snapshot and carries no commands
     commands = params.get("commands")
     if commands is None:
         commands = params.get("steps")
     if commands is None:
-        return True
-    return not isinstance(commands, list) or len(commands) == 0
+        return (
+            "batch_query requires params.commands (array of {command, params}); 'steps' is also "
+            f"accepted. Received keys: {sorted(params)}"
+        )
+    if not isinstance(commands, list) or len(commands) == 0:
+        return _ZERO_COMMAND_BATCH
+    return None
 
 
 def _batch_contains_replay_start(route_params: dict) -> bool:
@@ -709,10 +725,10 @@ def strict_router_tool(router, domain: str) -> Callable[..., str]:
                 f"Malformed {domain}_cmd envelope: timeout_s must be a positive number of seconds, "
                 f"got {timeout_s!r}."
             )
-        if domain == "core" and command in {"batch_query", "batch"} and _batch_has_zero_commands(params):
-            return reject(
-                "batch_query requires at least one command; zero-command batches are never successful."
-            )
+        if domain == "core" and command in {"batch_query", "batch"}:
+            shape_error = _batch_shape_error(params)
+            if shape_error is not None:
+                return reject(shape_error)
         if timeout_s is None:
             return router(command, params)
         low, high = _TIMEOUT_S_RANGE

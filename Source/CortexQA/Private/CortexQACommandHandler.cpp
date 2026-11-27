@@ -2,6 +2,7 @@
 #include "CortexCommandRouter.h"
 #include "CortexTypes.h"
 #include "Operations/CortexQAActionOps.h"
+#include "Operations/CortexQADelegateOps.h"
 #include "Operations/CortexQAAssertOps.h"
 #include "Operations/CortexQASetupOps.h"
 #include "Operations/CortexQAWorldOps.h"
@@ -55,6 +56,10 @@ FCortexCommandResult FCortexQACommandHandler::Execute(
     {
         return FCortexQASetupOps::SetRandomSeed(Params);
     }
+    if (Command == TEXT("broadcast_delegate"))
+    {
+        return FCortexQADelegateOps::BroadcastDelegate(Params);
+    }
     if (Command == TEXT("assert_state"))
     {
         return FCortexQAAssertOps::AssertState(Params);
@@ -101,6 +106,11 @@ TArray<FCortexCommandInfo> FCortexQACommandHandler::GetSupportedCommands() const
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier"))
             .Required(TEXT("property"), TEXT("string"), TEXT("Property path"))
             .Required(TEXT("value"), TEXT("object"), TEXT("Property value")),
+        FCortexCommandInfo{ TEXT("broadcast_delegate"), TEXT("Broadcast a multicast delegate (inline or sparse) on a PIE actor or one of its components, to exercise the bound handlers. Every signature parameter must be supplied in args; out/return parameters are refused. The response reports bound_count, the number of listeners before the broadcast") }
+            .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier (label, name or path)"))
+            .Optional(TEXT("component"), TEXT("string"), TEXT("Component name on the actor that owns the delegate; omit to use the actor itself"))
+            .Required(TEXT("delegate"), TEXT("string"), TEXT("Multicast delegate property name"))
+            .Optional(TEXT("args"), TEXT("object"), TEXT("Signature parameters by name; object parameters take an object path, e.g. {\"Target\": \"/Game/Map.Map:PersistentLevel.Actor\", \"Code\": 7}")),
         FCortexCommandInfo{ TEXT("set_random_seed"), TEXT("Set deterministic random seed in PIE world") }
             .Required(TEXT("seed"), TEXT("number"), TEXT("Random seed value")),
         FCortexCommandInfo{ TEXT("assert_state"), TEXT("Assert gameplay state using flat condition parameters") }

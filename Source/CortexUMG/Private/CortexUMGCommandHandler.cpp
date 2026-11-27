@@ -8,6 +8,7 @@
 #include "Operations/CortexUMGNativeBindingOps.h"
 #include "Operations/CortexUMGEmbeddedValueOps.h"
 #include "Operations/CortexUMGCommonUIOps.h"
+#include "Operations/CortexUMGLiveWidgetOps.h"
 #include "CortexAssetMutationGuard.h"
 #include "Engine/Blueprint.h"
 
@@ -49,7 +50,9 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
         || Command == TEXT("get_schema") || Command == TEXT("list_animations")
         || Command == TEXT("get_animation") || Command == TEXT("list_animation_bindings")
         || Command == TEXT("check_native_bindings") || Command == TEXT("get_embedded_widget_values")
-        || Command == TEXT("get_embedded_widget_diff") || Command == TEXT("get_commonui_info");
+        || Command == TEXT("get_embedded_widget_diff") || Command == TEXT("get_commonui_info")
+        || Command == TEXT("get_live_widgets") || Command == TEXT("snapshot_live_widgets")
+        || Command == TEXT("diff_live_widgets");
     if (!bReadOnly)
     {
         FCortexCommandResult GuardError;
@@ -179,6 +182,18 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     if (Command == TEXT("get_commonui_info"))
     {
         return FCortexUMGCommonUIOps::GetCommonUIInfo(Params);
+    }
+    if (Command == TEXT("get_live_widgets"))
+    {
+        return FCortexUMGLiveWidgetOps::GetLiveWidgets(Params);
+    }
+    if (Command == TEXT("snapshot_live_widgets"))
+    {
+        return FCortexUMGLiveWidgetOps::SnapshotLiveWidgets(Params);
+    }
+    if (Command == TEXT("diff_live_widgets"))
+    {
+        return FCortexUMGLiveWidgetOps::DiffLiveWidgets(Params);
     }
     if (Command == TEXT("set_animation_property_track"))
     {
@@ -376,6 +391,22 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .StrictParams(),
         FCortexCommandInfo{ TEXT("get_commonui_info"), TEXT("Read CommonUI activatable settings, implemented overrides, button/text/border styles and style_assets of a Widget Blueprint, or the style kind and referenced styles of a CommonUI style Blueprint; commonui_available is false when the CommonUI plugin is not loaded (read-only)") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint or CommonUI style Blueprint asset path"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("get_live_widgets"), TEXT("Read live UserWidget instances of a class in the PIE world (including widgets not in the viewport), ordered by creation counter: per instance index, name, class, in_viewport, visibility, reflected properties declared below UserWidget (widget references and delegates excluded) and the named child widgets (class, visibility, is_enabled, render_opacity, text with text_source slate|property, bindings, style); requested names that do not exist are listed in missing. Requires PIE (read-only)") }
+            .Required(TEXT("widget_class"), TEXT("string"), TEXT("Widget Blueprint asset path, generated class path or native class name"))
+            .Optional(TEXT("widgets"), TEXT("array"), TEXT("Child widget names to read (non-empty); omitted reads every named widget in the instance tree"))
+            .Optional(TEXT("include_properties"), TEXT("boolean"), TEXT("Include reflected instance properties (default: true)"))
+            .Optional(TEXT("max_instances"), TEXT("number"), TEXT("Maximum instances returned, integer 1-100 (default: 10); truncated reports the cut"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("snapshot_live_widgets"), TEXT("Write the get_live_widgets readback to Saved/Cortex/WidgetSnapshots/<label>.json (format_version, capture selectors, captured_at, truncated, instances); an existing label is overwritten. Requires PIE (read-only: no asset is modified)") }
+            .Required(TEXT("label"), TEXT("string"), TEXT("Snapshot label, [A-Za-z0-9_.-]{1,64}"))
+            .Required(TEXT("widget_class"), TEXT("string"), TEXT("Widget Blueprint asset path, generated class path or native class name"))
+            .Optional(TEXT("widgets"), TEXT("array"), TEXT("Child widget names to read (non-empty); omitted reads every named widget in the instance tree"))
+            .Optional(TEXT("include_properties"), TEXT("boolean"), TEXT("Include reflected instance properties (default: true)"))
+            .Optional(TEXT("max_instances"), TEXT("number"), TEXT("Maximum instances captured, integer 1-100 (default: 10)"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("diff_live_widgets"), TEXT("Compare the live PIE widgets with a stored snapshot, re-reading with the snapshot's own selectors. Instances pair by order; extra instances are reported in added_instances/removed_instances and count as differing; complete/identical are false when either readback was truncated; differences are capped at 200. Requires PIE (read-only)") }
+            .Required(TEXT("label"), TEXT("string"), TEXT("Label of the stored snapshot"))
             .StrictParams(),
     };
     return Infos;
