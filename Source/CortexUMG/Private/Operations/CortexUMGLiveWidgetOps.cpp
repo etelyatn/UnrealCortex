@@ -417,6 +417,14 @@ bool IsWidgetReferenceOrDelegate(const FProperty* Property)
     return false;
 }
 
+/** The compiler-generated UberGraphFrame (FPointerToUberGraphFrame) is runtime bookkeeping, not widget state. */
+bool IsUberGraphFrame(const FProperty* Property)
+{
+    const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+    return StructProperty && StructProperty->Struct
+        && StructProperty->Struct->GetFName() == FName(TEXT("PointerToUberGraphFrame"));
+}
+
 /** Reflected properties declared below UUserWidget, minus widget references and delegates. */
 TSharedPtr<FJsonObject> BuildPropertiesJson(const UUserWidget* Widget)
 {
@@ -425,7 +433,7 @@ TSharedPtr<FJsonObject> BuildPropertiesJson(const UUserWidget* Widget)
     {
         const UClass* Owner = It->GetOwner<UClass>();
         if (!Owner || Owner == UUserWidget::StaticClass() || !Owner->IsChildOf(UUserWidget::StaticClass())
-            || IsWidgetReferenceOrDelegate(*It))
+            || IsWidgetReferenceOrDelegate(*It) || IsUberGraphFrame(*It))
         {
             continue;
         }
@@ -530,49 +538,26 @@ FLiveReadback ReadLiveWidgets(UWorld* World, const FLiveWidgetRequest& Request)
     return Readback;
 }
 
+/** Escapes the path metacharacters so a literal key such as "a.b" cannot alias the nested path a -> b. */
+FString EscapeKeySegment(const FString& Segment)
+{
+    FString Escaped;
+    Escaped.Reserve(Segment.Len());
+    for (int32 Index = 0; Index < Segment.Len(); ++Index)
+    {
+        const TCHAR Character = Segment[Index];
+        if (Character == TEXT('\\') || Character == TEXT('.') || Character == TEXT('[') || Character == TEXT(']'))
+        {
+            Escaped.AppendChar(TEXT('\\'));
+        }
+        Escaped.AppendChar(Character);
+    }
+    return Escaped;
+}
+
 FString JoinKey(const FString& Prefix, const FString& Segment)
 {
     return Prefix.IsEmpty() ? Segment : Prefix + TEXT(".") + Segment;
-}
-
-/** Flattens a JSON value to leaf entries keyed by field path; arrays index as `[i]`, empty containers add nothing. */
-void FlattenValue(const FString& Key, const TSharedPtr<FJsonValue>& Value, FFlatEntries& Out)
-{
-    if (!Value.IsValid())
-    {
-        Out.Add(Key, MakeShared<FJsonValueNull>());
-        return;
-    }
-    switch (Value->Type)
-    {
-    case EJson::Object:
-    {
-        const TSharedPtr<FJsonObject>* Object = nullptr;
-        if (Value->TryGetObject(Object) && Object && Object->IsValid())
-        {
-            for (const auto& Pair : (*Object)->Values)
-            {
-                FlattenValue(JoinKey(Key, CortexEngineCompat::JsonKeyToString(Pair.Key)), Pair.Value, Out);
-            }
-        }
-        break;
-    }
-    case EJson::Array:
-    {
-        const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
-        if (Value->TryGetArray(Array) && Array)
-        {
-            for (int32 Index = 0; Index < Array->Num(); ++Index)
-            {
-                FlattenValue(FString::Printf(TEXT("%s[%d]"), *Key, Index), (*Array)[Index], Out);
-            }
-        }
-        break;
-    }
-    default:
-        Out.Add(Key, Value);
-        break;
-    }
 }
 
 /** Entries of one instance under `[<index>].<field path>`; identity metadata (name, index) is not compared. */
@@ -591,36 +576,7 @@ void FlattenInstance(const int32 Index, const TSharedPtr<FJsonValue>& Instance, 
         {
             continue;
         }
-        FlattenValue(JoinKey(Prefix, Field), Pair.Value, Out);
-    }
-}
-
-bool JsonLeavesEqual(const TSharedPtr<FJsonValue>& A, const TSharedPtr<FJsonValue>& B)
-{
-    if (!A.IsValid() || !B.IsValid())
-    {
-        return A.IsValid() == B.IsValid();
-    }
-    if (A->Type != B->Type)
-    {
-        return false;
-    }
-    switch (A->Type)
-    {
-    case EJson::String:
-        return A->AsString() == B->AsString();
-    case EJson::Number:
-    {
-        const double NumberA = A->AsNumber();
-        const double NumberB = B->AsNumber();
-        return NumberA == NumberB || (FMath::IsNaN(NumberA) && FMath::IsNaN(NumberB));
-    }
-    case EJson::Boolean:
-        return A->AsBool() == B->AsBool();
-    case EJson::Null:
-        return true;
-    default:
-        return false;
+        FCortexUMGLiveWidgetOps::FlattenValue(JoinKey(Prefix, EscapeKeySegment(Field)), Pair.Value, Out);
     }
 }
 
@@ -657,6 +613,88 @@ TSharedPtr<FJsonValue> InstanceSummary(const int32 Index, const TSharedPtr<FJson
     Json->SetNumberField(TEXT("entry_count"), Entries.Num());
     return MakeShared<FJsonValueObject>(Json);
 }
+}
+
+void FCortexUMGLiveWidgetOps::FlattenValue(
+    const FString& Key, const TSharedPtr<FJsonValue>& Value, TMap<FString, TSharedPtr<FJsonValue>>& Out)
+{
+    if (!Value.IsValid())
+    {
+        Out.Add(Key, MakeShared<FJsonValueNull>());
+        return;
+    }
+    switch (Value->Type)
+    {
+    case EJson::Object:
+    {
+        const TSharedPtr<FJsonObject>* Object = nullptr;
+        if (Value->TryGetObject(Object) && Object && Object->IsValid() && (*Object)->Values.Num() > 0)
+        {
+            for (const auto& Pair : (*Object)->Values)
+            {
+                FlattenValue(JoinKey(Key, EscapeKeySegment(CortexEngineCompat::JsonKeyToString(Pair.Key))), Pair.Value, Out);
+            }
+        }
+        else
+        {
+            // An empty object is a leaf: it must compare equal only to another empty object.
+            Out.Add(Key, MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()));
+        }
+        break;
+    }
+    case EJson::Array:
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+        if (Value->TryGetArray(Array) && Array && Array->Num() > 0)
+        {
+            for (int32 Index = 0; Index < Array->Num(); ++Index)
+            {
+                FlattenValue(FString::Printf(TEXT("%s[%d]"), *Key, Index), (*Array)[Index], Out);
+            }
+        }
+        else
+        {
+            // An empty array is a leaf: it must compare equal only to another empty array.
+            Out.Add(Key, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>()));
+        }
+        break;
+    }
+    default:
+        Out.Add(Key, Value);
+        break;
+    }
+}
+
+bool FCortexUMGLiveWidgetOps::LeavesEqual(const TSharedPtr<FJsonValue>& A, const TSharedPtr<FJsonValue>& B)
+{
+    if (!A.IsValid() || !B.IsValid())
+    {
+        return A.IsValid() == B.IsValid();
+    }
+    if (A->Type != B->Type)
+    {
+        return false;
+    }
+    switch (A->Type)
+    {
+    case EJson::String:
+        return A->AsString().Equals(B->AsString(), ESearchCase::CaseSensitive);
+    case EJson::Number:
+    {
+        const double NumberA = A->AsNumber();
+        const double NumberB = B->AsNumber();
+        return NumberA == NumberB || (FMath::IsNaN(NumberA) && FMath::IsNaN(NumberB));
+    }
+    case EJson::Boolean:
+        return A->AsBool() == B->AsBool();
+    case EJson::Null:
+    case EJson::Object:
+    case EJson::Array:
+        // Same type; containers only reach here as the empty-container leaves FlattenValue emits.
+        return true;
+    default:
+        return false;
+    }
 }
 
 FCortexCommandResult FCortexUMGLiveWidgetOps::GetLiveWidgets(const TSharedPtr<FJsonObject>& Params)
@@ -777,16 +815,27 @@ FCortexCommandResult FCortexUMGLiveWidgetOps::DiffLiveWidgets(const TSharedPtr<F
     }
     double FormatVersion = 0.0;
     const TArray<TSharedPtr<FJsonValue>>* SnapshotInstances = nullptr;
-    if (!Snapshot->TryGetNumberField(TEXT("format_version"), FormatVersion)
-        || static_cast<int32>(FormatVersion) != SnapshotFormatVersion
+    bool bSnapshotTruncated = false;
+    // Typed checks: TryGet*Field would also accept numeric or boolean strings.
+    const TSharedPtr<FJsonValue> VersionField = Snapshot->TryGetField(TEXT("format_version"));
+    const TSharedPtr<FJsonValue> TruncatedField = Snapshot->TryGetField(TEXT("truncated"));
+    if (!VersionField.IsValid() || VersionField->Type != EJson::Number
+        || !VersionField->TryGetNumber(FormatVersion) || FormatVersion != static_cast<double>(SnapshotFormatVersion)
+        || !TruncatedField.IsValid() || TruncatedField->Type != EJson::Boolean
+        || !TruncatedField->TryGetBool(bSnapshotTruncated)
         || !Snapshot->TryGetArrayField(TEXT("instances"), SnapshotInstances) || SnapshotInstances == nullptr)
     {
         return InvalidField(FString::Printf(
-            TEXT("Widget snapshot '%s' has an unsupported format (expected format_version %d with an instances array)"),
+            TEXT("Widget snapshot '%s' has an unsupported format (expected format_version exactly %d, a boolean truncated and an instances array)"),
             *Label, SnapshotFormatVersion));
     }
-    bool bSnapshotTruncated = false;
-    Snapshot->TryGetBoolField(TEXT("truncated"), bSnapshotTruncated);
+    for (const TSharedPtr<FJsonValue>& Entry : *SnapshotInstances)
+    {
+        if (!Entry.IsValid() || Entry->Type != EJson::Object)
+        {
+            return InvalidField(FString::Printf(TEXT("Widget snapshot '%s' is malformed: every instances entry must be a JSON object"), *Label));
+        }
+    }
 
     // Re-read with the snapshot's own selectors; the diff command accepts nothing but the label.
     FLiveWidgetRequest Request;
@@ -832,7 +881,7 @@ FCortexCommandResult FCortexUMGLiveWidgetOps::DiffLiveWidgets(const TSharedPtr<F
             ++TotalEntries;
             const TSharedPtr<FJsonValue>* BeforeValue = Before.Find(Key);
             const TSharedPtr<FJsonValue>* AfterValue = After.Find(Key);
-            if (BeforeValue && AfterValue && JsonLeavesEqual(*BeforeValue, *AfterValue))
+            if (BeforeValue && AfterValue && FCortexUMGLiveWidgetOps::LeavesEqual(*BeforeValue, *AfterValue))
             {
                 continue;
             }

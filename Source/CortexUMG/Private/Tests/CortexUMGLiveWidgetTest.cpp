@@ -9,6 +9,7 @@
 #include "CortexEngineCompat.h"
 #include "CortexTypes.h"
 #include "CortexUMGCommandHandler.h"
+#include "Operations/CortexUMGLiveWidgetOps.h"
 #include "CortexUMGLiveWidgetTestTypes.h"
 #include "Blueprint/UserWidget.h"
 #include "Dom/JsonObject.h"
@@ -737,5 +738,173 @@ bool FCortexUMGLiveWidgetsTruncatedSnapshotIncompleteTest::RunTest(const FString
 		Test.TestTrue(TEXT("entries were compared"), Total > 0);
 		Test.TestEqual(TEXT("summary"), Diff.Data->GetStringField(TEXT("summary")), FString::Printf(TEXT("0 of %d entries differ"), Total));
 	});
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGLiveWidgetsDiffIsCaseSensitiveTest,
+	"Cortex.UMG.LiveWidgets.DiffIsCaseSensitive",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGLiveWidgetsDiffIsCaseSensitiveTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	RunInPIE(this, [](FAutomationTestBase& Test, FLiveWidgetTestState& State)
+	{
+		UCortexUMGLiveWidgetTestWidget* Widget = Cast<UCortexUMGLiveWidgetTestWidget>(
+			SpawnLiveWidget(Test, State, UCortexUMGLiveWidgetTestWidget::StaticClass(), true));
+		if (Widget == nullptr || Widget->TitleRef == nullptr)
+		{
+			Test.AddError(TEXT("Fixture widget or its Title is missing"));
+			return;
+		}
+		const FString Label = NewLabel(TEXT("cortex_case_sensitive"));
+		State.Labels.Add(Label);
+		if (!ExpectSuccess(Test, TEXT("snapshot_live_widgets"),
+				RunUMG(TEXT("umg.snapshot_live_widgets"), MakeSnapshotParams(Label, LiveBaseClassName))))
+		{
+			return;
+		}
+
+		// Only the case changes: "Hello" -> "HELLO".
+		Widget->TitleRef->SetText(FText::FromString(TEXT("HELLO")));
+
+		const FCortexCommandResult Diff = RunUMG(TEXT("umg.diff_live_widgets"), MakeLabelParams(Label));
+		if (!ExpectSuccess(Test, TEXT("diff_live_widgets"), Diff))
+		{
+			return;
+		}
+		Test.TestEqual(TEXT("a case-only change is one differing entry"), static_cast<int32>(Diff.Data->GetNumberField(TEXT("differing_entries"))), 1);
+		Test.TestFalse(TEXT("a case-only change is not identical"), Diff.Data->GetBoolField(TEXT("identical")));
+		const TArray<TSharedPtr<FJsonValue>>* Differences = nullptr;
+		if (Diff.Data->TryGetArrayField(TEXT("differences"), Differences) && Differences != nullptr && Differences->Num() == 1)
+		{
+			const TSharedPtr<FJsonObject> Difference = (*Differences)[0]->AsObject();
+			Test.TestEqual(TEXT("difference key"), Difference->GetStringField(TEXT("key")), FString(TEXT("[0].widgets.Title.text")));
+			Test.TestEqual(TEXT("difference before"), Difference->GetStringField(TEXT("before")), FString(TEXT("Hello")));
+			Test.TestEqual(TEXT("difference after"), Difference->GetStringField(TEXT("after")), FString(TEXT("HELLO")));
+		}
+		else
+		{
+			Test.AddError(TEXT("Expected exactly one listed difference"));
+		}
+	});
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGLiveWidgetsFlattenKeepsEmptyAndEscapesTest,
+	"Cortex.UMG.LiveWidgets.FlattenKeepsEmptyAndEscapes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGLiveWidgetsFlattenKeepsEmptyAndEscapesTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("a.b"), 1);
+	const TSharedRef<FJsonObject> Nested = MakeShared<FJsonObject>();
+	Nested->SetNumberField(TEXT("b"), 2);
+	Root->SetObjectField(TEXT("a"), Nested);
+	Root->SetObjectField(TEXT("e"), MakeShared<FJsonObject>());
+	Root->SetArrayField(TEXT("l"), TArray<TSharedPtr<FJsonValue>>());
+	Root->SetNumberField(TEXT("k[0]"), 3);
+	Root->SetNumberField(TEXT("bs\\"), 4);
+
+	TMap<FString, TSharedPtr<FJsonValue>> Entries;
+	FCortexUMGLiveWidgetOps::FlattenValue(FString(), MakeShared<FJsonValueObject>(Root), Entries);
+
+	TestEqual(TEXT("every member is its own entry, empty containers included"), Entries.Num(), 6);
+	TestTrue(TEXT("literal key a.b is escaped"), Entries.Contains(TEXT("a\\.b")));
+	TestTrue(TEXT("nested a -> b keeps the plain path"), Entries.Contains(TEXT("a.b")));
+	TestTrue(TEXT("literal brackets are escaped"), Entries.Contains(TEXT("k\\[0\\]")));
+	TestTrue(TEXT("a backslash is escaped"), Entries.Contains(TEXT("bs\\\\")));
+	if (!Entries.Contains(TEXT("e")) || !Entries.Contains(TEXT("l")) || !Entries.Contains(TEXT("a\\.b")) || !Entries.Contains(TEXT("a.b")))
+	{
+		AddError(TEXT("Missing flattened entries"));
+		return true;
+	}
+	TestEqual(TEXT("literal a.b value"), Entries[TEXT("a\\.b")]->AsNumber(), 1.0);
+	TestEqual(TEXT("nested a -> b value"), Entries[TEXT("a.b")]->AsNumber(), 2.0);
+
+	const TSharedPtr<FJsonValue> EmptyObject = Entries[TEXT("e")];
+	const TSharedPtr<FJsonValue> EmptyArray = Entries[TEXT("l")];
+	TestEqual(TEXT("empty object leaf type"), static_cast<int32>(EmptyObject->Type), static_cast<int32>(EJson::Object));
+	TestEqual(TEXT("empty array leaf type"), static_cast<int32>(EmptyArray->Type), static_cast<int32>(EJson::Array));
+	TestTrue(TEXT("an empty object equals an empty object"), FCortexUMGLiveWidgetOps::LeavesEqual(EmptyObject, MakeShared<FJsonValueObject>(MakeShared<FJsonObject>())));
+	TestFalse(TEXT("an empty object differs from an empty array"), FCortexUMGLiveWidgetOps::LeavesEqual(EmptyObject, EmptyArray));
+	TestFalse(TEXT("an empty object differs from the string {}"), FCortexUMGLiveWidgetOps::LeavesEqual(EmptyObject, MakeShared<FJsonValueString>(TEXT("{}"))));
+	TestFalse(TEXT("an empty array differs from the string []"), FCortexUMGLiveWidgetOps::LeavesEqual(EmptyArray, MakeShared<FJsonValueString>(TEXT("[]"))));
+
+	// A property that goes from empty to non-empty is indexed entries instead of the empty leaf, so the keys differ.
+	TMap<FString, TSharedPtr<FJsonValue>> Filled;
+	const TSharedRef<FJsonObject> FilledRoot = MakeShared<FJsonObject>();
+	FilledRoot->SetArrayField(TEXT("l"), {MakeShared<FJsonValueNumber>(1)});
+	FCortexUMGLiveWidgetOps::FlattenValue(FString(), MakeShared<FJsonValueObject>(FilledRoot), Filled);
+	TestTrue(TEXT("a filled array flattens to indexed entries only"), Filled.Contains(TEXT("l[0]")) && !Filled.Contains(TEXT("l")));
+
+	TestTrue(TEXT("identical strings are equal"),
+		FCortexUMGLiveWidgetOps::LeavesEqual(MakeShared<FJsonValueString>(TEXT("Hello")), MakeShared<FJsonValueString>(TEXT("Hello"))));
+	TestFalse(TEXT("strings compare case-sensitively"),
+		FCortexUMGLiveWidgetOps::LeavesEqual(MakeShared<FJsonValueString>(TEXT("Hello")), MakeShared<FJsonValueString>(TEXT("HELLO"))));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGLiveWidgetsDiffRejectsMalformedSnapshotTest,
+	"Cortex.UMG.LiveWidgets.DiffRejectsMalformedSnapshot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGLiveWidgetsDiffRejectsMalformedSnapshotTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	struct FMalformedCase
+	{
+		const TCHAR* Name;
+		const TCHAR* FormatVersion;
+		const TCHAR* Truncated;
+		const TCHAR* Instances;
+	};
+	const FMalformedCase Cases[] = {
+		{TEXT("fractional format_version"), TEXT("1.5"), TEXT("false"), TEXT("[]")},
+		{TEXT("string format_version"), TEXT("\"1\""), TEXT("false"), TEXT("[]")},
+		{TEXT("null instance"), TEXT("1"), TEXT("false"), TEXT("[null]")},
+		{TEXT("non-object instance"), TEXT("1"), TEXT("false"), TEXT("[1]")},
+		{TEXT("string truncated"), TEXT("1"), TEXT("\"no\""), TEXT("[]")},
+		{TEXT("missing truncated"), TEXT("1"), nullptr, TEXT("[]")},
+	};
+
+	const auto WriteSnapshot = [this](const FString& Label, const FMalformedCase& Case)
+	{
+		const FString TruncatedField = Case.Truncated != nullptr ? FString::Printf(TEXT("\"truncated\":%s,"), Case.Truncated) : FString();
+		const FString Json = FString::Printf(
+			TEXT("{\"format_version\":%s,\"widget_class\":\"%s\",\"include_properties\":true,\"max_instances\":10,%s\"instances\":%s}"),
+			Case.FormatVersion, LiveBaseClassName, *TruncatedField, Case.Instances);
+		if (!FFileHelper::SaveStringToFile(Json, *SnapshotFilePath(Label)))
+		{
+			AddError(FString::Printf(TEXT("Could not write the malformed snapshot %s"), *Label));
+		}
+	};
+
+	for (const FMalformedCase& Case : Cases)
+	{
+		const FString Label = NewLabel(TEXT("cortex_malformed"));
+		WriteSnapshot(Label, Case);
+		const FCortexCommandResult Diff = RunUMG(TEXT("umg.diff_live_widgets"), MakeLabelParams(Label));
+		TestFalse(FString::Printf(TEXT("%s must be refused"), Case.Name), Diff.bSuccess);
+		TestEqual(FString::Printf(TEXT("%s error code"), Case.Name), Diff.ErrorCode, CortexErrorCodes::InvalidField);
+		IFileManager::Get().Delete(*SnapshotFilePath(Label), false, true, true);
+	}
+
+	// A well-formed file passes validation and then meets the PIE requirement.
+	if (GetPlayWorld() == nullptr)
+	{
+		const FMalformedCase Valid = {TEXT("valid"), TEXT("1"), TEXT("false"), TEXT("[]")};
+		const FString Label = NewLabel(TEXT("cortex_wellformed"));
+		WriteSnapshot(Label, Valid);
+		const FCortexCommandResult Diff = RunUMG(TEXT("umg.diff_live_widgets"), MakeLabelParams(Label));
+		TestFalse(TEXT("a valid snapshot outside PIE fails"), Diff.bSuccess);
+		TestEqual(TEXT("a valid snapshot reaches the PIE check"), Diff.ErrorCode, CortexErrorCodes::PIENotActive);
+		IFileManager::Get().Delete(*SnapshotFilePath(Label), false, true, true);
+	}
 	return true;
 }
