@@ -553,11 +553,6 @@ FCortexBPAdoptMemberOps::FAdoptPlan FCortexBPAdoptMemberOps::BuildPlan(
 			Refuse(CortexErrorCodes::InvalidField, FString::Printf(TEXT("'%s' is declared by %s, which is not a native class"), *Request.NativeProperty, *Native->GetOwnerClass()->GetName()));
 			continue;
 		}
-		if (!Native->HasAnyPropertyFlags(CPF_BlueprintVisible))
-		{
-			Refuse(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Native property '%s' is not Blueprint visible; nodes could not resolve to it"), *Request.NativeProperty));
-			continue;
-		}
 
 		const int32 Index = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, VariableName);
 		if (Index == INDEX_NONE)
@@ -575,6 +570,14 @@ FCortexBPAdoptMemberOps::FAdoptPlan FCortexBPAdoptMemberOps::BuildPlan(
 			}
 			Mapping.State = TEXT("engine_already_adopted");
 			Mapping.TypeMatch = TEXT("verified");
+			if (!Native->HasAnyPropertyFlags(CPF_BlueprintVisible))
+			{
+				// The variable is already gone, so the engine replaced it. A node cannot resolve to a property that is not Blueprint
+				// visible, so any node still naming it stays unresolved (it is listed under referencing_nodes).
+				Mapping.Warnings.Add(FString::Printf(
+					TEXT("Native property '%s' is not Blueprint visible: no node can resolve to it, so nodes that still name '%s' stay unresolved"),
+					*Request.NativeProperty, *Request.BpVariable));
+			}
 			const UObject* Cdo = GeneratedCdo(Blueprint);
 			const FProperty* Current = Cdo != nullptr ? FindFProperty<FProperty>(Cdo->GetClass(), NativeName) : nullptr;
 			if (Request.bHasDefault && bTransferDefault)
@@ -612,6 +615,11 @@ FCortexBPAdoptMemberOps::FAdoptPlan FCortexBPAdoptMemberOps::BuildPlan(
 		{
 			const FBPVariableDescription& Variable = Blueprint->NewVariables[Index];
 			Mapping.State = TEXT("variable_present");
+			if (!Native->HasAnyPropertyFlags(CPF_BlueprintVisible))
+			{
+				Refuse(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Native property '%s' is not Blueprint visible; nodes could not resolve to it. Adoption of a non-visible property is only recorded after the Blueprint variable '%s' is gone"), *Request.NativeProperty, *Request.BpVariable));
+				continue;
+			}
 			if (Request.bHasDefault)
 			{
 				Refuse(CortexErrorCodes::InvalidField, FString::Printf(TEXT("'default' only applies when the engine already adopted '%s'; the Blueprint default is transferred"), *Request.BpVariable));
