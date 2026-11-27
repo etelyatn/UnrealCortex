@@ -6,7 +6,7 @@
 **Execution:** six parallel implementation slices with exclusive file ownership on branch
 `fix/274-migration-feedback`, then one integration build, RED/GREEN automation runs, Python tests, Clang gate,
 live editor smoke, review, and themed commits. Triage evidence with file:line citations:
-`CortexSandbox/Saved/Issue274/triage-*.md`.
+task-workspace triage notes (`Saved/Issue274/triage-*.md` in the host project, not committed).
 
 ## Global constraints
 
