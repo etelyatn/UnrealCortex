@@ -941,6 +941,20 @@ class TestBatchQueryPagination:
 
         assert payload["_error"] == "INVALID_INVOCATION_SHAPE"
         assert connection.sends == []
+        assert "at least one command" in payload["_message"]
+
+    def test_missing_container_key_names_expected_and_received_keys(self):
+        connection = _CountingConnection(1)
+        router = _core_router(connection)
+
+        payload = json.loads(router("batch_query", {"list": [{"command": "get_status"}]}))
+
+        assert payload["_error"] == "INVALID_INVOCATION_SHAPE"
+        assert "params.commands" in payload["_message"]
+        assert "'steps'" in payload["_message"]
+        assert "['list']" in payload["_message"]
+        assert "at least one command" not in payload["_message"]
+        assert connection.sends == []
 
     def test_limit_preserves_apply_patch_refusal(self):
         connection = _CountingConnection(1)

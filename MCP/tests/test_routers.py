@@ -888,6 +888,20 @@ def test_sample_runtime_pose_receive_window_covers_its_real_time_budget(params, 
     assert _dispatch_timeout("anim.sample_runtime_pose", params) == expected_timeout
 
 
+@pytest.mark.parametrize(
+    ("params", "expected_timeout"),
+    [
+        ({}, 60.0),
+        ({"timeout_seconds": 300}, 330.0),
+        ({"timeout_seconds": "300"}, 60.0),
+    ],
+)
+def test_capture_stats_receive_window_covers_its_capture_deadline(params, expected_timeout):
+    from cortex_mcp.tools.routers import _dispatch_timeout
+
+    assert _dispatch_timeout("editor.capture_stats", params) == expected_timeout
+
+
 def test_blueprint_router_uses_cached_send_for_discovery_reads():
     connection = MagicMock()
     connection.send_command_cached.return_value = {
