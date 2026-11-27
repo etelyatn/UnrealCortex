@@ -39,8 +39,11 @@ def test_remove_graph_fallback_contract_is_explicit():
     cmd = _command("blueprint", "remove_graph", _FALLBACK_STRUCTURED)
     params = {p["name"]: p for p in cmd["params"]}
 
-    for name in ("asset_path", "name", "dry_run", "compile", "save"):
+    for name in ("asset_path", "dry_run", "compile", "save"):
         assert params[name]["required"] is True
+    # Exactly one of name (single graph) or names (batch, issue 274) is required; neither is required alone.
+    assert params["name"]["required"] is False
+    assert params["names"]["type"] == "array"
 
     assert params["dry_run"]["type"] == "boolean"
     assert params["compile"]["type"] == "boolean"
