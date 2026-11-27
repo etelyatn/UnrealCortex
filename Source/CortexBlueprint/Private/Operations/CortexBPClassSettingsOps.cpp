@@ -12,6 +12,12 @@
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Event.h"
 #include "K2Node_Message.h"
+#include "K2Node_Composite.h"
+#include "K2Node_MacroInstance.h"
+#include "K2Node_AddComponent.h"
+#include "K2Node_Timeline.h"
+#include "Operations/CortexBPGraphExecReach.h"
+#include "Operations/CortexBPGraphReachability.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPMigrationGuard.h"
 #include "Operations/CortexBPAssetOps.h"
@@ -252,6 +258,13 @@ namespace
 		FString EventName;
 		/** Exec-reachable nodes behind the event (sorted). */
 		TArray<FGuid> BodyNodes;
+		/**
+		 * preserve_implementations:false (#277): the nodes deleted with the event (its island) and the nodes kept with a reason
+		 * (shared | collapsed_graph | macro_instance | timeline), both sorted by guid text.
+		 */
+		bool bIslandRemoval = false;
+		TArray<FGuid> RemovedNodes;
+		TArray<TPair<FGuid, FString>> RetainedNodes;
 		/** Linked pins of the event node: pin name and sorted "<node guid>|<pin>" targets. */
 		TArray<TPair<FName, TArray<FString>>> EventLinks;
 
@@ -298,14 +311,14 @@ namespace
 		return Targets;
 	}
 
-	/** Every node reachable from the event through exec links (the event itself excluded), sorted by guid text. */
-	TArray<FGuid> CollectExecBody(const UEdGraphNode* Start)
+	/** Every node reachable from the event through exec links (the event itself excluded), in discovery order. */
+	TArray<const UEdGraphNode*> CollectInterfaceEventBodyNodes(const UEdGraphNode* Start)
 	{
 		TSet<const UEdGraphNode*> Visited;
 		TArray<const UEdGraphNode*> Stack;
 		Visited.Add(Start);
 		Stack.Add(Start);
-		TArray<FGuid> Body;
+		TArray<const UEdGraphNode*> Body;
 		while (!Stack.IsEmpty())
 		{
 			const UEdGraphNode* Node = Stack.Pop();
@@ -322,13 +335,247 @@ namespace
 					{
 						Visited.Add(Next);
 						Stack.Add(Next);
-						Body.Add(Next->NodeGuid);
+						Body.Add(Next);
 					}
 				}
 			}
 		}
-		Body.Sort([](const FGuid& A, const FGuid& B) { return A.ToString() < B.ToString(); });
 		return Body;
+	}
+
+	void SortInterfaceIslandGuids(TArray<FGuid>& Guids)
+	{
+		Guids.Sort([](const FGuid& A, const FGuid& B) { return A.ToString() < B.ToString(); });
+	}
+
+	/** Every node reachable from the event through exec links (the event itself excluded), sorted by guid text. */
+	TArray<FGuid> CollectExecBody(const UEdGraphNode* Start)
+	{
+		TArray<FGuid> Body;
+		for (const UEdGraphNode* Node : CollectInterfaceEventBodyNodes(Start))
+		{
+			Body.Add(Node->NodeGuid);
+		}
+		SortInterfaceIslandGuids(Body);
+		return Body;
+	}
+
+	bool InterfaceIslandIsPure(const UEdGraphNode* Node)
+	{
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin != nullptr && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Everything the graph's live entries other than the removed interface events reach (exec chains plus their data closure). */
+	TSet<const UEdGraphNode*> CollectInterfaceIslandOtherReach(const UEdGraph* Graph, const TSet<const UEdGraphNode*>& RemovedEvents)
+	{
+		TSet<const UEdGraphNode*> Reach;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node == nullptr || RemovedEvents.Contains(Node) || !CortexBPGraphReachability::IsEntryNode(Node))
+			{
+				continue;
+			}
+			CortexBPGraphReachability::FReachContext Root(Graph, nullptr, nullptr);
+			Root.SeedEntry(Node);
+			Root.ExpandDataClosure();
+			for (const UEdGraphNode* Reached : Root.Reached)
+			{
+				Reach.Add(Reached);
+			}
+		}
+		return Reach;
+	}
+
+	/** Why a node reached from a removed event is kept instead of deleted; empty when it may go with the island. */
+	FString InterfaceIslandRetainReason(const UEdGraphNode* Node, const TSet<const UEdGraphNode*>& OtherReach)
+	{
+		if (OtherReach.Contains(Node))
+		{
+			return TEXT("shared");
+		}
+		if (Node->IsA<UK2Node_Composite>())
+		{
+			return TEXT("collapsed_graph");
+		}
+		if (Node->IsA<UK2Node_MacroInstance>())
+		{
+			return TEXT("macro_instance");
+		}
+		if (Node->IsA<UK2Node_Timeline>())
+		{
+			return TEXT("timeline");
+		}
+		if (Node->IsA<UK2Node_AddComponent>())
+		{
+			// Deleting the node removes its component template from the Blueprint, and the guarded journal does not restore that array.
+			return TEXT("component_template");
+		}
+		return FString();
+	}
+
+	/** The candidate island of one removed event: what its exec walk and the pure feeders reach, and the nodes the walk stopped at. */
+	struct FInterfaceEventIsland
+	{
+		const UK2Node_Event* Event = nullptr;
+		TSet<const UEdGraphNode*> Candidates;
+		TMap<const UEdGraphNode*, FString> Boundary;
+	};
+
+	void WalkInterfaceEventIsland(
+		FInterfaceEventIsland& Island, const TSet<const UEdGraphNode*>& RemovedEvents, const TSet<const UEdGraphNode*>& OtherReach)
+	{
+		const auto Admit = [&](const UEdGraphNode* Node, TArray<const UEdGraphNode*>& WorkList)
+		{
+			if (Node == nullptr || Island.Candidates.Contains(Node) || Island.Boundary.Contains(Node) || RemovedEvents.Contains(Node))
+			{
+				return;
+			}
+			const FString Reason = InterfaceIslandRetainReason(Node, OtherReach);
+			if (!Reason.IsEmpty())
+			{
+				// The walk stops here: nothing behind a kept node is deleted.
+				Island.Boundary.Add(Node, Reason);
+				return;
+			}
+			Island.Candidates.Add(Node);
+			WorkList.Add(Node);
+		};
+
+		TArray<const UEdGraphNode*> Work;
+		Work.Add(Island.Event);
+		while (!Work.IsEmpty())
+		{
+			const UEdGraphNode* Node = Work.Pop();
+			for (const UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin == nullptr)
+				{
+					continue;
+				}
+				const bool bExec = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
+				if (Pin->Direction == EGPD_Output && bExec)
+				{
+					for (const UEdGraphPin* Linked : Pin->LinkedTo)
+					{
+						Admit(Linked != nullptr ? Linked->GetOwningNodeUnchecked() : nullptr, Work);
+					}
+				}
+				else if (Pin->Direction == EGPD_Input && !bExec && Node != Island.Event)
+				{
+					// Data is followed only through pure producers: an impure producer runs from elsewhere.
+					for (const UEdGraphPin* Linked : Pin->LinkedTo)
+					{
+						const UEdGraphNode* Producer = Linked != nullptr ? Linked->GetOwningNodeUnchecked() : nullptr;
+						if (Producer != nullptr && InterfaceIslandIsPure(Producer))
+						{
+							Admit(Producer, Work);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/** True when a node that stays drives the node (exec input) or consumes its data (data output): deleting it would break that node. */
+	bool InterfaceIslandTouchesOutside(
+		const UEdGraphNode* Node, const TSet<const UEdGraphNode*>& Island, const TSet<const UEdGraphNode*>& RemovedEvents)
+	{
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin == nullptr)
+			{
+				continue;
+			}
+			const bool bExec = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
+			if ((Pin->Direction == EGPD_Input) != bExec)
+			{
+				// Only exec inputs and data outputs matter; exec outputs lead onward and data inputs are producers.
+				continue;
+			}
+			for (const UEdGraphPin* Linked : Pin->LinkedTo)
+			{
+				const UEdGraphNode* Other = Linked != nullptr ? Linked->GetOwningNodeUnchecked() : nullptr;
+				if (Other != nullptr && !Island.Contains(Other) && !RemovedEvents.Contains(Other))
+				{
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	struct FInterfaceIslandOutcome
+	{
+		TArray<FGuid> Removed;
+		TArray<TPair<FGuid, FString>> Retained;
+	};
+
+	/**
+	 * The islands of every removed interface event of one root graph, parallel to Events. The candidates of all events form one
+	 * union that is trimmed to a fixpoint: a node still driven or consumed by a node that stays is kept (it is "shared"), and
+	 * so is everything that only hung off it. A node a remaining entry reaches, a collapsed graph, a macro instance and a
+	 * timeline are kept up front and the walk never continues through them.
+	 */
+	void ComputeInterfaceGraphIslands(
+		const UEdGraph* Graph, const TArray<const UK2Node_Event*>& Events, const TSet<const UEdGraphNode*>& RemovedEvents,
+		TArray<FInterfaceIslandOutcome>& OutOutcomes)
+	{
+		const TSet<const UEdGraphNode*> OtherReach = CollectInterfaceIslandOtherReach(Graph, RemovedEvents);
+		TArray<FInterfaceEventIsland> Islands;
+		TSet<const UEdGraphNode*> Union;
+		for (const UK2Node_Event* Event : Events)
+		{
+			FInterfaceEventIsland& Island = Islands.AddDefaulted_GetRef();
+			Island.Event = Event;
+			WalkInterfaceEventIsland(Island, RemovedEvents, OtherReach);
+			Union.Append(Island.Candidates);
+		}
+
+		bool bChanged = true;
+		while (bChanged)
+		{
+			bChanged = false;
+			for (const UEdGraphNode* Node : TArray<const UEdGraphNode*>(Union.Array()))
+			{
+				if (Union.Contains(Node) && InterfaceIslandTouchesOutside(Node, Union, RemovedEvents))
+				{
+					Union.Remove(Node);
+					bChanged = true;
+				}
+			}
+		}
+
+		for (const FInterfaceEventIsland& Island : Islands)
+		{
+			FInterfaceIslandOutcome& Outcome = OutOutcomes.AddDefaulted_GetRef();
+			for (const UEdGraphNode* Node : Island.Candidates)
+			{
+				if (Union.Contains(Node))
+				{
+					Outcome.Removed.Add(Node->NodeGuid);
+				}
+				else
+				{
+					Outcome.Retained.Emplace(Node->NodeGuid, TEXT("shared"));
+				}
+			}
+			for (const TPair<const UEdGraphNode*, FString>& Kept : Island.Boundary)
+			{
+				Outcome.Retained.Emplace(Kept.Key->NodeGuid, Kept.Value);
+			}
+			SortInterfaceIslandGuids(Outcome.Removed);
+			Outcome.Retained.Sort([](const TPair<FGuid, FString>& A, const TPair<FGuid, FString>& B)
+			{
+				return A.Key.ToString() < B.Key.ToString();
+			});
+		}
 	}
 
 	FInterfaceFunctionPlan* FindFunctionPlan(FInterfaceRemovalPlan& Plan, const FName Function)
@@ -361,12 +608,14 @@ namespace
 		// Event-style implementations: event nodes whose member parent is the interface (the engine's own test).
 		TArray<UK2Node_Event*> Events;
 		FBlueprintEditorUtils::GetAllNodesOfClass(Blueprint, Events);
+		TArray<UK2Node_Event*> InterfaceEvents;
 		for (UK2Node_Event* Event : Events)
 		{
 			if (Event == nullptr || Event->EventReference.GetMemberParentClass(Event->GetBlueprintClassFromNode()) != InterfaceClass)
 			{
 				continue;
 			}
+			InterfaceEvents.Add(Event);
 			FInterfaceFunctionPlan* Existing = FindFunctionPlan(Plan, Event->EventReference.GetMemberName());
 			if (Existing != nullptr)
 			{
@@ -380,9 +629,7 @@ namespace
 			Entry.EventGraphGuid = Event->GetGraph() != nullptr ? Event->GetGraph()->GraphGuid : FGuid();
 			Entry.BodyNodes = CollectExecBody(Event);
 			Entry.NodeCount = Entry.BodyNodes.Num();
-			Entry.Disposition = bPreserve
-				? TEXT("converted_to_custom_event")
-				: (Entry.BodyNodes.IsEmpty() ? TEXT("deleted") : TEXT("orphaned_nodes"));
+			Entry.Disposition = bPreserve ? TEXT("converted_to_custom_event") : TEXT("deleted");
 			for (const UEdGraphPin* Pin : Event->Pins)
 			{
 				if (Pin != nullptr && !Pin->LinkedTo.IsEmpty())
@@ -394,6 +641,64 @@ namespace
 			{
 				return A.Key.ToString() < B.Key.ToString();
 			});
+		}
+
+		// preserve_implementations:false removes each removed event's island with it (#277): the plan is part of the validation hash,
+		// so the preview names exactly the nodes the apply deletes and the nodes it keeps. An event inside a collapsed graph deletes
+		// nothing here (the collapsed graph owns its body): the body is reported as kept.
+		if (!bPreserve)
+		{
+			TSet<const UEdGraphNode*> RemovedEvents;
+			for (const UK2Node_Event* Event : InterfaceEvents)
+			{
+				RemovedEvents.Add(Event);
+			}
+			TMap<const UEdGraph*, TArray<const UK2Node_Event*>> RootEventsByGraph;
+			for (const UK2Node_Event* Event : InterfaceEvents)
+			{
+				FInterfaceFunctionPlan* Entry = Plan.Functions.FindByPredicate([Event](const FInterfaceFunctionPlan& Candidate)
+				{
+					return Candidate.Implementation == TEXT("event") && Candidate.EventNodeGuid == Event->NodeGuid;
+				});
+				const UEdGraph* Graph = Event->GetGraph();
+				if (Entry == nullptr || Graph == nullptr)
+				{
+					continue;
+				}
+				Entry->bIslandRemoval = true;
+				if (Cast<UBlueprint>(Graph->GetOuter()) == nullptr)
+				{
+					for (const UEdGraphNode* Body : CollectInterfaceEventBodyNodes(Event))
+					{
+						Entry->RetainedNodes.Emplace(Body->NodeGuid, TEXT("collapsed_graph"));
+					}
+					Entry->RetainedNodes.Sort([](const TPair<FGuid, FString>& A, const TPair<FGuid, FString>& B)
+					{
+						return A.Key.ToString() < B.Key.ToString();
+					});
+					Entry->NodeCount = 0;
+					Entry->Disposition = TEXT("deleted");
+					continue;
+				}
+				RootEventsByGraph.FindOrAdd(Graph).Add(Event);
+			}
+			for (const TPair<const UEdGraph*, TArray<const UK2Node_Event*>>& GraphEvents : RootEventsByGraph)
+			{
+				TArray<FInterfaceIslandOutcome> Outcomes;
+				ComputeInterfaceGraphIslands(GraphEvents.Key, GraphEvents.Value, RemovedEvents, Outcomes);
+				for (int32 Index = 0; Index < GraphEvents.Value.Num(); ++Index)
+				{
+					const UK2Node_Event* Event = GraphEvents.Value[Index];
+					FInterfaceFunctionPlan* Entry = Plan.Functions.FindByPredicate([Event](const FInterfaceFunctionPlan& Candidate)
+					{
+						return Candidate.Implementation == TEXT("event") && Candidate.EventNodeGuid == Event->NodeGuid;
+					});
+					Entry->RemovedNodes = Outcomes[Index].Removed;
+					Entry->RetainedNodes = Outcomes[Index].Retained;
+					Entry->NodeCount = Entry->RemovedNodes.Num();
+					Entry->Disposition = Entry->RemovedNodes.IsEmpty() ? TEXT("deleted") : TEXT("removed_with_body");
+				}
+			}
 		}
 
 		// Interface functions with no implementation at all.
@@ -455,6 +760,24 @@ namespace
 				Body.Add(MakeShared<FJsonValueString>(Guid.ToString()));
 			}
 			Json->SetArrayField(TEXT("body_node_guids"), Body);
+			if (Entry.bIslandRemoval)
+			{
+				TArray<TSharedPtr<FJsonValue>> Removed;
+				for (const FGuid& Guid : Entry.RemovedNodes)
+				{
+					Removed.Add(MakeShared<FJsonValueString>(Guid.ToString()));
+				}
+				TArray<TSharedPtr<FJsonValue>> Retained;
+				for (const TPair<FGuid, FString>& Kept : Entry.RetainedNodes)
+				{
+					TSharedPtr<FJsonObject> Row = MakeShared<FJsonObject>();
+					Row->SetStringField(TEXT("node_guid"), Kept.Key.ToString());
+					Row->SetStringField(TEXT("reason"), Kept.Value);
+					Retained.Add(MakeShared<FJsonValueObject>(Row));
+				}
+				Json->SetArrayField(TEXT("removed_node_guids"), Removed);
+				Json->SetArrayField(TEXT("retained_node_guids"), Retained);
+			}
 			TArray<TSharedPtr<FJsonValue>> Links;
 			for (const TPair<FName, TArray<FString>>& Link : Entry.EventLinks)
 			{
@@ -503,6 +826,56 @@ namespace
 	{
 		UEdGraph* const* Found = Graphs.FindByPredicate([&Guid](const UEdGraph* Graph) { return Graph != nullptr && Graph->GraphGuid == Guid; });
 		return Found != nullptr ? *Found : nullptr;
+	}
+
+	/**
+	 * Records everything the removal touches for editor undo before the engine removes the interface events: Cortex-authored nodes
+	 * carry no RF_Transactional, so a Modify() would record nothing and undo would restore nodes without their links.
+	 */
+	void RecordInterfaceRemovalForUndo(UBlueprint* Blueprint, const FInterfaceRemovalPlan& Plan)
+	{
+		TArray<UEdGraph*> AllGraphs;
+		Blueprint->GetAllGraphs(AllGraphs);
+		TSet<const UEdGraphNode*> Recorded;
+		const auto Record = [&Recorded](UEdGraphNode* Node)
+		{
+			if (Node != nullptr && !Recorded.Contains(Node))
+			{
+				Recorded.Add(Node);
+				Node->SetFlags(RF_Transactional);
+				Node->Modify();
+			}
+		};
+		for (const FInterfaceFunctionPlan& Entry : Plan.Functions)
+		{
+			UEdGraph* Graph = Entry.Implementation == TEXT("event") ? FindGraphByGuidIn(AllGraphs, Entry.EventGraphGuid) : nullptr;
+			if (Graph == nullptr)
+			{
+				continue;
+			}
+			TSet<FGuid> Targets;
+			Targets.Add(Entry.EventNodeGuid);
+			Targets.Append(Entry.RemovedNodes);
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node == nullptr || !Targets.Contains(Node->NodeGuid))
+				{
+					continue;
+				}
+				Record(Node);
+				for (const UEdGraphPin* Pin : Node->Pins)
+				{
+					if (Pin == nullptr)
+					{
+						continue;
+					}
+					for (const UEdGraphPin* Linked : Pin->LinkedTo)
+					{
+						Record(Linked != nullptr ? Linked->GetOwningNodeUnchecked() : nullptr);
+					}
+				}
+			}
+		}
 	}
 
 	/** Reads the predicted disposition back from the live graphs; false with the first difference. */
@@ -570,12 +943,34 @@ namespace
 					OutError = FString::Printf(TEXT("the interface event %s is still in its graph"), *Entry.EventName);
 					return false;
 				}
-				for (const FGuid& Guid : Entry.BodyNodes)
+				if (Plan.bPreserve)
 				{
-					if (!HasNode(Guid))
+					for (const FGuid& Guid : Entry.BodyNodes)
 					{
-						OutError = FString::Printf(TEXT("a body node of event %s was lost"), *Entry.EventName);
-						return false;
+						if (!HasNode(Guid))
+						{
+							OutError = FString::Printf(TEXT("a body node of event %s was lost"), *Entry.EventName);
+							return false;
+						}
+					}
+				}
+				else
+				{
+					for (const FGuid& Guid : Entry.RemovedNodes)
+					{
+						if (HasNode(Guid))
+						{
+							OutError = FString::Printf(TEXT("an island node of event %s is still in its graph"), *Entry.EventName);
+							return false;
+						}
+					}
+					for (const TPair<FGuid, FString>& Kept : Entry.RetainedNodes)
+					{
+						if (!HasNode(Kept.Key))
+						{
+							OutError = FString::Printf(TEXT("a %s node of event %s was lost"), *Kept.Value, *Entry.EventName);
+							return false;
+						}
 					}
 				}
 				if (Plan.bPreserve)
@@ -781,10 +1176,12 @@ FCortexCommandResult FCortexBPClassSettingsOps::RemoveInterface(const TSharedPtr
 		return Preview;
 	}
 
-	if (!ExpectedFingerprint.IsValid() || ExpectedValidationHash.IsEmpty())
+	// expected_validation_hash alone authorizes apply (#277): it commits to the live fingerprint and the island plan at preview
+	// time. expected_fingerprint stays optional and is still checked when supplied.
+	if (ExpectedValidationHash.IsEmpty())
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
-			TEXT("Apply requires expected_fingerprint and expected_validation_hash from a dry run"));
+			TEXT("Apply requires expected_validation_hash (= the validation_hash field of a dry run); expected_fingerprint (= fingerprint_before) is optional"));
 	}
 	FString BlockReason;
 	if (FCortexAssetMutationGuard::IsBlocked(Blueprint, BlockReason))
@@ -792,10 +1189,13 @@ FCortexCommandResult FCortexBPClassSettingsOps::RemoveInterface(const TSharedPtr
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 			FString::Printf(TEXT("Asset is blocked after failed recovery: %s"), *BlockReason));
 	}
-	FCortexCommandResult FingerprintError;
-	if (!FCortexBPMigrationGuard::CheckExpected(Blueprint, ExpectedFingerprint, FingerprintError))
+	if (ExpectedFingerprint.IsValid())
 	{
-		return FingerprintError;
+		FCortexCommandResult FingerprintError;
+		if (!FCortexBPMigrationGuard::CheckExpected(Blueprint, ExpectedFingerprint, FingerprintError))
+		{
+			return FingerprintError;
+		}
 	}
 	if (ExpectedValidationHash != ValidationHash)
 	{
@@ -808,9 +1208,43 @@ FCortexCommandResult FCortexBPClassSettingsOps::RemoveInterface(const TSharedPtr
 	// failure restores from the journal (explicit, verified) and only drops the undo record. A success stays one undo step.
 	Spec.bUndoOnFailure = false;
 	Spec.bRecordUndoStep = true;
-	Spec.Apply = [InterfaceClass, bPreserve](UBlueprint* Target, FString& OutError)
+	Spec.Apply = [InterfaceClass, bPreserve, &Plan](UBlueprint* Target, FString& OutError)
 	{
+		if (!bPreserve)
+		{
+			RecordInterfaceRemovalForUndo(Target, Plan);
+		}
 		FBlueprintEditorUtils::RemoveInterface(Target, FTopLevelAssetPath(InterfaceClass), bPreserve);
+		if (!bPreserve)
+		{
+			// The engine removed the interface events; their islands go in the same guarded run.
+			TArray<UEdGraph*> AllGraphs;
+			Target->GetAllGraphs(AllGraphs);
+			for (const FInterfaceFunctionPlan& Entry : Plan.Functions)
+			{
+				UEdGraph* Graph = Entry.bIslandRemoval ? FindGraphByGuidIn(AllGraphs, Entry.EventGraphGuid) : nullptr;
+				if (Graph == nullptr)
+				{
+					continue;
+				}
+				for (const FGuid& Guid : Entry.RemovedNodes)
+				{
+					UEdGraphNode* Found = nullptr;
+					for (UEdGraphNode* Candidate : Graph->Nodes)
+					{
+						if (Candidate != nullptr && Candidate->NodeGuid == Guid)
+						{
+							Found = Candidate;
+							break;
+						}
+					}
+					if (Found != nullptr)
+					{
+						FBlueprintEditorUtils::RemoveNode(Target, Found, true);
+					}
+				}
+			}
+		}
 		FBlueprintEditorUtils::MarkBlueprintAsModified(Target);
 		return true;
 	};

@@ -652,4 +652,90 @@ bool FCortexBPReplaceInterfacePackagePathTest::RunTest(const FString& Parameters
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPReplaceInterfaceHashOnlyApplyTest,
+	"Cortex.Blueprint.ReplaceInterface.HashOnlyApply",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+/** #277 item 2: expected_validation_hash alone authorizes apply; expected_fingerprint stays optional and is checked when supplied. */
+bool FCortexBPReplaceInterfaceHashOnlyApplyTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using CortexIssue122ReplaceInterfaceEntryTest::FScope;
+	using CortexIssue122ReplaceInterfaceEntryTest::FImplementer;
+	using CortexIssue122ReplaceInterfaceEntryTest::MakeInterface;
+	using CortexIssue122ReplaceInterfaceEntryTest::MakeImplementer;
+	using CortexIssue122ReplaceInterfaceEntryTest::EntryParams;
+	using CortexIssue122ReplaceInterfaceEntryTest::StringField;
+	using CortexIssue122ReplaceInterfaceEntryTest::InterfaceCount;
+	using CortexIssue122ReplaceInterfaceEntryTest::ApplyParams;
+
+	FScope Scope;
+	UBlueprint* const Old = MakeInterface(Scope, TEXT("BPI_Issue277HashOld"), TEXT("GetValue"), TEXT("Notify"));
+	UBlueprint* const New = MakeInterface(Scope, TEXT("BPI_Issue277HashNew"), TEXT("FetchValue"), TEXT("Alert"));
+	FImplementer Impl;
+	if (!TestNotNull(TEXT("Old BPI"), Old) || !TestNotNull(TEXT("New BPI"), New)
+		|| !TestTrue(TEXT("Implementer"), MakeImplementer(Scope, Old, TEXT("BP_Issue277Hash"), TEXT("GetValue"), TEXT("Notify"), Impl)))
+	{
+		return false;
+	}
+	FCortexBPCommandHandler Handler;
+	const FCortexCommandResult Preview = Handler.Execute(TEXT("replace_interface"), EntryParams(Impl.Blueprint, Old, New, false, true));
+	if (!TestTrue(FString::Printf(TEXT("The preview succeeds: %s"), *Preview.ErrorMessage), Preview.bSuccess))
+	{
+		return false;
+	}
+	const auto HashOnly = [&](const FCortexCommandResult& Source)
+	{
+		TSharedPtr<FJsonObject> Params = EntryParams(Impl.Blueprint, Old, New, false, false);
+		Params->SetStringField(TEXT("expected_validation_hash"), StringField(Source.Data, TEXT("validation_hash")));
+		return Params;
+	};
+
+	// A fingerprint without the hash is refused, naming the field and the dry run field it comes from.
+	{
+		TSharedPtr<FJsonObject> FingerprintOnly = ApplyParams(Impl.Blueprint, Old, New, Preview.Data);
+		FingerprintOnly->RemoveField(TEXT("expected_validation_hash"));
+		const FCortexCommandResult Refused = Handler.Execute(TEXT("replace_interface"), FingerprintOnly);
+		TestEqual(TEXT("A missing hash is refused"), Refused.ErrorCode, FString(CortexErrorCodes::StalePrecondition));
+		TestTrue(TEXT("... naming expected_validation_hash"), Refused.ErrorMessage.Contains(TEXT("expected_validation_hash")));
+		TestTrue(TEXT("... and the dry run's validation_hash field"), Refused.ErrorMessage.Contains(TEXT("validation_hash field")));
+		TestEqual(TEXT("The old interface is still implemented"), InterfaceCount(Impl.Blueprint, Old->GeneratedClass), 1);
+	}
+	// A wrong hash alone is refused.
+	{
+		TSharedPtr<FJsonObject> Wrong = HashOnly(Preview);
+		Wrong->SetStringField(TEXT("expected_validation_hash"), TEXT("0000"));
+		TestFalse(TEXT("A wrong hash alone is refused"), Handler.Execute(TEXT("replace_interface"), Wrong).bSuccess);
+		TestEqual(TEXT("The old interface is still implemented"), InterfaceCount(Impl.Blueprint, Old->GeneratedClass), 1);
+	}
+	// Drift after the preview: the hash commits to the fingerprint it was computed over, so a hash-only apply is stale.
+	{
+		FEdGraphPinType BoolType;
+		BoolType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+		FBlueprintEditorUtils::AddMemberVariable(Impl.Blueprint, TEXT("DriftAfterPreview"), BoolType);
+		const FCortexCommandResult Stale = Handler.Execute(TEXT("replace_interface"), HashOnly(Preview));
+		TestFalse(TEXT("A hash-only apply after drift is refused"), Stale.bSuccess);
+		TestEqual(TEXT("... with STALE_PRECONDITION"), Stale.ErrorCode, FString(CortexErrorCodes::StalePrecondition));
+		TestEqual(TEXT("The old interface is still implemented"), InterfaceCount(Impl.Blueprint, Old->GeneratedClass), 1);
+		FBlueprintEditorUtils::RemoveMemberVariable(Impl.Blueprint, TEXT("DriftAfterPreview"));
+		FKismetEditorUtilities::CompileBlueprint(Impl.Blueprint);
+	}
+
+	const FCortexCommandResult Fresh = Handler.Execute(TEXT("replace_interface"), EntryParams(Impl.Blueprint, Old, New, false, true));
+	if (!TestTrue(FString::Printf(TEXT("A fresh preview succeeds: %s"), *Fresh.ErrorMessage), Fresh.bSuccess))
+	{
+		return false;
+	}
+	const FCortexCommandResult Applied = Handler.Execute(TEXT("replace_interface"), HashOnly(Fresh));
+	if (!TestTrue(FString::Printf(TEXT("The hash-only apply succeeds: [%s] %s"), *Applied.ErrorCode, *Applied.ErrorMessage), Applied.bSuccess))
+	{
+		return false;
+	}
+	TestEqual(TEXT("applied"), StringField(Applied.Data, TEXT("apply_status")), FString(TEXT("applied")));
+	TestEqual(TEXT("The new interface is implemented"), InterfaceCount(Impl.Blueprint, New->GeneratedClass), 1);
+	TestEqual(TEXT("The old interface is gone"), InterfaceCount(Impl.Blueprint, Old->GeneratedClass), 0);
+	return true;
+}
+
 #endif // WITH_EDITOR && WITH_AUTOMATION_TESTS

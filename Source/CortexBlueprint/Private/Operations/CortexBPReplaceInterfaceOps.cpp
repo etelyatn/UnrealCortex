@@ -1,6 +1,9 @@
 #include "Operations/CortexBPReplaceInterfaceOps.h"
 
+#include "CortexGraphFingerprint.h"
 #include "CortexGraphInterfaceMigration.h"
+#include "Engine/Blueprint.h"
+#include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPCommandParams.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -81,10 +84,23 @@ FCortexCommandResult FCortexBPReplaceInterfaceOps::Execute(const TSharedPtr<FJso
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("expected_validation_hash is only valid for apply"));
 	}
-	if (!bDryRun && (Fingerprint == nullptr || ValidationHash.IsEmpty()))
+	// expected_validation_hash alone authorizes apply (#277): the graph-side hash commits to the live graph_authoring_hash at
+	// preview time, so a hash-only apply is stale as soon as the authored content drifts. expected_fingerprint stays checked when supplied.
+	if (!bDryRun && ValidationHash.IsEmpty())
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::StalePrecondition,
-			TEXT("Apply requires expected_fingerprint (= fingerprint_before) and expected_validation_hash (= validation_hash) from a dry_run preview"));
+			TEXT("Apply requires expected_validation_hash (= the validation_hash field of a dry_run preview); expected_fingerprint (= fingerprint_before) is optional"));
+	}
+	TSharedPtr<FJsonObject> LiveFingerprint;
+	if (!bDryRun && Fingerprint == nullptr)
+	{
+		FString LoadError;
+		UBlueprint* const Blueprint = FCortexBPAssetOps::LoadBlueprint(AssetPath, LoadError);
+		if (Blueprint == nullptr)
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::BlueprintNotFound, LoadError);
+		}
+		LiveFingerprint = FCortexGraphFingerprint::Compute(Blueprint);
 	}
 
 	FString PatchId;
@@ -122,6 +138,11 @@ FCortexCommandResult FCortexBPReplaceInterfaceOps::Execute(const TSharedPtr<FJso
 	if (Fingerprint != nullptr)
 	{
 		PatchRequest->SetObjectField(TEXT("expected_fingerprint"), *Fingerprint);
+	}
+	else if (LiveFingerprint.IsValid())
+	{
+		// The shared patch route requires a fingerprint object; the validation hash is what binds this apply to the preview.
+		PatchRequest->SetObjectField(TEXT("expected_fingerprint"), LiveFingerprint);
 	}
 	if (!ValidationHash.IsEmpty())
 	{

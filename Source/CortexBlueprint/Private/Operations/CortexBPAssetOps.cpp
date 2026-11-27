@@ -1441,6 +1441,33 @@ FCortexCommandResult FCortexBPAssetOps::GetInfo(const TSharedPtr<FJsonObject>& P
 	}
 	InfoObj->SetArrayField(TEXT("graphs"), GraphsArray);
 
+	// Interfaces this Blueprint itself implements (#277); interfaces inherited from the parent are not listed.
+	TArray<TSharedPtr<FJsonValue>> InterfacesArray;
+	for (const FBPInterfaceDescription& Description : BP->ImplementedInterfaces)
+	{
+		if (Description.Interface == nullptr)
+		{
+			continue;
+		}
+		const UBlueprintGeneratedClass* const InterfaceBlueprintClass = Cast<UBlueprintGeneratedClass>(Description.Interface.Get());
+		const UBlueprint* const InterfaceBlueprint = InterfaceBlueprintClass != nullptr
+			? Cast<UBlueprint>(InterfaceBlueprintClass->ClassGeneratedBy) : nullptr;
+		TSharedPtr<FJsonObject> InterfaceObj = MakeShared<FJsonObject>();
+		InterfaceObj->SetStringField(TEXT("name"), InterfaceBlueprint != nullptr ? InterfaceBlueprint->GetName() : Description.Interface->GetName());
+		InterfaceObj->SetStringField(TEXT("path"), InterfaceBlueprint != nullptr ? InterfaceBlueprint->GetPathName() : Description.Interface->GetPathName());
+		InterfaceObj->SetBoolField(TEXT("is_blueprint"), InterfaceBlueprintClass != nullptr);
+		TArray<TSharedPtr<FJsonValue>> ImplementationGraphs;
+		for (const UEdGraph* Graph : Description.Graphs)
+		{
+			if (Graph != nullptr)
+			{
+				ImplementationGraphs.Add(MakeShared<FJsonValueString>(Graph->GetName()));
+			}
+		}
+		InterfaceObj->SetArrayField(TEXT("implementation_graphs"), ImplementationGraphs);
+		InterfacesArray.Add(MakeShared<FJsonValueObject>(InterfaceObj));
+	}
+	InfoObj->SetArrayField(TEXT("interfaces"), InterfacesArray);
 	// Return success
 	Result.bSuccess = true;
 	Result.Data = InfoObj;
