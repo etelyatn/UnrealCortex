@@ -666,6 +666,9 @@ bool FCortexReflectNameLookupCommandTest::RunTest(const FString& Parameters)
 			TestTrue(TEXT("summary counts cpp hits"), Summary.Data->HasField(TEXT("cpp_total")));
 			TestTrue(TEXT("summary counts blueprint hits"), Summary.Data->HasField(TEXT("blueprint_total")));
 			TestTrue(TEXT("summary keeps at most the first 10 cpp hits"), ObjectArray(Summary.Data, TEXT("cpp")).Num() <= 10);
+			bool bTruncated = true;
+			TestTrue(TEXT("summary reports truncated"), Summary.Data->TryGetBoolField(TEXT("truncated"), bTruncated));
+			TestFalse(TEXT("nothing was capped, so truncated is false"), bTruncated);
 			FString Text;
 			TSharedPtr<FJsonObject> File;
 			if (TestTrue(TEXT("report file is written"), FFileHelper::LoadFileToString(Text, *OutPath))

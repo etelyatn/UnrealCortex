@@ -62,7 +62,8 @@ namespace CortexReflectAssetEnumeration
 	/**
 	 * Writes Full to OutPath and returns the compact response: every field of Full except the arrays named in
 	 * TruncatedArrays is copied as is; each named array keeps its first SummaryEntryLimit entries and gains a
-	 * `<name>_total` count; `out_path` is added.
+	 * `<name>_total` count; `truncated` (bool) and `truncated_arrays` (names of the arrays that actually lost
+	 * entries, empty when none did) are always added so a capped list is never silent; `out_path` is added.
 	 */
 	FCortexCommandResult WriteReportWithSummary(
 		const FCortexResolvedFilePath& OutPath, const TSharedRef<FJsonObject>& Full, const TArray<FString>& TruncatedArrays);

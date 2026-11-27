@@ -77,8 +77,8 @@ TArray<FCortexCommandInfo> FCortexQACommandHandler::GetSupportedCommands() const
         FCortexCommandInfo{ TEXT("get_actor_state"), TEXT("Get detailed state for a specific actor in PIE") }
             .Required(TEXT("actor"), TEXT("string"), TEXT("Actor identifier")),
         FCortexCommandInfo{ TEXT("get_player_state"), TEXT("Get detailed player pawn/controller state in PIE") },
-        FCortexCommandInfo{ TEXT("look_at"), TEXT("Rotate player control to face a target actor or world location") }
-            .Required(TEXT("target"), TEXT("object"), TEXT("Target actor or world-space location")),
+        FCortexCommandInfo{ TEXT("look_at"), TEXT("Rotate player control to face a target actor or world location. Aims from the camera viewpoint (PlayerCameraManager camera location, else the pawn view location), not the pawn origin; the response reports control_rotation and view_origin [x,y,z]") }
+            .Required(TEXT("target"), TEXT("object"), TEXT("Target actor name or world-space [x,y,z] location")),
         FCortexCommandInfo{ TEXT("interact"), TEXT("Inject interaction key input for gameplay interaction") }
             .Required(TEXT("target"), TEXT("object"), TEXT("Target actor or world-space location"))
             .Optional(TEXT("key"), TEXT("string"), TEXT("Interaction key"))

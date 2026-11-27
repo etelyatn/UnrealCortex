@@ -247,6 +247,15 @@ bool FCortexReflectFindInterfaceCallersTest::RunTest(const FString& Parameters)
 	{
 		TestEqual(TEXT("The summary keeps the first 10 callers"), Objects(FileResult.Data, TEXT("callers")).Num(), 10);
 		TestEqual(TEXT("... and totals all 12"), static_cast<int32>(FileResult.Data->GetNumberField(TEXT("callers_total"))), 12);
+		bool bTruncated = false;
+		TestTrue(TEXT("The summary reports truncated"), FileResult.Data->TryGetBoolField(TEXT("truncated"), bTruncated));
+		TestTrue(TEXT("... as true, because callers lost entries"), bTruncated);
+		const TArray<TSharedPtr<FJsonValue>>* TruncatedArrays = nullptr;
+		if (TestTrue(TEXT("The summary lists truncated_arrays"), FileResult.Data->TryGetArrayField(TEXT("truncated_arrays"), TruncatedArrays)))
+		{
+			TestTrue(TEXT("... including callers"), TruncatedArrays->ContainsByPredicate([](const TSharedPtr<FJsonValue>& Name) { return Name->AsString() == TEXT("callers"); }));
+			TestFalse(TEXT("... but not implementers, which fit"), TruncatedArrays->ContainsByPredicate([](const TSharedPtr<FJsonValue>& Name) { return Name->AsString() == TEXT("implementers"); }));
+		}
 		FString Text;
 		TSharedPtr<FJsonObject> Written;
 		TestTrue(TEXT("The report file is written"), FFileHelper::LoadFileToString(Text, *ReportPath));

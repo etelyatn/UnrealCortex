@@ -1061,6 +1061,14 @@ bool FCortexReflectDuplicateGraphOutPathTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("summary counts the exact groups"), static_cast<int32>(Result.Data->GetNumberField(TEXT("exact_groups_total"))), 1);
 		TestTrue(TEXT("summary keeps at most the first 10 groups"), ObjectArray(Result.Data, TEXT("exact_groups")).Num() <= 10);
 		TestTrue(TEXT("summary counts the pairs"), Result.Data->HasField(TEXT("blueprint_pairs_total")));
+		bool bTruncated = true;
+		TestTrue(TEXT("summary reports truncated"), Result.Data->TryGetBoolField(TEXT("truncated"), bTruncated));
+		TestFalse(TEXT("nothing was capped, so truncated is false"), bTruncated);
+		const TArray<TSharedPtr<FJsonValue>>* TruncatedArrays = nullptr;
+		if (TestTrue(TEXT("summary lists truncated_arrays"), Result.Data->TryGetArrayField(TEXT("truncated_arrays"), TruncatedArrays)))
+		{
+			TestEqual(TEXT("truncated_arrays is empty"), TruncatedArrays->Num(), 0);
+		}
 		const TSharedPtr<FJsonObject>* Matched = nullptr;
 		if (TestTrue(TEXT("matched_assets in the summary"), Result.Data->TryGetObjectField(TEXT("matched_assets"), Matched)))
 		{
