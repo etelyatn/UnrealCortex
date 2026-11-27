@@ -9,6 +9,8 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Input/CursorReply.h"
+#include "Input/Events.h"
 #include "GameFramework/PlayerController.h"
 #include "GenericPlatform/GenericApplication.h"
 #include "GenericPlatform/ICursor.h"
@@ -198,19 +200,33 @@ FCortexCommandResult FCortexEditorCursorOps::SetPIECursor(const TSharedPtr<FJson
 			TEXT("This platform has no OS cursor to place"));
 	}
 
-	// FSceneViewport::bCursorHiddenDueToCapture is not exposed, so the state is reconstructed from the
-	// public conditions that set it (FSceneViewport::OnMouseButtonDown): the viewport holds mouse capture,
-	// the game viewport client hides the cursor during capture and the player controller shows the cursor.
-	// While it is set, FSceneViewport::OnMouseMove warps the OS cursor back on every move.
+	// FSceneViewport::bCursorHiddenDueToCapture is latched at mouse-down (OnMouseButtonDown) and cleared
+	// only by mouse-up or the capture-mode tick; it has no public accessor (SceneViewport.h:459), and
+	// while it is latched FSceneViewport::OnMouseMove warps the OS cursor back on every move. Public
+	// queries that expose it, all evaluated only while the viewport holds mouse capture:
+	//  - OnCursorQuery (SceneViewport.h:252) answers EMouseCursor::None while the latch is set. The same
+	//    answer also comes from a player controller that hides its cursor (APlayerController::GetMouseCursor),
+	//    so it identifies the latch only while the controller shows the cursor. That holds even when
+	//    HideCursorDuringCapture or the input mode changed after the latch, which the current settings alone miss.
+	//  - Current settings that would latch on the next mouse-down: HideCursorDuringCapture
+	//    (ViewportClient.h:355) with a cursor-showing controller.
+	//  - IsCursorVisible (SceneViewport.h:79) is conservative extra: only editor viewport clients call
+	//    ShowCursor (EditorViewportClient.cpp:5970), so it stays true for a game viewport.
+	// Residual: latched, then the controller hides its cursor while still captured, is not observable
+	// through public API and is not refused.
 	const APlayerController* PlayerController = LocalPlayer->PlayerController;
-	if (Viewport->HasMouseCapture()
-		&& ViewportClient->HideCursorDuringCapture()
-		&& PlayerController != nullptr
-		&& PlayerController->ShouldShowMouseCursor())
+	if (Viewport->HasMouseCapture())
 	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InvalidOperation,
-			TEXT("The PIE viewport holds hidden-cursor mouse capture; the engine warps the cursor back on the next move, so an override would not persist. Release the capture (input mode without HideCursorDuringCapture, or a mouse button release) and retry."));
+		const bool bPlayerShowsCursor = PlayerController != nullptr && PlayerController->ShouldShowMouseCursor();
+		const bool bCursorQueryHidden = bPlayerShowsCursor
+			&& Viewport->OnCursorQuery(FGeometry(), FPointerEvent()).GetCursorType() == EMouseCursor::None;
+		if (!Viewport->IsCursorVisible()
+			|| (bPlayerShowsCursor && (ViewportClient->HideCursorDuringCapture() || bCursorQueryHidden)))
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::InvalidOperation,
+				TEXT("The PIE viewport holds hidden-cursor mouse capture; the engine warps the cursor back on the next move, so an override would not persist. Release the capture (input mode without HideCursorDuringCapture, or a mouse button release) and retry."));
+		}
 	}
 
 	// A restore left pending by a session that ended within the last tick is applied before this session records.

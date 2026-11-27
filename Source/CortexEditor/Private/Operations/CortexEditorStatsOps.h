@@ -22,13 +22,17 @@ public:
 	 * timeout_seconds (number 1-300, default 30).
 	 *
 	 * Invalid fields -> INVALID_FIELD. A capture already running, STATS compiled out, stats disabled for the
-	 * process, or no deferred callback -> INVALID_OPERATION. Otherwise the result is deferred and the callback
-	 * completes exactly once: success, TIMEOUT at the capture deadline, or EDITOR_NOT_AVAILABLE when the module
-	 * shuts down mid-capture.
+	 * process, module shutting down, or no deferred callback -> INVALID_OPERATION. Otherwise the result is
+	 * deferred and the callback completes exactly once: success, INVALID_OPERATION when the stats pipe reports
+	 * raw-stats mode (stat dumpspam), TIMEOUT when the last frame does not arrive by the capture deadline, or
+	 * EDITOR_NOT_AVAILABLE when the module shuts down mid-capture.
 	 */
 	static FCortexCommandResult CaptureStats(const TSharedPtr<FJsonObject>& Params, FDeferredResponseCallback DeferredCallback);
 
-	/** Module shutdown: completes a running capture, unsubscribes from the stats thread and drains the stats pipe. Game thread. */
+	/**
+	 * Module shutdown, game thread. Closes admission first, then completes a running capture and blocks until its
+	 * stats-thread unsubscribe and a stats-pipe barrier have run, so no module code stays queued at unload.
+	 */
 	static void Shutdown();
 
 	/** True while a capture is running (its deferred callback has not completed yet). Game thread. */

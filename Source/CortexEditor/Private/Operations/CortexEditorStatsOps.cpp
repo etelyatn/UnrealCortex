@@ -69,6 +69,10 @@ namespace CortexEditorStatsPrivate
 		double FrameMaxMs = 0.0;
 		TArray<FNodeResult> Nodes;
 		bool bTruncated = false;
+		/** Stats-pipe clock (FPlatformTime::Seconds) when the last requested frame arrived; the success deadline is judged against it. */
+		double CompletedAtSeconds = 0.0;
+		/** Non-empty: the capture was refused on the stats pipe (raw-stats mode) and completes with INVALID_OPERATION. */
+		FString Refusal;
 	};
 
 	FCortexCommandResult MakeInvalidField(const FString& Message)
@@ -201,6 +205,10 @@ namespace CortexEditorStatsPrivate
 
 	FCortexCommandResult ResultToCommandResult(const FCaptureResult& Result)
 	{
+		if (!Result.Refusal.IsEmpty())
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, Result.Refusal);
+		}
 		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 		Data->SetNumberField(TEXT("frame_count"), Result.FrameCount);
 		Data->SetNumberField(TEXT("first_frame"), static_cast<double>(Result.FirstFrame));
@@ -442,10 +450,13 @@ namespace CortexEditorStatsPrivate
 	TSharedPtr<FCapture, ESPMode::ThreadSafe> GActiveCapture;
 	/** Game-thread only: set once a capture touched the stats pipe, so shutdown only drains when needed. */
 	bool bPipeEverUsed = false;
+	/** Game-thread only: set first thing in Shutdown, so no completion callback can admit a new capture. */
+	bool bShuttingDown = false;
 
 	/**
 	 * Thread ownership:
 	 *  - Game thread: Callback, bCompleted, DeadlineSeconds, TickerHandle, GActiveCapture.
+	 *  - Immutable after construction (read on the pipe too): Params.
 	 *  - Stats pipe (serialised, never concurrent with itself): Root, NumFrames, FirstFrame, LastFrame,
 	 *    FrameTime*, Handle, bSubscribed and every call into FStatsThreadState / FThreadStats.
 	 *  - Shared: Mailbox (guarded by MailboxLock) and FramesCaptured (atomic).
@@ -527,6 +538,19 @@ namespace CortexEditorStatsPrivate
 		void BeginOnStatsPipe()
 		{
 			FStatsThreadState& Stats = FStatsThreadState::GetLocalState();
+			// Raw-stats mode (stat dumpspam) routes packets to NewRawStatPacket instead of building frames, so
+			// NewFrameDelegate would never fire. The engine itself branches on NewRawStatPacket.IsBound()
+			// (StatsData.cpp:1063); every engine path that enables raw stats binds it (StatsCommand.cpp:1827-1829,
+			// StatsFile.cpp:435), while the mode flag itself (FThreadStats::bIsRawStatsActive) is private.
+			// Refuse instead of waiting for a deadline; engine state is left untouched.
+			if (Stats.NewRawStatPacket.IsBound())
+			{
+				FCaptureResult Refused;
+				Refused.Refusal = TEXT("Stats raw-stats mode is active (stat dumpspam), which delivers raw packets instead of frames, so a frame capture is impossible. Stop it first (stat dumpspam -stop)");
+				FScopeLock Lock(&MailboxLock);
+				Mailbox = MoveTemp(Refused);
+				return;
+			}
 			FThreadStats::PrimaryEnableAdd();
 			Handle = Stats.NewFrameDelegate.AddRaw(this, &FCapture::OnNewFrame);
 			bSubscribed = true;
@@ -584,6 +608,9 @@ namespace CortexEditorStatsPrivate
 			{
 				FCaptureResult Result = BuildResult();
 				EndOnStatsPipe();
+				// Stamped when the last frame arrived, not when the game thread notices, so a stalled ticker cannot
+				// turn a late capture into a success.
+				Result.CompletedAtSeconds = FPlatformTime::Seconds();
 				FScopeLock Lock(&MailboxLock);
 				Mailbox = MoveTemp(Result);
 			}
@@ -631,25 +658,35 @@ namespace CortexEditorStatsPrivate
 			}
 			if (Ready.IsSet())
 			{
+				if (Ready.GetValue().CompletedAtSeconds > DeadlineSeconds)
+				{
+					CompleteWithTimeout(FMath::Max(0, Ready.GetValue().FrameCount - 1));
+					return false;
+				}
 				Complete(ResultToCommandResult(Ready.GetValue()));
 				return false;
 			}
 
 			if (FPlatformTime::Seconds() >= DeadlineSeconds)
 			{
-				const int32 Captured = FramesCaptured.load(std::memory_order_relaxed);
-				FCortexCommandResult Timeout = FCortexCommandRouter::Error(
-					CortexErrorCodes::Timeout,
-					FString::Printf(
-						TEXT("Stats capture collected %d of %d frames within %.1f seconds. Stats frames stop arriving when the editor stalls or raw-stats mode (stat dumpspam) is active."),
-						Captured, Params.Frames, Params.TimeoutSeconds));
-				Timeout.AddContext(TEXT("frames_captured"), Captured);
-				Timeout.AddContext(TEXT("frames_requested"), Params.Frames);
-				RequestEndOnStatsPipe();
-				Complete(MoveTemp(Timeout));
+				CompleteWithTimeout(FramesCaptured.load(std::memory_order_relaxed));
 				return false;
 			}
 			return true;
+		}
+
+		/** Game thread. Deadline passed (or the last frame arrived after it): TIMEOUT, capture released. */
+		void CompleteWithTimeout(int32 Captured)
+		{
+			FCortexCommandResult Timeout = FCortexCommandRouter::Error(
+				CortexErrorCodes::Timeout,
+				FString::Printf(
+					TEXT("Stats capture collected %d of %d frames within %.1f seconds. Stats frames stop arriving when the editor stalls."),
+					Captured, Params.Frames, Params.TimeoutSeconds));
+			Timeout.AddContext(TEXT("frames_captured"), Captured);
+			Timeout.AddContext(TEXT("frames_requested"), Params.Frames);
+			RequestEndOnStatsPipe();
+			Complete(MoveTemp(Timeout));
 		}
 
 		/** Exactly-once completion. */
@@ -700,6 +737,11 @@ FCortexCommandResult FCortexEditorStatsOps::CaptureStats(const TSharedPtr<FJsonO
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 			TEXT("editor.capture_stats answers through a deferred callback; this call has none"));
 	}
+	if (bShuttingDown)
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+			TEXT("The CortexEditor module is shutting down; stats captures are closed"));
+	}
 	if (GActiveCapture.IsValid())
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
@@ -727,6 +769,8 @@ void FCortexEditorStatsOps::Shutdown()
 #if STATS
 	using namespace CortexEditorStatsPrivate;
 
+	// Close admission before any callback runs, so a completion callback cannot start a new capture.
+	bShuttingDown = true;
 	if (!bPipeEverUsed)
 	{
 		return;
@@ -736,12 +780,12 @@ void FCortexEditorStatsOps::Shutdown()
 	{
 		Active->AbortForShutdown();
 	}
-	// The pipe is FIFO: once this no-op ran, every earlier Begin/End task (module code) has finished.
-	UE::Tasks::FTask Drain = GStatsPipe.Launch(TEXT("CortexCaptureStatsDrain"), []() {});
-	if (!Drain.Wait(FTimespan::FromSeconds(10.0)))
-	{
-		UE_LOG(LogCortexEditor, Warning, TEXT("Stats pipe did not drain within 10 s while shutting down the stats capture"));
-	}
+	// The pipe is FIFO: once this barrier ran, every earlier Begin/End task (module code, including the End task
+	// queued above) has finished and nothing of this module is left queued on the pipe. No timeout: the engine
+	// drains GStatsPipe at shutdown the same way (StatsSystemTypes.cpp:1329), and returning early would leave
+	// queued lambdas referencing module code at unload.
+	UE::Tasks::FTask Barrier = GStatsPipe.Launch(TEXT("CortexCaptureStatsDrain"), []() {});
+	Barrier.Wait();
 #endif
 }
 

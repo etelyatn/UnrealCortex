@@ -91,18 +91,36 @@ bool FCortexEditorInputResolvesActionAssetFormsTest::RunTest(const FString& Para
 	}
 
 	// --- A saved asset resolves by package path and by object path after it is unloaded. -----------
-	const FString PackageName = TEXT("/Game/Test/Issue276/IA_Issue276Probe");
-	const FString AssetName = TEXT("IA_Issue276Probe");
+	// A unique package per run keeps concurrent or aborted runs from colliding; only the owned file is
+	// deleted, and the shared fixture directory only when it is empty.
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits).Right(8);
+	const FString AssetName = FString::Printf(TEXT("IA_Issue276Probe_%s"), *Suffix);
+	const FString PackageName = FString::Printf(TEXT("/Game/Test/Issue276/%s"), *AssetName);
 	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *PackageName, *AssetName);
 	const FString PackageFilename = FPackageName::LongPackageNameToFilename(
 		PackageName, FPackageName::GetAssetPackageExtension());
 
 	IAssetRegistry& Registry = FAssetRegistryModule::GetRegistry();
 
+	// Registered before anything is created or saved, so every exit path releases the fixture.
+	auto CleanupFixture = [&PackageName, &ObjectPath, &PackageFilename, &Registry]()
+	{
+		UInputAction* Loaded = FindObject<UInputAction>(nullptr, *ObjectPath);
+		if (IsValid(Loaded))
+		{
+			Loaded->MarkAsGarbage();
+		}
+		UnloadInputResolveFixture(PackageName);
+		IFileManager::Get().Delete(*PackageFilename, false, true);
+		IFileManager::Get().DeleteDirectory(*FPaths::GetPath(PackageFilename), false, false);
+		Registry.ScanModifiedAssetFiles({ PackageFilename });
+	};
+
 	UPackage* Package = CreatePackage(*PackageName);
 	UInputAction* Asset = NewObject<UInputAction>(Package, FName(*AssetName), RF_Public | RF_Standalone);
 	if (!TestNotNull(TEXT("saved fixture created"), Asset))
 	{
+		CleanupFixture();
 		return false;
 	}
 	Asset->ValueType = EInputActionValueType::Axis2D;
@@ -112,18 +130,10 @@ bool FCortexEditorInputResolvesActionAssetFormsTest::RunTest(const FString& Para
 	SaveArgs.SaveFlags = SAVE_NoError;
 	if (!TestTrue(TEXT("fixture package saved"), UPackage::SavePackage(Package, Asset, *PackageFilename, SaveArgs)))
 	{
-		Asset->MarkAsGarbage();
+		CleanupFixture();
 		return false;
 	}
 	Registry.ScanFilesSynchronous({ PackageFilename }, true);
-
-	auto CleanupFixture = [&PackageName, &PackageFilename, &Registry]()
-	{
-		UnloadInputResolveFixture(PackageName);
-		IFileManager::Get().Delete(*PackageFilename, false, true);
-		IFileManager::Get().DeleteDirectory(*FPaths::GetPath(PackageFilename), false, true);
-		Registry.ScanModifiedAssetFiles({ PackageFilename });
-	};
 
 	// Resolution forms are exercised while the package is not loaded, so the load path is covered.
 	auto UnloadFixture = [this, &PackageName, &ObjectPath]() -> bool
