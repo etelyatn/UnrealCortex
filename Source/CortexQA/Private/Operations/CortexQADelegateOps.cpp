@@ -167,15 +167,16 @@ FCortexCommandResult FCortexQADelegateOps::BroadcastDelegate(const TSharedPtr<FJ
         TArray<FString> Problems;
         if (ArgsObject != nullptr && ArgsObject->IsValid())
         {
-            for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*ArgsObject)->Values)
+            for (const auto& Pair : (*ArgsObject)->Values)
             {
-                const bool bKnown = ParamProperties.ContainsByPredicate([&Pair](const FProperty* ParamProperty)
+                const FString ArgName = CortexEngineCompat::JsonKeyToString(Pair.Key);
+                const bool bKnown = ParamProperties.ContainsByPredicate([&ArgName](const FProperty* ParamProperty)
                 {
-                    return ParamProperty->GetName() == Pair.Key;
+                    return ParamProperty->GetName() == ArgName;
                 });
                 if (!bKnown)
                 {
-                    Problems.Add(FString::Printf(TEXT("unknown arg '%s'"), *Pair.Key));
+                    Problems.Add(FString::Printf(TEXT("unknown arg '%s'"), *ArgName));
                 }
             }
         }
