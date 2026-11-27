@@ -51,6 +51,14 @@ public:
 		UBlueprint* Blueprint,
 		const TSharedPtr<FJsonObject>& NodeParams,
 		FCortexCommandResult& OutError);
+	/**
+	 * Node class that actually gets constructed for a resolved family class and construction params:
+	 * a `CallFunction` with `call_kind: interface_message` is built as `UK2Node_Message`, every other
+	 * request keeps the family class.
+	 */
+	static UClass* ResolveConstructionClass(
+		UClass* FamilyClass,
+		const TSharedPtr<FJsonObject>& NodeParams);
 	static bool ApplyNodeConstructionParams(
 		UEdGraph* Graph,
 		UEdGraphNode* NewNode,

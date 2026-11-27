@@ -232,6 +232,11 @@ struct FCortexGraphMigrationPrunePlan
 	bool bAwaitingApproval = false;
 	/** True when the approved set is already absent: an idempotent replay that removes nothing. */
 	bool bReused = false;
+	/**
+	 * True when the request opted in to `include_result_producers`: pure data nodes whose only consumers are removed
+	 * nodes or a retained function result node join the removable set. Part of the plan, so the validation hash binds it.
+	 */
+	bool bIncludeResultProducers = false;
 
 	TSharedPtr<FJsonObject> ToJson() const;
 	static bool FromJson(

@@ -3,6 +3,7 @@
 
 #include "CortexBlueprintModule.h"
 #include "CortexGraphTree.h"
+#include "CortexGraphNodeVariation.h"
 #include "CortexTypes.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -89,7 +90,8 @@ namespace
 
 	bool IsConditionalNode(const UEdGraphNode* Node)
 	{
-		if (Node->IsA<UK2Node_IfThenElse>() || Node->IsA<UK2Node_Switch>() || Node->IsA<UK2Node_Select>())
+		if (Node->IsA<UK2Node_IfThenElse>() || Node->IsA<UK2Node_Switch>() || Node->IsA<UK2Node_Select>()
+			|| FCortexGraphNodeVariation::IsConditionalVariableGet(Node))
 		{
 			return true;
 		}

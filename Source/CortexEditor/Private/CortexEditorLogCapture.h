@@ -58,7 +58,8 @@ public:
 		const FString& CategoryFilter,
 		int32 Limit = 200,
 		int32 UntilCursor = INDEX_NONE,
-		bool bCountOnly = false) const;
+		bool bCountOnly = false,
+		const FString& ContainsFilter = FString()) const;
 
 private:
 	bool PassesSeverity(ELogVerbosity::Type Value, ELogVerbosity::Type MinSeverity) const;

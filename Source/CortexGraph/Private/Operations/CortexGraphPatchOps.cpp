@@ -273,6 +273,10 @@ FCortexGraphPatchLocators MakePreparedLocators(const FCortexGraphPreparedPatch& 
 	Locators.NodeGuidByClientId = Prepared.NodeGuidByClientId;
 	Locators.EntryNodeGuid = Prepared.EntryNodeGuid;
 	Locators.bHasEntryNode = Prepared.bHasEntryNode;
+	Locators.ResultNodeGuid = Prepared.ResultNodeGuid;
+	Locators.bHasResultNode = Prepared.bHasResultNode;
+	Locators.ParentCallNodeGuid = Prepared.ParentCallNodeGuid;
+	Locators.bHasParentCallNode = Prepared.bHasParentCallNode;
 	return Locators;
 }
 
@@ -727,11 +731,13 @@ bool ParseTarget(
 bool ParseEndpoint(const TSharedPtr<FJsonObject>& Endpoint, FString& OutIdentity, FString& OutPin, bool& OutEntry, FCortexCommandResult& OutError, const FString& Context)
 {
 	OutEntry = false;
-	if (!Endpoint.IsValid() || !HasOnlyFields(Endpoint, { TEXT("client_id"), TEXT("node_guid"), TEXT("entry"), TEXT("pin") }, OutError, Context)) return false;
+	if (!Endpoint.IsValid() || !HasOnlyFields(Endpoint, { TEXT("client_id"), TEXT("node_guid"), TEXT("entry"), TEXT("result"), TEXT("parent_call"), TEXT("pin") }, OutError, Context)) return false;
 	const bool bClient = Endpoint->HasField(TEXT("client_id"));
 	const bool bGuid = Endpoint->HasField(TEXT("node_guid"));
 	const bool bEntry = Endpoint->HasField(TEXT("entry"));
-	if (static_cast<int32>(bClient) + static_cast<int32>(bGuid) + static_cast<int32>(bEntry) != 1)
+	const bool bResult = Endpoint->HasField(TEXT("result"));
+	const bool bParentCall = Endpoint->HasField(TEXT("parent_call"));
+	if (static_cast<int32>(bClient) + static_cast<int32>(bGuid) + static_cast<int32>(bEntry) + static_cast<int32>(bResult) + static_cast<int32>(bParentCall) != 1)
 	{
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s requires exactly one endpoint identity"), *Context));
 		return false;
@@ -746,6 +752,26 @@ bool ParseEndpoint(const TSharedPtr<FJsonObject>& Endpoint, FString& OutIdentity
 		}
 		OutEntry = true;
 		OutIdentity = TEXT("entry");
+	}
+	else if (bParentCall)
+	{
+		bool ParentCallValue = false;
+		if (!Endpoint->TryGetBoolField(TEXT("parent_call"), ParentCallValue) || !ParentCallValue)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s.parent_call must be true"), *Context));
+			return false;
+		}
+		OutIdentity = TEXT("parent_call");
+	}
+	else if (bResult)
+	{
+		bool ResultValue = false;
+		if (!Endpoint->TryGetBoolField(TEXT("result"), ResultValue) || !ResultValue)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("%s.result must be true"), *Context));
+			return false;
+		}
+		OutIdentity = TEXT("result");
 	}
 	else if (bClient)
 	{
@@ -1307,7 +1333,7 @@ bool FCortexGraphPatchOps::Preflight(
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("normalized request exceeds max_request_size_bytes=65536"));
 		return false;
 	}
-	if (!HasOnlyFields(Params, { TEXT("asset_path"), TEXT("target"), TEXT("patch_id"), TEXT("expected_fingerprint"), TEXT("nodes"), TEXT("connections"), TEXT("pin_updates"), TEXT("dry_run"), TEXT("compile"), TEXT("save"), TEXT("allow_noop"), TEXT("expected_validation_hash"), TEXT("migration") }, OutError, TEXT("patch request"))) return false;
+	if (!HasOnlyFields(Params, { TEXT("asset_path"), TEXT("target"), TEXT("patch_id"), TEXT("expected_fingerprint"), TEXT("nodes"), TEXT("connections"), TEXT("disconnect"), TEXT("pin_updates"), TEXT("dry_run"), TEXT("compile"), TEXT("save"), TEXT("allow_noop"), TEXT("expected_validation_hash"), TEXT("migration") }, OutError, TEXT("patch request"))) return false;
 	FString AssetPath;
 	// Both spellings every Blueprint command accepts name the asset: the package path (/Game/X/BP_A) and the object path (/Game/X/BP_A.BP_A).
 	if (!ReadRequiredString(Params, TEXT("asset_path"), AssetPath, OutError)
@@ -1392,7 +1418,7 @@ bool FCortexGraphPatchOps::Preflight(
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("migration must be an object"));
 			return false;
 		}
-		for (const TCHAR* AuthoringField : { TEXT("nodes"), TEXT("connections"), TEXT("pin_updates") })
+		for (const TCHAR* AuthoringField : { TEXT("nodes"), TEXT("connections"), TEXT("disconnect"), TEXT("pin_updates") })
 		{
 			if (!Params->HasField(AuthoringField)) continue;
 			const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
@@ -2077,6 +2103,20 @@ bool FCortexGraphPatchOps::Preflight(
 		OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("connections exceeds max_edges=256"));
 		return false;
 	}
+	const TArray<TSharedPtr<FJsonValue>>* Disconnects = nullptr;
+	if (Params->HasField(TEXT("disconnect")))
+	{
+		if (!Params->TryGetArrayField(TEXT("disconnect"), Disconnects) || !Disconnects)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("disconnect must be an array"));
+			return false;
+		}
+		if (Disconnects->Num() > MaxEdges)
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::LimitExceeded, TEXT("disconnect exceeds max_edges=256"));
+			return false;
+		}
+	}
 
 	TSharedPtr<FJsonObject> Normalized = MakeShared<FJsonObject>();
 	Normalized->SetStringField(TEXT("asset_path"), Blueprint->GetPathName());
@@ -2124,11 +2164,28 @@ bool FCortexGraphPatchOps::Preflight(
 			}
 		}
 	}
+	if (!bNeedsExistingModel && Disconnects)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *Disconnects)
+		{
+			const TSharedPtr<FJsonObject> Disconnect = Value->AsObject();
+			const TSharedPtr<FJsonObject>* Endpoint = nullptr;
+			if (Disconnect.IsValid()
+				&& ((Disconnect->TryGetObjectField(TEXT("from"), Endpoint) && Endpoint && (*Endpoint)->HasField(TEXT("node_guid")))
+					|| (Disconnect->TryGetObjectField(TEXT("to"), Endpoint) && Endpoint && (*Endpoint)->HasField(TEXT("node_guid")))))
+			{
+				bNeedsExistingModel = true;
+				break;
+			}
+		}
+	}
 	if (bNeedsExistingModel)
 	{
 		CloneExistingGraphIntoPlanningGraph(TargetGraph, PlanningGraph, PlannedNodes);
 	}
 	const bool bImplementationTarget = Target->HasField(TEXT("implementation"));
+	int32 PlannedResultCount = 0;
+	int32 PlannedParentCallCount = 0;
 	if (bImplementationTarget)
 	{
 		const TSharedPtr<FJsonObject>* SelectorPtr = nullptr;
@@ -2166,7 +2223,11 @@ bool FCortexGraphPatchOps::Preflight(
 		}
 		else
 		{
-			GetDefault<UEdGraphSchema_K2>()->CreateFunctionGraphTerminators(*PlanningGraph, ImplementationPlan.Function);
+			// Plan through the engine path the apply uses (the class overload that EnsureForPatch reaches via
+			// AddFunctionGraph(..., FunctionClass)), so a BlueprintCallable override carries its parent-call node and the
+			// links the real graph will have. The terminators derive the function from the graph's name.
+			PlanningGraph->Rename(*ImplementationPlan.Function->GetName(), nullptr, REN_DontCreateRedirectors | REN_NonTransactional);
+			GetDefault<UEdGraphSchema_K2>()->CreateFunctionGraphTerminators(*PlanningGraph, ImplementationPlan.FunctionClass);
 			for (UEdGraphNode* Node : PlanningGraph->Nodes)
 			{
 				if (Cast<UK2Node_FunctionEntry>(Node))
@@ -2174,6 +2235,47 @@ bool FCortexGraphPatchOps::Preflight(
 					PlannedNodes.Add(TEXT("entry"), Node);
 					break;
 				}
+			}
+		}
+		// Reserved locator `result`: the function result node of a function implementation. It is
+		// addressable only when the graph has exactly one, so the locator never picks between several.
+		UEdGraphNode* PlannedResultNode = nullptr;
+		for (UEdGraphNode* Candidate : PlanningGraph->Nodes)
+		{
+			if (Cast<UK2Node_FunctionResult>(Candidate))
+			{
+				++PlannedResultCount;
+				PlannedResultNode = Candidate;
+			}
+		}
+		if (PlannedResultCount == 1)
+		{
+			PlannedNodes.Add(TEXT("result"), PlannedResultNode);
+			if (ImplementationPlan.ExistingEntryNode)
+			{
+				OutPrepared.ResultNodeGuid = PlannedResultNode->NodeGuid;
+				OutPrepared.bHasResultNode = true;
+			}
+		}
+		// Reserved locator `parent_call`: the single parent-call node of a function implementation graph (the engine inserts
+		// one for a BlueprintCallable override), addressable only when there is exactly one. Event implementations never
+		// expose it: their ubergraph page is shared with other events.
+		UEdGraphNode* PlannedParentCallNode = nullptr;
+		for (UEdGraphNode* Candidate : PlanningGraph->Nodes)
+		{
+			if (Cast<UK2Node_CallParentFunction>(Candidate))
+			{
+				++PlannedParentCallCount;
+				PlannedParentCallNode = Candidate;
+			}
+		}
+		if (!bImplementationIsEvent && PlannedParentCallCount == 1)
+		{
+			PlannedNodes.Add(TEXT("parent_call"), PlannedParentCallNode);
+			if (ImplementationPlan.ExistingEntryNode)
+			{
+				OutPrepared.ParentCallNodeGuid = PlannedParentCallNode->NodeGuid;
+				OutPrepared.bHasParentCallNode = true;
 			}
 		}
 	}
@@ -2198,6 +2300,16 @@ bool FCortexGraphPatchOps::Preflight(
 		if (ClientId.Equals(TEXT("entry"), ESearchCase::CaseSensitive))
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("node.client_id 'entry' is reserved"));
+			return false;
+		}
+		if (bImplementationTarget && ClientId.Equals(TEXT("result"), ESearchCase::CaseSensitive))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("node.client_id 'result' is reserved for an implementation target's function result node"));
+			return false;
+		}
+		if (bImplementationTarget && ClientId.Equals(TEXT("parent_call"), ESearchCase::CaseSensitive))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("node.client_id 'parent_call' is reserved for an implementation target's parent-call node"));
 			return false;
 		}
 		ClientIds.Add(ClientId);
@@ -2225,7 +2337,7 @@ bool FCortexGraphPatchOps::Preflight(
 		}
 		DerivedGuidOwners.Add(DerivedGuid, ClientId);
 		OutPrepared.NodeGuidByClientId.Add(ClientId, DerivedGuid);
-		UEdGraphNode* PlannedNode = NewObject<UEdGraphNode>(PlanningGraph, ResolvedNodeClass, NAME_None, RF_Transient);
+		UEdGraphNode* PlannedNode = NewObject<UEdGraphNode>(PlanningGraph, FCortexGraphNodeContract::ResolveConstructionClass(ResolvedNodeClass, NodeParams), NAME_None, RF_Transient);
 		PlannedNode->NodeGuid = DerivedGuid;
 		FString ApplyError;
 		if (!FCortexGraphNodeContract::ApplyNodeConstructionParams(PlanningGraph, PlannedNode, Blueprint, NodeParams, ApplyError))
@@ -2380,6 +2492,110 @@ bool FCortexGraphPatchOps::Preflight(
 	Normalized->SetArrayField(TEXT("pin_updates"), NormalizedPinUpdates);
 	Normalized->SetArrayField(TEXT("nodes"), NormalizedNodes);
 
+	// Reserved locators `result` and `parent_call`: refuses an endpoint that names one when this target has no single such node.
+	auto RefuseResultEndpoint = [&](const TSharedPtr<FJsonObject>& FromEndpoint, const TSharedPtr<FJsonObject>& ToEndpoint) -> bool
+	{
+		for (const TCHAR* Locator : { TEXT("result"), TEXT("parent_call") })
+		{
+			if (!FromEndpoint->HasField(Locator) && !ToEndpoint->HasField(Locator)) continue;
+			if (!bImplementationTarget || bImplementationHasParentCall)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					bImplementationHasParentCall
+						? FString::Printf(TEXT("%s endpoints are not supported for explicit parent-call implementations"), Locator)
+						: FString::Printf(TEXT("%s endpoints require an implementation target"), Locator));
+				return true;
+			}
+			if (bImplementationIsEvent && FCString::Strcmp(Locator, TEXT("parent_call")) == 0)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					TEXT("parent_call endpoints require a function implementation target: an event implementation shares its graph page with other events, whose parent calls it must not bind to"));
+				return true;
+			}
+			if (!PlannedNodes.Contains(Locator))
+			{
+				const int32 Count = FCString::Strcmp(Locator, TEXT("result")) == 0 ? PlannedResultCount : PlannedParentCallCount;
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					Count > 1
+						? FString::Printf(TEXT("the implementation graph has %d '%s' nodes; address them by node_guid"), Count, Locator)
+						: FString::Printf(TEXT("the implementation has no '%s' node; the endpoint needs a function whose graph has exactly one"), Locator));
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Links to remove run before every connection, so a default link (entry -> result) can be replaced in one apply.
+	TArray<TSharedPtr<FJsonValue>> NormalizedDisconnects;
+	if (Disconnects)
+	{
+		const bool bReplayDisconnect = CreatedClientIds.Num() == 0 && OutPrepared.ReusedClientIds.Num() > 0;
+		for (int32 Index = 0; Index < Disconnects->Num(); ++Index)
+		{
+			const TSharedPtr<FJsonObject> Disconnect = (*Disconnects)[Index]->AsObject();
+			if (!Disconnect.IsValid() || !HasOnlyFields(Disconnect, { TEXT("from"), TEXT("to") }, OutError, TEXT("disconnect"))) return false;
+			const TSharedPtr<FJsonObject>* FromPtr = nullptr;
+			const TSharedPtr<FJsonObject>* ToPtr = nullptr;
+			if (!Disconnect->TryGetObjectField(TEXT("from"), FromPtr) || !FromPtr || !FromPtr->IsValid() || !Disconnect->TryGetObjectField(TEXT("to"), ToPtr) || !ToPtr || !ToPtr->IsValid())
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("disconnect requires from and to objects"));
+				return false;
+			}
+			FString FromId, FromPinName, ToId, ToPinName;
+			bool bFromEntry = false;
+			bool bToEntry = false;
+			if (!ParseEndpoint(*FromPtr, FromId, FromPinName, bFromEntry, OutError, TEXT("disconnect.from")) || !ParseEndpoint(*ToPtr, ToId, ToPinName, bToEntry, OutError, TEXT("disconnect.to"))) return false;
+			if (FromId != FromId.TrimStartAndEnd() || ToId != ToId.TrimStartAndEnd())
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("disconnect endpoint identity cannot contain whitespace"));
+				return false;
+			}
+			if ((bFromEntry || bToEntry) && (!bImplementationTarget || bImplementationHasParentCall))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					bImplementationHasParentCall ? TEXT("entry endpoints are not supported for explicit parent-call implementations") : TEXT("entry endpoints require an implementation target"));
+				return false;
+			}
+			if (RefuseResultEndpoint(*FromPtr, *ToPtr)) return false;
+			if ((*FromPtr)->HasField(TEXT("client_id")) && !ClientIds.Contains(FromId))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Forward or unknown source client_id '%s'"), *FromId));
+				return false;
+			}
+			if ((*ToPtr)->HasField(TEXT("client_id")) && !ClientIds.Contains(ToId))
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Forward or unknown target client_id '%s'"), *ToId));
+				return false;
+			}
+			UEdGraphPin* SourcePin = FindPlannedPin(PlannedNodes, FromId, FromPinName, nullptr, OutError);
+			UEdGraphPin* TargetPin = FindPlannedPin(PlannedNodes, ToId, ToPinName, nullptr, OutError);
+			if (!SourcePin || !TargetPin) return false;
+			if (SourcePin->Direction != EGPD_Output || TargetPin->Direction != EGPD_Input)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation, TEXT("Disconnects must be output-to-input"));
+				return false;
+			}
+			if (SourcePin->LinkedTo.Contains(TargetPin))
+			{
+				SourcePin->BreakLinkTo(TargetPin);
+			}
+			else if (!bReplayDisconnect)
+			{
+				OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("disconnect %d: pin '%s' is not linked to pin '%s'"), Index, *FromPinName, *ToPinName));
+				return false;
+			}
+			TSharedPtr<FJsonObject> NormalizedDisconnect = MakeShared<FJsonObject>();
+			NormalizedDisconnect->SetObjectField(TEXT("from"), *FromPtr);
+			NormalizedDisconnect->SetObjectField(TEXT("to"), *ToPtr);
+			NormalizedDisconnects.Add(MakeShared<FJsonValueObject>(NormalizedDisconnect));
+		}
+	}
+	if (NormalizedDisconnects.Num() > 0)
+	{
+		Normalized->SetArrayField(TEXT("disconnect"), NormalizedDisconnects);
+	}
+
 	TArray<TSharedPtr<FJsonValue>> NormalizedConnections;
 	TSet<FString> ConnectedInputs;
 	for (int32 Index = 0; Index < Connections->Num(); ++Index)
@@ -2408,6 +2624,7 @@ bool FCortexGraphPatchOps::Preflight(
 				bImplementationHasParentCall ? TEXT("entry endpoints are not supported for explicit parent-call implementations") : TEXT("entry endpoints require an implementation target"));
 			return false;
 		}
+		if (RefuseResultEndpoint(*FromPtr, *ToPtr)) return false;
 		if ((*FromPtr)->HasField(TEXT("client_id")) && !ClientIds.Contains(FromId))
 		{
 			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, FString::Printf(TEXT("Forward or unknown source client_id '%s'"), *FromId));
@@ -2445,8 +2662,14 @@ bool FCortexGraphPatchOps::Preflight(
 		// may already model the native link through its cloned proxies, so re-creating the link here
 		// would look like replacing a competing native link. The exact native edge is verified
 		// against the live asset by the reuse comparison that decides this request is a replay.
+		const TSharedPtr<FJsonObject>& FromEndpoint = *FromPtr;
+		const TSharedPtr<FJsonObject>& ToEndpoint = *ToPtr;
 		const bool bReplayEdge = CreatedClientIds.Num() == 0 && OutPrepared.ReusedClientIds.Num() > 0
-			&& (!bFromEntry || OutPrepared.bHasEntryNode) && (!bToEntry || OutPrepared.bHasEntryNode);
+			&& (!bFromEntry || OutPrepared.bHasEntryNode) && (!bToEntry || OutPrepared.bHasEntryNode)
+			&& (!FromEndpoint->HasField(TEXT("result")) || OutPrepared.bHasResultNode)
+			&& (!ToEndpoint->HasField(TEXT("result")) || OutPrepared.bHasResultNode)
+			&& (!FromEndpoint->HasField(TEXT("parent_call")) || OutPrepared.bHasParentCallNode)
+			&& (!ToEndpoint->HasField(TEXT("parent_call")) || OutPrepared.bHasParentCallNode);
 		if (!bReplayEdge)
 		{
 			const UEdGraphSchema* Schema = PlanningGraph->GetSchema();
@@ -2502,7 +2725,7 @@ bool FCortexGraphPatchOps::Preflight(
 	}
 
 	const bool bHasPlannedIntent = NormalizedNodes.Num() > 0 || NormalizedConnections.Num() > 0
-		|| NormalizedPinUpdates.Num() > 0 || bImplementationWouldCreate;
+		|| NormalizedDisconnects.Num() > 0 || NormalizedPinUpdates.Num() > 0 || bImplementationWouldCreate;
 	OutPrepared.bChanged = bHasPlannedIntent && !OutPrepared.bFullyReused;
 	if (TargetGraph && !OutPrepared.bChanged && !bAllowNoop && !bHasPlannedIntent)
 	{
@@ -3667,6 +3890,16 @@ bool ResolveLiveNode(
 		if (!Locators.bHasEntryNode) return false;
 		NodeGuid = Locators.EntryNodeGuid;
 	}
+	else if (Identity == TEXT("result") && !Locators.NodeGuidByClientId.Contains(Identity))
+	{
+		if (!Locators.bHasResultNode) return false;
+		NodeGuid = Locators.ResultNodeGuid;
+	}
+	else if (Identity == TEXT("parent_call") && !Locators.NodeGuidByClientId.Contains(Identity))
+	{
+		if (!Locators.bHasParentCallNode) return false;
+		NodeGuid = Locators.ParentCallNodeGuid;
+	}
 	else if (const FGuid* Mapped = Locators.NodeGuidByClientId.Find(Identity))
 	{
 		NodeGuid = *Mapped;
@@ -4140,6 +4373,13 @@ bool ComparePlannedNodeAgainstNative(
 	FName Family;
 	UClass* ResolvedClass = nullptr;
 	FCortexGraphNodeContract::ResolveFamily(NodeClassName, Family, ResolvedClass);
+	const TSharedPtr<FJsonObject>* ExpectedParamsPtr = nullptr;
+	TSharedPtr<FJsonObject> ExpectedParams;
+	if (NodeJson->TryGetObjectField(TEXT("params"), ExpectedParamsPtr) && ExpectedParamsPtr && ExpectedParamsPtr->IsValid())
+	{
+		ExpectedParams = *ExpectedParamsPtr;
+	}
+	ResolvedClass = FCortexGraphNodeContract::ResolveConstructionClass(ResolvedClass, ExpectedParams);
 	FString ExpectedClass = ResolvedClass ? ResolvedClass->GetPathName() : FString();
 	if (Faults.InjectClass())
 	{
@@ -4321,6 +4561,60 @@ bool CompareEntrySymbol(
 	{
 		OutFailure = FString::Printf(TEXT("compiled generated class does not declare the requested symbol '%s'"), *ExpectedName);
 		return false;
+	}
+	return true;
+}
+
+/** Every planned disconnect, resolved through the durable locators, must be unlinked in the native graph. */
+bool ComparePlannedDisconnects(
+	UBlueprint* Blueprint,
+	const FCortexGraphPreparedPatch& Prepared,
+	const FCortexGraphPatchLocators& Locators,
+	FString& OutFailure)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Disconnects = nullptr;
+	if (!Prepared.NormalizedRequest->TryGetArrayField(TEXT("disconnect"), Disconnects) || !Disconnects) return true;
+	for (int32 Index = 0; Index < Disconnects->Num(); ++Index)
+	{
+		const TSharedPtr<FJsonObject> Disconnect = (*Disconnects)[Index]->AsObject();
+		const TSharedPtr<FJsonObject>* FromPtr = nullptr;
+		const TSharedPtr<FJsonObject>* ToPtr = nullptr;
+		if (!Disconnect.IsValid()
+			|| !Disconnect->TryGetObjectField(TEXT("from"), FromPtr) || !FromPtr || !FromPtr->IsValid()
+			|| !Disconnect->TryGetObjectField(TEXT("to"), ToPtr) || !ToPtr || !ToPtr->IsValid())
+		{
+			OutFailure = FString::Printf(TEXT("normalized planned disconnect %d is invalid"), Index);
+			return false;
+		}
+		FString FromId, FromPinName, ToId, ToPinName;
+		bool bFromEntry = false;
+		bool bToEntry = false;
+		FCortexCommandResult EndpointError;
+		if (!ParseEndpoint(*FromPtr, FromId, FromPinName, bFromEntry, EndpointError, TEXT("disconnect.from"))
+			|| !ParseEndpoint(*ToPtr, ToId, ToPinName, bToEntry, EndpointError, TEXT("disconnect.to")))
+		{
+			OutFailure = EndpointError.ErrorMessage;
+			return false;
+		}
+		UEdGraphNode* SourceNode = nullptr;
+		UEdGraphNode* TargetNode = nullptr;
+		if (!ResolveLiveNode(Blueprint, Locators, FromId, SourceNode) || !ResolveLiveNode(Blueprint, Locators, ToId, TargetNode))
+		{
+			OutFailure = FString::Printf(TEXT("planned disconnect %d no longer re-resolves its endpoints"), Index);
+			return false;
+		}
+		const UEdGraphPin* SourcePin = SourceNode->FindPin(FName(*FromPinName));
+		const UEdGraphPin* TargetPin = TargetNode->FindPin(FName(*ToPinName));
+		if (!SourcePin || !TargetPin)
+		{
+			OutFailure = FString::Printf(TEXT("planned disconnect %d no longer resolves pin '%s' -> '%s'"), Index, *FromPinName, *ToPinName);
+			return false;
+		}
+		if (SourcePin->LinkedTo.Contains(const_cast<UEdGraphPin*>(TargetPin)))
+		{
+			OutFailure = FString::Printf(TEXT("planned disconnect %d is still linked in the native graph"), Index);
+			return false;
+		}
 	}
 	return true;
 }
@@ -4570,6 +4864,7 @@ bool ComparePlannedIntentAgainstNative(
 	if (!ComparePlannedPinUpdates(Blueprint, Prepared, Faults, OutFailure)) return false;
 	if (!CompareEntrySymbol(Blueprint, Prepared, Locators, bCompiled, OutFailure)) return false;
 	if (!CompareImplementationParentCall(Blueprint, Prepared, Locators, OutFailure)) return false;
+	if (!ComparePlannedDisconnects(Blueprint, Prepared, Locators, OutFailure)) return false;
 	if (!ComparePlannedEdges(Blueprint, Prepared, Locators, Faults, OutFailure)) return false;
 	return true;
 }
@@ -5852,6 +6147,8 @@ bool ApplyPrepared(
 		return false;
 	}
 	UEdGraphNode* ImplementationEntry = nullptr;
+	UEdGraphNode* ImplementationResult = nullptr;
+	UEdGraphNode* ImplementationParentCall = nullptr;
 	UEdGraph* Graph = nullptr;
 	FCortexGraphPatchState ImplementationState;
 	const TSharedPtr<FJsonObject>* GraphRefPtr = nullptr;
@@ -5912,6 +6209,45 @@ bool ApplyPrepared(
 			Journal.Locators.EntryNodeGuid = ImplementationEntry->NodeGuid;
 			Journal.Locators.bHasEntryNode = true;
 		}
+		// Reserved locator `result`: addressable only when the function graph has exactly one result node.
+		int32 ResultNodeCount = 0;
+		for (UEdGraphNode* Candidate : Graph->Nodes)
+		{
+			if (Cast<UK2Node_FunctionResult>(Candidate))
+			{
+				++ResultNodeCount;
+				ImplementationResult = Candidate;
+			}
+		}
+		if (ResultNodeCount != 1)
+		{
+			ImplementationResult = nullptr;
+		}
+		if (ImplementationResult && ImplementationResult->NodeGuid.IsValid())
+		{
+			Journal.Locators.ResultNodeGuid = ImplementationResult->NodeGuid;
+			Journal.Locators.bHasResultNode = true;
+		}
+		// Reserved locator `parent_call`: the single parent-call node the engine inserts for a BlueprintCallable override.
+		int32 ParentCallNodeCount = 0;
+		for (UEdGraphNode* Candidate : Graph->Nodes)
+		{
+			if (Cast<UK2Node_CallParentFunction>(Candidate))
+			{
+				++ParentCallNodeCount;
+				ImplementationParentCall = Candidate;
+			}
+		}
+		// An event implementation lives in a shared ubergraph page: a parent call there may belong to another event.
+		if (ParentCallNodeCount != 1 || !Cast<UK2Node_FunctionEntry>(ImplementationEntry))
+		{
+			ImplementationParentCall = nullptr;
+		}
+		if (ImplementationParentCall && ImplementationParentCall->NodeGuid.IsValid())
+		{
+			Journal.Locators.ParentCallNodeGuid = ImplementationParentCall->NodeGuid;
+			Journal.Locators.bHasParentCallNode = true;
+		}
 	}
 
 	if (Journal.AddedGraphs.Num() > 0 && ShouldInjectApplyFault(TEXT("implementation_graph")))
@@ -5926,6 +6262,8 @@ bool ApplyPrepared(
 	}
 	const TArray<TSharedPtr<FJsonValue>>& Nodes = Prepared.NormalizedRequest->GetArrayField(TEXT("nodes"));
 	if (ImplementationEntry) NodesById.Add(TEXT("entry"), ImplementationEntry);
+	if (ImplementationResult) NodesById.Add(TEXT("result"), ImplementationResult);
+	if (ImplementationParentCall) NodesById.Add(TEXT("parent_call"), ImplementationParentCall);
 
 	Graph->Modify();
 	int32 CreatedByPatchNodes = 0;
@@ -5946,7 +6284,13 @@ bool ApplyPrepared(
 		{
 			return Fail(TEXT("Prepared node has no deterministic identity"));
 		}
-		UEdGraphNode* Node = NewObject<UEdGraphNode>(Graph, NodeClass, NAME_None, RF_Transactional);
+		const TSharedPtr<FJsonObject>* ClassParamsPtr = nullptr;
+		TSharedPtr<FJsonObject> ClassParams;
+		if (NodeJson->TryGetObjectField(TEXT("params"), ClassParamsPtr) && ClassParamsPtr && ClassParamsPtr->IsValid())
+		{
+			ClassParams = *ClassParamsPtr;
+		}
+		UEdGraphNode* Node = NewObject<UEdGraphNode>(Graph, FCortexGraphNodeContract::ResolveConstructionClass(NodeClass, ClassParams), NAME_None, RF_Transactional);
 		Node->NodeGuid = *DerivedGuid;
 		const TSharedPtr<FJsonObject>* ParamsPtr = nullptr;
 		FString ApplyError;
@@ -6032,6 +6376,46 @@ bool ApplyPrepared(
 		JournalNodeState(Node, Journal);
 		JournalPinDefault(Pin, Journal);
 		if (!FCortexGraphPinDefaults::ApplyDefault(Pin, *LiteralPtr, DefaultError)) return Fail(DefaultError.ErrorMessage);
+	}
+
+	// Links to remove run before every connection. Each touched node's pin identity is journaled first, so a
+	// failed apply restores the removed link exactly.
+	const TArray<TSharedPtr<FJsonValue>>* DisconnectValues = nullptr;
+	if (Prepared.NormalizedRequest->TryGetArrayField(TEXT("disconnect"), DisconnectValues) && DisconnectValues)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *DisconnectValues)
+		{
+			const TSharedPtr<FJsonObject> Disconnect = Value->AsObject();
+			const TSharedPtr<FJsonObject>* FromPtr = nullptr;
+			const TSharedPtr<FJsonObject>* ToPtr = nullptr;
+			if (!Disconnect.IsValid() || !Disconnect->TryGetObjectField(TEXT("from"), FromPtr) || !Disconnect->TryGetObjectField(TEXT("to"), ToPtr))
+			{
+				return Fail(TEXT("Prepared disconnect is invalid"));
+			}
+			FString FromId;
+			FString FromPinName;
+			FString ToId;
+			FString ToPinName;
+			bool bFromEntry = false;
+			bool bToEntry = false;
+			FCortexCommandResult EndpointError;
+			if (!ParseEndpoint(*FromPtr, FromId, FromPinName, bFromEntry, EndpointError, TEXT("disconnect.from"))
+				|| !ParseEndpoint(*ToPtr, ToId, ToPinName, bToEntry, EndpointError, TEXT("disconnect.to")))
+			{
+				return Fail(EndpointError.ErrorMessage);
+			}
+			UEdGraphNode* SourceNode = NodesById.FindRef(FromId);
+			UEdGraphNode* TargetNode = NodesById.FindRef(ToId);
+			UEdGraphPin* SourcePin = SourceNode ? SourceNode->FindPin(FName(*FromPinName)) : nullptr;
+			UEdGraphPin* TargetPin = TargetNode ? TargetNode->FindPin(FName(*ToPinName)) : nullptr;
+			if (!SourcePin || !TargetPin) return Fail(TEXT("Prepared disconnect endpoint no longer resolves"));
+			if (!SourcePin->LinkedTo.Contains(TargetPin)) return Fail(TEXT("Prepared disconnect link no longer exists"));
+			JournalNodePins(SourceNode, Journal);
+			JournalNodePins(TargetNode, Journal);
+			JournalNodeState(SourceNode, Journal);
+			JournalNodeState(TargetNode, Journal);
+			SourcePin->BreakLinkTo(TargetPin);
+		}
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>& Connections = Prepared.NormalizedRequest->GetArrayField(TEXT("connections"));

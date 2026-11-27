@@ -14,6 +14,9 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
 #include "K2Node_Variable.h"
+#include "K2Node_Knot.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 #include "K2Node_VariableSet.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Kismet/KismetStringLibrary.h"
@@ -1874,6 +1877,241 @@ bool FCortexGraphMigrationPruneCompileInvalidRepairTest::RunTest(const FString& 
 	TestNotNull(TEXT("prune keeps the entry terminator"), FindNodeByGuidInGraph(Graph, Entry->NodeGuid));
 	TestTrue(TEXT("unrelated retained logic is untouched"),
 		NodesLinked(RetainedEntry, TEXT("then"), RetainedPrint, TEXT("execute")));
+
+	Fixture.Cleanup();
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Issue 274 item 15: reroute knots join the island, `include_result_producers` opts in the result's producers
+// ---------------------------------------------------------------------------
+namespace CortexGraphMigrationPruneIssue274Test
+{
+UK2Node_Knot* AddKnot(UEdGraph* Graph, const int32 X, const int32 Y)
+{
+	UK2Node_Knot* Knot = NewObject<UK2Node_Knot>(Graph);
+	Knot->CreateNewGuid();
+	Knot->AllocateDefaultPins();
+	Knot->NodePosX = X;
+	Knot->NodePosY = Y;
+	Graph->AddNode(Knot, true, false);
+	return Knot;
+}
+
+/** Source -> knot -> target: the knot's pin type is inferred from its links. */
+UK2Node_Knot* RerouteThroughKnot(UEdGraph* Graph, UEdGraphNode* From, const TCHAR* FromPin,
+	UEdGraphNode* To, const TCHAR* ToPin, const int32 X, const int32 Y)
+{
+	UEdGraphPin* Source = From ? From->FindPin(FName(FromPin)) : nullptr;
+	UEdGraphPin* Target = To ? To->FindPin(FName(ToPin)) : nullptr;
+	const UEdGraphSchema* Schema = Graph ? Graph->GetSchema() : nullptr;
+	if (!Source || !Target || !Schema) return nullptr;
+	UK2Node_Knot* Knot = AddKnot(Graph, X, Y);
+	if (!Schema->TryCreateConnection(Source, Knot->GetInputPin())) return nullptr;
+	if (!Schema->TryCreateConnection(Knot->GetOutputPin(), Target)) return nullptr;
+	return Knot;
+}
+
+/** A function graph that implements the fixture's `ComputeScore`: entry plus a result with ReturnValue and OutIds. */
+struct FFunctionGraphFixture
+{
+	UEdGraph* Graph = nullptr;
+	UK2Node_FunctionEntry* Entry = nullptr;
+	UK2Node_FunctionResult* Result = nullptr;
+};
+
+FFunctionGraphFixture AddComputeScoreGraph(UBlueprint* Blueprint, const TCHAR* Name)
+{
+	FFunctionGraphFixture Built;
+	UClass* const OwnerClass = ACortexGraphMigrationFixtureActor::StaticClass();
+	Built.Graph = FBlueprintEditorUtils::CreateNewGraph(Blueprint, FName(Name),
+		UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	Blueprint->FunctionGraphs.Add(Built.Graph);
+
+	Built.Entry = NewObject<UK2Node_FunctionEntry>(Built.Graph);
+	Built.Entry->FunctionReference.SetExternalMember(FName(TEXT("ComputeScore")), OwnerClass);
+	Built.Entry->CreateNewGuid();
+	Built.Entry->AllocateDefaultPins();
+	Built.Entry->NodePosX = -400;
+	Built.Entry->NodePosY = 0;
+	Built.Graph->AddNode(Built.Entry, true, false);
+
+	Built.Result = NewObject<UK2Node_FunctionResult>(Built.Graph);
+	Built.Result->FunctionReference = Built.Entry->FunctionReference;
+	Built.Result->CreateNewGuid();
+	Built.Result->AllocateDefaultPins();
+	Built.Result->NodePosX = 700;
+	Built.Result->NodePosY = 0;
+	Built.Graph->AddNode(Built.Result, true, false);
+	return Built;
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationPruneRerouteKnotsTest,
+	"Cortex.Graph.Authoring.Migration.Prune.RerouteKnotsJoinIsland",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationPruneRerouteKnotsTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationPruneTest;
+	using namespace CortexGraphMigrationPruneIssue274Test;
+	ClearFaults();
+
+	// Knots whose every link stays inside the island are removed with it, with no additional_node_guids.
+	{
+		FFixture Fixture;
+		TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_PruneKnots_T274")));
+		if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+		UEdGraph* Graph = EnsureEventGraph(Fixture.Blueprint);
+		UK2Node_CustomEvent* Entry = AddEntryNode(Graph, TEXT("CortexPruneKnotEntry"), 0, 0);
+		UK2Node_CallFunction* Producer = AddPureProducerNode(Graph, 300, 300);
+		UK2Node_CallFunction* Print = AddPrintNode(Graph, TEXT("knot island"), 800, 0);
+		FKismetEditorUtilities::CompileBlueprint(Fixture.Blueprint);
+		UK2Node_Knot* ExecKnot = RerouteThroughKnot(Graph, Entry, TEXT("then"), Print, TEXT("execute"), 400, 0);
+		UK2Node_Knot* DataKnot = RerouteThroughKnot(Graph, Producer, TEXT("ReturnValue"), Print, TEXT("InString"), 500, 300);
+		TestNotNull(TEXT("the exec path is rerouted through a knot"), ExecKnot);
+		TestNotNull(TEXT("the data path is rerouted through a knot"), DataKnot);
+		if (!ExecKnot || !DataKnot) { Fixture.Cleanup(); return false; }
+
+		const TArray<FGuid> Island = { Print->NodeGuid, ExecKnot->NodeGuid, DataKnot->NodeGuid, Producer->NodeGuid };
+		FCortexGraphPreparedPatch Preview;
+		FCortexGraphMigrationPrunePlan PreviewPlan;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("the knot island previews: %s"), *Error.ErrorMessage),
+			PreviewPrune(Fixture.Blueprint,
+				PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000274020"), Graph, Entry, {}, false, false),
+				Preview, PreviewPlan, Error));
+		TestEqual(TEXT("the knots are part of the removable set"), PreviewPlan.RemovableGuids, GuidStrings(Island));
+		TestNull(TEXT("the exec knot is not blocked"), FindPartitionNode(PreviewPlan.Blocked, ExecKnot->NodeGuid));
+		TestNull(TEXT("the data knot is not blocked"), FindPartitionNode(PreviewPlan.Blocked, DataKnot->NodeGuid));
+
+		TSharedPtr<FJsonObject> Request = PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000274021"),
+			Graph, Entry, Island, true, false);
+		FCortexGraphPreparedPatch Prepared;
+		FCortexGraphMigrationPrunePlan Plan;
+		TestTrue(FString::Printf(TEXT("the apply prepares: %s"), *Error.ErrorMessage),
+			PrepareApply(Fixture.Blueprint, Request, Prepared, Plan, Error));
+		FCortexGraphPatchOutcome Outcome;
+		TestTrue(FString::Printf(TEXT("the knot island applies: %s [%s]"), *Error.ErrorMessage, *FString::Join(Outcome.Diagnostics, TEXT("; "))),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+		TestEqual(TEXT("the readback matches"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+		for (const FGuid& Guid : Island)
+		{
+			TestNull(TEXT("an island node is gone"), FindNodeByGuidInGraph(Graph, Guid));
+		}
+		TestNotNull(TEXT("the entry terminator survives"), FindNodeByGuidInGraph(Graph, Entry->NodeGuid));
+		Fixture.Cleanup();
+	}
+
+	// A knot that touches a retained node is retained with it: its producer is shared with a retained consumer.
+	{
+		FSharedProducerFixture Shared;
+		TestTrue(TEXT("shared fixture created"), Shared.Build(TEXT("BP_PruneKnotShared_T274")));
+		if (!Shared.Fixture.Blueprint) { Shared.Cleanup(); return false; }
+		UEdGraph* Graph = Shared.Graph;
+		UEdGraphPin* ProducerOut = Shared.Producer->FindPin(FName(TEXT("ReturnValue")));
+		UEdGraphPin* IslandIn = Shared.IslandPrint->FindPin(FName(TEXT("InString")));
+		if (ProducerOut && IslandIn) ProducerOut->BreakLinkTo(IslandIn);
+		UK2Node_Knot* Knot = RerouteThroughKnot(Graph, Shared.Producer, TEXT("ReturnValue"),
+			Shared.IslandPrint, TEXT("InString"), 450, 250);
+		TestNotNull(TEXT("the shared data path is rerouted through a knot"), Knot);
+		if (!Knot) { Shared.Cleanup(); return false; }
+
+		FCortexGraphPreparedPatch Preview;
+		FCortexGraphMigrationPrunePlan Plan;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("the shared-knot island previews: %s"), *Error.ErrorMessage),
+			PreviewPrune(Shared.Fixture.Blueprint,
+				PruneRequest(Shared.Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000274022"), Graph, Shared.Entry, {}, false, false),
+				Preview, Plan, Error));
+		TestEqual(TEXT("only the island print is removable"), Plan.RemovableGuids, GuidStrings({ Shared.IslandPrint->NodeGuid }));
+		TestNotNull(TEXT("the shared producer is retained"), FindPartitionNode(Plan.Shared, Shared.Producer->NodeGuid));
+		const FCortexGraphPruneNode* RetainedKnot = FindPartitionNode(Plan.Shared, Knot->NodeGuid);
+		TestNotNull(TEXT("the knot linked to the retained producer is retained"), RetainedKnot);
+		TestTrue(TEXT("the knot's retention is explained"), RetainedKnot && RetainedKnot->Reason.Contains(TEXT("reroute knot")));
+		Shared.Cleanup();
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexGraphMigrationPruneResultProducersTest,
+	"Cortex.Graph.Authoring.Migration.Prune.IncludeResultProducers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexGraphMigrationPruneResultProducersTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	using namespace CortexGraphMigrationPruneTest;
+	using namespace CortexGraphMigrationPruneIssue274Test;
+	ClearFaults();
+
+	FFixture Fixture;
+	TestTrue(TEXT("fixture created"), Fixture.Create(TEXT("BP_PruneResultProducers_T274")));
+	if (!Fixture.Blueprint) { Fixture.Cleanup(); return false; }
+	const FFunctionGraphFixture Built = AddComputeScoreGraph(Fixture.Blueprint, TEXT("PruneResultProducersFn"));
+	UEdGraph* Graph = Built.Graph;
+	UK2Node_FunctionEntry* Entry = Built.Entry;
+	UK2Node_FunctionResult* Result = Built.Result;
+	UK2Node_CallFunction* Producer = AddIntAddNode(Graph, 200, 300);
+	TestTrue(TEXT("the entry drives the result"), LinkNodes(Graph, Entry, TEXT("then"), Result, TEXT("execute")));
+	UK2Node_Knot* Knot = RerouteThroughKnot(Graph, Producer, TEXT("ReturnValue"), Result, TEXT("ReturnValue"), 450, 300);
+	TestNotNull(TEXT("the producer feeds the result through a reroute knot"), Knot);
+	if (!Knot) { Fixture.Cleanup(); return false; }
+
+	// Default: a pure producer of a retained result node is retained.
+	{
+		FCortexGraphPreparedPatch Preview;
+		FCortexGraphMigrationPrunePlan Plan;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("the default preview succeeds: %s"), *Error.ErrorMessage),
+			PreviewPrune(Fixture.Blueprint,
+				PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000274030"), Graph, Entry, {}, false, false),
+				Preview, Plan, Error));
+		TestEqual(TEXT("without the opt-in nothing is removable"), Plan.RemovableGuids.Num(), 0);
+		TestNotNull(TEXT("the producer is retained"), FindPartitionNode(Plan.Shared, Producer->NodeGuid));
+		TestNotNull(TEXT("the knot is retained"), FindPartitionNode(Plan.Shared, Knot->NodeGuid));
+	}
+
+	// include_result_producers: the producer and its knot are removable, the result pin link is a boundary edge.
+	const TArray<FGuid> Removable = { Producer->NodeGuid, Knot->NodeGuid };
+	{
+		TSharedPtr<FJsonObject> Request = PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000274031"), Graph, Entry, {}, false, false);
+		Request->GetObjectField(TEXT("migration"))->SetBoolField(TEXT("include_result_producers"), true);
+		FCortexGraphPreparedPatch Preview;
+		FCortexGraphMigrationPrunePlan Plan;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("the opt-in preview succeeds: %s"), *Error.ErrorMessage),
+			PreviewPrune(Fixture.Blueprint, Request, Preview, Plan, Error));
+		TestTrue(TEXT("the plan records the opt-in"), Plan.bIncludeResultProducers);
+		TestEqual(TEXT("the result producers are removable"), Plan.RemovableGuids, GuidStrings(Removable));
+		TestTrue(TEXT("the severed result pin link is a published boundary edge"),
+			PlanHasExternalEdge(Plan, Knot, TEXT("OutputPin"), Result, TEXT("ReturnValue")));
+	}
+
+	// Apply: the result node and its exec link survive, the severed result pin is unlinked.
+	{
+		TSharedPtr<FJsonObject> Request = PruneRequest(Fixture.Blueprint, TEXT("00000000-0000-0000-0000-000000274032"),
+			Graph, Entry, Removable, true, false);
+		Request->GetObjectField(TEXT("migration"))->SetBoolField(TEXT("include_result_producers"), true);
+		FCortexGraphPreparedPatch Prepared;
+		FCortexGraphMigrationPrunePlan Plan;
+		FCortexCommandResult Error;
+		TestTrue(FString::Printf(TEXT("the apply prepares: %s"), *Error.ErrorMessage),
+			PrepareApply(Fixture.Blueprint, Request, Prepared, Plan, Error));
+		FCortexGraphPatchOutcome Outcome;
+		TestTrue(FString::Printf(TEXT("the result producers apply: %s [%s]"), *Error.ErrorMessage, *FString::Join(Outcome.Diagnostics, TEXT("; "))),
+			FCortexGraphPatchOps::Execute(Fixture.Blueprint, Request, Outcome, Error));
+		TestEqual(TEXT("the readback matches"), Outcome.ReadbackStatus, FString(TEXT("matched")));
+		TestNull(TEXT("the producer is gone"), FindNodeByGuidInGraph(Graph, Producer->NodeGuid));
+		TestNull(TEXT("the knot is gone"), FindNodeByGuidInGraph(Graph, Knot->NodeGuid));
+		TestNotNull(TEXT("the result node survives"), FindNodeByGuidInGraph(Graph, Result->NodeGuid));
+		TestEqual(TEXT("the severed result pin carries no link"), CountLinkedPins(Result, TEXT("ReturnValue")), 0);
+		TestTrue(TEXT("the entry -> result exec link is untouched"), NodesLinked(Entry, TEXT("then"), Result, TEXT("execute")));
+	}
 
 	Fixture.Cleanup();
 	return true;

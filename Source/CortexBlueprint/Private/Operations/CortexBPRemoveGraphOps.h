@@ -4,18 +4,31 @@
 #include "CortexCommandRouter.h"
 
 class FJsonObject;
+class FJsonValue;
+
+/** One removal target resolved from a requested name: a whole graph or a custom-event node set. */
+struct FCortexBPRemoveGraphItem
+{
+	FString Name;
+	TSharedPtr<FJsonObject> Target;
+	TSharedPtr<FJsonObject> Deletion;
+	TSharedPtr<FJsonObject> Removed;
+	TArray<TSharedPtr<FJsonValue>> RemovedNodes;
+};
 
 struct FCortexBPRemoveGraphPrepared
 {
 	FString AssetPath;
-	FString Name;
+	/** One entry for the single `name` form, the requested set for the `names` form. */
+	TArray<FString> Names;
+	/** True when the request used `names[]`; selects the set-shaped response. */
+	bool bBatch = false;
 	bool bCascadeExecChain = false;
 	bool bDryRun = true;
 	bool bCompile = false;
 	bool bSave = false;
 	TSharedPtr<FJsonObject> FingerprintBefore;
-	TSharedPtr<FJsonObject> Target;
-	TSharedPtr<FJsonObject> Deletion;
+	TArray<FCortexBPRemoveGraphItem> Items;
 	FString ValidationHash;
 };
 
@@ -34,8 +47,11 @@ struct FCortexBPRemoveGraphOutcome
 	bool bDirtyAfter = false;
 	TSharedPtr<FJsonObject> FingerprintBefore;
 	TSharedPtr<FJsonObject> FingerprintAfter;
+	bool bBatch = false;
 	TSharedPtr<FJsonObject> Target;
 	TSharedPtr<FJsonObject> Deletion;
+	TArray<TSharedPtr<FJsonValue>> Targets;
+	TArray<TSharedPtr<FJsonValue>> Deletions;
 	TArray<FString> Diagnostics;
 };
 

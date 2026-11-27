@@ -180,6 +180,7 @@ FCortexCommandResult WriteReportWithSummary(
 	}
 
 	TSharedRef<FJsonObject> Summary = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> CappedArrays;
 	for (const auto& Field : Full->Values)
 	{
 		const FString Key = CortexEngineCompat::JsonKeyToString(Field.Key);
@@ -193,12 +194,19 @@ FCortexCommandResult WriteReportWithSummary(
 			}
 			Summary->SetArrayField(Key, First);
 			Summary->SetNumberField(Key + TEXT("_total"), Array->Num());
+			if (Array->Num() > SummaryEntryLimit)
+			{
+				CappedArrays.Add(MakeShared<FJsonValueString>(Key));
+			}
 		}
 		else
 		{
 			Summary->SetField(Key, Field.Value);
 		}
 	}
+	// Honest in both directions: only an array that actually lost entries is listed, and the file holds every entry.
+	Summary->SetBoolField(TEXT("truncated"), CappedArrays.Num() > 0);
+	Summary->SetArrayField(TEXT("truncated_arrays"), CappedArrays);
 	Summary->SetStringField(TEXT("out_path"), OutPath.AbsolutePath);
 	return FCortexCommandRouter::Success(Summary);
 }

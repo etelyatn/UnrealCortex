@@ -35,6 +35,15 @@ struct FCortexGraphPreparedPatch
 	/** Durable locator of an implementation entry node that already existed before this patch. */
 	FGuid EntryNodeGuid;
 	bool bHasEntryNode = false;
+	/**
+	 * Durable locator of the implementation's function result node when it existed before this patch;
+	 * a result node the apply creates is located from the journal instead.
+	 */
+	FGuid ResultNodeGuid;
+	bool bHasResultNode = false;
+	/** Durable locator of the implementation's single parent-call node when it existed before this patch. */
+	FGuid ParentCallNodeGuid;
+	bool bHasParentCallNode = false;
 	/** Client ids whose deterministic nodes already exist and match the canonical planned intent. */
 	TArray<FString> ReusedClientIds;
 	/** True when the whole planned intent is already present exactly: an idempotent replay. */
@@ -104,6 +113,10 @@ struct FCortexGraphPatchLocators
 	TMap<FString, FGuid> NodeGuidByClientId;
 	FGuid EntryNodeGuid;
 	bool bHasEntryNode = false;
+	FGuid ResultNodeGuid;
+	bool bHasResultNode = false;
+	FGuid ParentCallNodeGuid;
+	bool bHasParentCallNode = false;
 };
 
 /**

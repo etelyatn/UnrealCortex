@@ -10,6 +10,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Misc/EngineVersionComparison.h"
 #include "InputKeyEventArgs.h"
 #include "GameFramework/PlayerInput.h"
@@ -89,13 +90,19 @@ FCortexCommandResult FCortexQAActionOps::LookAt(const TSharedPtr<FJsonObject>& P
         return ParseError;
     }
 
-    const FVector Direction = TargetLocation - Pawn->GetActorLocation();
+    // Aim from the viewpoint (the camera the player sees through), not the pawn origin: a camera offset from the
+    // pawn (first-person eye height, third-person boom) would otherwise be pitched from the wrong point.
+    const FVector ViewOrigin = PC->PlayerCameraManager != nullptr
+        ? PC->PlayerCameraManager->GetCameraLocation()
+        : Pawn->GetPawnViewLocation();
+    const FVector Direction = TargetLocation - ViewOrigin;
     const FRotator LookRotation = Direction.Rotation();
     PC->SetControlRotation(LookRotation);
 
     TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
     Data->SetBoolField(TEXT("success"), true);
     FCortexQAUtils::SetRotatorArray(Data, TEXT("control_rotation"), LookRotation);
+    FCortexQAUtils::SetVectorArray(Data, TEXT("view_origin"), ViewOrigin);
     return FCortexCommandRouter::Success(Data);
 }
 

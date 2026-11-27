@@ -49,7 +49,7 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
         || Command == TEXT("get_schema") || Command == TEXT("list_animations")
         || Command == TEXT("get_animation") || Command == TEXT("list_animation_bindings")
         || Command == TEXT("check_native_bindings") || Command == TEXT("get_embedded_widget_values")
-        || Command == TEXT("get_commonui_info");
+        || Command == TEXT("get_embedded_widget_diff") || Command == TEXT("get_commonui_info");
     if (!bReadOnly)
     {
         FCortexCommandResult GuardError;
@@ -172,6 +172,10 @@ FCortexCommandResult FCortexUMGCommandHandler::Execute(
     {
         return FCortexUMGEmbeddedValueOps::GetEmbeddedWidgetValues(Params);
     }
+    if (Command == TEXT("get_embedded_widget_diff"))
+    {
+        return FCortexUMGEmbeddedValueOps::GetEmbeddedWidgetDiff(Params);
+    }
     if (Command == TEXT("get_commonui_info"))
     {
         return FCortexUMGCommonUIOps::GetCommonUIInfo(Params);
@@ -227,7 +231,7 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .Required(TEXT("property_name"), TEXT("string"), TEXT("Bindable attribute property"))
             .Required(TEXT("binding"), TEXT("any"), TEXT("Required object {kind:property,source_path:[names]} or {kind:function,function_name:name}; explicit null clears. Empty/omitted refuses."))
             .Required(TEXT("expected_fingerprint"), TEXT("object"), TEXT("Complete serialized binding fingerprint from opted-in get_tree/get_widget")),
-        FCortexCommandInfo{ TEXT("rename_widget"), TEXT("Guarded Unreal widget rename with structural/skeleton refresh; no explicit full compile or save") }
+        FCortexCommandInfo{ TEXT("rename_widget"), TEXT("Guarded Unreal widget rename with structural/skeleton refresh; no explicit full compile or save. The engine rename also resets the widget's Designer display label to the new name; the response reports display_label_before, display_label_after and display_label_changed (a dry run reports the predicted label)") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Required(TEXT("widget_name"), TEXT("string"), TEXT("Exact current widget name"))
             .Required(TEXT("new_name"), TEXT("string"), TEXT("Literal identifier; no silent sanitizing or case-only rename"))
@@ -363,9 +367,12 @@ const TArray<FCortexCommandInfo>& UMGCommandInfos()
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Optional(TEXT("native_class"), TEXT("string"), TEXT("UserWidget class path or name to check against; defaults to the Blueprint's parent class"))
             .StrictParams(),
-        FCortexCommandInfo{ TEXT("get_embedded_widget_values"), TEXT("Read per-instance values of embedded UserWidgets with is_override against the class default (read-only)") }
+        FCortexCommandInfo{ TEXT("get_embedded_widget_values"), TEXT("Read per-instance values of embedded UserWidgets with is_override against the class default; lists every editable property declared below UserWidget, including defaults-only (EditDefaultsOnly/DisableEditOnInstance) properties, each with instance_editable (read-only)") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint asset path"))
             .Optional(TEXT("widget_name"), TEXT("string"), TEXT("Exact embedded widget name; omitted reads every embedded UserWidget"))
+            .StrictParams(),
+        FCortexCommandInfo{ TEXT("get_embedded_widget_diff"), TEXT("List, per embedded UserWidget template in an outer Widget Blueprint, the editable properties declared below UserWidget whose template value differs from the embedded class default, including defaults-only (EditDefaultsOnly/DisableEditOnInstance) properties: property, declared_in, type, instance_value, class_default_value, instance_editable (read-only)") }
+            .Required(TEXT("asset_path"), TEXT("string"), TEXT("Outer Widget Blueprint asset path"))
             .StrictParams(),
         FCortexCommandInfo{ TEXT("get_commonui_info"), TEXT("Read CommonUI activatable settings, implemented overrides, button/text/border styles and style_assets of a Widget Blueprint, or the style kind and referenced styles of a CommonUI style Blueprint; commonui_available is false when the CommonUI plugin is not loaded (read-only)") }
             .Required(TEXT("asset_path"), TEXT("string"), TEXT("Widget Blueprint or CommonUI style Blueprint asset path"))

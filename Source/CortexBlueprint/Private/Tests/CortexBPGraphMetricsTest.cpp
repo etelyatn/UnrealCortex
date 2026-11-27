@@ -25,6 +25,7 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "UObject/UnrealType.h"
 #include "Misc/Guid.h"
 
 namespace
@@ -1428,5 +1429,56 @@ bool FCortexBPGraphMetricsGetterFanoutSharedGraphTest::RunTest(const FString& Pa
 		static_cast<int32>(Entry2->GetNumberField(TEXT("functional_nodes"))), 3);
 	TestEqual(TEXT("the getter feeds one print per instance"),
 		static_cast<int32>(Entry2->GetNumberField(TEXT("max_getter_fanout"))), 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexBPGraphMetricsBranchVariationGetTest,
+	"Cortex.Blueprint.GraphMetrics.BranchVariationGetIsConditional",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexBPGraphMetricsBranchVariationGetTest::RunTest(const FString& Parameters)
+{
+	FGraphMetricsBlueprintScope Scope(TEXT("BP_MetricsBranchGet"));
+	UBlueprint* Blueprint = Scope.Blueprint;
+	if (!TestNotNull(TEXT("Blueprint created"), Blueprint)) { return false; }
+
+	FEdGraphPinType BoolType;
+	BoolType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+	FBlueprintEditorUtils::AddMemberVariable(Blueprint, TEXT("Flag"), BoolType);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	UEdGraphNode* BeginPlay = EventGraph ? FindEntryNode(EventGraph, TEXT("ReceiveBeginPlay")) : nullptr;
+	if (!TestNotNull(TEXT("BeginPlay node"), BeginPlay)) { return false; }
+
+	// The branch variation of a bool getter is engine state behind a private field: it is set through reflection
+	// before the pins are allocated, as the editor's "Convert to Validated Get" toggle would.
+	UK2Node_VariableGet* Getter = NewObject<UK2Node_VariableGet>(EventGraph);
+	Getter->VariableReference.SetSelfMember(TEXT("Flag"));
+	Getter->CreateNewGuid();
+	EventGraph->AddNode(Getter, false, false);
+	const FEnumProperty* VariationProperty = CastField<FEnumProperty>(Getter->GetClass()->FindPropertyByName(TEXT("CurrentVariation")));
+	if (!TestTrue(TEXT("the variation field is reflected"), VariationProperty != nullptr && VariationProperty->GetEnum() != nullptr)) { return false; }
+	const int64 BranchValue = VariationProperty->GetEnum()->GetValueByNameString(TEXT("Branch"));
+	VariationProperty->GetUnderlyingProperty()->SetIntPropertyValue(VariationProperty->ContainerPtrToValuePtr<void>(Getter), BranchValue);
+	Getter->AllocateDefaultPins();
+	if (!TestTrue(TEXT("the branch variation has then/else pins"),
+		Getter->FindPin(UEdGraphSchema_K2::PN_Then) != nullptr && Getter->FindPin(UEdGraphSchema_K2::PN_Else) != nullptr)) { return false; }
+
+	UK2Node_CallFunction* PrintA = AddPrintString(EventGraph);
+	UK2Node_CallFunction* PrintB = AddPrintString(EventGraph);
+	if (!TestTrue(TEXT("Graph wired"),
+		LinkExec(BeginPlay, UEdGraphSchema_K2::PN_Then, Getter)
+		&& Link(Getter, UEdGraphSchema_K2::PN_Then, PrintA, UEdGraphSchema_K2::PN_Execute)
+		&& Link(Getter, UEdGraphSchema_K2::PN_Else, PrintB, UEdGraphSchema_K2::PN_Execute))) { return false; }
+
+	const FCortexCommandResult Result = RunGraphMetrics(Blueprint);
+	if (!TestTrue(TEXT("graph_metrics succeeded"), Result.bSuccess) || !Result.Data.IsValid()) { return false; }
+	const TSharedPtr<FJsonObject> Entry = FindEntry(Result.Data, TEXT("ReceiveBeginPlay"));
+	if (!TestTrue(TEXT("BeginPlay entry"), Entry.IsValid())) { return false; }
+	TestEqual(TEXT("functional nodes (branch getter, 2 prints)"), static_cast<int32>(Entry->GetNumberField(TEXT("functional_nodes"))), 3);
+	TestEqual(TEXT("a branch-variation getter is a conditional"), static_cast<int32>(Entry->GetNumberField(TEXT("conditionals"))), 1);
+	TestEqual(TEXT("it is still a variable get"), static_cast<int32>(Entry->GetNumberField(TEXT("variable_gets"))), 1);
 	return true;
 }

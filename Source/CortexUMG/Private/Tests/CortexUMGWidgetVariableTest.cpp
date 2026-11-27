@@ -361,6 +361,60 @@ bool FCortexUMGRenameWidgetTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexUMGRenameWidgetDisplayLabelTest,
+    "Cortex.UMG.RenameWidgetDisplayLabel", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGRenameWidgetDisplayLabelTest::RunTest(const FString& Parameters)
+{
+    (void)Parameters;
+    FCortexUMGAnimationBindingFixture Fixture(*this);
+    UWidgetBlueprint* WBP = Fixture.Blueprint.Get();
+    UWidget* Widget = WBP != nullptr && WBP->WidgetTree != nullptr ? WBP->WidgetTree->FindWidget(TEXT("BodySizeBox")) : nullptr;
+    if (!TestNotNull(TEXT("widget to rename"), Widget)) return false;
+
+    // The engine rename replaces a custom hierarchy label with the new name; the command must say so.
+    const FString CustomLabel = TEXT("Custom Body Label");
+    Widget->SetDisplayLabel(CustomLabel);
+
+    TSharedPtr<FJsonObject> TreeParams = MakeShared<FJsonObject>();
+    TreeParams->SetStringField(TEXT("asset_path"), WBP->GetPathName());
+    const FCortexCommandResult Tree = Fixture.Router.Execute(TEXT("umg.get_tree"), TreeParams);
+    const TSharedPtr<FJsonObject>* FingerprintPtr = nullptr;
+    if (!TestTrue(TEXT("tree inspection supplies the fingerprint"),
+        Tree.bSuccess && Tree.Data.IsValid() && Tree.Data->TryGetObjectField(TEXT("fingerprint"), FingerprintPtr))) return false;
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    Params->SetStringField(TEXT("asset_path"), WBP->GetPathName());
+    Params->SetStringField(TEXT("widget_name"), TEXT("BodySizeBox"));
+    Params->SetStringField(TEXT("new_name"), TEXT("LabelRenamedBox"));
+    Params->SetObjectField(TEXT("expected_fingerprint"), *FingerprintPtr);
+    const FCortexCommandResult Renamed = Fixture.Router.Execute(TEXT("umg.rename_widget"), Params);
+    if (!TestTrue(*FString::Printf(TEXT("rename succeeds (%s)"), *Renamed.ErrorMessage), Renamed.bSuccess)
+        || !TestTrue(TEXT("rename returns data"), Renamed.Data.IsValid())) return false;
+
+    TestTrue(TEXT("rename reports changed"), Renamed.Data->GetBoolField(TEXT("changed")));
+    TestEqual(TEXT("display_label_before is the custom label"),
+        Renamed.Data->GetStringField(TEXT("display_label_before")), CustomLabel);
+    TestEqual(TEXT("display_label_after is the engine-assigned label"),
+        Renamed.Data->GetStringField(TEXT("display_label_after")), FString(TEXT("LabelRenamedBox")));
+    TestTrue(TEXT("display_label_changed is true"), Renamed.Data->GetBoolField(TEXT("display_label_changed")));
+    TestEqual(TEXT("reported label is the real widget label"),
+        Renamed.Data->GetStringField(TEXT("display_label_after")), Widget->GetDisplayLabel());
+
+    // Same-name rename touches nothing, so the label is unchanged and reported as such.
+    Params->SetStringField(TEXT("widget_name"), TEXT("LabelRenamedBox"));
+    Params->SetObjectField(TEXT("expected_fingerprint"), Renamed.Data->GetObjectField(TEXT("fingerprint")));
+    const FCortexCommandResult NoOp = Fixture.Router.Execute(TEXT("umg.rename_widget"), Params);
+    if (TestTrue(TEXT("same-name rename succeeds"), NoOp.bSuccess) && TestTrue(TEXT("no-op returns data"), NoOp.Data.IsValid()))
+    {
+        TestFalse(TEXT("same-name reports unchanged"), NoOp.Data->GetBoolField(TEXT("changed")));
+        TestFalse(TEXT("same-name reports the label unchanged"), NoOp.Data->GetBoolField(TEXT("display_label_changed")));
+        TestEqual(TEXT("same-name label before equals after"),
+            NoOp.Data->GetStringField(TEXT("display_label_before")), NoOp.Data->GetStringField(TEXT("display_label_after")));
+    }
+    return true;
+}
+
 #if __has_include("UIComponentWidgetBlueprintExtension.h")
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FCortexUMGRenameWidgetComponentDependentTest,
     "Cortex.UMG.RenameWidgetComponentDependent",

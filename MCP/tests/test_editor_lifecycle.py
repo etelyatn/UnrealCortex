@@ -3,37 +3,24 @@
 import json
 import os
 import pathlib
+import threading
+import types
 from unittest.mock import MagicMock, patch
 
-import threading
+import psutil
 
-import pytest
-
-from cortex_mcp.tcp_client import UEConnection
+from cortex_mcp.tcp_client import UECommandError, UEConnection
 from tools.editor.composites import (
     do_restart_editor,
     do_shutdown_editor,
     register_editor_composite_tools,
 )
 
-
-@pytest.fixture
-def fake_engine(tmp_path, monkeypatch):
-    """An engine root whose UnrealEditor.exe exists, exported as UE_56_PATH."""
-    engine_root = tmp_path / "Engine_Root"
-    editor_exe = engine_root / "Engine" / "Binaries" / "Win64" / "UnrealEditor.exe"
-    editor_exe.parent.mkdir(parents=True)
-    editor_exe.write_bytes(b"")
-    monkeypatch.setenv("UE_56_PATH", str(engine_root))
-    return editor_exe
-
-
-def _editor_process(pid: int, exit_code: int | None) -> MagicMock:
-    """A launched editor process stand-in: poll() is None while running, else its exit code."""
-    process = MagicMock()
-    process.pid = pid
-    process.poll.return_value = exit_code
-    return process
+OLD_PID = 1234
+NEW_PID = 5678
+PROJECT_PATH = "C:/test/Test.uproject"
+RUNNING_EXE = str(pathlib.Path("C:/Engines/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe"))
+RUNNING_ENGINE_ROOT = str(pathlib.Path("C:/Engines/UE_5.8"))
 
 
 class MockMCP:
@@ -48,6 +35,128 @@ class MockMCP:
             return fn
 
         return decorator
+
+
+def _port_file_text(pid, port, project_path=PROJECT_PATH):
+    return json.dumps(
+        {
+            "port": port,
+            "pid": pid,
+            "project": "Test",
+            "project_path": project_path,
+            "started_at": "2026-01-01T00:00:00Z",
+        }
+    )
+
+
+class RestartHarness:
+    """Simulated editor world for do_restart_editor: pids, port files, shutdown and launch."""
+
+    def __init__(self, tmp_path, *, old_pid=OLD_PID, status_project="Test", conn_pid=OLD_PID):
+        self.saved_dir = tmp_path / "Saved"
+        self.saved_dir.mkdir(parents=True)
+        self.tmp_path = tmp_path
+        self.alive = {old_pid} if old_pid else set()
+        self.launched = []
+        self.launch_pid = NEW_PID
+        # One entry per launch: {"pid", "exit_code" or "poll_seq", "writes_file"}; the last entry repeats.
+        self.launch_plan = None
+        self.probe_error = None
+        self.foreign_pids = []
+        self.shutdown_error = None
+        self.status_project = status_project
+        self.process_exe = RUNNING_EXE
+        self.old_pid = old_pid
+
+        self.conn = MagicMock(spec=UEConnection)
+        self.conn._pid = conn_pid
+        self.conn._project_path = PROJECT_PATH
+        self.conn.port = 8742
+        self.conn.host = "127.0.0.1"
+        self.conn.send_command.side_effect = self._send_command
+        self.conn.retarget.side_effect = self._retarget
+        # What the shared connection would answer if a transport failure made it rediscover another editor.
+        self.rediscovered_status = None
+        self.status_pid = None
+        self.delay_launched_file = False
+        self.sleeps = 0
+        self.probe_ports = []
+        self.probes = []
+        if old_pid:
+            (self.saved_dir / f"CortexPort-{old_pid}.txt").write_text(_port_file_text(old_pid, 8742))
+
+    def _send_command(self, command, params=None, **_kwargs):
+        if command == "core.shutdown":
+            if self.shutdown_error is not None:
+                raise self.shutdown_error
+            self.alive.discard(self.old_pid)
+            return {"success": True, "data": {"message": "Shutdown initiated"}}
+        if command == "get_status":
+            # The shared connection is never the verifier; it would answer for whichever editor discovery picks.
+            return {"success": True, "data": self.rediscovered_status or self._status_data()}
+        raise AssertionError(f"unexpected command {command}")
+
+    def _status_data(self):
+        data = {"project_name": self.status_project, "subsystems": {"core": True}}
+        if self.status_pid is not None:
+            data["pid"] = self.status_pid
+        return data
+
+    def _retarget(self, port, pid, project):
+        self.conn.port = port
+        self.conn._pid = pid
+
+    def _open_probe(self, host, port):
+        self.probe_ports.append(port)
+        probe = MagicMock(spec=UEConnection)
+        if self.probe_error is not None:
+            probe.send_command.side_effect = self.probe_error
+        else:
+            probe.send_command.return_value = {"success": True, "data": self._status_data()}
+        self.probes.append(probe)
+        return probe
+
+    def _sleep(self, _seconds):
+        self.sleeps += 1
+        if self.delay_launched_file and self.sleeps == 2:
+            self._write_launched_file()
+
+    def _write_launched_file(self, pid=None):
+        pid = pid or self.launch_pid
+        (self.saved_dir / f"CortexPort-{pid}.txt").write_text(_port_file_text(pid, 8743))
+
+    def _popen(self, args, **_kwargs):
+        self.launched.append(args)
+        plans = self.launch_plan or [{"pid": self.launch_pid}]
+        plan = plans[min(len(self.launched) - 1, len(plans) - 1)]
+        pid = plan["pid"]
+        poll_seq = list(plan.get("poll_seq", [plan.get("exit_code")]))
+        if poll_seq[0] is None:
+            self.alive.add(pid)
+        for foreign_pid in self.foreign_pids:
+            (self.saved_dir / f"CortexPort-{foreign_pid}.txt").write_text(_port_file_text(foreign_pid, 9999))
+        if plan.get("writes_file", True) and not self.delay_launched_file:
+            self._write_launched_file(pid)
+
+        def poll():
+            return poll_seq.pop(0) if len(poll_seq) > 1 else poll_seq[0]
+
+        return types.SimpleNamespace(pid=pid, poll=poll)
+
+    def _process(self, pid):
+        if self.process_exe is None:
+            raise psutil.NoSuchProcess(pid)
+        return types.SimpleNamespace(exe=lambda: self.process_exe)
+
+    def run(self, **restart_kwargs):
+        env = {"CORTEX_PROJECT_DIR": str(self.tmp_path)}
+        with patch.dict(os.environ, env, clear=False), \
+                patch("tools.editor.composites.psutil.pid_exists", side_effect=lambda pid: pid in self.alive), \
+                patch("tools.editor.composites.psutil.Process", side_effect=self._process), \
+                patch("tools.editor.composites.subprocess.Popen", side_effect=self._popen), \
+                patch("tools.editor.composites._open_probe", side_effect=self._open_probe), \
+                patch("tools.editor.composites.time.sleep", side_effect=self._sleep):
+            return do_restart_editor(self.conn, **restart_kwargs)
 
 
 class TestShutdownEditor:
@@ -67,6 +176,15 @@ class TestShutdownEditor:
         mcp.tools["shutdown_editor"](force=True)
         conn.send_command.assert_called_with("core.shutdown", {"force": True})
 
+    def test_shutdown_defaults_to_not_forcing(self):
+        conn = MagicMock(spec=UEConnection)
+        conn.send_command.return_value = {"success": True, "data": {}}
+
+        mcp = MockMCP()
+        register_editor_composite_tools(mcp, conn)
+        mcp.tools["shutdown_editor"]()
+        conn.send_command.assert_called_with("core.shutdown", {"force": False})
+
     def test_shutdown_catches_connection_drop(self):
         conn = MagicMock(spec=UEConnection)
         conn.send_command.side_effect = ConnectionError("Connection lost")
@@ -79,52 +197,99 @@ class TestShutdownEditor:
         assert payload["message"] == "Shutdown initiated"
         assert payload["force"] is True
 
+    def test_shutdown_passes_unsaved_changes_refusal_through(self):
+        conn = MagicMock(spec=UEConnection)
+        conn.send_command.side_effect = UECommandError(
+            "core.shutdown",
+            "UNSAVED_CHANGES",
+            "2 unsaved packages",
+            {"dirty_packages": [{"package": "/Game/A", "file": ""}], "count": 2},
+        )
+
+        mcp = MockMCP()
+        register_editor_composite_tools(mcp, conn)
+        payload = json.loads(mcp.tools["shutdown_editor"]())
+        assert payload["success"] is False
+        assert payload["_error"] == "UNSAVED_CHANGES"
+        assert payload["count"] == 2
+
 
 class TestRestartEditor:
     """Tests for restart_editor composite flow."""
 
-    def test_restart_full_flow(self, tmp_path, fake_engine):
-        conn = MagicMock(spec=UEConnection)
-        conn._pid = 1234
-        conn._project_path = "C:/test/Test.uproject"
-        conn.send_command.side_effect = [
-            {"success": True, "data": {"message": "Shutdown initiated"}},
-            {"success": True, "data": {"subsystems": {"core": True}}},
-        ]
+    def test_restart_full_flow_uses_running_editor_engine(self, tmp_path):
+        harness = RestartHarness(tmp_path)
 
-        project_dir = tmp_path
-        saved_dir = project_dir / "Saved"
-        saved_dir.mkdir(parents=True)
-        port_file = saved_dir / "CortexPort-5678.txt"
-
-        def _popen_side_effect(*args, **kwargs):
-            port_file.write_text(
-                '{"port":8743,"pid":5678,"project":"Test","project_path":"C:/test/Test.uproject","started_at":"2026-01-01T00:00:00Z"}'
-            )
-            return _editor_process(5678, exit_code=None)
-
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(project_dir)}, clear=False), \
-                patch("tools.editor.composites.psutil.pid_exists", side_effect=[True, False]), \
-                patch("tools.editor.composites.subprocess.Popen", side_effect=_popen_side_effect), \
-                patch("tools.editor.composites.time.sleep", return_value=None):
+        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False):
             mcp = MockMCP()
-            register_editor_composite_tools(mcp, conn)
+            register_editor_composite_tools(mcp, harness.conn)
             assert "restart_editor" in mcp.tools
+            with patch("tools.editor.composites.psutil.pid_exists", side_effect=lambda pid: pid in harness.alive), \
+                    patch("tools.editor.composites.psutil.Process", side_effect=harness._process), \
+                    patch("tools.editor.composites.subprocess.Popen", side_effect=harness._popen), \
+                    patch("tools.editor.composites._open_probe", side_effect=harness._open_probe), \
+                    patch("tools.editor.composites.time.sleep", side_effect=harness._sleep):
+                payload = json.loads(mcp.tools["restart_editor"](timeout=30))
 
-            result = mcp.tools["restart_editor"](timeout=30)
-            payload = json.loads(result)
-            assert payload["message"] == "Editor restarted successfully"
-            assert payload["port"] == 8743
-            assert payload["pid"] == 5678
+        assert payload["message"] == "Editor restarted successfully"
+        assert payload["port"] == 8743
+        assert payload["old_pid"] == OLD_PID
+        assert payload["new_pid"] == NEW_PID
+        assert payload["engine_path"] == RUNNING_ENGINE_ROOT
+        assert payload["launch_attempts"] == 1
+        assert "pid" not in payload
+        assert harness.launched[0][0] == RUNNING_EXE
+        assert harness.launched[0][1] == PROJECT_PATH
+        harness.conn.send_command.assert_any_call("core.shutdown", {"force": False})
+        harness.probes[0].send_command.assert_called_once_with("get_status")
+        harness.probes[0].disconnect.assert_called_once()
+        assert harness.probe_ports == [8743]
+        harness.conn.retarget.assert_called_once_with(8743, NEW_PID, "Test")
+        assert harness.conn._project_path == PROJECT_PATH
+        harness.conn.disconnect.assert_called_once()
+        assert not (harness.saved_dir / f"CortexPort-{OLD_PID}.txt").exists()
 
-        conn.send_command.assert_any_call("core.shutdown", {"force": True})
-        conn.send_command.assert_any_call("get_status")
-        conn.disconnect.assert_called_once()
+    def test_restart_does_not_read_ue_56_path(self, tmp_path):
+        harness = RestartHarness(tmp_path)
+        with patch.dict(os.environ, {"UE_56_PATH": "C:/WrongEngine"}, clear=False):
+            result = harness.run(timeout=30)
+
+        assert result["message"] == "Editor restarted successfully"
+        assert "WrongEngine" not in harness.launched[0][0]
+
+    def test_restart_force_is_passed_to_shutdown(self, tmp_path):
+        harness = RestartHarness(tmp_path)
+
+        result = harness.run(timeout=30, force=True)
+
+        assert result["message"] == "Editor restarted successfully"
+        harness.conn.send_command.assert_any_call("core.shutdown", {"force": True})
+
+    def test_restart_unsaved_changes_refusal_launches_nothing(self, tmp_path):
+        harness = RestartHarness(tmp_path)
+        harness.shutdown_error = UECommandError(
+            "core.shutdown",
+            "UNSAVED_CHANGES",
+            "1 unsaved package",
+            {"dirty_packages": [{"package": "/Game/A", "file": "A.uasset"}], "count": 1},
+        )
+
+        result = harness.run(timeout=30)
+
+        assert result["success"] is False
+        assert result["_error"] == "UNSAVED_CHANGES"
+        assert result["count"] == 1
+        assert result["dirty_packages"][0]["package"] == "/Game/A"
+        assert harness.launched == []
+        harness.conn.disconnect.assert_not_called()
+        assert OLD_PID in harness.alive
+        assert (harness.saved_dir / f"CortexPort-{OLD_PID}.txt").exists()
 
     def test_restart_requires_project_path(self, tmp_path):
         conn = MagicMock(spec=UEConnection)
         conn._pid = None
         conn._project_path = None
+        conn.port = 0
 
         with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False):
             mcp = MockMCP()
@@ -135,83 +300,200 @@ class TestRestartEditor:
             assert payload["_error"] == "INVALID_OPERATION"
             assert "uproject" in payload["_message"]
 
-    def test_restart_reads_project_path_from_port_file_when_pid_unknown(self, tmp_path, fake_engine):
-        """project_path is read from port file when connection._pid/_project_path are None (e.g. CORTEX_PORT override)."""
-        conn = MagicMock(spec=UEConnection)
-        conn._pid = None
-        conn._project_path = None
-        conn.send_command.return_value = {"success": True, "data": {"subsystems": {"core": True}}}
+    def test_restart_discovers_pid_from_port_file_of_connected_port(self, tmp_path):
+        """An explicit-port connection has no pid; it is read from the port file for that port."""
+        harness = RestartHarness(tmp_path, conn_pid=None)
+        harness.conn._project_path = None
 
-        saved_dir = tmp_path / "Saved"
-        saved_dir.mkdir(parents=True)
+        result = harness.run(timeout=30)
 
-        new_port_file = saved_dir / "CortexPort-5678.txt"
+        assert result["message"] == "Editor restarted successfully"
+        assert result["old_pid"] == OLD_PID
+        harness.conn.send_command.assert_any_call("core.shutdown", {"force": False})
+        harness.conn.disconnect.assert_called_once()
 
-        def _popen_side_effect(*args, **kwargs):
-            new_port_file.write_text(
-                '{"port":8743,"pid":5678,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T01:00:00Z"}'
-            )
-            return _editor_process(5678, exit_code=None)
+    def test_restart_refused_before_shutdown_when_old_pid_unknown(self, tmp_path):
+        """No pid on the connection and no port file for the connected port: nothing is touched."""
+        harness = RestartHarness(tmp_path, conn_pid=None)
+        harness.conn.port = 9999  # the only port file belongs to port 8742
 
-        # Existing port file with project_path — present before shutdown, absent after
-        existing_port_file = saved_dir / "CortexPort-1234.txt"
-        existing_port_file.write_text(
-            '{"port":8742,"pid":1234,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T00:00:00Z"}'
-        )
+        result = harness.run(timeout=30)
 
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
-                patch("tools.editor.composites.psutil.pid_exists", return_value=False), \
-                patch("tools.editor.composites.subprocess.Popen", side_effect=_popen_side_effect), \
-                patch("tools.editor.composites.time.sleep", return_value=None):
-            mcp = MockMCP()
-            register_editor_composite_tools(mcp, conn)
-            result = mcp.tools["restart_editor"](timeout=30)
-            payload = json.loads(result)
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert "pid" in result["_message"]
+        harness.conn.send_command.assert_not_called()
+        harness.conn.disconnect.assert_not_called()
+        assert harness.launched == []
+        assert OLD_PID in harness.alive
 
-        assert payload.get("message") == "Editor restarted successfully", f"Unexpected result: {payload}"
-        assert payload["port"] == 8743
+    def test_restart_falls_back_to_engine_association_directory(self, tmp_path):
+        engine_root = tmp_path / "InstalledEngine"
+        exe = engine_root / "Engine" / "Binaries" / "Win64" / "UnrealEditor.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+        uproject = tmp_path / "Test.uproject"
+        uproject.write_text(json.dumps({"EngineAssociation": str(engine_root)}))
 
-    def test_restart_shuts_down_discovered_pid_when_connection_pid_unknown(self, tmp_path, fake_engine):
-        """When _pid=None but port file has a live PID, Phase 1 shuts it down via that discovered PID."""
-        conn = MagicMock(spec=UEConnection)
-        conn._pid = None
-        conn._project_path = None
-        # shutdown raises ConnectionError (expected — editor closes socket), status succeeds
-        conn.send_command.side_effect = [
-            ConnectionError("Connection closed"),
-            {"success": True, "data": {"subsystems": {"core": True}}},
-        ]
+        harness = RestartHarness(tmp_path)
+        harness.process_exe = None  # the running editor's executable cannot be queried
+        harness.conn._project_path = str(uproject)
 
-        saved_dir = tmp_path / "Saved"
-        saved_dir.mkdir(parents=True)
+        result = harness.run(timeout=30)
 
-        existing_port_file = saved_dir / "CortexPort-1234.txt"
-        existing_port_file.write_text(
-            '{"port":8742,"pid":1234,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T00:00:00Z"}'
-        )
+        assert result["message"] == "Editor restarted successfully"
+        assert result["engine_path"] == str(engine_root)
+        assert harness.launched[0][0] == str(exe)
 
-        new_port_file = saved_dir / "CortexPort-5678.txt"
+    def test_restart_refused_before_shutdown_when_engine_unresolvable(self, tmp_path):
+        uproject = tmp_path / "Test.uproject"
+        uproject.write_text(json.dumps({"EngineAssociation": "9.99"}))
 
-        def _popen_side_effect(*args, **kwargs):
-            existing_port_file.unlink(missing_ok=True)
-            new_port_file.write_text(
-                '{"port":8743,"pid":5678,"project_path":"C:/test/Test.uproject","started_at":"2026-01-01T01:00:00Z"}'
-            )
-            return _editor_process(5678, exit_code=None)
+        harness = RestartHarness(tmp_path)
+        harness.process_exe = None
+        harness.conn._project_path = str(uproject)
 
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
-                patch("tools.editor.composites.psutil.pid_exists", side_effect=[True, False]), \
-                patch("tools.editor.composites.subprocess.Popen", side_effect=_popen_side_effect), \
-                patch("tools.editor.composites.time.sleep", return_value=None):
-            mcp = MockMCP()
-            register_editor_composite_tools(mcp, conn)
-            result = mcp.tools["restart_editor"](timeout=30)
-            payload = json.loads(result)
+        with patch("tools.editor.composites._registry_engine_root", return_value=None):
+            result = harness.run(timeout=30)
 
-        assert payload.get("message") == "Editor restarted successfully", f"Unexpected result: {payload}"
-        assert payload["port"] == 8743
-        conn.send_command.assert_any_call("core.shutdown", {"force": True})
-        conn.disconnect.assert_called_once()
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert "Engine" in result["_message"]
+        harness.conn.send_command.assert_not_called()
+        assert harness.launched == []
+        assert OLD_PID in harness.alive
+
+    def test_restart_ignores_port_files_of_other_editors(self, tmp_path):
+        """A foreign editor's port file alone on the first poll must not abort the wait; the launched pid's file,
+        published on a later poll, is adopted."""
+        harness = RestartHarness(tmp_path)
+        harness.foreign_pids = [9999]
+        harness.delay_launched_file = True
+
+        result = harness.run(timeout=30)
+
+        assert result["message"] == "Editor restarted successfully"
+        assert result["new_pid"] == NEW_PID
+        assert result["port"] == 8743  # not the foreign editor's port 9999
+        assert harness.probe_ports == [8743]
+        assert harness.conn.port == 8743
+        assert harness.conn._pid == NEW_PID
+
+    def test_restart_verifies_through_a_probe_pinned_to_the_launched_port(self, tmp_path):
+        """If the shared connection would rediscover another editor, its answer must not satisfy verification."""
+        harness = RestartHarness(tmp_path, status_project="OtherProject")
+        harness.rediscovered_status = {"project_name": "Test", "subsystems": {"core": True}}
+
+        result = harness.run(timeout=30)
+
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert "OtherProject" in result["_message"]
+        assert harness.probe_ports == [8743]
+        assert "get_status" not in [c.args[0] for c in harness.conn.send_command.call_args_list]
+        harness.conn.retarget.assert_not_called()
+        assert harness.conn.port == 8742  # the shared connection was not repointed
+
+    def test_restart_fails_when_status_reports_other_pid(self, tmp_path):
+        harness = RestartHarness(tmp_path)
+        harness.status_pid = 4242
+
+        result = harness.run(timeout=30)
+
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert result["reported_pid"] == 4242
+        harness.conn.retarget.assert_not_called()
+
+    def test_restart_relaunches_once_when_first_launch_exits_before_ready(self, tmp_path):
+        harness = RestartHarness(tmp_path)
+        # The first editor publishes its port file and then dies: its stale file must not be accepted.
+        harness.launch_plan = [{"pid": 4000, "exit_code": 1}, {"pid": NEW_PID}]
+
+        result = harness.run(timeout=30)
+
+        assert result["message"] == "Editor restarted successfully", result
+        assert result["new_pid"] == NEW_PID
+        assert result["launch_attempts"] == 2
+        assert len(harness.launched) == 2
+        assert harness.launched[0][0] == RUNNING_EXE
+        assert harness.probe_ports == [8743]
+        assert (harness.saved_dir / "CortexPort-4000.txt").exists()
+
+    def test_restart_reports_no_running_editor_after_two_exited_launches(self, tmp_path):
+        harness = RestartHarness(tmp_path)
+        harness.launch_plan = [{"pid": 4000, "exit_code": 3}, {"pid": 4001, "exit_code": 3}]
+
+        result = harness.run(timeout=30)
+
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert result["launch"] == "exited"
+        assert result["relaunch_attempted"] is True
+        assert result["launch_attempts"] == 2
+        assert result["editor_running"] is False
+        assert result["editor_pid"] == 4001
+        assert result["exit_code"] == 3
+        assert "launch the editor manually" in result["_message"].lower()
+        assert len(harness.launched) == 2
+        harness.conn.retarget.assert_not_called()
+
+    def test_restart_reports_still_running_editor_on_timeout_without_second_launch(self, tmp_path):
+        harness = RestartHarness(tmp_path)
+        harness.launch_plan = [{"pid": 4321, "writes_file": False}]
+
+        result = harness.run(timeout=0)
+
+        assert result["success"] is False
+        assert result["launch"] == "timeout"
+        assert result["relaunch_attempted"] is True
+        assert result["launch_attempts"] == 1
+        assert result["editor_running"] is True
+        assert result["editor_pid"] == 4321
+        assert "still running" in result["_message"]
+        assert len(harness.launched) == 1
+
+    def test_restart_reports_process_state_when_verification_fails(self, tmp_path):
+        harness = RestartHarness(tmp_path)
+        # Alive when its port file is read, gone when the pinned probe fails.
+        harness.launch_plan = [{"pid": NEW_PID, "poll_seq": [None, 7]}]
+        harness.probe_error = ConnectionError("refused")
+
+        result = harness.run(timeout=30)
+
+        assert result["success"] is False
+        assert result["port"] == 8743
+        assert result["pid"] == NEW_PID
+        assert result["relaunch_attempted"] is True
+        assert result["launch_attempts"] == 1
+        assert result["editor_running"] is False
+        assert result["exit_code"] == 7
+        harness.conn.retarget.assert_not_called()
+
+    def test_restart_never_launches_when_engine_is_unresolvable_and_reports_it(self, tmp_path):
+        """Upstream #234: a restart that cannot relaunch leaves the editor open and says so."""
+        harness = RestartHarness(tmp_path)
+        harness.process_exe = None
+        harness.conn._project_path = str(tmp_path / "Missing.uproject")
+
+        result = harness.run(timeout=30)
+
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert result["shutdown"] == "not_attempted"
+        assert result["relaunch_attempted"] is False
+        harness.conn.send_command.assert_not_called()
+        assert harness.launched == []
+        assert OLD_PID in harness.alive
+
+    def test_restart_fails_when_status_reports_other_project(self, tmp_path):
+        harness = RestartHarness(tmp_path, status_project="OtherProject")
+
+        result = harness.run(timeout=30)
+
+        assert result["success"] is False
+        assert result["_error"] == "INVALID_OPERATION"
+        assert "OtherProject" in result["_message"]
 
 
 class TestDoShutdownEditor:
@@ -249,6 +531,14 @@ class TestDoShutdownEditor:
         assert result["force"] is False
         conn.send_command.assert_called_with("core.shutdown", {"force": False})
 
+    def test_force_defaults_to_false(self):
+        conn = MagicMock(spec=UEConnection)
+        conn.send_command.return_value = {"success": True, "data": {}}
+
+        do_shutdown_editor(conn)
+
+        conn.send_command.assert_called_with("core.shutdown", {"force": False})
+
 
 class TestDoRestartEditor:
     """Tests for the do_restart_editor standalone function."""
@@ -270,6 +560,7 @@ class TestDoRestartEditor:
         conn = MagicMock(spec=UEConnection)
         conn._pid = None
         conn._project_path = None
+        conn.port = 0
 
         with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False):
             result = do_restart_editor(conn, timeout=10)
@@ -279,55 +570,31 @@ class TestDoRestartEditor:
         assert result["_error"] == "INVALID_OPERATION"
         assert "uproject" in result["_message"]
 
-    def test_returns_success_dict_on_full_flow(self, tmp_path, fake_engine):
-        conn = MagicMock(spec=UEConnection)
-        conn._pid = 1234
-        conn._project_path = "C:/test/Test.uproject"
-        conn.send_command.side_effect = [
-            {"success": True, "data": {"message": "Shutdown initiated"}},
-            {"success": True, "data": {"subsystems": {"core": True}}},
-        ]
+    def test_returns_success_dict_on_full_flow(self, tmp_path):
+        harness = RestartHarness(tmp_path)
 
-        saved_dir = tmp_path / "Saved"
-        saved_dir.mkdir(parents=True)
-        port_file = saved_dir / "CortexPort-5678.txt"
-
-        def _popen_side_effect(*args, **kwargs):
-            port_file.write_text(
-                '{"port":8743,"pid":5678,"project":"Test","project_path":"C:/test/Test.uproject","started_at":"2026-01-01T00:00:00Z"}'
-            )
-            return _editor_process(5678, exit_code=None)
-
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
-                patch("tools.editor.composites.psutil.pid_exists", side_effect=[True, False]), \
-                patch("tools.editor.composites.subprocess.Popen", side_effect=_popen_side_effect), \
-                patch("tools.editor.composites.time.sleep", return_value=None):
-            result = do_restart_editor(conn, timeout=30)
+        result = harness.run(timeout=30)
 
         assert isinstance(result, dict)
         assert result["message"] == "Editor restarted successfully"
         assert result["port"] == 8743
-        assert result["pid"] == 5678
+        assert result["new_pid"] == NEW_PID
+        assert result["project"] == "Test"
 
-    def test_cancel_between_phases_returns_cancelled(self, tmp_path, fake_engine):
-        conn = MagicMock(spec=UEConnection)
-        conn._pid = None
-        conn._project_path = "C:/test/Test.uproject"
-
-        saved_dir = tmp_path / "Saved"
-        saved_dir.mkdir(parents=True)
-
+    def test_cancel_between_phases_returns_cancelled(self, tmp_path):
+        harness = RestartHarness(tmp_path)
         cancel = threading.Event()
+        original_popen = harness._popen
 
-        def _popen_side_effect(*args, **kwargs):
-            # Signal cancellation after launch so Phase 3 check fires
+        def _popen_then_cancel(args, **kwargs):
+            # Signal cancellation after launch so the Phase 3 check fires
+            process = original_popen(args, **kwargs)
             cancel.set()
-            return MagicMock()
+            return process
 
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
-                patch("tools.editor.composites.subprocess.Popen", side_effect=_popen_side_effect), \
-                patch("tools.editor.composites.time.sleep", return_value=None):
-            result = do_restart_editor(conn, timeout=30, cancel=cancel)
+        harness._popen = _popen_then_cancel
+
+        result = harness.run(timeout=30, cancel=cancel)
 
         assert isinstance(result, dict)
         assert result.get("cancelled") is True
@@ -337,6 +604,7 @@ class TestDoRestartEditor:
         conn = MagicMock(spec=UEConnection)
         conn._pid = None
         conn._project_path = None
+        conn.port = 0
 
         with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False):
             result = do_restart_editor(conn, timeout=5, cancel=None)
@@ -345,132 +613,3 @@ class TestDoRestartEditor:
         assert result["success"] is False
         assert result["_error"] == "INVALID_OPERATION"
         assert result["_message"]
-
-
-class TestRestartEditorRelaunch:
-    """Issue #234: a restart never leaves the editor closed without saying so."""
-
-    @staticmethod
-    def _connection() -> MagicMock:
-        conn = MagicMock(spec=UEConnection)
-        conn._pid = 1234
-        conn._project_path = "C:/test/Test.uproject"
-        return conn
-
-    @pytest.mark.parametrize("engine_path", [None, "missing"])
-    def test_refuses_before_shutdown_when_editor_cannot_be_launched(self, tmp_path, monkeypatch, engine_path):
-        if engine_path is None:
-            monkeypatch.delenv("UE_56_PATH", raising=False)
-        else:
-            monkeypatch.setenv("UE_56_PATH", str(tmp_path / engine_path))
-        (tmp_path / "Saved").mkdir()
-        conn = self._connection()
-
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
-                patch("tools.editor.composites.psutil.pid_exists", return_value=True), \
-                patch("tools.editor.composites.subprocess.Popen") as popen:
-            result = do_restart_editor(conn, timeout=30)
-
-        assert result["success"] is False
-        assert result["_error"] == "INVALID_OPERATION"
-        assert result["shutdown"] == "not_attempted"
-        assert result["relaunch_attempted"] is False
-        conn.send_command.assert_not_called()
-        popen.assert_not_called()
-
-    def test_relaunches_once_when_first_launch_exits_before_ready(self, tmp_path, fake_engine):
-        saved_dir = tmp_path / "Saved"
-        saved_dir.mkdir()
-        conn = self._connection()
-        conn.send_command.side_effect = [
-            ConnectionError("Connection closed"),
-            {"success": True, "data": {"subsystems": {"core": True}}},
-        ]
-        launches = []
-
-        def _popen(*args, **kwargs):
-            launches.append(args[0])
-            if len(launches) == 1:
-                # The first editor publishes its port file and then dies: its stale file must not be accepted.
-                (saved_dir / "CortexPort-4000.txt").write_text('{"port":8800,"pid":4000}')
-                return _editor_process(4000, exit_code=1)
-            (saved_dir / "CortexPort-5678.txt").write_text('{"port":8743,"pid":5678}')
-            return _editor_process(5678, exit_code=None)
-
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
-                patch("tools.editor.composites.psutil.pid_exists", side_effect=[True, False]), \
-                patch("tools.editor.composites.subprocess.Popen", side_effect=_popen), \
-                patch("tools.editor.composites.time.sleep", return_value=None):
-            result = do_restart_editor(conn, timeout=30)
-
-        assert result["message"] == "Editor restarted successfully", result
-        assert result["pid"] == 5678
-        assert result["launch_attempts"] == 2
-        assert len(launches) == 2
-        assert pathlib.Path(launches[0][0]) == fake_engine
-
-    def test_reports_no_running_editor_after_two_exited_launches(self, tmp_path, fake_engine):
-        (tmp_path / "Saved").mkdir()
-        conn = self._connection()
-        conn.send_command.side_effect = ConnectionError("Connection closed")
-        processes = [_editor_process(4000, exit_code=3), _editor_process(4001, exit_code=3)]
-
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
-                patch("tools.editor.composites.psutil.pid_exists", side_effect=[True, False]), \
-                patch("tools.editor.composites.subprocess.Popen", side_effect=processes) as popen, \
-                patch("tools.editor.composites.time.sleep", return_value=None):
-            result = do_restart_editor(conn, timeout=30)
-
-        assert result["success"] is False
-        assert result["launch"] == "exited"
-        assert result["relaunch_attempted"] is True
-        assert result["launch_attempts"] == 2
-        assert result["editor_running"] is False
-        assert result["editor_pid"] == 4001
-        assert result["exit_code"] == 3
-        assert "launch the editor manually" in result["_message"].lower()
-        assert popen.call_count == 2
-
-    def test_reports_still_running_editor_on_timeout_without_second_launch(self, tmp_path, fake_engine):
-        (tmp_path / "Saved").mkdir()
-        conn = self._connection()
-        conn._pid = None
-
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
-                patch("tools.editor.composites.subprocess.Popen",
-                      return_value=_editor_process(4321, exit_code=None)) as popen:
-            result = do_restart_editor(conn, timeout=0)
-
-        assert result["success"] is False
-        assert result["launch"] == "timeout"
-        assert result["relaunch_attempted"] is True
-        assert result["launch_attempts"] == 1
-        assert result["editor_running"] is True
-        assert result["editor_pid"] == 4321
-        assert "still running" in result["_message"]
-        assert popen.call_count == 1
-
-    def test_reports_process_state_when_verification_fails(self, tmp_path, fake_engine):
-        saved_dir = tmp_path / "Saved"
-        saved_dir.mkdir()
-        conn = self._connection()
-        conn._pid = None
-        conn.send_command.side_effect = ConnectionError("refused")
-        process = _editor_process(5678, exit_code=None)
-        process.poll.side_effect = [None, 7]  # alive when its port file is read, gone when get_status fails
-
-        def _popen(*args, **kwargs):
-            (saved_dir / "CortexPort-5678.txt").write_text('{"port":8743,"pid":5678}')
-            return process
-
-        with patch.dict(os.environ, {"CORTEX_PROJECT_DIR": str(tmp_path)}, clear=False), \
-                patch("tools.editor.composites.subprocess.Popen", side_effect=_popen), \
-                patch("tools.editor.composites.time.sleep", return_value=None):
-            result = do_restart_editor(conn, timeout=30)
-
-        assert result["success"] is False
-        assert result["pid"] == 5678
-        assert result["relaunch_attempted"] is True
-        assert result["launch_attempts"] == 1
-        assert result["editor_running"] is False
-        assert result["exit_code"] == 7

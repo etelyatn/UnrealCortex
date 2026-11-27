@@ -389,6 +389,14 @@ bool FCortexReflectFindTypeUsagesTest::RunTest(const FString& Parameters)
 	{
 		TestEqual(TEXT("The summary keeps the first 10 usages"), Objects(FileResult.Data, TEXT("usages")).Num(), 10);
 		TestEqual(TEXT("... and totals all 15"), static_cast<int32>(FileResult.Data->GetNumberField(TEXT("usages_total"))), 15);
+		bool bTruncated = false;
+		TestTrue(TEXT("The summary reports truncated"), FileResult.Data->TryGetBoolField(TEXT("truncated"), bTruncated));
+		TestTrue(TEXT("... as true, because usages lost entries"), bTruncated);
+		const TArray<TSharedPtr<FJsonValue>>* TruncatedArrays = nullptr;
+		if (TestTrue(TEXT("The summary lists truncated_arrays"), FileResult.Data->TryGetArrayField(TEXT("truncated_arrays"), TruncatedArrays)))
+		{
+			TestTrue(TEXT("... including usages"), TruncatedArrays->ContainsByPredicate([](const TSharedPtr<FJsonValue>& Name) { return Name->AsString() == TEXT("usages"); }));
+		}
 		FString Text;
 		TSharedPtr<FJsonObject> Written;
 		TestTrue(TEXT("The report file is written"), FFileHelper::LoadFileToString(Text, *ReportPath));

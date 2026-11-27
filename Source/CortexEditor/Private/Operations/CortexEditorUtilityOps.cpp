@@ -11,6 +11,7 @@
 #include "PythonScriptTypes.h"
 #include "Editor.h"
 #include "Engine/World.h"
+#include "Engine/Engine.h"
 #include "GameFramework/WorldSettings.h"
 #include "GameFramework/GameModeBase.h"
 
@@ -634,6 +635,7 @@ FCortexCommandResult FCortexEditorUtilityOps::GetRecentLogs(
 	double SinceSeconds = 30.0;
 	int32 SinceCursor = -1;
 	FString Category;
+	FString Contains;
 	int32 Limit = 200;
 	int32 UntilCursor = INDEX_NONE;
 	bool bCountOnly = false;
@@ -644,6 +646,7 @@ FCortexCommandResult FCortexEditorUtilityOps::GetRecentLogs(
 		Params->TryGetNumberField(TEXT("since_seconds"), SinceSeconds);
 		Params->TryGetNumberField(TEXT("since_cursor"), SinceCursor);
 		Params->TryGetStringField(TEXT("category"), Category);
+		Params->TryGetStringField(TEXT("contains"), Contains);
 		Params->TryGetBoolField(TEXT("count_only"), bCountOnly);
 
 		double LimitNumber = 0.0;
@@ -686,7 +689,7 @@ FCortexCommandResult FCortexEditorUtilityOps::GetRecentLogs(
 	}
 
 	const FCortexEditorLogResult Logs =
-		LogCapture.GetRecentLogs(Severity, SinceSeconds, SinceCursor, Category, Limit, UntilCursor, bCountOnly);
+		LogCapture.GetRecentLogs(Severity, SinceSeconds, SinceCursor, Category, Limit, UntilCursor, bCountOnly, Contains);
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	TArray<TSharedPtr<FJsonValue>> EntriesArray;
@@ -721,11 +724,21 @@ FCortexCommandResult FCortexEditorUtilityOps::ExecuteConsoleCommand(
 	const FCortexEditorPIEState& PIEState,
 	const TSharedPtr<FJsonObject>& Params)
 {
-	if (!PIEState.IsActive() || GEditor == nullptr || GEditor->PlayWorld == nullptr)
+	if (GEditor == nullptr)
 	{
 		return FCortexCommandRouter::Error(
-			CortexErrorCodes::PIENotActive,
-			TEXT("PIE is not running. Call start_pie first."));
+			CortexErrorCodes::EditorNotReady,
+			TEXT("Editor is not ready"));
+	}
+
+	// PIE world while PIE is active, else the editor world.
+	const bool bPIE = PIEState.IsActive() && GEditor->PlayWorld != nullptr;
+	UWorld* World = bPIE ? GEditor->PlayWorld.Get() : GEditor->GetEditorWorldContext().World();
+	if (World == nullptr)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::EditorNotReady,
+			TEXT("No PIE world and no editor world to run the console command in"));
 	}
 
 	FString Command;
@@ -736,9 +749,22 @@ FCortexCommandResult FCortexEditorUtilityOps::ExecuteConsoleCommand(
 			TEXT("Missing required param: command"));
 	}
 
-	// Preserve world Exec precedence; never dispatch again after either path handles the input.
-	const bool bOk = GEditor->PlayWorld->Exec(GEditor->PlayWorld, *Command)
-		|| IConsoleManager::Get().ProcessUserConsoleInput(*Command, *GLog, GEditor->PlayWorld);
+	// Dispatch order: world Exec keeps precedence, then the console manager, then the engine Exec (the only
+	// handler of `stat`). Never dispatch again once a route has handled the input.
+	const TCHAR* Route = nullptr;
+	if (World->Exec(World, *Command))
+	{
+		Route = TEXT("world_exec");
+	}
+	else if (IConsoleManager::Get().ProcessUserConsoleInput(*Command, *GLog, World))
+	{
+		Route = TEXT("console");
+	}
+	else if (GEngine != nullptr && GEngine->Exec(World, *Command, *GLog))
+	{
+		Route = TEXT("engine_exec");
+	}
+	const bool bOk = Route != nullptr;
 	if (!bOk)
 	{
 		return FCortexCommandRouter::Error(
@@ -749,6 +775,8 @@ FCortexCommandResult FCortexEditorUtilityOps::ExecuteConsoleCommand(
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("command"), Command);
 	Data->SetStringField(TEXT("status"), TEXT("ok"));
+	Data->SetStringField(TEXT("world"), bPIE ? TEXT("pie") : TEXT("editor"));
+	Data->SetStringField(TEXT("route"), Route);
 	return FCortexCommandRouter::Success(Data);
 }
 

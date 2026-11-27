@@ -227,11 +227,12 @@ bool FCortexBPRemoveGraphSchemaContractTest::RunTest(const FString&)
 	{
 		Params.Add(Param.Name, &Param);
 	}
-	for (const TCHAR* Name : { TEXT("asset_path"), TEXT("name"), TEXT("dry_run"), TEXT("compile"), TEXT("save") })
+	for (const TCHAR* Name : { TEXT("asset_path"), TEXT("dry_run"), TEXT("compile"), TEXT("save") })
 	{
 		TestTrue(FString::Printf(TEXT("%s is required"), Name), Params.Contains(Name) && Params[Name]->bRequired);
 	}
-	for (const TCHAR* Name : { TEXT("cascade_exec_chain"), TEXT("expected_fingerprint"), TEXT("expected_validation_hash") })
+	// The target is selected by exactly one of name or names, so neither can be schema-required.
+	for (const TCHAR* Name : { TEXT("name"), TEXT("names"), TEXT("cascade_exec_chain"), TEXT("expected_fingerprint"), TEXT("expected_validation_hash") })
 	{
 		TestTrue(FString::Printf(TEXT("%s is optional"), Name), Params.Contains(Name) && !Params[Name]->bRequired);
 	}

@@ -83,6 +83,22 @@ public:
 
 		/** Optional: digest of operation-owned state, compared before the run and after a restoration. */
 		TFunction<FString(UBlueprint* Blueprint)> DigestExtra;
+
+		/**
+		 * Journals the values of the generated class's default object (properties the #124 snapshot tracks, declared by a native or parent
+		 * class, without strong object references) as owned copies and writes back, with FProperty::Identical/CopyCompleteValue, every value
+		 * that differs after the recovery compile. The compile after a mutation regenerates the CDO and can leave a value different from the
+		 * pre-call state; the editor undo and the generic journal do not cover it. Values of the Blueprint's own variables are restored by the
+		 * journaled variable defaults and the recovery compile, not by this flag.
+		 */
+		bool bJournalCdo = false;
+
+		/**
+		 * A failure lists the other loaded packages the run marked dirty at any point, including ones the undo made clean again (a compile
+		 * reinstances dependents and embedded widget instances, which neither the undo nor the journal restore), as reload_packages
+		 * [{package, file, was_dirty_before}] with a reload_instruction. The target Blueprint's own package is never listed.
+		 */
+		bool bReportDirtiedPackages = false;
 	};
 
 	static FCortexCommandResult Execute(const FSpec& Spec);

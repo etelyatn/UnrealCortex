@@ -6,9 +6,9 @@
 #include "CortexUMGEmbeddedValueTestTypes.generated.h"
 
 /**
- * Test-only native base for umg.get_embedded_widget_values: one instance-editable property declared
- * natively (it must be listed like a Blueprint variable) and one that is not editable on instances
- * (it must be skipped).
+ * Test-only native base for umg.get_embedded_widget_values and umg.get_embedded_widget_diff: one
+ * instance-editable property declared natively (listed like a Blueprint variable) and one defaults-only
+ * property that is not editable on instances (listed with instance_editable=false).
  */
 UCLASS(Blueprintable)
 class UCortexUMGEmbeddedValueTestWidget : public UUserWidget

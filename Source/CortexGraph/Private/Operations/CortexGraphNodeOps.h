@@ -25,6 +25,7 @@ public:
 	static FCortexCommandResult SearchNodes(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult AddNode(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult RemoveNode(const TSharedPtr<FJsonObject>& Params);
+	static FCortexCommandResult RemoveNodes(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult SetPinValue(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult AutoLayout(const TSharedPtr<FJsonObject>& Params);
 	static FCortexCommandResult DescribeNode(const TSharedPtr<FJsonObject>& Params);

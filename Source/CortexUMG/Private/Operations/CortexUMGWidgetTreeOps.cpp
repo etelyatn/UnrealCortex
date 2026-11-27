@@ -1143,6 +1143,10 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
         return FCortexCommandRouter::Error(CortexErrorCodes::WidgetNotFound, TEXT("Exact widget name to rename was not found"));
     const FString OldName = Widget->GetName();
     const bool bChanged = !OldName.Equals(NewName, ESearchCase::CaseSensitive);
+    // The engine rename (FWidgetBlueprintOperationUtils::RenameWidget) always sets the display label to the new
+    // name, replacing any custom hierarchy label; the label is editor data that no fingerprint hashes, so it is
+    // reported explicitly.
+    const FString DisplayLabelBefore = Widget->GetDisplayLabel();
 
     // Renaming away from a name that a native BindWidget property of the parent chain binds breaks the compile
     // for a required binding, and silently unbinds an optional one. VerifyWidgetRename only guards the target name.
@@ -1324,6 +1328,10 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
             Data->SetStringField(TEXT("scope"), Scope);
             Data->SetBoolField(TEXT("dry_run"), true);
             Data->SetBoolField(TEXT("changed"), false);
+            // Predicted from the engine rename, which sets the label to the new name.
+            Data->SetStringField(TEXT("display_label_before"), DisplayLabelBefore);
+            Data->SetStringField(TEXT("display_label_after"), NewName);
+            Data->SetBoolField(TEXT("display_label_changed"), !DisplayLabelBefore.Equals(NewName, ESearchCase::CaseSensitive));
             Data->SetBoolField(TEXT("saved"), false);
             Data->SetBoolField(TEXT("skeleton_regenerated"), false);
             Data->SetObjectField(TEXT("plan"), PlanJson);
@@ -1593,6 +1601,10 @@ FCortexCommandResult FCortexUMGWidgetTreeOps::RenameWidget(const TSharedPtr<FJso
     Data->SetStringField(TEXT("old_name"), OldName);
     Data->SetStringField(TEXT("widget_name"), Widget->GetName());
     Data->SetBoolField(TEXT("changed"), bChanged);
+    const FString DisplayLabelAfter = Widget->GetDisplayLabel();
+    Data->SetStringField(TEXT("display_label_before"), DisplayLabelBefore);
+    Data->SetStringField(TEXT("display_label_after"), DisplayLabelAfter);
+    Data->SetBoolField(TEXT("display_label_changed"), !DisplayLabelBefore.Equals(DisplayLabelAfter, ESearchCase::CaseSensitive));
     Data->SetBoolField(TEXT("saved"), false);
     Data->SetBoolField(TEXT("skeleton_regenerated"), bChanged);
     Data->SetBoolField(TEXT("unbinds_optional_bindwidget"), bUnbindsOptionalBindWidget);

@@ -29,9 +29,11 @@
 #include "Operations/CortexEditorTurnaroundOps.h"
 #include "Rendering/SlateRenderer.h"
 #include "GraphEditor.h"
+#include "Slate/SceneViewport.h"
 #include "SGraphPanel.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
 
 namespace
@@ -185,6 +187,147 @@ bool HasMovingGraphPanel(const TSharedRef<SWidget>& Widget)
 	}
 	return false;
 }
+
+/**
+ * Reads Target back through Slate, so UMG and every other widget drawn into the window is included. Refuses, with
+ * OutError set, a target that is in no live window, a window under a modal dialog, a hidden or minimized window, or a
+ * failed readback. Subject names the target in messages ("the details panel", "the PIE viewport").
+ */
+bool TakeSlateScreenshot(
+	FSlateApplication& Slate,
+	const TSharedRef<SWidget>& Target,
+	const FString& Subject,
+	TArray<FColor>& OutPixels,
+	FIntVector& OutSize,
+	TSharedPtr<SWindow>& OutWindow,
+	FCortexCommandResult& OutError)
+{
+	// Settle ticks process window messages: the window may have closed or the widget left it meanwhile.
+	// TakeScreenshot asserts on a widget that is in no live window, so the path is checked right before it.
+	OutWindow = GetVisibleWidgetArea(Target) > 0.0 ? Slate.FindWidgetWindow(Target) : nullptr;
+	if (!OutWindow.IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::WidgetNotFound,
+			FString::Printf(TEXT("Cannot capture %s: it is not in an open editor window"), *Subject));
+		return false;
+	}
+	// TakeScreenshot reads back during its own draw of the window; a window that draw skips would leave the renderer
+	// holding the request (and a pointer to our pixel buffer) for a later frame, so such windows are refused first.
+	const TSharedPtr<SWindow> ModalWindow = Slate.GetActiveModalWindow();
+	if (ModalWindow.IsValid() && ModalWindow != OutWindow)
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::EditorBusy,
+			FString::Printf(TEXT("A modal dialog is open (%s); close it before capturing"), *ModalWindow->GetTitle().ToString()));
+		return false;
+	}
+	if (!OutWindow->IsVisible() || OutWindow->IsWindowMinimized())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::ScreenshotFailed,
+			FString::Printf(TEXT("The window '%s' is hidden or minimized"), *OutWindow->GetTitle().ToString()));
+		return false;
+	}
+	if (!Slate.TakeScreenshot(Target, OutPixels, OutSize))
+	{
+		// Drop a request the renderer did not consume: target no window, so no frame writes into the sink.
+		static TArray<FColor> UnusedScreenshotSink;
+		if (FSlateRenderer* Renderer = Slate.GetRenderer())
+		{
+			Renderer->PrepareToTakeScreenshot(FIntRect(), &UnusedScreenshotSink, nullptr);
+		}
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::ScreenshotFailed,
+			FString::Printf(TEXT("Slate could not read back %s"), *Subject));
+		return false;
+	}
+	return true;
+}
+
+enum class ECortexScreenshotSource : uint8
+{
+	Auto,
+	Editor,
+	PIE,
+};
+
+bool ParseScreenshotSource(const FString& Name, ECortexScreenshotSource& OutSource)
+{
+	if (Name == TEXT("auto"))
+	{
+		OutSource = ECortexScreenshotSource::Auto;
+		return true;
+	}
+	if (Name == TEXT("editor"))
+	{
+		OutSource = ECortexScreenshotSource::Editor;
+		return true;
+	}
+	if (Name == TEXT("pie"))
+	{
+		OutSource = ECortexScreenshotSource::PIE;
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Captures the PIE viewport (selected-viewport and new-window PIE alike: GetPIEViewport covers both) through Slate,
+ * so UMG is part of the image. The PIE game camera's pose is not known here, so it is reported as unavailable.
+ */
+FCortexCommandResult CapturePIEViewport(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!FSlateApplication::IsInitialized() || !FApp::CanEverRender())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::EditorNotAvailable,
+			TEXT("The editor cannot render Slate windows in this process (no Slate application or -NullRHI)"));
+	}
+
+	// UGameViewportClient::Viewport is always an FSceneViewport (CreateGameViewport); that is the viewport GetPIEViewport returns.
+	FViewport* PIEViewport = GEditor->GetPIEViewport();
+	const FSceneViewport* PIESceneViewport = static_cast<const FSceneViewport*>(PIEViewport);
+	const TSharedPtr<SViewport> ViewportWidget = PIESceneViewport != nullptr ? PIESceneViewport->GetViewportWidget().Pin() : nullptr;
+	if (!ViewportWidget.IsValid())
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::ViewportNotFound,
+			TEXT("PIE is running but has no viewport widget to capture"));
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+	// Arrange the widgets (a window that just opened) before measuring them.
+	Slate.Tick(ESlateTickType::All);
+
+	const double StartTime = FPlatformTime::Seconds();
+	TSharedPtr<SWindow> Window;
+	TArray<FColor> Pixels;
+	FIntVector CapturedSize = FIntVector::ZeroValue;
+	FCortexCommandResult ReadbackError;
+	if (!TakeSlateScreenshot(Slate, ViewportWidget.ToSharedRef(), TEXT("the PIE viewport"), Pixels, CapturedSize, Window, ReadbackError))
+	{
+		return ReadbackError;
+	}
+
+	const FIntPoint Size(CapturedSize.X, CapturedSize.Y);
+	Pixels.SetNum(Size.X * Size.Y);
+	const FString OutputPath = ResolveCaptureOutputPath(Params, TEXT("cortex"));
+	FString WriteError;
+	if (!WriteOpaquePng(Pixels, Size, OutputPath, WriteError))
+	{
+		return FCortexCommandRouter::Error(CortexErrorCodes::ScreenshotFailed, WriteError);
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("path"), FPaths::ConvertRelativePathToFull(OutputPath));
+	Data->SetNumberField(TEXT("width"), Size.X);
+	Data->SetNumberField(TEXT("height"), Size.Y);
+	Data->SetNumberField(TEXT("file_size_bytes"), static_cast<double>(IFileManager::Get().FileSize(*OutputPath)));
+	Data->SetNumberField(TEXT("capture_time_ms"), (FPlatformTime::Seconds() - StartTime) * 1000.0);
+	Data->SetStringField(TEXT("source"), TEXT("pie"));
+	Data->SetBoolField(TEXT("includes_ui"), true);
+	Data->SetStringField(TEXT("view"), TEXT("pie_game_camera"));
+	Data->SetBoolField(TEXT("pie_active"), true);
+	Data->SetBoolField(TEXT("camera_available"), false);
+	Data->SetStringField(TEXT("camera_provenance"), TEXT("unavailable"));
+	Data->SetStringField(TEXT("window_title"), Window->GetTitle().ToString());
+	return FCortexCommandRouter::Success(Data);
+}
 }
 
 FCortexCommandResult FCortexEditorViewportOps::GetViewportInfo()
@@ -259,6 +402,41 @@ FCortexCommandResult FCortexEditorViewportOps::GetViewportInfo()
 
 FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPtr<FJsonObject>& Params)
 {
+	ECortexScreenshotSource Source = ECortexScreenshotSource::Auto;
+	if (Params.IsValid() && Params->HasField(TEXT("source")))
+	{
+		FString SourceName;
+		if (!Params->TryGetStringField(TEXT("source"), SourceName) || !ParseScreenshotSource(SourceName, Source))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+				FString::Printf(TEXT("source must be auto, editor or pie, got '%s'"), *SourceName));
+		}
+	}
+
+	// A live game viewport exists only while PIE plays: a Simulate-In-Editor session (or PIE ejected into SIE) keeps a
+	// play world but shows the editor camera, so it is not a PIE capture target.
+	const bool bPIERunning = GEditor != nullptr && GEditor->PlayWorld != nullptr && !GEditor->bIsSimulatingInEditor;
+	if (Source == ECortexScreenshotSource::PIE && !bPIERunning)
+	{
+		return FCortexCommandRouter::Error(
+			CortexErrorCodes::PIENotActive,
+			TEXT("source=pie requires a running PIE session (not Simulate-In-Editor). Call start_pie first."));
+	}
+	// auto: the PIE viewport (UI included) while PIE plays. When the Slate capture is unavailable (a process that cannot
+	// render Slate windows, a minimized or hidden window, a background tab, a modal dialog) the previous scene-only viewport
+	// readback below is kept; the response reports which source was read and whether UI is in the image. An explicit
+	// source=pie keeps its refusal.
+	if (bPIERunning && (Source == ECortexScreenshotSource::PIE || Source == ECortexScreenshotSource::Auto))
+	{
+		FCortexCommandResult PIEResult = CapturePIEViewport(Params);
+		if (PIEResult.bSuccess || Source == ECortexScreenshotSource::PIE)
+		{
+			return PIEResult;
+		}
+		UE_LOG(LogCortexEditor, Log, TEXT("capture_screenshot auto: the Slate PIE capture was unavailable (%s: %s); using the scene readback"),
+			*PIEResult.ErrorCode, *PIEResult.ErrorMessage);
+	}
+
 	const TSharedPtr<IAssetViewport> Viewport = GetActiveAssetViewport();
 	if (!Viewport.IsValid() || Viewport->GetActiveViewport() == nullptr)
 	{
@@ -325,6 +503,8 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureScreenshot(const TSharedPt
 	Data->SetNumberField(TEXT("capture_time_ms"), CaptureTimeMs);
 	Data->SetStringField(TEXT("view"), bActiveGameViewport ? TEXT("pie_game_camera") : TEXT("editor_camera"));
 	Data->SetBoolField(TEXT("pie_active"), bPieActive);
+	Data->SetStringField(TEXT("source"), TEXT("editor"));
+	Data->SetBoolField(TEXT("includes_ui"), false);
 
 	if (bActiveGameViewport)
 	{
@@ -895,43 +1075,21 @@ FCortexCommandResult FCortexEditorViewportOps::CaptureEditorPanel(const TSharedP
 		}
 	}
 
-	// The settle ticks process window messages: the panel's window may have closed or the panel left it meanwhile.
-	// TakeScreenshot asserts on a widget that is in no live window, so the path is checked again right before it.
-	const TSharedPtr<SWindow> Window = Target.IsValid() && GetVisibleWidgetArea(Target.ToSharedRef()) > 0.0
-		? Slate.FindWidgetWindow(Target.ToSharedRef()) : nullptr;
-	if (!Window.IsValid())
+	// The settle ticks above process window messages, so the panel's window may have closed meanwhile.
+	if (!Target.IsValid())
 	{
 		return FCortexCommandRouter::Error(CortexErrorCodes::WidgetNotFound, TEXT("The panel is not in an open editor window"));
 	}
-	// TakeScreenshot reads back during its own draw of Window; a window that draw skips would leave the renderer
-	// holding the request (and a pointer to our pixel buffer) for a later frame, so such windows are refused first.
-	const TSharedPtr<SWindow> ModalWindow = Slate.GetActiveModalWindow();
-	if (ModalWindow.IsValid() && ModalWindow != Window)
-	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::EditorBusy,
-			FString::Printf(TEXT("A modal dialog is open (%s); close it before capturing"), *ModalWindow->GetTitle().ToString()));
-	}
-	if (!Window->IsVisible() || Window->IsWindowMinimized())
-	{
-		return FCortexCommandRouter::Error(CortexErrorCodes::ScreenshotFailed,
-			FString::Printf(TEXT("The window '%s' is hidden or minimized"), *Window->GetTitle().ToString()));
-	}
-
-	const FString OutputPath = ResolveCaptureOutputPath(Params, TEXT("cortex_panel"));
 	const double StartTime = FPlatformTime::Seconds();
+	TSharedPtr<SWindow> Window;
 	TArray<FColor> Pixels;
 	FIntVector CapturedSize = FIntVector::ZeroValue;
-	if (!Slate.TakeScreenshot(Target.ToSharedRef(), Pixels, CapturedSize))
+	FCortexCommandResult ReadbackError;
+	if (!TakeSlateScreenshot(Slate, Target.ToSharedRef(), FString::Printf(TEXT("the %s panel"), *PanelName), Pixels, CapturedSize, Window, ReadbackError))
 	{
-		// Drop a request the renderer did not consume: target no window, so no frame writes into the sink.
-		static TArray<FColor> UnusedScreenshotSink;
-		if (FSlateRenderer* Renderer = Slate.GetRenderer())
-		{
-			Renderer->PrepareToTakeScreenshot(FIntRect(), &UnusedScreenshotSink, nullptr);
-		}
-		return FCortexCommandRouter::Error(CortexErrorCodes::ScreenshotFailed,
-			FString::Printf(TEXT("Slate could not read back the %s panel"), *PanelName));
+		return ReadbackError;
 	}
+	const FString OutputPath = ResolveCaptureOutputPath(Params, TEXT("cortex_panel"));
 
 	const FIntPoint Size(CapturedSize.X, CapturedSize.Y);
 	Pixels.SetNum(Size.X * Size.Y);

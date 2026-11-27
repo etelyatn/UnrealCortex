@@ -89,7 +89,8 @@ FCortexEditorLogResult FCortexEditorLogCapture::GetRecentLogs(
 	const FString& CategoryFilter,
 	int32 Limit,
 	int32 UntilCursor,
-	bool bCountOnly) const
+	bool bCountOnly,
+	const FString& ContainsFilter) const
 {
 	FScopeLock Lock(&BufferCS);
 
@@ -143,6 +144,10 @@ FCortexEditorLogResult FCortexEditorLogCapture::GetRecentLogs(
 			continue;
 		}
 		if (!CategoryFilter.IsEmpty() && Entry.Category != CategoryFilter)
+		{
+			continue;
+		}
+		if (!ContainsFilter.IsEmpty() && !Entry.Message.Contains(ContainsFilter, ESearchCase::IgnoreCase))
 		{
 			continue;
 		}

@@ -1025,7 +1025,7 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("required envelope fields"), FString::Join(ParamNames(*ApplyPatch, true), TEXT(",")),
 		FString(TEXT("asset_path,patch_id,expected_fingerprint")));
 	TestEqual(TEXT("optional envelope fields"), FString::Join(ParamNames(*ApplyPatch, false), TEXT(",")),
-		FString(TEXT("target,nodes,connections,pin_updates,migration,dry_run,compile,save,allow_noop,expected_validation_hash")));
+		FString(TEXT("target,nodes,connections,disconnect,pin_updates,migration,dry_run,compile,save,allow_noop,expected_validation_hash")));
 	TestFalse(TEXT("apply_patch never opts into the rollback-safe contract"),
 		ApplyPatch->bRollbackSafe);
 	TestTrue(TEXT("the published description declares the batch restriction"),
@@ -1058,7 +1058,7 @@ bool FCortexGraphPatchCommandSchemaTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("the published migration selector names its required target"),
 			MigrationParam->Description.Contains(TEXT("target.implementation")));
 		TestTrue(TEXT("the published migration selector refuses mixed authoring arrays"),
-			MigrationParam->Description.Contains(TEXT("nodes/connections/pin_updates")));
+			MigrationParam->Description.Contains(TEXT("nodes/connections/disconnect/pin_updates")));
 		// T12 published the bounded same-asset transfer; T13 publishes the execution-island prune once
 		// its native path and its own coverage exist.
 		TestTrue(TEXT("copy_subgraph is published"),
