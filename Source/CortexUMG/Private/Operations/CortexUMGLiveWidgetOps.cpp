@@ -54,7 +54,7 @@ struct FLiveReadback
     bool bTruncated = false;
 };
 
-using FFlatEntries = TMap<FString, TSharedPtr<FJsonValue>>;
+using FFlatEntries = FCortexLiveWidgetPathMap;
 
 FCortexCommandResult InvalidField(const FString& Message)
 {
@@ -603,6 +603,42 @@ FString InstanceName(const TSharedPtr<FJsonValue>& Instance)
     return Name;
 }
 
+/** First field a readback always writes that the snapshot instance lacks (or has with the wrong JSON type); empty when complete. */
+FString FindMissingInstanceField(const TSharedPtr<FJsonObject>& Instance, const bool bIncludeProperties)
+{
+    struct FRequiredField
+    {
+        const TCHAR* Name;
+        EJson Type;
+    };
+    const FRequiredField Fields[] = {
+        {TEXT("index"), EJson::Number},
+        {TEXT("name"), EJson::String},
+        {TEXT("class"), EJson::String},
+        {TEXT("in_viewport"), EJson::Boolean},
+        {TEXT("visibility"), EJson::String},
+        {TEXT("widgets"), EJson::Object},
+        {TEXT("missing"), EJson::Array},
+    };
+    for (const FRequiredField& Field : Fields)
+    {
+        const TSharedPtr<FJsonValue> Value = Instance->TryGetField(Field.Name);
+        if (!Value.IsValid() || Value->Type != Field.Type)
+        {
+            return Field.Name;
+        }
+    }
+    if (bIncludeProperties)
+    {
+        const TSharedPtr<FJsonValue> Properties = Instance->TryGetField(TEXT("properties"));
+        if (!Properties.IsValid() || Properties->Type != EJson::Object)
+        {
+            return TEXT("properties");
+        }
+    }
+    return FString();
+}
+
 TSharedPtr<FJsonValue> InstanceSummary(const int32 Index, const TSharedPtr<FJsonValue>& Instance)
 {
     FFlatEntries Entries;
@@ -616,7 +652,7 @@ TSharedPtr<FJsonValue> InstanceSummary(const int32 Index, const TSharedPtr<FJson
 }
 
 void FCortexUMGLiveWidgetOps::FlattenValue(
-    const FString& Key, const TSharedPtr<FJsonValue>& Value, TMap<FString, TSharedPtr<FJsonValue>>& Out)
+    const FString& Key, const TSharedPtr<FJsonValue>& Value, FCortexLiveWidgetPathMap& Out)
 {
     if (!Value.IsValid())
     {
@@ -843,6 +879,15 @@ FCortexCommandResult FCortexUMGLiveWidgetOps::DiffLiveWidgets(const TSharedPtr<F
     {
         return Error;
     }
+    for (int32 Index = 0; Index < SnapshotInstances->Num(); ++Index)
+    {
+        const FString Missing = FindMissingInstanceField((*SnapshotInstances)[Index]->AsObject(), Request.bIncludeProperties);
+        if (!Missing.IsEmpty())
+        {
+            return InvalidField(FString::Printf(
+                TEXT("Widget snapshot '%s' is malformed: instances[%d] lacks the field '%s' every readback writes"), *Label, Index, *Missing));
+        }
+    }
 
     UWorld* World = FCortexPIEUtils::GetPIEWorld();
     if (!World)
@@ -874,7 +919,10 @@ FCortexCommandResult FCortexUMGLiveWidgetOps::DiffLiveWidgets(const TSharedPtr<F
                 Keys.Add(Entry.Key);
             }
         }
-        Keys.Sort();
+        Keys.Sort([](const FString& A, const FString& B)
+        {
+            return A.Compare(B, ESearchCase::CaseSensitive) < 0;
+        });
 
         for (const FString& Key : Keys)
         {
@@ -930,7 +978,7 @@ FCortexCommandResult FCortexUMGLiveWidgetOps::DiffLiveWidgets(const TSharedPtr<F
     Data->SetStringField(TEXT("label"), Label);
     Data->SetNumberField(TEXT("total_entries"), TotalEntries);
     Data->SetNumberField(TEXT("differing_entries"), DifferingEntries);
-    Data->SetBoolField(TEXT("identical"), bComplete && DifferingEntries == 0);
+    Data->SetBoolField(TEXT("identical"), bComplete && DifferingEntries == 0 && AddedInstances.IsEmpty() && RemovedInstances.IsEmpty());
     Data->SetBoolField(TEXT("complete"), bComplete);
     Data->SetStringField(TEXT("summary"), FString::Printf(TEXT("%d of %d entries differ"), DifferingEntries, TotalEntries));
     Data->SetArrayField(TEXT("differences"), Differences);

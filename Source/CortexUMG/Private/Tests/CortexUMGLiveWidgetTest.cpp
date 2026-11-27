@@ -810,7 +810,7 @@ bool FCortexUMGLiveWidgetsFlattenKeepsEmptyAndEscapesTest::RunTest(const FString
 	Root->SetNumberField(TEXT("k[0]"), 3);
 	Root->SetNumberField(TEXT("bs\\"), 4);
 
-	TMap<FString, TSharedPtr<FJsonValue>> Entries;
+	FCortexLiveWidgetPathMap Entries;
 	FCortexUMGLiveWidgetOps::FlattenValue(FString(), MakeShared<FJsonValueObject>(Root), Entries);
 
 	TestEqual(TEXT("every member is its own entry, empty containers included"), Entries.Num(), 6);
@@ -836,7 +836,7 @@ bool FCortexUMGLiveWidgetsFlattenKeepsEmptyAndEscapesTest::RunTest(const FString
 	TestFalse(TEXT("an empty array differs from the string []"), FCortexUMGLiveWidgetOps::LeavesEqual(EmptyArray, MakeShared<FJsonValueString>(TEXT("[]"))));
 
 	// A property that goes from empty to non-empty is indexed entries instead of the empty leaf, so the keys differ.
-	TMap<FString, TSharedPtr<FJsonValue>> Filled;
+	FCortexLiveWidgetPathMap Filled;
 	const TSharedRef<FJsonObject> FilledRoot = MakeShared<FJsonObject>();
 	FilledRoot->SetArrayField(TEXT("l"), {MakeShared<FJsonValueNumber>(1)});
 	FCortexUMGLiveWidgetOps::FlattenValue(FString(), MakeShared<FJsonValueObject>(FilledRoot), Filled);
@@ -846,6 +846,24 @@ bool FCortexUMGLiveWidgetsFlattenKeepsEmptyAndEscapesTest::RunTest(const FString
 		FCortexUMGLiveWidgetOps::LeavesEqual(MakeShared<FJsonValueString>(TEXT("Hello")), MakeShared<FJsonValueString>(TEXT("Hello"))));
 	TestFalse(TEXT("strings compare case-sensitively"),
 		FCortexUMGLiveWidgetOps::LeavesEqual(MakeShared<FJsonValueString>(TEXT("Hello")), MakeShared<FJsonValueString>(TEXT("HELLO"))));
+
+	// Paths that differ only by case are distinct entries (a reflected map key renamed Title -> TITLE).
+	const TSharedRef<FJsonObject> TitleRoot = MakeShared<FJsonObject>();
+	TitleRoot->SetNumberField(TEXT("Title"), 1);
+	const TSharedRef<FJsonObject> UpperRoot = MakeShared<FJsonObject>();
+	UpperRoot->SetNumberField(TEXT("TITLE"), 1);
+	FCortexLiveWidgetPathMap TitleEntries;
+	FCortexLiveWidgetPathMap UpperEntries;
+	FCortexUMGLiveWidgetOps::FlattenValue(FString(), MakeShared<FJsonValueObject>(TitleRoot), TitleEntries);
+	FCortexUMGLiveWidgetOps::FlattenValue(FString(), MakeShared<FJsonValueObject>(UpperRoot), UpperEntries);
+	TestTrue(TEXT("Title is present in the Title readback"), TitleEntries.Contains(TEXT("Title")));
+	TestFalse(TEXT("TITLE is not found in the Title readback"), TitleEntries.Contains(TEXT("TITLE")));
+	TestTrue(TEXT("TITLE is present in the TITLE readback"), UpperEntries.Contains(TEXT("TITLE")));
+	TestFalse(TEXT("Title is not found in the TITLE readback"), UpperEntries.Contains(TEXT("Title")));
+	FCortexLiveWidgetPathMap Distinct;
+	Distinct.Add(TEXT("Title"), MakeShared<FJsonValueNumber>(1));
+	Distinct.Add(TEXT("TITLE"), MakeShared<FJsonValueNumber>(2));
+	TestEqual(TEXT("keys differing only by case are separate map entries"), Distinct.Num(), 2);
 	return true;
 }
 
@@ -869,6 +887,10 @@ bool FCortexUMGLiveWidgetsDiffRejectsMalformedSnapshotTest::RunTest(const FStrin
 		{TEXT("string format_version"), TEXT("\"1\""), TEXT("false"), TEXT("[]")},
 		{TEXT("null instance"), TEXT("1"), TEXT("false"), TEXT("[null]")},
 		{TEXT("non-object instance"), TEXT("1"), TEXT("false"), TEXT("[1]")},
+		{TEXT("empty instance object"), TEXT("1"), TEXT("false"), TEXT("[{}]")},
+		{TEXT("identity-only instance"), TEXT("1"), TEXT("false"), TEXT("[{\"index\":0,\"name\":\"x\"}]")},
+		{TEXT("instance without properties although captured"), TEXT("1"), TEXT("false"),
+			TEXT("[{\"index\":0,\"name\":\"x\",\"class\":\"c\",\"in_viewport\":false,\"visibility\":\"Visible\",\"widgets\":{},\"missing\":[]}]")},
 		{TEXT("string truncated"), TEXT("1"), TEXT("\"no\""), TEXT("[]")},
 		{TEXT("missing truncated"), TEXT("1"), nullptr, TEXT("[]")},
 	};
@@ -906,5 +928,41 @@ bool FCortexUMGLiveWidgetsDiffRejectsMalformedSnapshotTest::RunTest(const FStrin
 		TestEqual(TEXT("a valid snapshot reaches the PIE check"), Diff.ErrorCode, CortexErrorCodes::PIENotActive);
 		IFileManager::Get().Delete(*SnapshotFilePath(Label), false, true, true);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexUMGLiveWidgetsDiffNoLiveInstancesNotIdenticalTest,
+	"Cortex.UMG.LiveWidgets.DiffNoLiveInstancesNotIdentical",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FCortexUMGLiveWidgetsDiffNoLiveInstancesNotIdenticalTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	RunInPIE(this, [](FAutomationTestBase& Test, FLiveWidgetTestState& State)
+	{
+		// A well-formed snapshot of one instance that no longer exists: a removal, never identical.
+		const FString Label = NewLabel(TEXT("cortex_ghost"));
+		State.Labels.Add(Label);
+		const FString Json = FString::Printf(
+			TEXT("{\"format_version\":1,\"widget_class\":\"%s\",\"include_properties\":false,\"max_instances\":10,\"truncated\":false,")
+			TEXT("\"instances\":[{\"index\":0,\"name\":\"Ghost\",\"class\":\"%s\",\"in_viewport\":false,\"visibility\":\"Visible\",\"widgets\":{},\"missing\":[]}]}"),
+			LiveBaseClassName, LiveBaseClassName);
+		if (!FFileHelper::SaveStringToFile(Json, *SnapshotFilePath(Label)))
+		{
+			Test.AddError(TEXT("Could not write the ghost snapshot"));
+			return;
+		}
+
+		const FCortexCommandResult Diff = RunUMG(TEXT("umg.diff_live_widgets"), MakeLabelParams(Label));
+		if (!ExpectSuccess(Test, TEXT("diff against a vanished instance"), Diff))
+		{
+			return;
+		}
+		Test.TestEqual(TEXT("the vanished instance is reported removed"), ArrayCount(Diff.Data, TEXT("removed_instances")), 1);
+		Test.TestEqual(TEXT("nothing added"), ArrayCount(Diff.Data, TEXT("added_instances")), 0);
+		Test.TestFalse(TEXT("a count mismatch is never identical"), Diff.Data->GetBoolField(TEXT("identical")));
+		Test.TestTrue(TEXT("removed entries count as differing"), Diff.Data->GetNumberField(TEXT("differing_entries")) > 0);
+	});
 	return true;
 }
