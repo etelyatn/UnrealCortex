@@ -60,6 +60,7 @@
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectIterator.h"
 #include "NodeFactory.h"
+#include "Operations/CortexGraphOverrideEvents.h"
 #include "SGraphNode.h"
 
 namespace
@@ -135,6 +136,104 @@ bool ResolveMutableNodeGraph(
 
 	OutGraph = Entry.Graph;
 	return true;
+}
+
+enum class ECortexNodePlacementSide : uint8
+{
+	Left,
+	Right,
+	Above,
+	Below
+};
+
+/** graph.add_node `placement`: the new node goes beside an anchor node's body. */
+struct FCortexNodePlacementRequest
+{
+	bool bRequested = false;
+	FString AnchorId;
+	ECortexNodePlacementSide Side = ECortexNodePlacementSide::Right;
+	int32 Gap = 80;
+};
+
+bool ParseNodePlacementRequest(const TSharedPtr<FJsonObject>& Params, FCortexNodePlacementRequest& OutRequest, FCortexCommandResult& OutError)
+{
+	OutRequest = FCortexNodePlacementRequest();
+	if (!Params->HasField(TEXT("placement")))
+	{
+		return true;
+	}
+
+	const TSharedPtr<FJsonObject>* PlacementObject = nullptr;
+	if (!Params->TryGetObjectField(TEXT("placement"), PlacementObject) || PlacementObject == nullptr || !PlacementObject->IsValid())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("placement must be an object {relative_to, side, gap?}"));
+		return false;
+	}
+	if (Params->HasField(TEXT("position")))
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("placement and position are mutually exclusive"));
+		return false;
+	}
+
+	if (!(*PlacementObject)->TryGetStringField(TEXT("relative_to"), OutRequest.AnchorId) || OutRequest.AnchorId.IsEmpty())
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("placement.relative_to is required: the node_id or node_guid of the anchor node"));
+		return false;
+	}
+
+	FString SideText;
+	(*PlacementObject)->TryGetStringField(TEXT("side"), SideText);
+	if (SideText == TEXT("left"))
+	{
+		OutRequest.Side = ECortexNodePlacementSide::Left;
+	}
+	else if (SideText == TEXT("right"))
+	{
+		OutRequest.Side = ECortexNodePlacementSide::Right;
+	}
+	else if (SideText == TEXT("above"))
+	{
+		OutRequest.Side = ECortexNodePlacementSide::Above;
+	}
+	else if (SideText == TEXT("below"))
+	{
+		OutRequest.Side = ECortexNodePlacementSide::Below;
+	}
+	else
+	{
+		OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField,
+			FString::Printf(TEXT("placement.side must be one of left, right, above, below (got '%s')"), *SideText));
+		return false;
+	}
+
+	if ((*PlacementObject)->HasField(TEXT("gap")))
+	{
+		double GapValue = 0.0;
+		if (!(*PlacementObject)->TryGetNumberField(TEXT("gap"), GapValue) || GapValue < 0.0 || GapValue > static_cast<double>(MAX_int32))
+		{
+			OutError = FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, TEXT("placement.gap must be a number between 0 and 2147483647"));
+			return false;
+		}
+		OutRequest.Gap = FMath::RoundToInt(GapValue);
+	}
+
+	OutRequest.bRequested = true;
+	return true;
+}
+
+/** The anchor of a placement: a node of Graph addressed by node_id (object name) or node_guid. */
+UEdGraphNode* FindPlacementAnchorNode(UEdGraph* Graph, const FString& AnchorId)
+{
+	FGuid AnchorGuid;
+	const bool bIsGuid = FGuid::Parse(AnchorId, AnchorGuid);
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node && (Node->GetName() == AnchorId || (bIsGuid && Node->NodeGuid == AnchorGuid)))
+		{
+			return Node;
+		}
+	}
+	return nullptr;
 }
 
 bool TryParseGraphKind(const FString& GraphKindString, ECortexGraphKind& OutKind)
@@ -538,6 +637,21 @@ UEdGraphNode* FCortexGraphNodeOps::FindNode(UEdGraph* Graph, const FString& Node
 		FString::Printf(TEXT("Node not found: %s"), *NodeId)
 	);
 	return nullptr;
+}
+
+/** The Slate desired size of a node body, rounded up: the estimate auto-layout and placement both use. */
+bool FCortexGraphNodeOps::EstimateNodeBodySize(UEdGraphNode* Node, FIntPoint& OutSize)
+{
+	const TSharedPtr<SGraphNode> Widget = FNodeFactory::CreateNodeWidget(Node);
+	if (!Widget.IsValid())
+	{
+		return false;
+	}
+	Widget->SlatePrepass(1.0f);
+	const FVector2D BodySize = Widget->GetDesiredSize();
+	OutSize.X = FMath::Max(1, FMath::CeilToInt(BodySize.X));
+	OutSize.Y = FMath::Max(1, FMath::CeilToInt(BodySize.Y));
+	return true;
 }
 
 bool FCortexGraphNodeOps::ValidateWritableAssetPath(const FString& AssetPath, FCortexCommandResult& OutError)
@@ -997,6 +1111,13 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 		(*PosObj)->TryGetNumberField(TEXT("y"), PosY);
 	}
 
+	FCortexNodePlacementRequest Placement;
+	FCortexCommandResult PlacementError;
+	if (!ParseNodePlacementRequest(Params, Placement, PlacementError))
+	{
+		return PlacementError;
+	}
+
 	FCortexCommandResult LoadError;
 	if (!ValidateWritableGraphNodeBlueprintAssetPath(AssetPath, LoadError))
 	{
@@ -1052,6 +1173,69 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 		if (Graph == nullptr)
 		{
 			return LoadError;
+		}
+	}
+
+	// The anchor is resolved (and, for right/below, measured) before anything is created, so a bad anchor adds nothing.
+	UEdGraphNode* PlacementAnchor = nullptr;
+	FIntPoint PlacementAnchorSize(0, 0);
+
+	// A node body is never wider or taller than this, so left/above placement can be range-checked before the node exists
+	// (creating a composite node also creates its bound graph, which removing the node would leave behind).
+	constexpr int32 PlacementMaxBodyExtent = 1000000;
+	// The placed coordinates are computed in 64 bits: an int32 sum can wrap to the wrong side of the anchor.
+	auto TryComputePlacement = [&](const FIntPoint& NewNodeSize, int32& OutX, int32& OutY) -> bool
+	{
+		int64 PlacedX = PlacementAnchor->NodePosX;
+		int64 PlacedY = PlacementAnchor->NodePosY;
+		switch (Placement.Side)
+		{
+		case ECortexNodePlacementSide::Left:
+			PlacedX -= static_cast<int64>(Placement.Gap) + NewNodeSize.X;
+			break;
+		case ECortexNodePlacementSide::Right:
+			PlacedX += static_cast<int64>(PlacementAnchorSize.X) + Placement.Gap;
+			break;
+		case ECortexNodePlacementSide::Above:
+			PlacedY -= static_cast<int64>(Placement.Gap) + NewNodeSize.Y;
+			break;
+		case ECortexNodePlacementSide::Below:
+			PlacedY += static_cast<int64>(PlacementAnchorSize.Y) + Placement.Gap;
+			break;
+		}
+		if (PlacedX < MIN_int32 || PlacedX > MAX_int32 || PlacedY < MIN_int32 || PlacedY > MAX_int32)
+		{
+			return false;
+		}
+		OutX = static_cast<int32>(PlacedX);
+		OutY = static_cast<int32>(PlacedY);
+		return true;
+	};
+	const FString PlacementRangeMessage = TEXT("placement puts the node outside the supported coordinate range; use a smaller gap");
+	if (Placement.bRequested)
+	{
+		PlacementAnchor = FindPlacementAnchorNode(Graph, Placement.AnchorId);
+		if (PlacementAnchor == nullptr)
+		{
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::NodeNotFound,
+				FString::Printf(TEXT("placement.relative_to node not found in the resolved graph: %s"), *Placement.AnchorId));
+		}
+		if (Placement.Side == ECortexNodePlacementSide::Right || Placement.Side == ECortexNodePlacementSide::Below)
+		{
+			if (!FCortexGraphNodeOps::EstimateNodeBodySize(PlacementAnchor, PlacementAnchorSize))
+			{
+				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
+					FString::Printf(TEXT("Cannot measure graph node: %s"), *PlacementAnchor->GetName()));
+			}
+		}
+		// Refused before anything is created: right/below depend only on the anchor, left/above are checked against the
+		// maximum body extent, so the later positioning cannot leave the int32 range.
+		int32 CheckX = 0;
+		int32 CheckY = 0;
+		if (!TryComputePlacement(FIntPoint(PlacementMaxBodyExtent, PlacementMaxBodyExtent), CheckX, CheckY))
+		{
+			return FCortexCommandRouter::Error(CortexErrorCodes::InvalidField, PlacementRangeMessage);
 		}
 	}
 
@@ -1118,6 +1302,29 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 		CompositeNewNode->PostPlacedNewNode();
 		// Re-allocate pins after PostPlacedNewNode so the entry/exit tunnel pins are present
 		CompositeNewNode->AllocateDefaultPins();
+	}
+
+	if (Placement.bRequested)
+	{
+		// The new node's body is measured for left/above; when no widget can be built a default body is assumed. Either way
+		// the size is capped at the extent the range check above used, so the position below is always in range.
+		FIntPoint NewNodeSize(0, 0);
+		if (Placement.Side == ECortexNodePlacementSide::Left || Placement.Side == ECortexNodePlacementSide::Above)
+		{
+			if (!FCortexGraphNodeOps::EstimateNodeBodySize(NewNode, NewNodeSize))
+			{
+				NewNodeSize = FIntPoint(200, 100);
+			}
+			NewNodeSize.X = FMath::Min(NewNodeSize.X, PlacementMaxBodyExtent);
+			NewNodeSize.Y = FMath::Min(NewNodeSize.Y, PlacementMaxBodyExtent);
+		}
+		int32 PlacedX = 0;
+		int32 PlacedY = 0;
+		if (TryComputePlacement(NewNodeSize, PlacedX, PlacedY))
+		{
+			NewNode->NodePosX = PlacedX;
+			NewNode->NodePosY = PlacedY;
+		}
 	}
 
 	// Record the mutation for failure-atomic batch rollback: a failing batch removes every
@@ -1229,6 +1436,12 @@ FCortexCommandResult FCortexGraphNodeOps::AddNode(const TSharedPtr<FJsonObject>&
 	Data->SetStringField(TEXT("class"), AddedNodeClass);
 	Data->SetStringField(TEXT("node_class"), AddedNodeClass);
 	Data->SetStringField(TEXT("display_name"), NewNode->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+	{
+		TSharedRef<FJsonObject> FinalPosition = MakeShared<FJsonObject>();
+		FinalPosition->SetNumberField(TEXT("x"), NewNode->NodePosX);
+		FinalPosition->SetNumberField(TEXT("y"), NewNode->NodePosY);
+		Data->SetObjectField(TEXT("position"), FinalPosition);
+	}
 	if (const TSharedPtr<FJsonObject> PropertyAccess = FCortexGraphPropertyAccess::Describe(NewNode))
 	{
 		Data->SetObjectField(TEXT("property_access"), PropertyAccess);
@@ -2145,6 +2358,8 @@ FCortexCommandResult FCortexGraphNodeOps::RemoveNodes(const TSharedPtr<FJsonObje
 		}
 	}
 	const int32 RetainedCount = Graph->Nodes.Num() - ToRemove.Num();
+	// Informational pre-flight, computed before the removal while every call site still exists; never blocks it.
+	const TArray<TSharedPtr<FJsonValue>> OverrideEventsJson = FCortexGraphOverrideEvents::Describe(Blueprint, ToRemove);
 
 	if (!bDryRun && ToRemove.Num() > 0)
 	{
@@ -2171,6 +2386,7 @@ FCortexCommandResult FCortexGraphNodeOps::RemoveNodes(const TSharedPtr<FJsonObje
 	Data->SetArrayField(TEXT("kept"), KeptJson);
 	Data->SetNumberField(TEXT("remaining_node_count"), RetainedCount);
 	Data->SetNumberField(TEXT("disconnected_pins"), DisconnectedPins);
+	Data->SetArrayField(TEXT("override_events"), OverrideEventsJson);
 	return FCortexCommandRouter::Success(Data);
 }
 
@@ -2775,16 +2991,14 @@ FCortexCommandResult FCortexGraphNodeOps::AutoLayout(const TSharedPtr<FJsonObjec
 
 			LN.bIsEntryPoint = (!bHasExecInput && bHasExecOutput);
 			LN.bIsExecNode = (bHasExecInput || bHasExecOutput);
-			const TSharedPtr<SGraphNode> Widget = FNodeFactory::CreateNodeWidget(Node);
-			if (!Widget.IsValid())
+			FIntPoint BodyEstimate(1, 1);
+			if (!FCortexGraphNodeOps::EstimateNodeBodySize(Node, BodyEstimate))
 			{
 				return FCortexCommandRouter::Error(CortexErrorCodes::InvalidOperation,
 					FString::Printf(TEXT("Cannot measure graph node: %s"), *Node->GetName()));
 			}
-			Widget->SlatePrepass(1.0f);
-			const FVector2D BodySize = Widget->GetDesiredSize();
-			LN.Width = FMath::Max(1, FMath::CeilToInt(BodySize.X));
-			LN.Height = FMath::Max(1, FMath::CeilToInt(BodySize.Y));
+			LN.Width = BodyEstimate.X;
+			LN.Height = BodyEstimate.Y;
 
 			for (UEdGraphPin* Pin : Node->Pins)
 			{
