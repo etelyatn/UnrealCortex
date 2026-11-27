@@ -685,7 +685,8 @@
     "editor_restart": {
       "file": "cortex_mcp/tools/standalone/editor.py",
       "params": [
-        "timeout"
+        "timeout",
+        "force"
       ]
     },
     "execute_console_command": {
@@ -725,7 +726,8 @@
         "until_cursor",
         "limit",
         "count_only",
-        "category"
+        "category",
+        "contains"
       ]
     },
     "get_viewport_info": {
@@ -751,7 +753,8 @@
     "restart_editor": {
       "file": "tools/editor/composites.py",
       "params": [
-        "timeout"
+        "timeout",
+        "force"
       ]
     },
     "restart_pie": {

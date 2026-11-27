@@ -6,6 +6,9 @@
 #include "Editor/EditorEngine.h"
 #include "LevelEditor.h"
 #include "Containers/Ticker.h"
+#include "Settings/LevelEditorPlaySettings.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
@@ -15,6 +18,45 @@ FCortexCommandResult MissingCallbackError(const TCHAR* Command)
 	return FCortexCommandRouter::Error(
 		CortexErrorCodes::InvalidOperation,
 		FString::Printf(TEXT("%s requires a deferred response callback and cannot run inside core.batch"), Command));
+}
+
+enum class ECortexPIELaunchMode : uint8
+{
+	SelectedViewport,
+	NewWindow,
+};
+
+/** Reads `mode`: selected_viewport (default) or new_window. Any other value is refused before PIE state changes. */
+bool TryReadLaunchMode(const TSharedPtr<FJsonObject>& Params, ECortexPIELaunchMode& OutMode, FCortexCommandResult& OutError)
+{
+	OutMode = ECortexPIELaunchMode::SelectedViewport;
+	if (!Params.IsValid() || !Params->HasField(TEXT("mode")))
+	{
+		return true;
+	}
+
+	FString Mode;
+	if (!Params->TryGetStringField(TEXT("mode"), Mode))
+	{
+		OutError = FCortexCommandRouter::Error(
+			CortexErrorCodes::InvalidField,
+			TEXT("mode must be a string: selected_viewport or new_window"));
+		return false;
+	}
+	if (Mode == TEXT("selected_viewport"))
+	{
+		return true;
+	}
+	if (Mode == TEXT("new_window"))
+	{
+		OutMode = ECortexPIELaunchMode::NewWindow;
+		return true;
+	}
+
+	OutError = FCortexCommandRouter::Error(
+		CortexErrorCodes::InvalidField,
+		FString::Printf(TEXT("Invalid mode: %s (expected selected_viewport or new_window)"), *Mode));
+	return false;
 }
 }
 
@@ -32,6 +74,13 @@ FCortexCommandResult FCortexEditorPIEOps::StartPIE(
 	const TSharedPtr<FJsonObject>& Params,
 	FDeferredResponseCallback DeferredCallback)
 {
+	ECortexPIELaunchMode LaunchMode = ECortexPIELaunchMode::SelectedViewport;
+	FCortexCommandResult ModeError;
+	if (!TryReadLaunchMode(Params, LaunchMode, ModeError))
+	{
+		return ModeError;
+	}
+
 	if (GEditor == nullptr)
 	{
 		return FCortexCommandRouter::Error(
@@ -76,15 +125,19 @@ FCortexCommandResult FCortexEditorPIEOps::StartPIE(
 	(void)CallbackId;
 
 	FRequestPlaySessionParams RequestParams;
-	FString Mode = TEXT("selected_viewport");
-	if (Params.IsValid())
-	{
-		Params->TryGetStringField(TEXT("mode"), Mode);
-	}
-	if (Mode == TEXT("selected_viewport"))
+	if (LaunchMode == ECortexPIELaunchMode::SelectedViewport)
 	{
 		FLevelEditorModule& LevelEditorModule = FModuleManager::Get().GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
 		RequestParams.DestinationSlateViewport = LevelEditorModule.GetFirstActiveViewport();
+	}
+	else
+	{
+		// Floating PIE window: no destination viewport, so the engine creates its own window. The play mode
+		// is set on a per-request copy of the play settings; the user's persisted last-executed mode stays.
+		ULevelEditorPlaySettings* FloatingSettings = DuplicateObject<ULevelEditorPlaySettings>(
+			GetDefault<ULevelEditorPlaySettings>(), GetTransientPackage());
+		FloatingSettings->LastExecutedPlayModeType = PlayMode_InEditorFloating;
+		RequestParams.EditorPlaySettings = FloatingSettings;
 	}
 
 	PIEState.HoldCPUThrottleBypass();
@@ -195,6 +248,13 @@ FCortexCommandResult FCortexEditorPIEOps::RestartPIE(
 	const TSharedPtr<FJsonObject>& Params,
 	FDeferredResponseCallback DeferredCallback)
 {
+	ECortexPIELaunchMode LaunchMode = ECortexPIELaunchMode::SelectedViewport;
+	FCortexCommandResult ModeError;
+	if (!TryReadLaunchMode(Params, LaunchMode, ModeError))
+	{
+		return ModeError;
+	}
+
 	if (GEditor == nullptr)
 	{
 		return FCortexCommandRouter::Error(

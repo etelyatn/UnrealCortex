@@ -3,6 +3,7 @@
 #include "CortexPluginIdentity.h"
 #include "CortexCommandRouter.h"
 #include "Operations/CortexAssetFingerprintOps.h"
+#include "Operations/CortexDirtyPackageOps.h"
 #include "Operations/CortexAssetDeletionOps.h"
 #include "Operations/CortexAssetOps.h"
 #include "Containers/Ticker.h"
@@ -68,6 +69,10 @@ FCortexCommandResult FCortexCoreCommandHandler::Execute(
 	{
 		return FCortexAssetDeletionOps::DeleteFolder(Params);
 	}
+	if (Command == TEXT("list_dirty_packages"))
+	{
+		return FCortexDirtyPackageOps::ListDirtyPackages(Params);
+	}
 	if (Command == TEXT("shutdown"))
 	{
 		static bool bShutdownRequested = false;
@@ -77,13 +82,28 @@ FCortexCommandResult FCortexCoreCommandHandler::Execute(
 				CortexErrorCodes::InvalidOperation,
 				TEXT("Shutdown already in progress"));
 		}
-		bShutdownRequested = true;
 
-		bool bForce = true;
+		bool bForce = false;
 		if (Params.IsValid())
 		{
 			Params->TryGetBoolField(TEXT("force"), bForce);
 		}
+
+		const TArray<FCortexDirtyPackageEntry> DirtyPackages = FCortexDirtyPackageOps::CollectDirtyPackages();
+		if (!bForce && DirtyPackages.Num() > 0)
+		{
+			// Refused before the exit is armed: the editor keeps running and nothing is discarded.
+			TSharedPtr<FJsonObject> Details = MakeShared<FJsonObject>();
+			Details->SetNumberField(TEXT("count"), DirtyPackages.Num());
+			Details->SetArrayField(TEXT("dirty_packages"), FCortexDirtyPackageOps::BuildEntriesJson(DirtyPackages));
+			return FCortexCommandRouter::Error(
+				CortexErrorCodes::UnsavedChanges,
+				FString::Printf(
+					TEXT("%d unsaved package(s); save them or pass force=true to discard them and exit"),
+					DirtyPackages.Num()),
+				Details);
+		}
+		bShutdownRequested = true;
 
 		FTSTicker::GetCoreTicker().AddTicker(
 			FTickerDelegate::CreateLambda([bForce](float) -> bool
@@ -107,6 +127,11 @@ FCortexCommandResult FCortexCoreCommandHandler::Execute(
 		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 		Data->SetStringField(TEXT("message"), TEXT("Shutdown initiated"));
 		Data->SetBoolField(TEXT("force"), bForce);
+		if (bForce)
+		{
+			Data->SetNumberField(TEXT("discarded_count"), DirtyPackages.Num());
+			Data->SetArrayField(TEXT("discarded_packages"), FCortexDirtyPackageOps::BuildEntriesJson(DirtyPackages));
+		}
 		return FCortexCommandRouter::Success(Data);
 	}
 
@@ -283,8 +308,10 @@ TArray<FCortexCommandInfo> FCortexCoreCommandHandler::GetSupportedCommands() con
 			.Required(TEXT("folder_path"), TEXT("string"), TEXT("Folder path to delete"))
 			.Optional(TEXT("recursive"), TEXT("boolean"), TEXT("Delete assets in subfolders as well"))
 			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Delete even when packages outside the folder reference its assets")),
-		FCortexCommandInfo{ TEXT("shutdown"), TEXT("Gracefully shut down the editor") }
-			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Discard dirty packages before exit")),
+		FCortexCommandInfo{ TEXT("list_dirty_packages"), TEXT("Read-only listing of the loaded packages with unsaved changes: count and packages [{package, file}] (file is empty for never-saved packages). Never-saved packages (such as a new /Temp/Untitled level) are listed with an empty file. Transient, in-memory (/Memory/), script and PIE packages are excluded; no dirty flag is touched") }
+			.StrictParams(),
+		FCortexCommandInfo{ TEXT("shutdown"), TEXT("Gracefully shut down the editor. Without force, packages with unsaved changes refuse the shutdown with UNSAVED_CHANGES (details.dirty_packages, details.count) and the editor keeps running") }
+			.Optional(TEXT("force"), TEXT("boolean"), TEXT("Discard dirty packages and exit (default false); the response lists discarded_packages")),
 		FCortexCommandInfo{ TEXT("batch_query"), TEXT("Alias for batch — execute multiple commands in a single transaction with optional graph rollback") }
 			.Optional(TEXT("commands"), TEXT("array"), TEXT("Array of command objects; either commands or steps is required"))
 			.Optional(TEXT("steps"), TEXT("array"), TEXT("Alias for commands; either commands or steps is required"))

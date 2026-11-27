@@ -1,4 +1,5 @@
 #include "Misc/AutomationTest.h"
+#include "Editor.h"
 #include "Containers/Ticker.h"
 #include "CortexEditorLogCapture.h"
 #include "CortexEditorCommandHandler.h"
@@ -103,21 +104,140 @@ bool FCortexEditorLogCaptureCategoryFilterTest::RunTest(const FString& Parameter
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FCortexEditorExecuteConsoleNoPIETest,
-	"Cortex.Editor.Utility.ExecuteConsole.ErrorWhenNoPIE",
+	FCortexEditorLogCaptureContainsFilterTest,
+	"Cortex.Editor.Utility.LogCapture.ContainsFilter",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
 )
 
-bool FCortexEditorExecuteConsoleNoPIETest::RunTest(const FString& Parameters)
+bool FCortexEditorLogCaptureContainsFilterTest::RunTest(const FString& Parameters)
 {
 	(void)Parameters;
+	FCortexEditorLogCapture LogCapture(100);
+
+	LogCapture.AddEntry(ELogVerbosity::Error, TEXT("Blueprint"), TEXT("Accessed None from BP_Door"), 10.0, 600);
+	LogCapture.AddEntry(ELogVerbosity::Warning, TEXT("Audio"), TEXT("Sound not found"), 10.1, 601);
+	LogCapture.AddEntry(ELogVerbosity::Log, TEXT("LogTemp"), TEXT("Normal log message"), 10.2, 602);
+
+	const FCortexEditorLogResult MessageOnly = LogCapture.GetRecentLogs(
+		ELogVerbosity::Log, 30.0, -1, TEXT(""), 200, INDEX_NONE, false, TEXT("aCCessed NONE"));
+	TestEqual(TEXT("contains matches case-insensitively on the message"), MessageOnly.Entries.Num(), 1);
+	if (MessageOnly.Entries.Num() == 1)
+	{
+		TestEqual(TEXT("the matching entry is the Blueprint error"), MessageOnly.Entries[0].Category, FString(TEXT("Blueprint")));
+	}
+
+	const FCortexEditorLogResult CategoryNameOnly = LogCapture.GetRecentLogs(
+		ELogVerbosity::Log, 30.0, -1, TEXT(""), 200, INDEX_NONE, false, TEXT("Audio"));
+	TestEqual(TEXT("contains does not match the category name"), CategoryNameOnly.Entries.Num(), 0);
+
+	const FCortexEditorLogResult WithCategory = LogCapture.GetRecentLogs(
+		ELogVerbosity::Log, 30.0, -1, TEXT("Audio"), 200, INDEX_NONE, false, TEXT("sound"));
+	TestEqual(TEXT("contains combines with category"), WithCategory.Entries.Num(), 1);
+
+	const FCortexEditorLogResult CategoryMismatch = LogCapture.GetRecentLogs(
+		ELogVerbosity::Log, 30.0, -1, TEXT("Blueprint"), 200, INDEX_NONE, false, TEXT("sound"));
+	TestEqual(TEXT("category and contains must both match"), CategoryMismatch.Entries.Num(), 0);
+
+	const FCortexEditorLogResult WithSeverity = LogCapture.GetRecentLogs(
+		ELogVerbosity::Warning, 30.0, -1, TEXT(""), 200, INDEX_NONE, false, TEXT("message"));
+	TestEqual(TEXT("contains combines with severity"), WithSeverity.Entries.Num(), 0);
+	TestEqual(TEXT("matched_count counts only contains matches"), MessageOnly.MatchedCount, 1);
+
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetNumberField(TEXT("since_seconds"), -1);
+	Params->SetStringField(TEXT("contains"), TEXT("NOT FOUND"));
+	const FCortexCommandResult Routed = FCortexEditorUtilityOps::GetRecentLogs(LogCapture, Params);
+	TestTrue(TEXT("get_recent_logs with contains succeeds"), Routed.bSuccess);
+	if (Routed.Data.IsValid())
+	{
+		TestEqual(TEXT("the params reach the capture"), static_cast<int32>(Routed.Data->GetNumberField(TEXT("count"))), 1);
+	}
+
+	FCortexEditorCommandHandler Handler;
+	const TArray<FCortexCommandInfo> Commands = Handler.GetSupportedCommands();
+	const FCortexCommandInfo* RecentLogs = Commands.FindByPredicate(
+		[](const FCortexCommandInfo& Command) { return Command.Name == TEXT("get_recent_logs"); });
+	bool bDeclaresContains = false;
+	if (RecentLogs != nullptr)
+	{
+		for (const FCortexParamInfo& Param : RecentLogs->Params)
+		{
+			bDeclaresContains |= Param.Name == TEXT("contains");
+		}
+	}
+	TestTrue(TEXT("get_recent_logs declares contains"), bDeclaresContains);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorExecuteConsoleEditorWorldTest,
+	"Cortex.Editor.ConsoleCommand.EditorWorld",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorExecuteConsoleEditorWorldTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (GEditor == nullptr || GEditor->PlayWorld != nullptr)
+	{
+		AddError(TEXT("The editor-world console test requires an editor with no PIE session"));
+		return false;
+	}
+
+#if STATS
+	// `stat` is handled only by the engine Exec; without PIE it runs in the editor world.
 	FCortexEditorCommandHandler Handler;
 	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
-	Params->SetStringField(TEXT("command"), TEXT("stat fps"));
+	Params->SetStringField(TEXT("command"), TEXT("stat help"));
 
 	const FCortexCommandResult Result = Handler.Execute(TEXT("execute_console_command"), Params);
-	TestFalse(TEXT("execute_console_command should fail without PIE"), Result.bSuccess);
-	TestEqual(TEXT("Error should be PIE_NOT_ACTIVE"), Result.ErrorCode, TEXT("PIE_NOT_ACTIVE"));
+	TestTrue(TEXT("execute_console_command runs in the editor world without PIE"), Result.bSuccess);
+	if (Result.Data.IsValid())
+	{
+		TestEqual(TEXT("world is the editor world"), Result.Data->GetStringField(TEXT("world")), FString(TEXT("editor")));
+		TestEqual(TEXT("stat is handled by the engine Exec route"), Result.Data->GetStringField(TEXT("route")), FString(TEXT("engine_exec")));
+	}
+#else
+	AddInfo(TEXT("STATS is disabled in this build; the stat engine_exec route cannot be exercised"));
+#endif
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FCortexEditorExecuteConsoleEditorWorldCVarTest,
+	"Cortex.Editor.ConsoleCommand.EditorWorldCVarRoute",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FCortexEditorExecuteConsoleEditorWorldCVarTest::RunTest(const FString& Parameters)
+{
+	(void)Parameters;
+	if (GEditor == nullptr || GEditor->PlayWorld != nullptr)
+	{
+		AddError(TEXT("The editor-world console test requires an editor with no PIE session"));
+		return false;
+	}
+
+	const int32 OriginalValue = GCortexEditorUtilityTestIntCVar.GetValueOnGameThread();
+	FCortexEditorCommandHandler Handler;
+	TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("command"), TEXT("cortex.test.EditorUtilityInt 91"));
+
+	const FCortexCommandResult Result = Handler.Execute(TEXT("execute_console_command"), Params);
+	TestTrue(TEXT("a console variable is set through the editor world without PIE"), Result.bSuccess);
+	TestEqual(TEXT("the variable changed"), GCortexEditorUtilityTestIntCVar.GetValueOnGameThread(), 91);
+	if (Result.Data.IsValid())
+	{
+		TestEqual(TEXT("world is the editor world"), Result.Data->GetStringField(TEXT("world")), FString(TEXT("editor")));
+		TestEqual(TEXT("a registered object takes the console route"), Result.Data->GetStringField(TEXT("route")), FString(TEXT("console")));
+	}
+
+	GCortexEditorUtilityTestIntCVar->Set(OriginalValue, ECVF_SetByConsole);
+
+	Params->SetStringField(TEXT("command"), TEXT("CortexTest.UnrecognizedConsoleEditorWorld_274"));
+	const FCortexCommandResult Unknown = Handler.Execute(TEXT("execute_console_command"), Params);
+	TestFalse(TEXT("an unknown command still fails in the editor world"), Unknown.bSuccess);
+	TestEqual(TEXT("unknown command code"), Unknown.ErrorCode, FString(TEXT("CONSOLE_COMMAND_FAILED")));
 	return true;
 }
 

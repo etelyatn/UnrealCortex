@@ -160,18 +160,18 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 {
 	return {
 		FCortexCommandInfo{ TEXT("start_pie"), TEXT("Start PIE session") }
-			.Optional(TEXT("mode"), TEXT("string"), TEXT("PIE launch mode")),
+			.Optional(TEXT("mode"), TEXT("string"), TEXT("PIE launch mode: selected_viewport (default; plays inside the active level viewport) or new_window (plays in a separate floating window). Any other value is refused with INVALID_FIELD")),
 		FCortexCommandInfo{ TEXT("stop_pie"), TEXT("Stop PIE session") },
 		FCortexCommandInfo{ TEXT("pause_pie"), TEXT("Pause PIE") },
 		FCortexCommandInfo{ TEXT("resume_pie"), TEXT("Resume PIE") },
 		FCortexCommandInfo{ TEXT("get_pie_state"), TEXT("Get PIE state") },
 		FCortexCommandInfo{ TEXT("restart_pie"), TEXT("Restart PIE session") }
-			.Optional(TEXT("mode"), TEXT("string"), TEXT("PIE launch mode")),
+			.Optional(TEXT("mode"), TEXT("string"), TEXT("PIE launch mode: selected_viewport (default) or new_window (separate floating window). Any other value is refused with INVALID_FIELD before PIE is stopped")),
 		FCortexCommandInfo{ TEXT("inject_key"), TEXT("Inject keyboard input into PIE") }
 			.Required(TEXT("key"), TEXT("string"), TEXT("Key to inject"))
 			.Optional(TEXT("action"), TEXT("string"), TEXT("tap, press, or release"))
 			.Optional(TEXT("duration_ms"), TEXT("number"), TEXT("Press duration in milliseconds")),
-		FCortexCommandInfo{ TEXT("inject_mouse"), TEXT("Inject Slate mouse input into PIE") }
+		FCortexCommandInfo{ TEXT("inject_mouse"), TEXT("Inject Slate mouse input into PIE. Limitation: moves are Slate pointer events; game code that reads the OS cursor through the scene viewport (GetMousePosition, deprojection) does not see them. Use a Cortex Replay recording (absolute events move the real cursor) for cursor-driven gameplay") }
 			.Required(TEXT("action"), TEXT("string"), TEXT("click, move, or scroll"))
 			.Optional(TEXT("button"), TEXT("string"), TEXT("left (default), right, or middle; used for click"))
 			.Optional(TEXT("x"), TEXT("number"), TEXT("Screen-space X coordinate; defaults to current cursor X"))
@@ -187,8 +187,9 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("duration_ms"), TEXT("number"), TEXT("Finite positive start duration; omitted runs until stop or session cancellation")),
 		FCortexCommandInfo{ TEXT("inject_input_sequence"), TEXT("Execute timed input sequence") }
 			.Required(TEXT("steps"), TEXT("array"), TEXT("Timed input steps to execute")),
-		FCortexCommandInfo{ TEXT("capture_screenshot"), TEXT("Redraw and capture the active viewport with explicit camera provenance") }
-			.Optional(TEXT("output_path"), TEXT("string"), TEXT("Optional screenshot output path")),
+		FCortexCommandInfo{ TEXT("capture_screenshot"), TEXT("Capture a viewport to PNG with explicit camera provenance. PIE source reads the PIE viewport through Slate, so UMG is included (includes_ui true); editor source redraws the active level viewport, scene only (includes_ui false)") }
+			.Optional(TEXT("output_path"), TEXT("string"), TEXT("Optional screenshot output path"))
+			.Optional(TEXT("source"), TEXT("string"), TEXT("auto (default; the PIE viewport while PIE plays, else the active level viewport; falls back to the scene-only readback, source editor, when the Slate capture is unavailable), editor (active level viewport, scene only), or pie (PIE viewport, UI included; PIE_NOT_ACTIVE without PIE or during Simulate-In-Editor; no fallback). The response reports source and includes_ui")),
 		FCortexCommandInfo{ TEXT("capture_editor_panel"), TEXT("Render an Editor panel to PNG through Slate (no OS screen-capture permission): an asset editor, its Details panel or graph, or a top-level window") }
 			.Optional(TEXT("asset_path"), TEXT("string"), TEXT("Asset whose editor is opened or focused and captured; maps are refused. Without it the active top-level window (main frame when the editor is in the background) is the root"))
 			.Optional(TEXT("panel"), TEXT("string"), TEXT("editor (default with asset_path; asset editor tab content), window (default without; whole top-level window), details (largest visible Details panel), graph (largest visible graph editor)"))
@@ -210,7 +211,7 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("graph_guid"), TEXT("string"), TEXT("Optional GraphGuid of the graph holding the node, any graph of the Blueprint including nested graphs; GRAPH_NOT_FOUND when unknown, INVALID_FIELD when malformed or shared by several graphs")),
 		FCortexCommandInfo{ TEXT("set_viewport_mode"), TEXT("Change view mode") }
 			.Required(TEXT("mode"), TEXT("string"), TEXT("Viewport mode name")),
-		FCortexCommandInfo{ TEXT("execute_console_command"), TEXT("Run console command in PIE") }
+		FCortexCommandInfo{ TEXT("execute_console_command"), TEXT("Run a console command in the PIE world while PIE is active, else in the editor world (EDITOR_NOT_READY only when neither exists). Dispatch order: world Exec, console manager, engine Exec (handles stat). The response reports world (pie or editor) and route (world_exec, console, engine_exec)") }
 			.Required(TEXT("command"), TEXT("string"), TEXT("Console command to execute")),
 		FCortexCommandInfo{ TEXT("get_cvar"), TEXT("Get an editor console variable") }
 			.Required(TEXT("name"), TEXT("string"), TEXT("Console variable name")),
@@ -227,7 +228,8 @@ TArray<FCortexCommandInfo> FCortexEditorCommandHandler::GetSupportedCommands() c
 			.Optional(TEXT("until_cursor"), TEXT("number"), TEXT("Inclusive end-of-window cursor pinning the window"))
 			.Optional(TEXT("limit"), TEXT("number"), TEXT("Maximum retained entries, 1..2000; omitted uses 200"))
 			.Optional(TEXT("count_only"), TEXT("boolean"), TEXT("Return window metadata and matched_count without entry rows"))
-			.Optional(TEXT("category"), TEXT("string"), TEXT("Optional log category filter")),
+			.Optional(TEXT("category"), TEXT("string"), TEXT("Optional log category filter"))
+			.Optional(TEXT("contains"), TEXT("string"), TEXT("Case-insensitive substring match on the log message; combines with category and severity")),
 		FCortexCommandInfo{ TEXT("set_time_dilation"), TEXT("Set game time scale") }
 			.Required(TEXT("factor"), TEXT("number"), TEXT("Global time dilation factor")),
 		FCortexCommandInfo{ TEXT("get_editor_state"), TEXT("Get general editor state") },

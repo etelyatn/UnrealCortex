@@ -97,12 +97,21 @@ public:
 		Params->SetStringField(TEXT("command"), Command);
 		const FCortexCommandResult Result = Handler->Execute(TEXT("execute_console_command"), Params);
 		Test->TestTrue(TEXT("Registered console command dispatch succeeds"), Result.bSuccess);
+		if (Result.Data.IsValid())
+		{
+			Test->TestEqual(TEXT("PIE console command reports the pie world"), Result.Data->GetStringField(TEXT("world")), FString(TEXT("pie")));
+			Test->TestEqual(TEXT("Registered command reports the console route"), Result.Data->GetStringField(TEXT("route")), FString(TEXT("console")));
+		}
 		CheckObservation(World, TEXT("Cortex route"));
 
 		const FName OriginalTraceTag = World->DebugDrawTraceTag;
 		Params->SetStringField(TEXT("command"), TEXT("TRACETAG CortexConsoleExecSentinel"));
 		const FCortexCommandResult ExecResult = Handler->Execute(TEXT("execute_console_command"), Params);
 		Test->TestTrue(TEXT("Existing world Exec command succeeds"), ExecResult.bSuccess);
+		if (ExecResult.Data.IsValid())
+		{
+			Test->TestEqual(TEXT("World Exec command reports the world_exec route"), ExecResult.Data->GetStringField(TEXT("route")), FString(TEXT("world_exec")));
+		}
 		Test->TestEqual(TEXT("World Exec has observable effect"), World->DebugDrawTraceTag,
 			FName(TEXT("CortexConsoleExecSentinel")));
 		World->DebugDrawTraceTag = OriginalTraceTag;
