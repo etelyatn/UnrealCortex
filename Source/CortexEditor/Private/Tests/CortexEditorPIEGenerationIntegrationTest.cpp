@@ -844,7 +844,7 @@ bool FCortexEditorPIEGenerationStaleCancelTest::RunTest(const FString& Parameter
 		Value->SetNumberField(TEXT("z"), 0.0);
 		Params->SetObjectField(TEXT("value"), Value);
 
-		*InjectResult = FCortexEditorInputOps::InjectInputContinuous(PIEState, Params, nullptr);
+		*InjectResult = FCortexEditorInputOps::InjectInputContinuous(PIEState, Params);
 		TestTrue(TEXT("the successor accepts a continuous Axis3D run from its operation"),
 			InjectResult->bSuccess);
 		if (InjectResult->bSuccess && InjectResult->Data.IsValid())
@@ -894,7 +894,7 @@ bool FCortexEditorPIEGenerationStaleCancelTest::RunTest(const FString& Parameter
 		TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
 		Params->SetStringField(TEXT("action_name"), Fixture->ActionPath);
 		Params->SetStringField(TEXT("mode"), CortexPIEGenerationModeStop);
-		*InjectStopResult = FCortexEditorInputOps::InjectInputContinuous(PIEState, Params, nullptr);
+		*InjectStopResult = FCortexEditorInputOps::InjectInputContinuous(PIEState, Params);
 		TestTrue(TEXT("the successor can stop the injection it owns"), InjectStopResult->bSuccess);
 	});
 

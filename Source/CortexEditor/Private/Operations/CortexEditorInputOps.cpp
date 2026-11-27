@@ -10,6 +10,7 @@
 #include "InputCoreTypes.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Containers/Ticker.h"
+#include "Misc/PackageName.h"
 #include "Widgets/SViewport.h"
 
 namespace
@@ -250,17 +251,11 @@ FCortexCommandResult ResolveEnhancedInputTarget(
 			TEXT("Enhanced Input subsystem not available"));
 	}
 
-	UInputAction* FoundAction = FindObject<UInputAction>(nullptr, *ActionName);
+	FString ResolveError;
+	UInputAction* FoundAction = FCortexEditorInputOps::ResolveInputActionObject(ActionName, ResolveError);
 	if (!FoundAction)
 	{
-		FoundAction = FindFirstObject<UInputAction>(*ActionName);
-	}
-
-	if (!FoundAction)
-	{
-		return FCortexCommandRouter::Error(
-			CortexErrorCodes::InputActionNotFound,
-			FString::Printf(TEXT("Input action not found: %s"), *ActionName));
+		return FCortexCommandRouter::Error(CortexErrorCodes::InputActionNotFound, ResolveError);
 	}
 
 	OutSubsystem = Subsystem;
@@ -439,6 +434,56 @@ FCortexCommandResult DispatchEnhancedInputAction(const FString& ActionName, cons
 	WriteInputActionValueField(Data, Value);
 	return FCortexCommandRouter::Success(Data);
 }
+}
+
+UInputAction* FCortexEditorInputOps::ResolveInputActionObject(const FString& ActionName, FString& OutError)
+{
+	OutError.Reset();
+
+	// 1. Already loaded: full object path, or short name of a loaded action.
+	UInputAction* Found = FindObject<UInputAction>(nullptr, *ActionName);
+	if (!Found)
+	{
+		Found = FindFirstObject<UInputAction>(*ActionName);
+	}
+	if (Found)
+	{
+		return Found;
+	}
+
+	// 2 and 3. A long package path or full object path of an asset that may not be loaded yet.
+	if (ActionName.StartsWith(TEXT("/")))
+	{
+		FString PackageName;
+		FString ObjectPath;
+		if (ActionName.Contains(TEXT(".")))
+		{
+			PackageName = FPackageName::ObjectPathToPackageName(ActionName);
+			ObjectPath = ActionName;
+		}
+		else
+		{
+			PackageName = ActionName;
+			ObjectPath = FString::Printf(TEXT("%s.%s"), *ActionName, *FPackageName::GetShortName(ActionName));
+		}
+
+		Found = FindObject<UInputAction>(nullptr, *ObjectPath);
+		if (!Found
+			&& FPackageName::IsValidLongPackageName(PackageName)
+			&& FPackageName::DoesPackageExist(PackageName))
+		{
+			Found = LoadObject<UInputAction>(nullptr, *ObjectPath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+		}
+		if (Found)
+		{
+			return Found;
+		}
+	}
+
+	OutError = FString::Printf(
+		TEXT("Input action not found: %s. Accepted forms: object path (/Game/Input/IA_Jump.IA_Jump), package path (/Game/Input/IA_Jump), or the name of a loaded action"),
+		*ActionName);
+	return nullptr;
 }
 
 FCortexCommandResult FCortexEditorInputOps::InjectKey(
@@ -645,8 +690,7 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputAction(
 
 FCortexCommandResult FCortexEditorInputOps::InjectInputContinuous(
 	TSharedPtr<FCortexEditorPIEState> PIEState,
-	const TSharedPtr<FJsonObject>& Params,
-	FDeferredResponseCallback DeferredCallback)
+	const TSharedPtr<FJsonObject>& Params)
 {
 	// --- Field validation. Runs before any context lookup or input side effect so a malformed
 	//     request can never tear down or replace an existing run. -------------------------------
@@ -683,10 +727,10 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputContinuous(
 	}
 
 	const bool bHasDuration = Params->HasField(TEXT("duration_ms"));
+	double DurationMs = 0.0;
 	float DurationSeconds = 0.0f;
 	if (bHasDuration)
 	{
-		double DurationMs = 0.0;
 		if (!TryGetStrictNumberField(Params, TEXT("duration_ms"), DurationMs) || !FMath::IsFinite(DurationMs) || DurationMs <= 0.0)
 		{
 			return FCortexCommandRouter::Error(
@@ -717,14 +761,6 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputContinuous(
 			return FCortexCommandRouter::Error(
 				CortexErrorCodes::InvalidField,
 				TEXT("duration_ms is only supported with mode=start"));
-		}
-		// Timed injection needs a caller to notify when the run ends; reject before mutating the
-		// existing run rather than silently running indefinitely.
-		if (!DeferredCallback)
-		{
-			return FCortexCommandRouter::Error(
-				CortexErrorCodes::InvalidOperation,
-				TEXT("duration_ms requires a deferred response callback"));
 		}
 	}
 
@@ -765,71 +801,22 @@ FCortexCommandResult FCortexEditorInputOps::InjectInputContinuous(
 
 	if (Mode == TEXT("start"))
 	{
-		// Invalidate the owned predecessor before installing its successor: this stops the old
-		// native injection, removes its stop timer and completes the replaced caller once. That
-		// caller runs synchronously and may disconnect or end PIE, so snapshot the resolved target
-		// and revalidate before mutating when it ran.
-		const TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> WeakSubsystem(Subsystem);
-		const TWeakObjectPtr<const UInputAction> WeakAction(Action);
-
-		bool bCancelledDuringCallback = false;
-		const bool bReplacedCallbackRan =
-			PIEState->InvalidateContinuousInputRun(Action, bCancelledDuringCallback);
-
-		if (bReplacedCallbackRan)
-		{
-			if (bCancelledDuringCallback)
-			{
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::InvalidOperation,
-					TEXT("Continuous input session was cancelled while replacing the previous injection"));
-			}
-
-			const FCortexCommandResult RevalidateContext = ValidateInputContext(*PIEState);
-			if (!RevalidateContext.bSuccess)
-			{
-				return RevalidateContext;
-			}
-
-			UEnhancedInputLocalPlayerSubsystem* RevalidatedSubsystem = nullptr;
-			UInputAction* RevalidatedAction = nullptr;
-			const FCortexCommandResult RevalidateTarget =
-				ResolveEnhancedInputTarget(ActionName, RevalidatedSubsystem, RevalidatedAction);
-			if (!RevalidateTarget.bSuccess)
-			{
-				return RevalidateTarget;
-			}
-			if (RevalidatedSubsystem != WeakSubsystem.Get() || RevalidatedAction != WeakAction.Get())
-			{
-				return FCortexCommandRouter::Error(
-					CortexErrorCodes::InvalidOperation,
-					TEXT("Continuous input target changed while replacing the previous injection"));
-			}
-
-			Subsystem = RevalidatedSubsystem;
-			Action = RevalidatedAction;
-		}
+		// Replacing an owned predecessor stops its native injection and its stop timer before the
+		// successor is tracked, so the old deadline can never end the new run.
+		PIEState->InvalidateContinuousInputRun(Action);
 
 		Subsystem->StartContinuousInputInjectionForAction(Action, Value, NoModifiers, NoTriggers);
+		PIEState->TrackContinuousInputRun(Subsystem, Action, bHasDuration, DurationSeconds);
 
-		if (bHasDuration)
-		{
-			const uint32 CallbackId = PIEState->RegisterPendingInputCallback(MoveTemp(DeferredCallback));
-			PIEState->TrackContinuousInputRun(
-				Subsystem, Action, /*bTimed=*/true, DurationSeconds, /*bHasCallback=*/true, CallbackId);
-
-			FCortexCommandResult Deferred;
-			Deferred.bIsDeferred = true;
-			return Deferred;
-		}
-
-		PIEState->TrackContinuousInputRun(
-			Subsystem, Action, /*bTimed=*/false, 0.0f, /*bHasCallback=*/false, 0);
-
+		// A timed start is answered immediately; the PIE state's stop timer ends the run later.
 		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 		Data->SetStringField(TEXT("action_name"), ActionName);
 		Data->SetStringField(TEXT("mode"), Mode);
 		Data->SetBoolField(TEXT("injecting"), true);
+		if (bHasDuration)
+		{
+			Data->SetNumberField(TEXT("duration_ms"), DurationMs);
+		}
 		return FCortexCommandRouter::Success(Data);
 	}
 
