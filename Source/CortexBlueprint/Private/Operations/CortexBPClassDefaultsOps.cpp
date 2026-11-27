@@ -2,6 +2,7 @@
 
 #include "CortexEngineCompat.h"
 #include "Operations/CortexBPAssetOps.h"
+#include "Operations/CortexBPEmbeddedTemplates.h"
 #include "Operations/CortexBPSCSDiagnostics.h"
 #include "CortexAssetFingerprint.h"
 #include "CortexAssetMutationGuard.h"
@@ -2285,6 +2286,9 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 	bool bSave = true;
 	Params->TryGetBoolField(TEXT("save"), bSave);
 
+	bool bResyncEmbedded = false;
+	Params->TryGetBoolField(TEXT("resync_embedded"), bResyncEmbedded);
+
 	// Echo mode is validated before any mutation so a malformed selector never leaves a partial
 	// write behind. It only controls the response representation; the mutation is identical in every
 	// mode.
@@ -2322,6 +2326,9 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 			CortexErrorCodes::CompileFailed,
 			TEXT("Blueprint generated class is missing"));
 	}
+
+	// Which embedded Widget Blueprint template properties still follow the class default is recorded before the CDO changes.
+	const FCortexBPEmbeddedTemplates::FPreState EmbeddedBefore = FCortexBPEmbeddedTemplates::Capture(Blueprint);
 
 	TSharedPtr<FJsonObject> ResultsObject = MakeShared<FJsonObject>();
 	TArray<FString> ResponseWarnings;
@@ -2590,6 +2597,7 @@ FCortexCommandResult FCortexBPClassDefaultsOps::SetClassDefaults(const TSharedPt
 	Data->SetBoolField(TEXT("compiled"), bCompile && bDidCompile);
 	Data->SetBoolField(TEXT("saved"), bSave && bDidSave);
 	Data->SetArrayField(TEXT("compile_errors"), CompileErrors);
+	FCortexBPEmbeddedTemplates::ReportInto(EmbeddedBefore, /*bClassCurrent=*/true, nullptr, bResyncEmbedded, bSave, /*bReportDropped=*/false, Data.ToSharedRef(), ResponseWarnings);
 
 	TArray<TSharedPtr<FJsonValue>> WarningsArray;
 	for (const FString& Warning : ResponseWarnings)

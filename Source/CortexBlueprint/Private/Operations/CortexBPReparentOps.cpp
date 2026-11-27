@@ -7,15 +7,18 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
+#include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
+#include "K2Node_VariableGet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/Kismet2NameValidators.h"
 #include "Operations/CortexBPAssetOps.h"
 #include "Operations/CortexBPCommandParams.h"
+#include "Operations/CortexBPEmbeddedTemplates.h"
 #include "Operations/CortexBPGuardedRun.h"
 #include "Operations/CortexBPMigrationGuard.h"
 #include "Operations/CortexBPParentRules.h"
@@ -27,6 +30,7 @@
 namespace CortexBPReparentPrivate
 {
 	TFunction<void(UBlueprint*)> GPostApplyHookForTest;
+	TFunction<void(UBlueprint*)> GPostRunHookForTest;
 }
 #endif
 
@@ -158,6 +162,20 @@ bool FCortexBPReparentOps::FCollision::ReplacesVariable() const
 	return Kind == KindVariable && (Resolution == TEXT("engine_replaces") || Resolution == TEXT("adoptable_convertible"));
 }
 
+TSharedRef<FJsonObject> FCortexBPReparentOps::FTypeChangingCallSite::ToJson() const
+{
+	TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+	Json->SetStringField(TEXT("member"), Member);
+	Json->SetStringField(TEXT("old_type"), OldType);
+	Json->SetStringField(TEXT("new_type"), NewType);
+	Json->SetStringField(TEXT("graph"), Graph);
+	Json->SetStringField(TEXT("node_id"), NodeId);
+	Json->SetStringField(TEXT("node"), Node);
+	Json->SetStringField(TEXT("required_type"), RequiredType);
+	Json->SetBoolField(TEXT("resolves_on_new_type"), bResolvesOnNewType);
+	return Json;
+}
+
 TSharedRef<FJsonObject> FCortexBPReparentOps::FCollision::ToJson() const
 {
 	TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
@@ -190,6 +208,25 @@ void FCortexBPReparentOps::FReparentPlan::AppendTo(const TSharedRef<FJsonObject>
 	}
 	Target->SetArrayField(TEXT("save_game_findings"), FindingValues);
 	Target->SetArrayField(TEXT("interface_overlap"), ToJsonStrings(InterfaceOverlap));
+
+	TArray<TSharedPtr<FJsonValue>> CallSiteValues;
+	int32 BreakingCallSites = 0;
+	for (const FTypeChangingCallSite& CallSite : TypeChangingCallSites)
+	{
+		CallSiteValues.Add(MakeShared<FJsonValueObject>(CallSite.ToJson()));
+		BreakingCallSites += CallSite.bResolvesOnNewType ? 0 : 1;
+	}
+	Target->SetArrayField(TEXT("type_changing_call_sites"), CallSiteValues);
+	Target->SetNumberField(TEXT("type_changing_call_site_count"), TypeChangingCallSites.Num());
+	if (!TypeChangingCallSites.IsEmpty())
+	{
+		TArray<FString> Warnings;
+		Warnings.Add(FString::Printf(
+			TEXT("%d node(s) call through a member whose type becomes a base type under the new parent (%d no longer resolve its target); "
+				"remove or rewire those nodes before reparenting, or the compile fails and the reparent is rolled back"),
+			TypeChangingCallSites.Num(), BreakingCallSites));
+		Target->SetArrayField(TEXT("warnings"), ToJsonStrings(Warnings));
+	}
 	Target->SetArrayField(TEXT("required_acknowledgment"), ToJsonStrings(RequiredAcknowledgment));
 	Target->SetArrayField(TEXT("blocking"), ToJsonStrings(Blocking));
 }
@@ -335,6 +372,73 @@ FCortexBPReparentOps::FReparentPlan FCortexBPReparentOps::BuildPlan(UBlueprint* 
 		}
 	}
 
+	// Call sites: nodes that call through a member (a Blueprint variable or a widget binding) whose class widens to the base class the
+	// native parent declares under the same name. The compile adopts the native member, so the node's target is retyped.
+	if (OwnClass != nullptr)
+	{
+		struct FChangingMember
+		{
+			FString OldType;
+			FString NewType;
+			const UClass* NewClass = nullptr;
+		};
+		TMap<FName, FChangingMember> Changing;
+		for (TFieldIterator<FObjectPropertyBase> It(OwnClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		{
+			const FObjectPropertyBase* Own = *It;
+			const FObjectPropertyBase* Native = CastField<FObjectPropertyBase>(NewParent->FindPropertyByName(Own->GetFName()));
+			if (Native != nullptr && Own->PropertyClass != nullptr && Native->PropertyClass != nullptr
+				&& Own->PropertyClass != Native->PropertyClass && Own->PropertyClass->IsChildOf(Native->PropertyClass))
+			{
+				Changing.Add(Own->GetFName(), FChangingMember{Own->PropertyClass->GetName(), Native->PropertyClass->GetName(), Native->PropertyClass});
+			}
+		}
+
+		if (!Changing.IsEmpty())
+		{
+			TArray<UEdGraph*> AllGraphs;
+			Blueprint->GetAllGraphs(AllGraphs);
+			for (const UEdGraph* Graph : AllGraphs)
+			{
+				for (const UEdGraphNode* GraphNode : Graph->Nodes)
+				{
+					const UK2Node_VariableGet* Get = Cast<UK2Node_VariableGet>(GraphNode);
+					const FChangingMember* Member = Get != nullptr && Get->VariableReference.IsSelfContext()
+						? Changing.Find(Get->VariableReference.GetMemberName()) : nullptr;
+					const UEdGraphPin* ValuePin = Member != nullptr ? Get->GetValuePin() : nullptr;
+					if (ValuePin == nullptr)
+					{
+						continue;
+					}
+					for (const UEdGraphPin* Linked : ValuePin->LinkedTo)
+					{
+						// Only the target (self) pin: the node calls through the member, it does not merely pass it along.
+						if (Linked == nullptr || Linked->PinName != UEdGraphSchema_K2::PN_Self)
+						{
+							continue;
+						}
+						const UEdGraphNode* Consumer = Linked->GetOwningNode();
+						const UClass* RequiredClass = Cast<UClass>(Linked->PinType.PinSubCategoryObject.Get());
+						FTypeChangingCallSite CallSite;
+						CallSite.Member = Get->VariableReference.GetMemberName().ToString();
+						CallSite.OldType = Member->OldType;
+						CallSite.NewType = Member->NewType;
+						CallSite.Graph = Graph->GetName();
+						CallSite.NodeId = Consumer->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens);
+						CallSite.Node = Consumer->GetNodeTitle(ENodeTitleType::ListView).ToString();
+						CallSite.RequiredType = RequiredClass != nullptr ? RequiredClass->GetName() : FString();
+						CallSite.bResolvesOnNewType = RequiredClass == nullptr || Member->NewClass->IsChildOf(RequiredClass);
+						Plan.TypeChangingCallSites.Add(MoveTemp(CallSite));
+					}
+				}
+			}
+			Plan.TypeChangingCallSites.Sort([](const FTypeChangingCallSite& A, const FTypeChangingCallSite& B)
+			{
+				return A.Graph != B.Graph ? A.Graph < B.Graph : A.NodeId < B.NodeId;
+			});
+		}
+	}
+
 	TArray<FString> Required;
 	TArray<FString> Blocking;
 	for (const FCollision& Collision : Plan.Collisions)
@@ -367,11 +471,13 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 	bool bDryRun = false;
 	bool bCompile = true;
 	bool bSave = false;
+	bool bResyncEmbedded = false;
 	if (!ReadRequiredString(Params, TEXT("asset_path"), AssetPath, ParamError)
 		|| !ReadRequiredString(Params, TEXT("new_parent"), NewParentInput, ParamError)
 		|| !ReadOptionalBool(Params, TEXT("dry_run"), false, bDryRun, ParamError)
 		|| !ReadOptionalBool(Params, TEXT("compile"), true, bCompile, ParamError)
-		|| !ReadOptionalBool(Params, TEXT("save"), false, bSave, ParamError))
+		|| !ReadOptionalBool(Params, TEXT("save"), false, bSave, ParamError)
+		|| !ReadOptionalBool(Params, TEXT("resync_embedded"), false, bResyncEmbedded, ParamError))
 	{
 		return ParamError;
 	}
@@ -577,6 +683,9 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 
 	KeptVariables.RemoveAll([&ReplacedVariables](const FString& Name) { return ReplacedVariables.Contains(Name); });
 
+	// The embedded Widget Blueprint templates are inventoried before the class changes: a dropped property is no longer reflectable afterwards.
+	const FCortexBPEmbeddedTemplates::FPreState EmbeddedBefore = FCortexBPEmbeddedTemplates::Capture(Blueprint);
+
 	const TSharedRef<FReparentApplyState> State = MakeShared<FReparentApplyState>();
 
 	FCortexBPGuardedRun::FSpec Spec;
@@ -587,6 +696,8 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 	Spec.CompileOptions = EBlueprintCompileOptions::UseDeltaSerializationDuringReinstancing
 		| EBlueprintCompileOptions::SkipNewVariableDefaultsDetection;
 	Spec.Expected = Expected;
+	Spec.bJournalCdo = true;
+	Spec.bReportDirtiedPackages = true;
 
 	Spec.Capture = [State](UBlueprint* Target, FString& OutError)
 	{
@@ -757,6 +868,16 @@ FCortexCommandResult FCortexBPReparentOps::Execute(const TSharedPtr<FJsonObject>
 	const TSharedRef<FJsonObject> Delta = BuildDelta(*State, ResolvedReport);
 	Data->SetObjectField(TEXT("cdo_delta"), Delta);
 
+#if WITH_DEV_AUTOMATION_TESTS
+	if (CortexBPReparentPrivate::GPostRunHookForTest)
+	{
+		CortexBPReparentPrivate::GPostRunHookForTest(Blueprint);
+	}
+#endif
+	TArray<FString> EmbeddedWarnings;
+	FCortexBPEmbeddedTemplates::ReportInto(EmbeddedBefore, /*bClassCurrent=*/bCompile, NewParent, bResyncEmbedded, bSave, /*bReportDropped=*/true, Data, EmbeddedWarnings);
+	Result.Warnings.Append(EmbeddedWarnings);
+
 	TArray<FString> Notes;
 	Notes.Add(TEXT("Editor reparent steps not replicated: default namespace import migration, EnsureBlueprintIsUpToDate (purge null graphs, cosmetic upgrade, SCS creation)."));
 	Data->SetArrayField(TEXT("notes"), ToJsonStrings(Notes));
@@ -774,5 +895,15 @@ void FCortexBPReparentOps::SetPostApplyHookForTest(TFunction<void(UBlueprint*)> 
 void FCortexBPReparentOps::ClearPostApplyHookForTest()
 {
 	CortexBPReparentPrivate::GPostApplyHookForTest = nullptr;
+}
+
+void FCortexBPReparentOps::SetPostRunHookForTest(TFunction<void(UBlueprint*)> Hook)
+{
+	CortexBPReparentPrivate::GPostRunHookForTest = MoveTemp(Hook);
+}
+
+void FCortexBPReparentOps::ClearPostRunHookForTest()
+{
+	CortexBPReparentPrivate::GPostRunHookForTest = nullptr;
 }
 #endif
